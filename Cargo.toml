@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/offline-core", "crates/patch-builder", "patches/bank", "patches/transporter"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
+
+# The Transporter hooks keep the settings of the builds that ran on a console.
+[profile.transporter]
+inherits = "release"
+overflow-checks = false

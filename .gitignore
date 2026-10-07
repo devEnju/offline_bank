@@ -1,0 +1,15 @@
+/target/
+/build/
+/analysis/
+/input/
+/tools/
+/.tools/
+/.ghidra-user/
+*.cia
+*.exe
+*.bin
+*.cxi
+*.cfa
+*.3ds
+*.gpr
+*.rep/

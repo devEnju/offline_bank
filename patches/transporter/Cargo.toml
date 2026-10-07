@@ -1,0 +1,20 @@
+[package]
+name = "transporter-payload"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+offline-core = { path = "../../crates/offline-core" }
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+linked-image = []
+
+[[bin]]
+name = "transporter-payload-link"
+path = "src/link.rs"
+required-features = ["linked-image"]

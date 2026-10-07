@@ -1,0 +1,22 @@
+{
+  "llvm-target": "armv6k-none-eabi",
+  "arch": "arm",
+  "cpu": "mpcore",
+  "abi": "eabi",
+  "os": "none",
+  "vendor": "unknown",
+  "env": "",
+  "data-layout": "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64",
+  "target-pointer-width": 32,
+  "features": "+soft-float,+strict-align",
+  "llvm-floatabi": "soft",
+  "max-atomic-width": 32,
+  "linker": "rust-lld",
+  "linker-flavor": "gnu-lld",
+  "executables": true,
+  "relocation-model": "static",
+  "panic-strategy": "abort",
+  "disable-redzone": true,
+  "emit-debug-gdb-scripts": false,
+  "eh-frame-header": false
+}

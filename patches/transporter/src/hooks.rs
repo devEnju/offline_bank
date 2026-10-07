@@ -1,0 +1,308 @@
+//! The entry points called from the patched original code, the worker thread
+//! that does the file work, and the file adapter over Transporter's own SDK
+//! wrappers. The original task calls an entry every frame until it answers;
+//! the main thread never waits for a file operation.
+
+use crate::layout::*;
+use core::{
+    cell::UnsafeCell,
+    mem::transmute,
+    slice,
+    sync::atomic::{AtomicU32, Ordering},
+};
+use offline_core::{
+    sections::TRANSPORT_SLOTS,
+    sidecar::Sidecar,
+    transport::{self, KIND},
+    Storage,
+};
+
+/// Transporter's `fs:USER` session handle.
+pub(crate) const FS_SESSION: *const u32 = 0x0031_1f80 as *const u32;
+pub(crate) const OPEN_FILE_DIRECTLY: usize = 0x001d_f448;
+pub(crate) const FILE_READ: usize = 0x0015_930c;
+pub(crate) const FILE_WRITE: usize = 0x0015_9390;
+pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
+pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
+/// Flush and update the file's time, as Bank's writer does.
+pub(crate) const FLUSH_FLAGS: u32 = 0x0001_0001;
+/// The original's `svcCreateThread(out, entry, arg, stack_top, priority,
+/// processor)` and `svcExitThread()` wrappers.
+const CREATE_THREAD: usize = 0x0010_e250;
+const EXIT_THREAD: usize = 0x0011_f140;
+/// One below the main thread, so the worker runs while the main thread waits
+/// for the next frame.
+const WORKER_PRIORITY: i32 = 0x31;
+
+extern "aapcs" {
+    /// `svc 0x23` behind an ordinary call boundary (see link.rs).
+    pub(crate) fn transporter_close_handle(handle: u32) -> i32;
+}
+
+const IDLE: u32 = 0;
+const RUNNING: u32 = 1;
+const DONE: u32 = 2;
+const JOB_CHECK: u32 = 0;
+const JOB_DELIVER: u32 = 1;
+
+/// Worker state. Only the main thread starts and collects a job; while one
+/// runs, the worker reads `task` and `job` and writes the two atomics.
+#[repr(C)]
+struct Shared {
+    phase: AtomicU32,
+    result: AtomicU32,
+    handle: UnsafeCell<u32>,
+    task: UnsafeCell<*const u8>,
+    job: UnsafeCell<u32>,
+}
+// SAFETY: see the access rule above; `phase` orders every hand-over.
+unsafe impl Sync for Shared {}
+static STATE: Shared = Shared {
+    phase: AtomicU32::new(IDLE),
+    result: AtomicU32::new(0),
+    handle: UnsafeCell::new(0),
+    task: UnsafeCell::new(core::ptr::null()),
+    job: UnsafeCell::new(0),
+};
+
+#[repr(C, align(8))]
+struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
+// SAFETY: used only as the stack of the one worker thread.
+unsafe impl Sync for Stack {}
+static STACK: Stack = Stack(UnsafeCell::new([0; WORKER_STACK_SIZE]));
+
+/// `/transport.bin` in Bank's extdata, open for reading and writing.
+struct File(u32);
+impl File {
+    /// `None` when Bank's extdata or the file does not exist, access is
+    /// refused, or the file is not exactly the size Bank creates.
+    unsafe fn open() -> Option<Self> {
+        type Open = unsafe extern "aapcs" fn(
+            *const u32,
+            *mut u32,
+            u32,
+            u32,
+            u32,
+            *const u8,
+            u32,
+            u32,
+            *const u8,
+            u32,
+            u32,
+            u32,
+        ) -> i32;
+        type Size = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
+        let open: Open = unsafe { transmute(OPEN_FILE_DIRECTLY) };
+        // media type SD, extdata id low and high.
+        let archive = [1u32, BANK_EXTDATA, 0];
+        let mut handle = 0;
+        let code = unsafe {
+            open(
+                FS_SESSION,
+                &mut handle,
+                0,
+                6,
+                2,
+                archive.as_ptr().cast(),
+                12,
+                3,
+                TRANSPORT_PATH.as_ptr(),
+                TRANSPORT_PATH.len() as u32,
+                3,
+                0,
+            )
+        };
+        if code < 0 || handle == 0 {
+            return None;
+        }
+        let file = Self(handle);
+        let size: Size = unsafe { transmute(FILE_SIZE) };
+        let mut length = 0;
+        if unsafe { size(&file.0, &mut length) } < 0 || length != KIND.file_len() {
+            return None;
+        }
+        Some(file)
+    }
+    fn put(&mut self, offset: u64, bytes: &[u8], flags: u32) -> Result<(), ()> {
+        type Write =
+            unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
+        let write: Write = unsafe { transmute(FILE_WRITE) };
+        let mut count = 0;
+        let code = unsafe {
+            write(
+                &self.0,
+                &mut count,
+                offset,
+                bytes.as_ptr(),
+                bytes.len() as u32,
+                flags,
+            )
+        };
+        if code < 0 || count as usize != bytes.len() {
+            return Err(());
+        }
+        Ok(())
+    }
+}
+impl Drop for File {
+    fn drop(&mut self) {
+        type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
+        let close: Close = unsafe { transmute(FILE_CLOSE) };
+        unsafe {
+            close(&self.0);
+            transporter_close_handle(self.0);
+        }
+    }
+}
+impl Storage for File {
+    type Error = ();
+    fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), ()> {
+        type Read = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
+        let read: Read = unsafe { transmute(FILE_READ) };
+        let mut count = 0;
+        let code = unsafe {
+            read(
+                &self.0,
+                &mut count,
+                offset,
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+            )
+        };
+        if code < 0 || count as usize != bytes.len() {
+            return Err(());
+        }
+        Ok(())
+    }
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), ()> {
+        self.put(offset, bytes, 0)
+    }
+    fn sync(&mut self) -> Result<(), ()> {
+        let dummy = [0u8; 1];
+        self.put(0, &dummy[..0], FLUSH_FLAGS)
+    }
+}
+
+/// A pointer the original would itself dereference: word aligned and inside
+/// the process image or heap.
+unsafe fn follow(base: *const u8, offset: usize) -> Option<*const u8> {
+    let value = unsafe { base.add(offset).cast::<u32>().read() };
+    if value & 3 != 0 || !(0x0010_0000..0x1000_0000).contains(&value) {
+        return None;
+    }
+    Some(value as *const u8)
+}
+
+/// The transport box the original filled while reading the source game.
+unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> {
+    unsafe {
+        let manager = follow(task, TASK_MANAGER)?;
+        let object = follow(manager, MANAGER_BANK_OBJECT)?;
+        let accessor = follow(object, BANK_OBJECT_ACCESSOR)?;
+        let body = follow(accessor, ACCESSOR_BODY)?;
+        Some((
+            slice::from_raw_parts(body.add(RECORDS_OFFSET), RECORDS_LEN),
+            slice::from_raw_parts(body.add(TAGS_OFFSET), TRANSPORT_SLOTS),
+        ))
+    }
+}
+
+/// The file work of one job. Runs on the worker thread.
+unsafe fn work(job: u32, task: *const u8) -> u32 {
+    let Some(file) = (unsafe { File::open() }) else {
+        return if job == JOB_CHECK { CHECK_REFUSED } else { 0 };
+    };
+    let mut file = Sidecar::new(file, KIND);
+    if job == JOB_CHECK {
+        let allowed = file
+            .slots()
+            .is_ok_and(|slots| transport::may_deliver(&slots));
+        return if allowed {
+            CHECK_ALLOWED
+        } else {
+            CHECK_REFUSED
+        };
+    }
+    let Some((records, tags)) = (unsafe { native_box(task) }) else {
+        return 0;
+    };
+    u32::from(transport::deliver(&mut file, records, tags).is_ok())
+}
+
+unsafe extern "aapcs" fn worker(_: u32) {
+    let result = unsafe { work(*STATE.job.get(), *STATE.task.get()) };
+    STATE.result.store(result, Ordering::Relaxed);
+    STATE.phase.store(DONE, Ordering::Release);
+    let exit: unsafe extern "aapcs" fn() = unsafe { transmute(EXIT_THREAD) };
+    unsafe { exit() };
+}
+
+/// Starts `job` on the first call and answers `None` until it is finished.
+/// If no thread can be created the job runs here, as it did before.
+unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
+    type Create = unsafe extern "aapcs" fn(
+        *mut u32,
+        unsafe extern "aapcs" fn(u32),
+        u32,
+        usize,
+        i32,
+        i32,
+    ) -> i32;
+    match STATE.phase.load(Ordering::Acquire) {
+        IDLE => {
+            unsafe {
+                *STATE.task.get() = task;
+                *STATE.job.get() = job;
+            }
+            STATE.phase.store(RUNNING, Ordering::Release);
+            let create: Create = unsafe { transmute(CREATE_THREAD) };
+            let top = STACK.0.get() as usize + WORKER_STACK_SIZE;
+            let code = unsafe { create(STATE.handle.get(), worker, 0, top, WORKER_PRIORITY, -2) };
+            if code < 0 {
+                STATE.phase.store(IDLE, Ordering::Release);
+                return Some(unsafe { work(job, task) });
+            }
+            None
+        }
+        DONE => {
+            unsafe { transporter_close_handle(*STATE.handle.get()) };
+            STATE.phase.store(IDLE, Ordering::Release);
+            Some(STATE.result.load(Ordering::Relaxed))
+        }
+        _ => None,
+    }
+}
+
+/// Replaces the server question "is Bank's transport box empty?". Returns the
+/// next sub-state of the original task.
+/// # Safety
+/// Called only from the patched site at 00248D40 with the live task in `r0`.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
+    // Bank is asked whatever Box 1 held, as the original asked the server.
+    // An empty box is reported afterwards by the original's next step.
+    match unsafe { step(task, JOB_CHECK) } {
+        None => CHECK_PENDING,
+        Some(CHECK_ALLOWED) => CHECK_ALLOWED,
+        Some(_) => {
+            // First entry of the original message table.
+            unsafe { task.add(TASK_MESSAGE_INDEX).write(0) };
+            CHECK_REFUSED
+        }
+    }
+}
+
+/// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
+/// flushed, and read back; `DELIVER_PENDING` while that is in progress; and
+/// `DELIVER_FAILED` when nothing was delivered, in which case the original
+/// must not remove anything from the source game.
+/// # Safety
+/// Called only from the patched site at 0024A154 with the live task in `r0`.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
+    match unsafe { step(task, JOB_DELIVER) } {
+        None => DELIVER_PENDING,
+        Some(1) => DELIVER_DONE,
+        Some(_) => DELIVER_FAILED,
+    }
+}
