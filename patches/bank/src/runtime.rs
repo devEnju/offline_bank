@@ -1136,6 +1136,23 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
                     write_word(raw, 0x10, 0x1b);
                 }
             }
+            // Still the saved day and nothing to redeem: both tasks go to states of
+            // their own that end without a word. The guard's is "no present
+            // in the way" (outcome 5), the claim's its end for a total of
+            // zero. Bank has no gifts to hand out offline.
+            let entry = state.rewards.entry.ok_or(Fault::RewardState)?;
+            let balance = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+                .and_then(|bank| bank.miles())
+                .map_err(|_| Fault::NativeObject)?;
+            if rewards::nothing_to_get(entry.new_day(), balance, false) {
+                if !is_guard {
+                    // The original ends the loading panel in state 0x1b
+                    // before it looks at the total (002aac80).
+                    unsafe { crate::ui::stop_loading(task.ui()?) }
+                        .map_err(|_| Fault::NativeObject)?;
+                }
+                unsafe { write_word(raw, 0x10, if is_guard { 4 } else { 0x22 }) };
+            }
         }
         Ok(session)
     })();

@@ -58,6 +58,8 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - Battle Points: `Miles ÷ 10` go to the game and the remainder stays. Gen 6 and Gen 7.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, blocks a new claim.
 
+**When nothing is said.** The original talks about Miles whenever the balance is above zero. The patch goes straight to the boxes when it is still the day of the last Save and Quit and the balance is below 10. That is the usual state after redeeming Battle Points, which leaves a remainder. In that case the game's notice about a present still waiting in it is skipped as well, since nothing new could be sent. With 10 or more Miles, or on any later day, everything appears as in the original; on a later day that means once, until the next Save and Quit.
+
 The patch adds one safety check: after a claim, the balance and the gift in the game must match what was shown. If not, the balance is restored and the session ends with error `00000013` without saving.
 
 ## Pokédex and adventure records
@@ -132,7 +134,9 @@ The first Save and Quit only records the date and your Pokémon count N.
 | Next day (or console date +1), open and select a game. | `N ÷ 30` Miles more than before, rounded down. |
 | Decline, withdraw some Pokémon, Save and Quit, reopen the same day. | Balance unchanged. |
 | Same day, a different game. | Same balance. No second credit. |
-| Fewer than 10 Miles. | Original message, no redemption choices. |
+| Fewer than 10 Miles, first opening on a later day than the last Save and Quit (whether or not Miles were added). | Original messages, no redemption choices. Again at each opening until a Save and Quit on that day. |
+| Fewer than 10 Miles, reopened the same day after Save and Quit (for example the remainder after redeeming Battle Points). | No reward dialog; the boxes open directly. Also no "present waiting" notice from a Gen 6 game. |
+| 10 or more Miles saved without redeeming, reopened the same day. | The redemption choices appear as before. |
 | 10 or more, Gen 6: Miles one day, Battle Points another. | Miles: balance 0. BP: `Miles ÷ 10` to the game, remainder kept. The gift waits in the game after Save and Quit. |
 | 10 or more, Gen 7. | Miles refused by the original message; BP arrives in the gift list. |
 | Redeem, then leave without saving. | Balance as before the claim; no gift in the game. |
