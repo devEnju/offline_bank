@@ -27,7 +27,7 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 
 ### Edits to the original
 
-18 regions and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
+27 regions and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -46,6 +46,13 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | `0033d30c` | Box screen child callback `002a7578` | `bank_offline_dex_save_request` |
 | `003600cc` | Records task update `0026d8ec` | `bank_offline_dex_records_update` |
 | `0033d34c` | Records completion callback `002a71a8` | `bank_offline_dex_records_finish` |
+| `002a4898` | `BL 0025c08c`: apply the language of Bank's save | Nothing; the console's language stays |
+| `002a4940` | "Language known" flag is 0 without a saved language | 1: the language screen is never entered |
+| `002ac5b0` | Task 3 without a valid save: show the "Precaution for Use" notice | Branch to `002ac8a8`, where accepting it continues |
+| `002ac6ec` | Task 3: store a picked language in a new save | Never |
+| `002ac61c`, `002ac628`, `002ac62c`, `002ac640`, `002ac648` | Task 3, valid save: store a picked language and write the save | The same store and write for a save that holds a language, with language 0 and kanji 0 |
+
+The last rows, from `002a4898` on, are plain instruction words; see [First start](#first-start).
 
 Five internal `bank_svc_*` wrappers give SVC `23/24/38/39/3a` ordinary AAPCS call boundaries, because the kernel overwrites registers that inlined code would still use. The builder checks their exact instruction bodies.
 
@@ -72,9 +79,21 @@ Task object: vtable `+8` init, `+c` update, `+14` end, `+1c` busy poll; state at
 
 **Scene and text window.** Bank draws its screen objects in the order in which they were registered with the manager (`001df0e4` appends to the list at `manager + 0x44`). The reward dialogs need the character scene (`manager + 0x8c`, created by `002a5228`) registered before the text window (the shared UI at `manager + 0x80`), or the scene covers the text. The start-up routine of task `0xB` (`002af12c`) establishes that order: `001d6a34` closes and destroys the shared UI, the scene is created and registered, `001d62a8` creates a new shared UI, and the loading panel is shown on it. The patch therefore runs task `0xB` between game selection and loading and replaces only its update. The reward claim's end (`002ab934`) and the manager's cleanup (`002a497c`) destroy the scene.
 
+**Welcome.** The original's task 9 update (`002ae568`) plays the welcome when the server's reply says that no Bank exists (`[[task + 0x28] + 0x20] == 0x35`), before it creates one; nothing records that it was shown. Entry (`002ae634`): end loading, `001d6194(ui)` shows the dialog scene (pane `0xa2`), `002b6114(0x10004, 0x3c, 0)`. State 2 shows message `[00337e14 + 4 * [task + 0x54]]` (0, 1, 2 of text file 37) through `001d6650(ui, 1, message, 1)`, state 3 waits for `001d6600(ctx) == 4` and counts up; after the third it hides the scene (`002ae6fc`) and sets state 4, the request for a new Bank. The patch has the same case when its Bank file is missing: it makes the entry calls (`ui::welcome`), sets state 2, and calls the original update while the state is 2 or 3 (`Step::Introduce`). At state 4 it shows the loading panel again and creates the file. HOME is not refused during the welcome; a task that ends there has created nothing.
+
 **No usable game.** Selection state 0 would repeat notice `0x1A` forever. Task 9 checks the availability bytes (`manager + kind*12 + 1`), shows the notice once via `001d6650(ui, 0, 0x1A, 1)`, and routes to cleanup.
 
-**UI helpers.** Shared UI at `manager(+0x2c) + 0x80`; task UI pointer at `+0x3c` (tasks 9, 7), `+0x38` (`0x10`, `0xC`), `+0x40` (`0xD`); context at `ui + 0x5c`. Loading: `001d5b44(ui)` then `0025da24(ui, message)` with message 2 (open) or `0xE` (load). Dialog poll `001d6600(ctx) == 4`. The error dialog writes its text into the UI's own string object (`ui + 0x94`).
+**UI helpers.** Shared UI at `manager(+0x2c) + 0x80`; task UI pointer at `+0x3c` (tasks 9, 7), `+0x38` (`0x10`, `0xC`), `+0x40` (`0xD`); context at `ui + 0x5c`. Loading: `001d5b44(ui)` then `0025da24(ui, message)` with message `0xE` ("Communicating with the Pokémon Bank server…") for opening and loading, as the original has on screen in both, and message 2 ("Preparing Pokémon Bank for your use…") only while a new Bank is created (original: `002ae764`). Dialog poll `001d6600(ctx) == 4`. The error dialog is the original's message `0xB` (shown by its task `0x16` after a failed save) through `001d6650(ui, 0, 0xB, 1)`; the patch then ends the message at its first page break (control code `0x10, 1, 0xBE01`; in Simplified Chinese, which has one page, at the first line feed), which leaves its first sentence, and puts two eight-digit numbers on the third line (one or two line feeds first) in the UI's own string object (`ui + 0x94`: data pointer `+4`, capacity `+8`, length `+0xa`) and hands it to the dialog again (`001d643c`). That sentence has one or two lines in all ten languages and the dialog holds three. No other text is written by the patch. A fault stays for the session: the router then sends everything to cleanup except the game scan, which still leads to task 9, where the hook shows the error again.
+
+### First start
+
+Both first-start prompts depend on Bank's own save data (`data:`, 128 KiB), not on the extdata.
+
+- **Save object** `[app + 0x74]`, with `app = [[003ab90c] + 0x1c]`: language at `+0x30` (u16, 0 = none), kanji at `+0x32`. `002cb914` and `002cb8f4` read them, `002baf00(save, language, kanji)` writes them. `0015dbf0(app, heap)` loads and checks the file (1 = valid); `0015dc50` clears a new one, language 0.
+- **Language.** At every start `00105c2c` takes the console's language and `00105c44`..`00105cc0` the text set for it; for Japanese that is text set 0, kana. The manager set-up `002a47f4` then loads the save: if it is valid and holds a language, it applies it (`0025c08c(language, heap, kanji)`, the only way to text set 1, kanji) and sets the manager's flag `+0x1b`; otherwise the flag is 0. The router sends task 0 to task 2, the start screen, with the flag set, and to task 1, the language screen (vtable `00361954`, screen `0025ce8c`), without it. The patch leaves the saved language unapplied and always sets the flag.
+- **Notice.** Task 3 (`002abe08`), states `0x12` and `0x13`: without a valid save it shows the notice at `002ac5b0` (`002b2dbc(ui, 0)`; messages `0x4f` and `0x50` of text file 39) and waits. Accepting is state `0x1d`: from `002ac8a8` it clears the listener, shows the loading panel, and state `0x14` creates the save (`002bb380`), state `0x16` clears it, stores the language picked on the language screen if there is one (`002ac6ec`) and writes it. Declining exits. With a valid save, `002ac618` stores a newly picked language (`002ac630`) and writes, or goes on. The patch branches from `002ac5b0` to `002ac8a8`, makes the store for a new save unreachable, and turns the one for a valid save into a reset: `002ac618` now takes the save (`[app + 0x74]`) and its language (`[[save + 4] + 0x30]`), goes on if that is 0, and otherwise runs the original's `002baf00(save, 0, 0)` and save write.
+
+A save written by the patched Bank is therefore valid with language 0, which to the original means: notice accepted, language not chosen. It then asks for the language only. A save that holds a language loses it at the first patched start, in one write.
 
 ### Bank object
 
@@ -123,6 +142,7 @@ Save manager (0x100 bytes): selected kind at `+c8`; per kind `k` (1..8 = X, Y, O
 - Count: `001d5ec0(bank + 0xbb520)`, 100 boxes × 30 slots. Balance: `001d588c` / `001d59fc` on `bank + 0xbb528`.
 - Native accrual in guard state 0 and claim state `0x1b` is `count × (1/30) × hours × (1/24)`. The hook sets the stored reward date to the session date first, so native accrual is zero; local earnings are added to the balance when task `0x10` finishes.
 - The claim hook starts task `0xD` at state `0x1b` with `+4c = 1`, `+50 = 0`, and session `+38 = -1`, which skips service queries and distributions. Allowed states: `0`, `7..0xd`, `0x16`, `0x1b..0x22`.
+- Nothing to get (`rewards::nothing_to_get`: today is not later than the record's accounted-through date, balance below 10, no gift): the hook sets the guard to state 4 (`002ad658`, outcome 5, no notice 7 / `0x51` about a present in the game) and the claim to state `0x22` (`002ab124`, the original's end for a total of 0), after ending the loading panel as the original's state `0x1b` does before it looks at the total (`002aac80`). Otherwise claim state `0x1b` shows message `0xE` for any total above 0 and state `0x16` message `0xF` below 10 or the choice `0x10` from 10 on.
 - Redemption runs in state `0xb` (choice at `+60`, quote at `+50`) and ends in `0xc`. Gen 6 writes the gift buffer from `(*(game + 0x1c384))->vtable[2]`: flag `+1ff |= 0x80`, Miles at `+6a2`, BP at `+6a0`. Gen 7 inserts a 0x108-byte record (type 3 at `+51`, amount at `+68`) through `002b6d68` into the 48-slot store at `game + 0xad43c`; the original ignores that call's result, so the hook compares counts and the new record.
 
 ### Pokédex
@@ -225,13 +245,13 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 
 | Where | Role |
 | --- | --- |
-| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), entry table and assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
+| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), entry table and assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
 | [crates/offline-core/](../crates/offline-core/src/) | `transport::deliver` and the side-file format, shared with Bank. |
 | [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. The profile with every edit and its original word is [transporter15.rs](../crates/patch-builder/src/transporter15.rs). |
 
 ### Edits to the original
 
-32 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with ten entry branches, in this order: check, deliver, session, slot, cartridge id, cartridge read, cartridge write, list next, select, list limit.
+43 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with seventeen entry branches, in this order: check, deliver, session, slot, cartridge id, cartridge read, cartridge write, list next, select, list limit, language chosen, language order, language buttons, list keep, language back, title begin, title end. One edit, at `0013AEE4`, does not branch to an entry but to the layout check beside the start-up hook (see [Placement](#placement-1)).
 
 | Address | Purpose | Replacement |
 | --- | --- | --- |
@@ -248,6 +268,15 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | `00244F10` | Game list: go on to the Virtual Console titles | List-next entry |
 | `00244908` | Game list: a DS entry was confirmed | Select entry |
 | `0024508C` | Game list: bound of the loop that appends the Virtual Console titles | List-limit entry |
+| `00245080` | Game list: count after appending a Virtual Console title | List-keep entry: counts it only in the listed language |
+| `0025C5FC` | Language screen ended: switch the language of the screens | Language-chosen entry |
+| `0025C618` | Language screen ended: record the language in the manager | Skipped |
+| `0022BEE0` | Language screen: order and place the nine list entries | Language-order entry |
+| `0022B5B0` | Language screen: cursor range and enabled buttons of the list | Language-buttons entry: the original, then the shown entries only |
+| `0022B6E0`, `0022B6E4` | Language screen: list index 5, Japanese, goes to the kana/kanji part | List index 7, Back, goes to part 3, the end; every language goes to the confirm part |
+| `0022B3B8` | Language screen: B on a part without a Back button does nothing | Language-back entry: on the list, presses the Back button |
+| `0024BA44`, `0024BA74` | Title screen: before and after it loads its archives | Title-begin and title-end entries: the archive with logo and start prompt is read in the chosen language |
+| `0013AEE4` | Building a layout: the layout binary on its way to `Layout::Build` | Layout check: the same, and the payload adjusts the language screen's layout first |
 | `00248D3C`..`00248D44` | Bank check: the answer | Check entry; its result is the next sub-state |
 | `0024A150`..`0024A16C` | Transfer, sub-state 0: create the upload request | Deliver entry, then branch on its result |
 | `0024A3D8`, `0024A3DC` | Transfer, sub-state `0xA`: commit request | Continue with sub-state `0xE` |
@@ -256,7 +285,7 @@ The offline flow follows zaksabeast's Transporter-Offline-Patch. Unlike that pat
 
 ### Placement
 
-Same method as the [Bank patch](#placement). Transporter's main function is the same engine code as Bank's: `00103D9C` is its one `BL` to application init. The start-up hook sits at `0028D1AC`, in the zero bytes after the original text. Unlike Bank's it flushes the caches whole (Luma SVC `92`/`94`): its code range is only 8 KiB, and a range flush of that size is carried out by virtual address on every core, which faulted in the kernel on core 1 under another process's address space. The payload links at `00364000`, the first page after the original zero-initialised data, which follows the data section directly (`003293FC..003638A4`) and is not page aligned. The paired exheader enlarges the data segment and sets BSS to zero (fields `0x34`, `0x38`, `0x3c` only); the IPS writes the former BSS as zero, then the payload. `code.ips` and `exheader.bin` only work together.
+Same method as the [Bank patch](#placement). Transporter's main function is the same engine code as Bank's: `00103D9C` is its one `BL` to application init. The start-up hook sits at `0028D1AC`, in the zero bytes after the original text. The layout check for `0013AEE4` lies there too, at `0028D1DC`: that site is on the way of every layout, and the first layouts are built during start-up, before the payload is executable (a branch into the payload from there was a prefetch abort at its entry word). The check hands only a layout binary of the language screen's size to the payload, and that layout is built when the screen is opened. Unlike Bank's hook it flushes the caches whole (Luma SVC `92`/`94`): its code range is only 12 KiB, and a range flush of a small range is carried out by virtual address on every core, which faulted in the kernel on core 1 under another process's address space. The payload links at `00364000`, the first page after the original zero-initialised data, which follows the data section directly (`003293FC..003638A4`) and is not page aligned. The paired exheader enlarges the data segment and sets BSS to zero (fields `0x34`, `0x38`, `0x3c` only); the IPS writes the former BSS as zero, then the payload. `code.ips` and `exheader.bin` only work together.
 
 ### Bank data object
 
@@ -309,11 +338,49 @@ Transporter's SDK wrappers: open-directly `001DF448`, read `0015930C`, write `00
 
 The three cartridge calls are redirected at their call sites. `Saves` ([sdsave.rs](../patches/transporter/src/sdsave.rs)) holds what is offered and which item is presented to the cartridge code right now: the cartridge slot itself, or one save.
 
-- **Scan.** In scan mode the cartridge-id entry calls the original first, then probes the accepted file names (56 open attempts at most). The items are kept in the order of the original's list kinds (Black, White, Black 2, White 2; languages in the order `JOFIDSK`). A Gen 5 cartridge stands at the place of its game and language, and the save of exactly that game and language is left out. The first item, cartridge or save, is presented in the cartridge's place.
+- **Scan.** In scan mode the cartridge-id entry calls the original first, then probes the accepted file names in the [listed language](#language-screen) (8 open attempts at most). The items are kept in the order of the original's list kinds (Black, White, Black 2, White 2). A Gen 5 cartridge in that language stands at the place of its game, and the save of that game is left out. The first item, cartridge or save, is presented in the cartridge's place. A Gen 5 cartridge in another language is no item; if no save stands in its place, the entry answers a game code of zero, which the cartridge task takes as "no Pokémon cartridge" (`00243554`).
 - **Calls.** While the cartridge slot is presented, all three entries pass through to the original functions. While a save is presented, the game code comes from its file name, reads and writes go to the file, and the save is copied to `<name>.sav.bak` before the first write of a session.
 - **List.** The list-next entry runs after each read for a DS entry: it notes the next item's kind and starts its read, as state 1 does for a cartridge, so the cartridge and every save get an entry. The select entry notes which entry was picked. List positions are mapped back to the cartridge or a file, so an item the original rejects does not shift the others.
 
-The list holds 40 entries (kind bytes at `task + 0x3C` up to the count at `+0x64`), which the original could not exceed with one cartridge and 39 Virtual Console titles. With saves it could, so the list-limit entry replaces the bound of the loop that appends the titles (state 4, `00245064`..`00245094`): once the list holds 40, the bound reads as zero and the loop ends. The redirect is based on zaksabeast's DreamRadarCartRedirect, which replaces the same three functions for one hard-coded file.
+The list holds 40 entries (kind bytes at `task + 0x3C` up to the count at `+0x64`), which the original could not exceed with one cartridge and 39 Virtual Console titles. With saves of every language it could, and the bound is kept although one language no longer reaches it: the list-limit entry replaces the bound of the loop that appends the titles (state 4, `00245064`..`00245094`): once the list holds 40, the bound reads as zero and the loop ends. The redirect is based on zaksabeast's DreamRadarCartRedirect, which replaces the same three functions for one hard-coded file.
+
+### Language screen
+
+**Nothing is saved by the original.** Its exheader declares no save data and no extdata. At start, `001058E8` reads the console's language (`001E49BC`, config block `000A0002`), maps it with `00106EAC` and stores it in the byte at `[0032938C]`, which `001E356C` returns. The only other caller of the setter `0022AF28` (`00240D9C`) passes a start-up parameter. Language ids: 1 Japanese, 2 English, 3 French, 4 Italian, 5 German, 7 Spanish, 8 Korean, 9 and 10 Chinese; consoles in Dutch, Portuguese or Russian get 2.
+
+**States.** `get_next_state` (`00242BA0`) and the task factory (`0019CEE4`): 2 is the title screen, 1 the language screen (task vtable `002E6680`), `0x11` a reload that returns to the title screen, 8 the game list. The title screen's outcome `0x12` leads to state 1.
+
+**The screen** (constructor `0022BD28`, vtable `002E543C`, `0xC0` bytes):
+
+| Offset | Content |
+| --- | --- |
+| `+0x10`, `+0x5C` | Button manager, layout |
+| `+0x7C`, `+0x7D` | Part (0 list, 1 kana/kanji, 2 confirm, 3 end) and its step |
+| `+0x80` | List index of the picked entry |
+| `+0x84` | Kana (0) or kanji (1) |
+| `+0x88` | Nine list indices in display order |
+| `+0xAC`, `+0xB0`, `+0xB4` | First and one-past-last position of the cursor's range, cursor |
+
+- List index to language id, table `002CA380`: `2, 7, 3, 5, 4, 1, 8, 9, 10`. Buttons 0..8 are the languages in that order, 9 and `0xA` kana and kanji, `0xC` confirm, `0xB` and `0xD` back (button handler `0025BBD8`).
+- `0022BC0C` builds the display order, the current language first and the others in table order, and places the nine panes 26 units apart, from 104 down to -104, through `001A1B3C(layout, 1, pane, &xyz)`; the panes of the list indices are in table `002CA3A4`.
+- `001A1FE0` sets the cursor's range for the part about to be shown and enables exactly the buttons whose ids are in it (`0022CA5C(buttons, id, 0)`, the others `0022CB98(buttons, id)`). `001A18CC(buttons, id, sound)` gives a button its sound; `0x5000A` is the cancel sound.
+- The key handler `0022B330` moves the cursor, presses the button under it on A (`001A2304(buttons, id)`), and on B presses the Back button of part 1 or 2.
+- A pressed list button stores its list index in `+0x80` (button listener `0025BBD8`). After the list has faded out, `0022B6DC`..`0022B6F8` send list index 5 (Japanese) to part 1 and every other to part 2. The text frame of the picked language comes from table `002CA70C`; index 5 has frame 0.
+- Part 3 calls the task's listener `0025C5BC(listener, language id of +0x80, kanji)`, which switches the language (`0022AF28`), records it in `[manager + 0x168]` (`0022C06C`) and ends the task.
+
+**The patch** ([language.rs](../patches/transporter/src/language.rs)) keeps one byte: the chosen language id, 0 until a choice is made. The listed language is that byte or, while it is 0, the language of the screens; ids without source games become 2.
+
+- The language-chosen entry stores the id instead of switching, if it is a language games exist in. The record in the manager is left alone, so everything else keeps seeing the language of the screens. The reload state still runs.
+- **The list.** The language-order entry stands in for `0022BC0C`: the six languages other than the listed one in table order, then list index 7 as the Back button, centred and 32 units apart (96 down to -96), the distance of the long buttons in Bank's main menu (`Turtle_lower5.bclyt` in Bank: 58 down to -102), which the original's nine entries, 26 apart and overlapping, have no room for; the listed language and list index 8 follow and are placed far off the screen. The language-buttons entry runs the original `001A1FE0` and then ends the cursor's range after the shown entries and disables the buttons of the others.
+- **Back.** List index 7 is sent to part 3 instead of a sub-screen, so the screen ends as after a confirm; the listener then reports language id 9, which the language-chosen entry ignores. Button 7 gets the cancel sound, and B on the list presses it.
+- **Back's text.** The language screen's own message file (36 of the text archive; 24 is the game-selection screen's) has no "Back": its two Back buttons say "Select language" (message 6). The game-selection screen's Back is message `0x1F` of file `0x18` (`002427BC`). The language-order entry opens that file the way `0022EF30` opens a screen's own (`001E6360(0x28, heap)`, `001DFB00(memory, 001E2540(10), file, heap, 1, 5)`, heap from the constructor's parameter `+4`), sets the pane's text with the original's `0019F7B0(strings, layout, pane, messages, message)`, which copies the string, and deletes the object through its second virtual function, as `0022F004` does.
+- **The Back button's panes** ([lytpatch.rs](../patches/transporter/src/lytpatch.rs)). The language screen is one of Bank's screens, and the Back buttons of Bank's menus (`Turtle_lower5.bclyt` in Bank, panes `5`, `l`, `2h`) are a 304x30 long button holding a text pane centred at (0, 0) and a 30x30 `return_icon.bclim` at x 137, drawn as the texture is: teal, `008899` (material black colour 0, white corner colours). The game-selection screen's Back (`Salmon_lower4.bclyt`, pane `3`) is the same in Transporter's brown: its material's black colour `FFFFFF` turns the icon white and the pane's corner colours tint it `533324`, a brown near the dark end of the button's bar (`482321` to `7C3C2F`) but none of its pixels. The language screen's layout (`Turtle_lang_select_lower.bclyt`, 12,680 bytes; pane names are the pane ids in base 36) has the same long button in blue for each list entry, but with the language's name as a picture. The layout check sees every layout binary before `Layout::Build` (`0013AEF8`); the payload gets the ones of this size and changes exactly this one, identified by its CRC-32: the picture `1a` of the Simplified Chinese button `m` becomes the icon (the texture name it refers to is replaced by `return_icon.bclim`, which the common archive `a/0/4/5` holds and this screen loads; size and position as in Bank; the material's black colour, `323232` for the name pictures, becomes 0 as in Bank's icon material, so the icon has the texture's teal), and the text pane `2e` of the kana/kanji part is moved into `m` and centred. The button itself, `m` with `long_button.bclim`, is not changed. A layout is a flat list of sections in which `pas1`/`pae1` bracket a pane's children and nothing refers to a section by offset, so the pane is moved by rotating bytes; no animation of the screen names the moved or changed panes. If the layout is not the known one, it is left alone: the entry keeps its Chinese picture and still works as Back.
+- **Virtual Console titles.** The scanner (`0024120C`) walks the table `002AFE0C`, 39 rows of `{ version, language id, title index }`, and gives row `i` the list kind `i + 5`. The game list appends the kinds it found in the loop `00245064`..`00245094`. The list-keep entry replaces the increment of the count: a title in another language is not counted, and the next one overwrites its kind byte.
+- **Gen 5.** The scan for SD saves and the cartridge use the letter of the listed language ([Saves on the SD card](#saves-on-the-sd-card)).
+
+**The title screen.** The start prompt and the logo are pictures (`push_start_button.bclim` in the lower layout `Salmon_lower3`, `Salmon_logo.bclim` in the upper one), both in archive `a/0/4/6`, whose one entry exists in a variant per language id (0 the default, used for Japanese; 2, 3, 4, 5, 7, 8, 9, 10). English and Korean have the same prompt; the logo differs in all. An archive entry is read in the variant of the global at `002F4D7C` (`001DDC0C`), which the original sets through `001071B0` to the language of the screens whenever that changes (`00104EBC`, its only caller). The title screen's constructor (`0024B9E4`) loads its three archives (`0x2C`, `0x2D`, `0x2E`) and builds its layouts in one call (`0024BA70`); the title is built anew each time the language screen ends. The two entries call `001071B0` around that call: with the chosen language before it, if one was chosen, and with the language of the screens after it. The other two archives have one variant only, and the screen's texts come from the text archive of the screens' language, which that global does not touch.
+
+**A console set to Chinese.** The screens are in Chinese (ids 9 and 10), the listed language is English until one is chosen, so English is the hidden entry. The Chinese entries are never offered as languages: list index 7 is the Back button, index 8 is hidden. Back reports id 9, which is ignored whatever the screens' language is. All ten text archives, both Chinese ones included, have message `0x1F` in file `0x18`.
 
 ### Messages
 

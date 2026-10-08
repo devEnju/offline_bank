@@ -42,6 +42,10 @@ pub const BOOTSTRAP_LIMIT: u32 = 0x0028_e000;
 /// function it calls. The same engine code as Bank's 001040A4 / 0010494C.
 pub const STARTUP_CALL: u32 = 0x0010_3d9c;
 pub const ORIGINAL_APP_INIT: u32 = 0x0010_4644;
+/// The check on the way of every layout (0013AEE4), in the same already
+/// executable place as the start-up hook, twelve words after its start:
+/// layouts are built before the payload can run.
+pub const LAYOUT_CHECK: u32 = BOOTSTRAP_ADDRESS + 0x30;
 /// First page after the original zero-initialised data (ends at 003638A4).
 pub const PAYLOAD_ADDRESS: u32 = 0x0036_4000;
 /// Entry words at the start of the payload, in this order.
@@ -55,7 +59,14 @@ pub const ENTRY_CART_WRITE: u32 = PAYLOAD_ADDRESS + 24;
 pub const ENTRY_LIST_NEXT: u32 = PAYLOAD_ADDRESS + 28;
 pub const ENTRY_SELECT: u32 = PAYLOAD_ADDRESS + 32;
 pub const ENTRY_LIST_LIMIT: u32 = PAYLOAD_ADDRESS + 36;
-pub const ENTRY_COUNT: u32 = 10;
+pub const ENTRY_LANGUAGE_CHOSEN: u32 = PAYLOAD_ADDRESS + 40;
+pub const ENTRY_LANGUAGE_ORDER: u32 = PAYLOAD_ADDRESS + 44;
+pub const ENTRY_LANGUAGE_BUTTONS: u32 = PAYLOAD_ADDRESS + 48;
+pub const ENTRY_LIST_KEEP: u32 = PAYLOAD_ADDRESS + 52;
+pub const ENTRY_LANGUAGE_BACK: u32 = PAYLOAD_ADDRESS + 56;
+pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 60;
+pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 64;
+pub const ENTRY_COUNT: u32 = 17;
 
 enum Word {
     Raw(u32),
@@ -113,6 +124,41 @@ const EDITS: &[(u32, u32, Word)] = &[
     // (was: ldrh r1, [r1, #0x58], its bound). The entry ends the loop when
     // the list holds its 40 entries.
     (0x0024_508c, 0xe1d1_15b8, BranchLink(ENTRY_LIST_LIMIT)),
+    // --- The language screen chooses which language's games are listed. ---
+    // The screen ending (0025C5BC): no switch of the screens' language (was:
+    // bl 0022AF28); the entry notes the choice. The record of the language
+    // in the manager (was: bl 0022C06C) keeps its value.
+    (0x0025_c5fc, 0xebff_3a49, BranchLink(ENTRY_LANGUAGE_CHOSEN)),
+    (0x0025_c618, 0xebff_3e93, Raw(0xe320_f000)),
+    // Constructor (0022BD28), ordering and placing the list (was:
+    // bl 0022BC0C): the six languages that are not listed already, centred,
+    // and the Back button below them.
+    (0x0022_bee0, 0xebff_ff49, BranchLink(ENTRY_LANGUAGE_ORDER)),
+    // Showing the list (0022B530): cursor range and enabled buttons (was:
+    // bl 001A1FE0, which the entry calls first) for the shown entries only.
+    (0x0022_b5b0, 0xebfd_da8a, BranchLink(ENTRY_LANGUAGE_BUTTONS)),
+    // After an entry was picked (was: cmp r0, #5 / moveq r1, #1: list index
+    // 5, Japanese, goes to the kana/kanji part): index 7, the Back button,
+    // goes to part 3, the end of the screen; every language goes to the
+    // confirm part.
+    (0x0022_b6e0, 0xe350_0005, Raw(0xe350_0007)),
+    (0x0022_b6e4, 0x03a0_1001, Raw(0x03a0_1003)),
+    // Key handler (0022B330), B on a part without a Back button (was:
+    // b 0022B510): on the list the entry presses the Back button.
+    (0x0022_b3b8, 0xea00_0054, Branch(ENTRY_LANGUAGE_BACK)),
+    // Title screen's constructor (0024B9E4), before and after the call that
+    // loads its archives (0024BA70; was: mov r7, #3 and mov r3, #0x27): the
+    // archive with the logo and the start prompt is read in the chosen
+    // language, and the reading language is set back.
+    (0x0024_ba44, 0xe3a0_7003, BranchLink(ENTRY_TITLE_BEGIN)),
+    (0x0024_ba74, 0xe3a0_3027, BranchLink(ENTRY_TITLE_END)),
+    // Building a layout (0013AE2C), the layout binary on its way to
+    // Layout::Build (was: mov r1, r0): the check does the same and lets the
+    // payload give the language screen's layout its Back button first.
+    (0x0013_aee4, 0xe1a0_1000, BranchLink(LAYOUT_CHECK)),
+    // Game list (00244D2C), appending a Virtual Console title (was:
+    // add r1, r1, #1): the entry counts it only in the listed language.
+    (0x0024_5080, 0xe281_1001, BranchLink(ENTRY_LIST_KEEP)),
     // --- Bank check: r0 = task; the entry answers the next sub-state. ---
     (0x0024_8d3c, 0xe594_003c, Raw(0xe1a0_0004)),
     (0x0024_8d40, 0xe594_1028, BranchLink(ENTRY_CHECK)),
@@ -261,6 +307,11 @@ pub fn inspect_image(elf: &[u8]) -> Result<HookImage> {
             != Some(ORIGINAL_APP_INIT)
     {
         return fail("start-up hook does not begin by calling the original application init");
+    }
+    // The layout check begins with the instruction it stands in for.
+    let check = (LAYOUT_CHECK - BOOTSTRAP_ADDRESS) as usize;
+    if bootstrap.bytes.len() < check + 4 || le32(&bootstrap.bytes, check)? != 0xe1a0_1000 {
+        return fail("layout check is not at its reviewed place in the start-up hook");
     }
 
     if code.address != PAYLOAD_ADDRESS
@@ -494,6 +545,8 @@ mod tests {
         bytes.extend_from_slice(
             &encode_arm_branch(BOOTSTRAP_ADDRESS + 4, ORIGINAL_APP_INIT, true).unwrap(),
         );
+        bytes.resize((LAYOUT_CHECK - BOOTSTRAP_ADDRESS) as usize, 0xAA);
+        bytes.extend_from_slice(&0xe1a0_1000u32.to_le_bytes());
         bytes.resize(0x40, 0xAA);
         bytes
     }
@@ -556,6 +609,7 @@ mod tests {
             let other = encode_arm_branch(BOOTSTRAP_ADDRESS + 4, 0x0010_4648, true).unwrap();
             s[0].2[4..8].copy_from_slice(&other);
         });
+        reject(&|s| s[0].2[(LAYOUT_CHECK - BOOTSTRAP_ADDRESS) as usize] ^= 1);
         // Payload code: address, permissions, partial page, entry words.
         reject(&|s| s[1].0 += 0x1000);
         reject(&|s| s[1].1 = 7);
@@ -620,6 +674,13 @@ mod tests {
             (0x0024_4f10, ENTRY_LIST_NEXT),
             (0x0024_4908, ENTRY_SELECT),
             (0x0024_508c, ENTRY_LIST_LIMIT),
+            (0x0025_c5fc, ENTRY_LANGUAGE_CHOSEN),
+            (0x0022_bee0, ENTRY_LANGUAGE_ORDER),
+            (0x0022_b5b0, ENTRY_LANGUAGE_BUTTONS),
+            (0x0024_5080, ENTRY_LIST_KEEP),
+            (0x0013_aee4, LAYOUT_CHECK),
+            (0x0024_ba44, ENTRY_TITLE_BEGIN),
+            (0x0024_ba74, ENTRY_TITLE_END),
             (STARTUP_CALL, BOOTSTRAP_ADDRESS),
         ] {
             let call = word(address, &BranchLink(entry));
@@ -631,9 +692,27 @@ mod tests {
             (0x0024_39a8, 0xebff_5b8c, 0x0021_a7e0),
             (0x0024_37f4, 0xebff_5cd5, 0x0021_ab50),
             (0x0024_397c, 0xebff_5c73, 0x0021_ab50),
+            // The language screen's calls.
+            (0x0025_c5fc, 0xebff_3a49, 0x0022_af28),
+            (0x0025_c618, 0xebff_3e93, 0x0022_c06c),
+            (0x0022_bee0, 0xebff_ff49, 0x0022_bc0c),
+            (0x0022_b5b0, 0xebfd_da8a, 0x001a_1fe0),
         ] {
             assert_eq!(branch_target(address, original, true), Some(target));
         }
+        // B on the language list: the original branch and its replacement.
+        assert_eq!(
+            branch_target(0x0022_b3b8, 0xea00_0054, false),
+            Some(0x0022_b510)
+        );
+        assert_eq!(
+            branch_target(
+                0x0022_b3b8,
+                word(0x0022_b3b8, &Branch(ENTRY_LANGUAGE_BACK)),
+                false
+            ),
+            Some(ENTRY_LANGUAGE_BACK)
+        );
         // The original start-up call that the hook replaces and then makes.
         assert_eq!(
             branch_target(STARTUP_CALL, 0xeb00_0228, true),

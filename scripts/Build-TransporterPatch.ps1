@@ -19,8 +19,7 @@ try {
     & (Join-Path $PSScriptRoot 'Build-TransporterPayload.ps1') | Out-Host
     $elf = Join-Path $projectRoot 'build/intermediate/transporter/transporter-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing hook image: $elf" }
-    $elfHash = (Get-FileHash -LiteralPath $elf -Algorithm SHA256).Hash.ToLowerInvariant()
-    $output = Join-Path $projectRoot ('build/transporter/' + $elfHash.Substring(0,16))
+    $output = Join-Path $projectRoot ('build/transporter/' + (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind transporter))
     if (Test-Path -LiteralPath $output) { throw "Output already exists and will not be replaced: $output" }
     New-Item -ItemType Directory -Path (Split-Path -Parent $output) -Force | Out-Null
     & cargo +stable run --locked --offline -p patch-builder -- build-transporter $code $exheader $elf $output

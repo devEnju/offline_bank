@@ -38,9 +38,43 @@ pub fn archive_preservation_candidate() -> CheckedEdit {
     }
 }
 
-/// Native edit regions in the current profile: seventeen hooks plus the linked
+/// The first start without prompts (docs/internals.md, "First start"):
+/// (virtual address, original word, replacement word). Bank asks for a
+/// language while its own save holds none, and shows its "Precaution for
+/// Use" notice while it has no valid save.
+pub const FIRST_START_EDITS: [(u32, u32, u32); 9] = [
+    // Manager set-up (002a47f4): a saved language is not applied (was:
+    // bl 0025c08c), so the console's language stays...
+    (0x002a4898, 0xebfeddfb, 0xe320f000),
+    // ...and the "language known" flag is set also without one (was:
+    // mov r5, r7, zero), so the language screen, task 1, is never entered.
+    (0x002a4940, 0xe1a05007, 0xe3a05001),
+    // Task 3 without a valid save (was: ldr r5, [r4, #0x40], the start of
+    // showing the notice): b 002ac8a8, where accepting it continues. The
+    // save is created and written as after "accept".
+    (0x002ac5b0, 0xe5945040, FIRST_START_ACCEPT_BRANCH),
+    // Task 3 never stores a language in a new save (was: beq 002ac710). A
+    // save made here holds language 0, for which the original asks.
+    (0x002ac6ec, 0x0a000007, 0xea000007),
+    // Task 3 with a valid save (002ac618) stored a language picked on the
+    // language screen and wrote the save. It now does that for a save that
+    // holds a language, with language 0 and kanji 0, so the original asks
+    // again: r6 is the save (was: ldr r6, [r0, #0xf0], the picked
+    // language), r5 its language (was: movs r5, r0; nop), and the store
+    // gets zeros (was: mov r2, r0 and uxth r1, r5). The branch between
+    // them and the write after them are the original's.
+    (0x002ac61c, 0xe59060f0, 0xe5906074),
+    (0x002ac628, 0xe1b05000, 0xe1d053b0),
+    (0x002ac62c, 0xe320f000, 0xe3550000),
+    (0x002ac640, 0xe1a02000, 0xe3a02000),
+    (0x002ac648, 0xe6ff1075, 0xe3a01000),
+];
+/// `b 002ac8a8` at 002ac5b0.
+pub const FIRST_START_ACCEPT_BRANCH: u32 = 0xea0000bc;
+
+/// Native edit regions in the current profile: twenty-two hooks plus the linked
 /// bootstrap bytes.
-pub const NATIVE_EDIT_REGIONS: usize = 18;
+pub const NATIVE_EDIT_REGIONS: usize = 27;
 
 /// Task 0xb (scene set-up between game selection and Bank loading): the
 /// update slot of its vtable, the update it holds (a server check), and the
@@ -182,6 +216,9 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     ] {
         edits.push(word(address, expected, target.to_le_bytes()));
     }
+    for (address, expected, replacement) in FIRST_START_EDITS {
+        edits.push(word(address, expected, replacement.to_le_bytes()));
+    }
     Ok(edits)
 }
 #[cfg(test)]
@@ -258,6 +295,31 @@ mod tests {
                 .unwrap();
             assert_eq!(edit.replacement, target.to_le_bytes());
         }
+        // The first start: each edit is present with its original word, and
+        // the notice is skipped to where accepting it continues.
+        for (address, expected, replacement) in FIRST_START_EDITS {
+            let edit = edits
+                .iter()
+                .find(|e| e.offset == (address - CODE_BASE) as usize)
+                .unwrap();
+            assert_eq!(edit.expected, expected.to_le_bytes());
+            assert_eq!(edit.replacement, replacement.to_le_bytes());
+        }
+        assert_eq!(
+            FIRST_START_ACCEPT_BRANCH.to_le_bytes(),
+            encode_arm_branch(0x002ac5b0, 0x002ac8a8, false).unwrap()
+        );
+        // The conditional branch becomes unconditional, same target.
+        let (address, original, replacement) = FIRST_START_EDITS
+            .into_iter()
+            .find(|edit| edit.0 == 0x002ac6ec)
+            .unwrap();
+        assert_eq!(original >> 28, 0x0);
+        assert_eq!(
+            replacement.to_le_bytes(),
+            encode_arm_branch(address, 0x002ac710, false).unwrap()
+        );
+        assert_eq!(original & 0x0fff_ffff, replacement & 0x0fff_ffff);
         let timestamp = edits.iter().find(|e| e.offset == 0x000d3bf4).unwrap();
         assert_eq!(timestamp.expected, [0xf3, 0x4f, 0x2d, 0xe9]);
         assert_eq!(

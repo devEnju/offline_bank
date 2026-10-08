@@ -11,6 +11,10 @@ mod linked {
     };
     use transporter_payload::gen5::transporter_slot_holds;
     use transporter_payload::hooks::{transporter_check, transporter_deliver};
+    use transporter_payload::language::{
+        transporter_language_buttons, transporter_language_chosen, transporter_language_order,
+        transporter_layout_built, transporter_title_language, transporter_vc_listed,
+    };
 
     // Keeps the start-up hook in the link; the builder installs its call.
     #[used]
@@ -18,7 +22,7 @@ mod linked {
     static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
         transporter_payload::bootstrap::transporter_bootstrap_startup;
 
-    // Two fixed entry words the patched sites branch to; the builder checks
+    // The fixed entry words the patched sites branch to; the builder checks
     // that they are branches into this image.
     core::arch::global_asm!(
         ".section .transporter.entry,\"ax\",%progbits",
@@ -35,10 +39,19 @@ mod linked {
         "b transporter_list_next_stub",
         "b transporter_select_stub",
         "b transporter_list_limit_stub",
+        "b {language_chosen}",
+        "b transporter_language_order_stub",
+        "b {language_buttons}",
+        "b transporter_list_keep_stub",
+        "b transporter_language_back_stub",
+        "b transporter_title_begin_stub",
+        "b transporter_title_end_stub",
         check = sym transporter_check,
         deliver = sym transporter_deliver,
         cart_read = sym transporter_cart_read,
         cart_write = sym transporter_cart_write,
+        language_chosen = sym transporter_language_chosen,
+        language_buttons = sym transporter_language_buttons,
     );
 
     // Call-site adapters for the SD-save hooks: they pass the caller's task
@@ -72,9 +85,79 @@ mod linked {
         "cmp r12, #40",
         "movhs r1, #0",
         "bx lr",
+        // 00245080 (was: add r1, r1, #1, the list count after a Virtual
+        // Console title was appended). The kind byte was just written at
+        // kinds[r2] (r5 = kinds); the count only advances when the title is
+        // in the listed language, so the next one overwrites it otherwise.
+        // r0, the loop index, stays live.
+        "transporter_list_keep_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "ldrb r0, [r5, r2]",
+        "bl {vc_listed}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "addne r1, r1, #1",
+        "bx lr",
         cart_id = sym transporter_cart_id,
         list_next = sym transporter_list_next,
         select = sym transporter_select,
+        vc_listed = sym transporter_vc_listed,
+    );
+
+    // The language screen (0022BD28).
+    core::arch::global_asm!(
+        ".section .text.transporter_language_stubs,\"ax\",%progbits",
+        ".arm",
+        // 0022BEE0 (was: bl 0022BC0C). r0 = screen; r6 = the constructor's
+        // parameter, whose heap the screen's objects come from.
+        "transporter_language_order_stub:",
+        "mov r1, r6",
+        "b {language_order}",
+        // 0022B3B8 (was: b 0022B510, B pressed on a part of the screen that
+        // has no Back button; r0 = the part). On the list, part 0, B now
+        // presses the Back button, button 7, as the original does for the
+        // two other parts at 0022B3BC..0022B3DC. r4 = screen.
+        "transporter_language_back_stub:",
+        "cmp r0, #0",
+        "ldrne r12, =0x0022b510",
+        "bxne r12",
+        "ldr r0, [r4, #0x10]",
+        "mov r1, #7",
+        "ldr r12, =0x0022b3dc",
+        "bx r12",
+        // The title screen's constructor (0024B9E4), around its call that
+        // loads its archives and builds its layouts (0024BA70).
+        // 0024BA44 (was: mov r7, #3), while the call's arguments are set up;
+        // every register is returned as it came.
+        "transporter_title_begin_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "mov r0, #1",
+        "bl {title_language}",
+        "pop {{r0-r3, r12, lr}}",
+        "mov r7, #3",
+        "bx lr",
+        // 0024BA74 (was: mov r3, #0x27), right after the call.
+        "transporter_title_end_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "mov r0, #0",
+        "bl {title_language}",
+        "pop {{r0-r3, r12, lr}}",
+        "mov r3, #0x27",
+        "bx lr",
+        // Reached from transporter_layout_check (bootstrap.rs) for a layout
+        // binary of the language screen's size, with the lr of the patched
+        // site 0013AEE4. r0 and r1 are the layout binary and are returned as
+        // they came, with every other register.
+        ".global transporter_layout_adjust",
+        "transporter_layout_adjust:",
+        "push {{r0-r3, r12, lr}}",
+        "bl {layout_built}",
+        "pop {{r0-r3, r12, lr}}",
+        "bx lr",
+        ".ltorg",
+        language_order = sym transporter_language_order,
+        layout_built = sym transporter_layout_built,
+        title_language = sym transporter_title_language,
     );
 
     // Small pieces that run inside original functions and use their state.

@@ -32,8 +32,7 @@ try {
     $elf = Join-Path $projectRoot 'build/intermediate/bank/bank-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     if (-not $OutputDirectory) {
-        $elfHash = (Get-FileHash -LiteralPath $elf -Algorithm SHA256).Hash.ToLowerInvariant()
-        $output = Join-Path $projectRoot ('build/bank/' + $elfHash.Substring(0,16))
+        $output = Join-Path $projectRoot ('build/bank/' + (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank))
     }
     if (Test-Path -LiteralPath $output) {
         throw "Output already exists and will not be replaced: $output"

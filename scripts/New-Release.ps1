@@ -78,12 +78,13 @@ try {
     Invoke-Checked 'formatting' { cargo +stable fmt --all -- --check }
 
     # 3. Both patches, built from these sources and independently verified.
-    # A package is named after the hash of its compiled code, so an existing
-    # one with that name was built from the same code and is reused.
+    # A package is named after the hash of its compiled code and of the
+    # builder's profile with the edits of the original (Get-PackageId.ps1),
+    # so an existing one with that name was built from the same sources and
+    # is reused.
     function Get-Package([string]$kind, [string]$title) {
         & (Join-Path $PSScriptRoot "Build-${title}Payload.ps1") | Out-Host
-        $elf = Join-Path $projectRoot "build/intermediate/$kind/$kind-payload.elf"
-        $id = (Get-Sha256 $elf).Substring(0, 16)
+        $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind
         $directory = Join-Path $projectRoot "build/$kind/$id"
         if (-not (Test-Path -LiteralPath $directory)) {
             & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") | Out-Host

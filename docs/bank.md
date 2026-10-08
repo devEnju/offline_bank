@@ -12,12 +12,27 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Downloads the Bank from the server and uploads it on save. | Reads and writes local files on a background thread while the original loading screen keeps animating. |
 | The server resolves interrupted saves. | A local journal does. An interruption leaves either the old or the new state, never a mix. |
 | Loading screens, messages, sounds. | The originals. |
+| First start: asks for a language, which cannot be changed later. | Never asks. Bank is always in the console's language ([below](#first-start)). |
+| First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
 | HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original redemption is kept. Server gifts and distributions are skipped. |
 | Pokédex and adventure records update when you visit the records screen. | They update at Save and Quit, with the original rules ([below](#pokédex-and-adventure-records)). |
 
 Not included: Pokémon HOME, purchases, importing a Bank from Nintendo's servers, event gifts, and import or export tools for save editors.
+
+## First start
+
+The original asks two things when it has no save data of its own yet. Both are gone:
+
+- **Language.** Bank no longer asks and no longer follows an earlier choice: it is in the console's language at every start, as Poké Transporter is. No language is ever stored, and one stored earlier by the original is cleared. A Japanese console gets kana; kanji could only be chosen on the removed screen.
+- **Precaution for Use.** The notice is not shown. Bank goes on as if you had accepted it and creates its save data in the same step ("Preparing Pokémon Bank for your use…"), once.
+
+**If you remove the patch later**, the original finds save data in which the notice is accepted and no language is chosen: it asks for the language and does not show the notice again. That also holds for save data in which the original had stored a language: the patched Bank clears it at its first start, so the original asks again.
+
+This save data is Bank's own small save, not the extra data that holds your boxes.
+
+**Brigette's welcome** is kept. The original plays it when no Bank exists yet, right before it creates one, and stores no mark for it. The patch does the same: it plays once, when the offline Bank is created, and never for a Bank that already exists. If you close Bank while she talks, no Bank has been created and the welcome plays at the next start.
 
 ## Poké Miles
 
@@ -42,6 +57,8 @@ Not included: Pokémon HOME, purchases, importing a Bank from Nintendo's servers
 - Miles: the whole balance goes to the game. Gen 6 only; the original refuses Miles for Gen 7 games with its own message.
 - Battle Points: `Miles ÷ 10` go to the game and the remainder stays. Gen 6 and Gen 7.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, blocks a new claim.
+
+**When nothing is said.** The original talks about Miles whenever the balance is above zero. The patch goes straight to the boxes when it is still the day of the last Save and Quit and the balance is below 10. That is the usual state after redeeming Battle Points, which leaves a remainder. In that case the game's notice about a present still waiting in it is skipped as well, since nothing new could be sent. With 10 or more Miles, or on any later day, everything appears as in the original; on a later day that means once, until the next Save and Quit.
 
 The patch adds one safety check: after a claim, the balance and the gift in the game must match what was shown. If not, the balance is restored and the session ends with error `00000013` without saving.
 
@@ -117,7 +134,9 @@ The first Save and Quit only records the date and your Pokémon count N.
 | Next day (or console date +1), open and select a game. | `N ÷ 30` Miles more than before, rounded down. |
 | Decline, withdraw some Pokémon, Save and Quit, reopen the same day. | Balance unchanged. |
 | Same day, a different game. | Same balance. No second credit. |
-| Fewer than 10 Miles. | Original message, no redemption choices. |
+| Fewer than 10 Miles, first opening on a later day than the last Save and Quit (whether or not Miles were added). | Original messages, no redemption choices. Again at each opening until a Save and Quit on that day. |
+| Fewer than 10 Miles, reopened the same day after Save and Quit (for example the remainder after redeeming Battle Points). | No reward dialog; the boxes open directly. Also no "present waiting" notice from a Gen 6 game. |
+| 10 or more Miles saved without redeeming, reopened the same day. | The redemption choices appear as before. |
 | 10 or more, Gen 6: Miles one day, Battle Points another. | Miles: balance 0. BP: `Miles ÷ 10` to the game, remainder kept. The gift waits in the game after Save and Quit. |
 | 10 or more, Gen 7. | Miles refused by the original message; BP arrives in the gift list. |
 | Redeem, then leave without saving. | Balance as before the claim; no gift in the game. |
@@ -132,7 +151,7 @@ The first Save and Quit only records the date and your Pokémon count N.
 
 ## Troubleshooting
 
-`Offline Bank error XXXXXXXX YYYYYYYY` ends the session; restart Bank afterwards. Stored data is kept. The first number says which step failed, the second why.
+An error ends the session; restart Bank afterwards. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language) with two numbers on the third line: `XXXXXXXX YYYYYYYY`. Only the numbers tell what happened; the sentence about the server is not to be taken literally. The first number says which step failed, the second why.
 
 | First number | Step |
 | --- | --- |
@@ -170,4 +189,4 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 - **First start.** Creating the files runs in the background, but two original steps still run on the main thread and can cause short pauses: the game scan creates the extdata archive, and the default box and group names are formatted in one call.
 - **Backups.** The journal cannot repair a game save damaged mid-write, and cannot detect restoring a Bank backup and a game backup from different times. Always back up Bank's extdata and your games together.
 - **Clock.** A console date set ahead is paid as if the days had passed.
-- **Errors are final for the session.** After an `Offline Bank error`, restart Bank.
+- **Errors are final for the session.** After an error with the two numbers, restart Bank. Until then, pressing START shows the same error again and opens nothing.

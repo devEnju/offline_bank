@@ -17,9 +17,9 @@
 pub const SAVE_SIZE: u64 = 0x8_0000;
 /// Longest path built here, with terminator.
 pub const PATH_CAPACITY: usize = 48;
-/// At most this many saves are offered. The original list holds 40 entries
-/// and may add up to 39 Virtual Console titles after these.
-pub const MAX_SAVES: usize = 8;
+/// At most this many saves are offered: one per game, in the one language
+/// that is listed. The original list holds 40 entries.
+pub const MAX_SAVES: usize = GAMES.len();
 /// Language letters of the game code the original accepts (`00243568`).
 pub const LANGUAGES: [u8; 7] = *b"JOFIDSK";
 /// Cartridge revisions looked for. Only 00 and 01 are known to exist.
@@ -141,17 +141,19 @@ impl Item {
 /// a Gen 5 one is inserted, and the saves found on the SD card. Also which
 /// of them is presented to the original's cartridge code right now.
 ///
-/// The order is always Black, White, Black 2, White 2, and within a game the
-/// order of `LANGUAGES`, whatever the source. A cartridge takes the place of
-/// its own game and language and hides the SD save of exactly that one, so
-/// the game in the slot is always the one used; other languages of the same
-/// game on the SD card stay listed, as separate entries.
+/// Only games in the language chosen on the language screen are offered. The
+/// order is always Black, White, Black 2, White 2, whatever the source. A
+/// cartridge in that language takes the place of its own game and hides the
+/// SD save of that game, so the game in the slot is always the one used. A
+/// Gen 5 cartridge in another language is not offered at all.
 #[derive(Clone, Copy, Debug)]
 pub struct Saves {
     list: [Save; MAX_SAVES],
     count: u8,
-    /// List kind of the cartridge's game, 0 without a Gen 5 cartridge.
+    /// List kind of the cartridge's game, 0 without a listed cartridge.
     cartridge_kind: u8,
+    /// A Gen 5 cartridge is inserted but is in another language.
+    cartridge_hidden: bool,
     /// Everything offered, in list order, as item values.
     items: [u8; MAX_SAVES + 1],
     item_count: u8,
@@ -172,6 +174,7 @@ impl Saves {
         list: [Save::NONE; MAX_SAVES],
         count: 0,
         cartridge_kind: 0,
+        cartridge_hidden: false,
         items: [CARTRIDGE; MAX_SAVES + 1],
         item_count: 0,
         at: 0,
@@ -183,41 +186,47 @@ impl Saves {
     };
 
     /// A new session. `cartridge` is the game code the cartridge slot
-    /// reported, if any. `exists` answers whether a path names a file of
-    /// exactly `SAVE_SIZE` bytes that opens for reading and writing. For each
-    /// game and language the highest revision wins.
+    /// reported, if any. `language` is the letter of the language whose games
+    /// are listed. `exists` answers whether a path names a file of exactly
+    /// `SAVE_SIZE` bytes that opens for reading and writing. For each game
+    /// the highest revision wins.
     ///
     /// The first item is presented in the cartridge's place: the cartridge
     /// itself if its game comes first, otherwise a save.
-    pub fn scan(&mut self, cartridge: Option<[u8; 4]>, mut exists: impl FnMut(&[u8]) -> bool) {
+    pub fn scan(
+        &mut self,
+        cartridge: Option<[u8; 4]>,
+        language: u8,
+        mut exists: impl FnMut(&[u8]) -> bool,
+    ) {
         *self = Self::EMPTY;
         let cartridge = cartridge.filter(|&code| is_gen5_code(code));
+        self.cartridge_hidden = cartridge.is_some_and(|code| code[3] != language);
+        let cartridge = cartridge.filter(|code| code[3] == language);
         let mut path = [0; PATH_CAPACITY];
         for game in 0..GAMES.len() as u8 {
-            for language in LANGUAGES {
-                let info = GAMES[game as usize];
-                if cartridge.is_some_and(|code| code[2] == info.letter && code[3] == language) {
-                    self.cartridge_kind = info.kind;
-                    self.items[self.item_count as usize] = CARTRIDGE;
-                    self.item_count += 1;
-                    continue;
-                }
-                for revision in (0..REVISIONS).rev() {
-                    let save = Save {
-                        game,
-                        language,
-                        revision,
-                    };
-                    let length = save.path(false, &mut path);
-                    if exists(&path[..length]) {
-                        if (self.count as usize) < MAX_SAVES {
-                            self.list[self.count as usize] = save;
-                            self.items[self.item_count as usize] = self.count;
-                            self.item_count += 1;
-                            self.count += 1;
-                        }
-                        break;
+            let info = GAMES[game as usize];
+            if cartridge.is_some_and(|code| code[2] == info.letter) {
+                self.cartridge_kind = info.kind;
+                self.items[self.item_count as usize] = CARTRIDGE;
+                self.item_count += 1;
+                continue;
+            }
+            for revision in (0..REVISIONS).rev() {
+                let save = Save {
+                    game,
+                    language,
+                    revision,
+                };
+                let length = save.path(false, &mut path);
+                if exists(&path[..length]) {
+                    if (self.count as usize) < MAX_SAVES {
+                        self.list[self.count as usize] = save;
+                        self.items[self.item_count as usize] = self.count;
+                        self.item_count += 1;
+                        self.count += 1;
                     }
+                    break;
                 }
             }
         }
@@ -228,6 +237,12 @@ impl Saves {
 
     pub fn count(&self) -> usize {
         self.count as usize
+    }
+    /// True when a Gen 5 cartridge is inserted that is not offered, and no
+    /// save stands in its place: the slot is then presented as holding no
+    /// Pokémon game.
+    pub fn hides_cartridge(&self) -> bool {
+        self.cartridge_hidden && self.current().is_none()
     }
     /// The save currently presented; `None` while the cartridge slot itself
     /// is, which the original code then handles alone.
@@ -305,12 +320,16 @@ mod tests {
             revision,
         }
     }
+    /// German is the listed language unless a test says otherwise.
     fn scan(present: &[&str]) -> Saves {
         scan_with(None, present)
     }
     fn scan_with(cartridge: Option<[u8; 4]>, present: &[&str]) -> Saves {
+        scan_in(cartridge, b'D', present)
+    }
+    fn scan_in(cartridge: Option<[u8; 4]>, language: u8, present: &[&str]) -> Saves {
         let mut saves = Saves::EMPTY;
-        saves.scan(cartridge, |path| {
+        saves.scan(cartridge, language, |path| {
             let name = core::str::from_utf8(&path[..path.len() - 1]).unwrap();
             present.contains(&name)
         });
@@ -367,7 +386,7 @@ mod tests {
 
     #[test]
     fn scan_finds_only_exact_names_and_prefers_the_higher_revision() {
-        let found = scan(&[
+        let present = [
             "/roms/nds/saves/POKEMON_W_IRAD01_00.sav",
             "/roms/nds/saves/POKEMON_B2_IRED01_00.sav",
             "/roms/nds/saves/POKEMON_B2_IRED01_01.sav",
@@ -377,14 +396,18 @@ mod tests {
             "/roms/nds/saves/pokemon_w2_irdd01_00.sav",
             "/roms/nds/saves/White 2.sav",
             "/roms/nds/POKEMON_W2_IRDD01_00.sav",
-        ]);
+        ];
+        let found = scan(&present);
         let list: Vec<Save> = found.list[..found.count()].to_vec();
-        // Game order, then language order; Black 2 German at revision 01.
-        assert_eq!(
-            list,
-            vec![save(1, b'D', 0), save(2, b'O', 0), save(2, b'D', 1)]
-        );
+        // Game order; Black 2 German at revision 01; the English one is not
+        // in the listed language.
+        assert_eq!(list, vec![save(1, b'D', 0), save(2, b'D', 1)]);
         assert_eq!(found.current(), Some(save(1, b'D', 0)));
+        // With English listed, only that one.
+        let found = scan_in(None, b'O', &present);
+        assert_eq!(found.list[..found.count()], [save(2, b'O', 0)]);
+        // A language without saves offers nothing.
+        assert_eq!(scan_in(None, b'K', &present).count(), 0);
     }
 
     #[test]
@@ -392,6 +415,7 @@ mod tests {
         for cartridge in [None, Some(*b"IPKD"), Some(*b"IRAD")] {
             let mut none = scan_with(cartridge, &[]);
             assert_eq!((none.count(), none.current()), (0, None));
+            assert!(!none.hides_cartridge());
             assert_eq!(none.next_for_list(1), None);
             none.select(0);
             assert_eq!(none.current(), None);
@@ -468,45 +492,53 @@ mod tests {
     }
 
     #[test]
-    fn a_cartridge_hides_only_the_save_of_its_own_game_and_language() {
+    fn only_games_in_the_listed_language_are_offered() {
         let present = [B, W, W_ENGLISH, W2];
-        // A German White cartridge replaces the German White save only; the
-        // English one stays, before it, in language order.
+        let german = vec![
+            (1, Some(save(0, b'D', 0))),
+            (2, Some(save(1, b'D', 0))),
+            (4, Some(save(3, b'D', 0))),
+        ];
+        assert_eq!(listed(&mut scan(&present)), german);
+        assert_eq!(
+            listed(&mut scan_in(None, b'O', &present)),
+            vec![(2, Some(save(1, b'O', 0)))]
+        );
+        // A German White cartridge replaces the German White save.
         assert_eq!(
             listed(&mut scan_with(Some(*b"IRAD"), &present)),
             vec![
                 (1, Some(save(0, b'D', 0))),
-                (2, Some(save(1, b'O', 0))),
                 (2, None),
                 (4, Some(save(3, b'D', 0)))
             ]
         );
-        // A French White cartridge hides nothing: it stands between English
-        // and German.
+        // A French White cartridge is not offered while German is listed and
+        // hides nothing; the saves stand in the slot's place.
+        let mut french = scan_with(Some(*b"IRAF"), &present);
+        assert!(!french.hides_cartridge());
+        assert_eq!(listed(&mut french), german);
+        // With French listed it is the only entry.
         assert_eq!(
-            listed(&mut scan_with(Some(*b"IRAF"), &present)),
-            vec![
-                (1, Some(save(0, b'D', 0))),
-                (2, Some(save(1, b'O', 0))),
-                (2, None),
-                (2, Some(save(1, b'D', 0))),
-                (4, Some(save(3, b'D', 0)))
-            ]
-        );
-        // Without it, both languages of White are listed, in language order.
-        assert_eq!(
-            listed(&mut scan(&present)),
-            vec![
-                (1, Some(save(0, b'D', 0))),
-                (2, Some(save(1, b'O', 0))),
-                (2, Some(save(1, b'D', 0))),
-                (4, Some(save(3, b'D', 0)))
-            ]
+            listed(&mut scan_in(Some(*b"IRAF"), b'F', &present)),
+            vec![(2, None)]
         );
         // A cartridge that is not Gen 5 hides nothing and is not listed.
         let mut other = scan_with(Some(*b"IPKD"), &present);
-        assert_eq!(other.count(), 4);
-        assert_eq!(listed(&mut other).len(), 4);
+        assert_eq!(other.count(), 3);
+        assert_eq!(listed(&mut other).len(), 3);
+    }
+
+    #[test]
+    fn a_cartridge_in_another_language_alone_is_presented_as_no_game() {
+        let mut saves = scan_with(Some(*b"IRAF"), &[]);
+        assert_eq!((saves.count(), saves.current()), (0, None));
+        assert!(saves.hides_cartridge());
+        assert_eq!(saves.next_for_list(0), None);
+        // In its own language, or with no Gen 5 cartridge, nothing is hidden.
+        assert!(!scan_in(Some(*b"IRAF"), b'F', &[]).hides_cartridge());
+        assert!(!scan_with(Some(*b"IPKD"), &[]).hides_cartridge());
+        assert!(!scan_with(None, &[]).hides_cartridge());
     }
 
     #[test]
@@ -534,33 +566,37 @@ mod tests {
     }
 
     #[test]
-    fn no_more_than_the_list_can_hold_are_offered() {
+    fn one_save_per_game_is_looked_for_in_the_listed_language_only() {
         let mut probes = 0;
         let mut saves = Saves::EMPTY;
-        saves.scan(None, |_| {
+        saves.scan(None, b'D', |_| {
             probes += 1;
             true
         });
         assert_eq!(saves.count(), MAX_SAVES);
-        // One probe per game and language when the highest revision exists.
-        assert_eq!(probes, GAMES.len() * LANGUAGES.len());
+        // One probe per game when the highest revision exists.
+        assert_eq!(probes, GAMES.len());
         let mut probes = 0;
         let mut empty = Saves::EMPTY;
-        empty.scan(None, |_| {
+        empty.scan(None, b'D', |_| {
             probes += 1;
             false
         });
-        assert_eq!(probes, GAMES.len() * LANGUAGES.len() * REVISIONS as usize);
-        // With a cartridge its own game and language is not probed.
+        assert_eq!(probes, GAMES.len() * REVISIONS as usize);
+        // A listed cartridge's own game is not probed.
         let mut probes = 0;
-        empty.scan(Some(*b"IRBD"), |_| {
+        empty.scan(Some(*b"IRBD"), b'D', |_| {
             probes += 1;
             false
         });
-        assert_eq!(
-            probes,
-            (GAMES.len() * LANGUAGES.len() - 1) * REVISIONS as usize
-        );
+        assert_eq!(probes, (GAMES.len() - 1) * REVISIONS as usize);
+        // A cartridge in another language takes no game's place.
+        let mut probes = 0;
+        empty.scan(Some(*b"IRBO"), b'D', |_| {
+            probes += 1;
+            false
+        });
+        assert_eq!(probes, GAMES.len() * REVISIONS as usize);
     }
 
     #[test]

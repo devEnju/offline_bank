@@ -241,6 +241,14 @@ impl Entry {
     pub const fn committed(&self) -> Option<Accounting> {
         self.committed
     }
+    /// Whether today is later than the day of the last save. A Bank
+    /// without a record has no such day yet.
+    pub fn new_day(&self) -> bool {
+        match (self.committed, self.through) {
+            (Some(record), Some(through)) => through > record.accounted_through,
+            _ => false,
+        }
+    }
 }
 
 /// Calculates the entry quote from the committed record and stored balance.
@@ -317,6 +325,16 @@ pub fn settle(
         balance: step.balance,
         earned: step.earned,
     })
+}
+
+/// Whether the reward screens have nothing to say after a game was loaded:
+/// it is still the day of the last save, the balance is below what can be
+/// redeemed, and Bank holds no gift for the game. A later day is always
+/// announced, once: saving on it makes it the day of the last save. A
+/// balance of ten or more that was saved without redeeming still gets its
+/// choice. No gifts exist offline yet; `gift` is for them.
+pub fn nothing_to_get(new_day: bool, balance: u32, gift: bool) -> bool {
+    !new_day && balance < REDEEM_THRESHOLD && !gift
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -699,6 +717,48 @@ mod tests {
         );
         let entry = enter(Some(record(day, 1, 0)), 0, day).unwrap();
         assert_eq!(settle(&entry, 0, 3001, day), Err(RewardError::InvalidCount));
+    }
+
+    #[test]
+    fn reward_screens_are_skipped_only_on_the_saved_day_below_the_threshold() {
+        let day = date(2026, 10, 6);
+        // Same day as the last save: a remainder below ten says nothing,
+        // ten or more saved without redeeming still offers the choice.
+        for balance in 0..=30 {
+            let entry = enter(Some(record(day, 3000, 0)), balance, day).unwrap();
+            assert!(!entry.new_day());
+            assert_eq!(
+                nothing_to_get(entry.new_day(), entry.balance(), false),
+                balance < 10,
+                "{balance}"
+            );
+        }
+        // A later day is announced once, whether it credited Miles...
+        let earned = enter(Some(record(day, 60, 0)), 3, next_day(day)).unwrap();
+        assert_eq!((earned.earned(), earned.balance()), (2, 5));
+        assert!(earned.new_day());
+        assert!(!nothing_to_get(earned.new_day(), earned.balance(), false));
+        // ...or not yet a whole one.
+        let idle = enter(Some(record(day, 15, 0)), 3, next_day(day)).unwrap();
+        assert_eq!((idle.earned(), idle.balance()), (0, 3));
+        assert!(idle.new_day());
+        assert!(!nothing_to_get(idle.new_day(), idle.balance(), false));
+        // Saving on that day records it: the same day says nothing again.
+        let saved = settle(&idle, idle.balance(), 15, next_day(day)).unwrap();
+        let again = enter(Some(saved.accounting), saved.balance, next_day(day)).unwrap();
+        assert!(!again.new_day());
+        assert!(nothing_to_get(again.new_day(), again.balance(), false));
+        // Leaving without saving does not: the day is announced again.
+        let unsaved = enter(Some(record(day, 15, 0)), 3, next_day(day)).unwrap();
+        assert!(unsaved.new_day());
+        // A clock set back is no new day; neither is a Bank without a record.
+        let back = enter(Some(record(day, 3000, 0)), 5, date(2026, 10, 1)).unwrap();
+        assert!(!back.new_day());
+        assert!(!enter(None, 0, day).unwrap().new_day());
+        // A gift is announced in every case.
+        for (new_day, balance) in [(false, 0), (false, 9), (false, 10), (true, 5)] {
+            assert!(!nothing_to_get(new_day, balance, true));
+        }
     }
 
     #[test]
