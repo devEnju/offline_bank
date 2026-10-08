@@ -27,7 +27,7 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 
 ### Edits to the original
 
-18 regions and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
+27 regions and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -46,6 +46,13 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | `0033d30c` | Box screen child callback `002a7578` | `bank_offline_dex_save_request` |
 | `003600cc` | Records task update `0026d8ec` | `bank_offline_dex_records_update` |
 | `0033d34c` | Records completion callback `002a71a8` | `bank_offline_dex_records_finish` |
+| `002a4898` | `BL 0025c08c`: apply the language of Bank's save | Nothing; the console's language stays |
+| `002a4940` | "Language known" flag is 0 without a saved language | 1: the language screen is never entered |
+| `002ac5b0` | Task 3 without a valid save: show the "Precaution for Use" notice | Branch to `002ac8a8`, where accepting it continues |
+| `002ac6ec` | Task 3: store a picked language in a new save | Never |
+| `002ac61c`, `002ac628`, `002ac62c`, `002ac640`, `002ac648` | Task 3, valid save: store a picked language and write the save | The same store and write for a save that holds a language, with language 0 and kanji 0 |
+
+The last rows, from `002a4898` on, are plain instruction words; see [First start](#first-start).
 
 Five internal `bank_svc_*` wrappers give SVC `23/24/38/39/3a` ordinary AAPCS call boundaries, because the kernel overwrites registers that inlined code would still use. The builder checks their exact instruction bodies.
 
@@ -72,9 +79,21 @@ Task object: vtable `+8` init, `+c` update, `+14` end, `+1c` busy poll; state at
 
 **Scene and text window.** Bank draws its screen objects in the order in which they were registered with the manager (`001df0e4` appends to the list at `manager + 0x44`). The reward dialogs need the character scene (`manager + 0x8c`, created by `002a5228`) registered before the text window (the shared UI at `manager + 0x80`), or the scene covers the text. The start-up routine of task `0xB` (`002af12c`) establishes that order: `001d6a34` closes and destroys the shared UI, the scene is created and registered, `001d62a8` creates a new shared UI, and the loading panel is shown on it. The patch therefore runs task `0xB` between game selection and loading and replaces only its update. The reward claim's end (`002ab934`) and the manager's cleanup (`002a497c`) destroy the scene.
 
+**Welcome.** The original's task 9 update (`002ae568`) plays the welcome when the server's reply says that no Bank exists (`[[task + 0x28] + 0x20] == 0x35`), before it creates one; nothing records that it was shown. Entry (`002ae634`): end loading, `001d6194(ui)` shows the dialog scene (pane `0xa2`), `002b6114(0x10004, 0x3c, 0)`. State 2 shows message `[00337e14 + 4 * [task + 0x54]]` (0, 1, 2 of text file 37) through `001d6650(ui, 1, message, 1)`, state 3 waits for `001d6600(ctx) == 4` and counts up; after the third it hides the scene (`002ae6fc`) and sets state 4, the request for a new Bank. The patch has the same case when its Bank file is missing: it makes the entry calls (`ui::welcome`), sets state 2, and calls the original update while the state is 2 or 3 (`Step::Introduce`). At state 4 it shows the loading panel again and creates the file. HOME is not refused during the welcome; a task that ends there has created nothing.
+
 **No usable game.** Selection state 0 would repeat notice `0x1A` forever. Task 9 checks the availability bytes (`manager + kind*12 + 1`), shows the notice once via `001d6650(ui, 0, 0x1A, 1)`, and routes to cleanup.
 
-**UI helpers.** Shared UI at `manager(+0x2c) + 0x80`; task UI pointer at `+0x3c` (tasks 9, 7), `+0x38` (`0x10`, `0xC`), `+0x40` (`0xD`); context at `ui + 0x5c`. Loading: `001d5b44(ui)` then `0025da24(ui, message)` with message 2 (open) or `0xE` (load). Dialog poll `001d6600(ctx) == 4`. The error dialog writes its text into the UI's own string object (`ui + 0x94`).
+**UI helpers.** Shared UI at `manager(+0x2c) + 0x80`; task UI pointer at `+0x3c` (tasks 9, 7), `+0x38` (`0x10`, `0xC`), `+0x40` (`0xD`); context at `ui + 0x5c`. Loading: `001d5b44(ui)` then `0025da24(ui, message)` with message `0xE` ("Communicating with the Pokémon Bank server…") for opening and loading, as the original has on screen in both, and message 2 ("Preparing Pokémon Bank for your use…") only while a new Bank is created (original: `002ae764`). Dialog poll `001d6600(ctx) == 4`. The error dialog is the original's message `0xB` (shown by its task `0x16` after a failed save) through `001d6650(ui, 0, 0xB, 1)`; the patch then ends the message at its first page break (control code `0x10, 1, 0xBE01`; in Simplified Chinese, which has one page, at the first line feed), which leaves its first sentence, and puts two eight-digit numbers on the third line (one or two line feeds first) in the UI's own string object (`ui + 0x94`: data pointer `+4`, capacity `+8`, length `+0xa`) and hands it to the dialog again (`001d643c`). That sentence has one or two lines in all ten languages and the dialog holds three. No other text is written by the patch. A fault stays for the session: the router then sends everything to cleanup except the game scan, which still leads to task 9, where the hook shows the error again.
+
+### First start
+
+Both first-start prompts depend on Bank's own save data (`data:`, 128 KiB), not on the extdata.
+
+- **Save object** `[app + 0x74]`, with `app = [[003ab90c] + 0x1c]`: language at `+0x30` (u16, 0 = none), kanji at `+0x32`. `002cb914` and `002cb8f4` read them, `002baf00(save, language, kanji)` writes them. `0015dbf0(app, heap)` loads and checks the file (1 = valid); `0015dc50` clears a new one, language 0.
+- **Language.** At every start `00105c2c` takes the console's language and `00105c44`..`00105cc0` the text set for it; for Japanese that is text set 0, kana. The manager set-up `002a47f4` then loads the save: if it is valid and holds a language, it applies it (`0025c08c(language, heap, kanji)`, the only way to text set 1, kanji) and sets the manager's flag `+0x1b`; otherwise the flag is 0. The router sends task 0 to task 2, the start screen, with the flag set, and to task 1, the language screen (vtable `00361954`, screen `0025ce8c`), without it. The patch leaves the saved language unapplied and always sets the flag.
+- **Notice.** Task 3 (`002abe08`), states `0x12` and `0x13`: without a valid save it shows the notice at `002ac5b0` (`002b2dbc(ui, 0)`; messages `0x4f` and `0x50` of text file 39) and waits. Accepting is state `0x1d`: from `002ac8a8` it clears the listener, shows the loading panel, and state `0x14` creates the save (`002bb380`), state `0x16` clears it, stores the language picked on the language screen if there is one (`002ac6ec`) and writes it. Declining exits. With a valid save, `002ac618` stores a newly picked language (`002ac630`) and writes, or goes on. The patch branches from `002ac5b0` to `002ac8a8`, makes the store for a new save unreachable, and turns the one for a valid save into a reset: `002ac618` now takes the save (`[app + 0x74]`) and its language (`[[save + 4] + 0x30]`), goes on if that is 0, and otherwise runs the original's `002baf00(save, 0, 0)` and save write.
+
+A save written by the patched Bank is therefore valid with language 0, which to the original means: notice accepted, language not chosen. It then asks for the language only. A save that holds a language loses it at the first patched start, in one write.
 
 ### Bank object
 

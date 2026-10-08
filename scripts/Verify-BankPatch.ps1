@@ -44,7 +44,8 @@ try {
     Assert-Check ($headerHash -eq '39d93584b07901dfa7ea2fc8ce1236cdd92476584ee2dbb60c11a4ae9402abf7') 'Original exheader hash'
     Assert-Check ($original.Length -eq 0x2ac000 -and $originalHeader.Length -eq 0x800) 'Original input lengths'
     Assert-Check ($manifest.source_code_sha256 -eq $codeHash -and $manifest.source_exheader_sha256 -eq $headerHash) 'Manifest input hashes'
-    Assert-Check ($manifest.source_elf_sha256 -eq $elfHash -and $elfHash.StartsWith($Package)) 'Manifest ELF hash/package'
+    Assert-Check ($manifest.source_elf_sha256 -eq $elfHash) 'Manifest ELF hash'
+    Assert-Check ($Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank)) 'Package is not the one of the current payload and profile'
     Assert-Check ($manifest.title_id -eq '00040000000c9b00' -and $manifest.tmd_version -eq 6272 -and $manifest.remaster_version -eq 6) 'Manifest version'
     foreach($name in @('code.ips','exheader.bin')) {
         $bytes=if($name -eq 'code.ips'){$ips}else{$header}
@@ -120,7 +121,9 @@ try {
         @(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false),
         @(0x1040a4,0xeb000228L,'bank_bootstrap_startup',$true),
         @(0x2a5a2c,0xebfffed3L,'bank_offline_next',$true),
-        @(0x2d1034,0xebff074aL,'bank_offline_validate_game',$true)
+        @(0x2d1034,0xebff074aL,'bank_offline_validate_game',$true),
+        # First start: the notice is skipped to where accepting it continues.
+        @(0x2ac5b0,0xe5945040L,0x2ac8a8,$false)
     )
     # Main-menu locations edited by earlier packages. They must stay original.
     $retired=@(
@@ -143,7 +146,21 @@ try {
         @(0x362034,0x2b1cf8,'bank_offline_save'),
         @(0x362044,0x2b4a20,'bank_offline_save'),
         # Task 0xb update (server check) -> the native "finished" stub.
-        @(0x361e84,0x2af034,0x2af124)
+        @(0x361e84,0x2af034,0x2af124),
+        # First start, whole instruction words: a saved language is not
+        # applied (nop), the language is always "known" (mov r5, #1), and
+        # task 3 never stores a language (beq -> b, twice).
+        @(0x2a4898,0xebfeddfbL,0xe320f000L),
+        @(0x2a4940,0xe1a05007L,0xe3a05001L),
+        @(0x2ac6ec,0x0a000007L,0xea000007L),
+        # A saved language is cleared through the original's store and
+        # write: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30]; cmp r5, #0;
+        # mov r2, #0; mov r1, #0.
+        @(0x2ac61c,0xe59060f0L,0xe5906074L),
+        @(0x2ac628,0xe1b05000L,0xe1d053b0L),
+        @(0x2ac62c,0xe320f000L,0xe3550000L),
+        @(0x2ac640,0xe1a02000L,0xe3a02000L),
+        @(0x2ac648,0xe6ff1075L,0xe3a01000L)
     )
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     [byte[]]$expected=[byte[]]::new($expandedSize)
@@ -245,16 +262,16 @@ try {
     Assert-Check ((($originalBssEnd+0xfff)-band -4096) -eq $rx.address) 'Payload follows original BSS'
     Assert-Check ((Hash $patched ($originalBssStart-0x100000) ($rx.address-$originalBssStart)) -eq (Hash ([byte[]]::new($rx.address-$originalBssStart)))) 'Former native BSS and alignment gap initialized'
 
-    Assert-Check ($branches.Count+$pointers.Count+1 -eq 18 -and $manifest.native_edits -eq 18 -and $manifest.main_menu_edits -eq 0) 'Native region count'
+    Assert-Check ($branches.Count+$pointers.Count+1 -eq 27 -and $manifest.native_edits -eq 27 -and $manifest.main_menu_edits -eq 0) 'Native region count'
     $report=[ordered]@{
         status='passed'; package=$Package; source_elf_sha256=$elfHash
         ips_sha256=(Hash $ips); paired_exheader_sha256=(Hash $header)
-        ips_records=$records; native_regions=18; runtime_exports=$exportNames.Count
+        ips_records=$records; native_regions=27; runtime_exports=$exportNames.Count
         system_call_wrappers=$wrapperNames.Count
         original_main_menu_locations=@($retired | ForEach-Object { $_[0].ToString('x8') })
         expanded_code_bytes=$expandedSize; expanded_code_sha256=$patchedHash
         initial_extension_fill='a5'; elf_loads=$loads
-        checks=@('original inputs unchanged','all IPS records bounded and disjoint','extension fully initialized from nonzero memory','native bytes preserved outside 18 allowed regions','five earlier main-menu locations equal the original executable and receive no IPS record','no menu wrapper symbol remains; five system-call wrappers are in RX memory','all branch and pointer targets match independently parsed ELF symbols','all ELF LOAD file and BSS bytes match','former native BSS and alignment gap zeroed','only paired exheader fields 0x34/0x38/0x3c changed','paired allocation exactly covers expanded image','manifest hashes, exports, placement, and status match')
+        checks=@('original inputs unchanged','all IPS records bounded and disjoint','extension fully initialized from nonzero memory','native bytes preserved outside 27 allowed regions','five earlier main-menu locations equal the original executable and receive no IPS record','no menu wrapper symbol remains; five system-call wrappers are in RX memory','all branch and pointer targets match independently parsed ELF symbols','all ELF LOAD file and BSS bytes match','former native BSS and alignment gap zeroed','only paired exheader fields 0x34/0x38/0x3c changed','paired allocation exactly covers expanded image','manifest hashes, exports, placement, and status match')
         limitations=@('static artifact verification; hardware behavior not established')
     }
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8

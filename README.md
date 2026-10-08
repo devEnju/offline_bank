@@ -67,7 +67,7 @@ Pokémon HOME, purchases, importing a Bank from Nintendo's servers, legality che
 **Something does not work or behaves oddly?** Please [open an issue](../../issues) in this repository. Include:
 
 - what you did, step by step, and what happened instead of what you expected,
-- the numbers of any `Offline Bank error` shown, or a photo of the screen,
+- the two numbers of any error shown in Bank, or a photo of that screen,
 - which games were involved, and whether cartridge, digital, or a save on the SD card,
 - the release you used, your console model, and your Luma3DS version.
 

@@ -65,6 +65,7 @@ pub enum Fault {
 enum Step {
     Idle,
     Open,
+    Introduce,
     Initialize,
     Recover,
     NoGames,
@@ -662,7 +663,49 @@ impl Runtime {
         storage_activity(false);
         true
     }
+    /// Creates the Bank file from the original's defaults for a new Bank.
+    fn create_bank(&mut self, task: Task) -> Result<(), Fault> {
+        // Only an explicit NotFound for our private file permits fresh
+        // initialization. Native defaults/translated names stay on UI.
+        let defaults: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x002a_e8b0usize) };
+        unsafe { defaults(task.raw()) };
+        // A fresh Bank has no Miles record until its first save.
+        self.stage_bank(task)?;
+        self.submit(task, Step::Initialize, Job::Initialize)
+    }
+    /// The welcome the original gives before it creates a Bank. Its own
+    /// update runs states 2 and 3 (three messages, each acknowledged) and
+    /// leaves state 4, where it would ask the server for the new Bank.
+    unsafe fn introduce(&mut self, task: Task) -> Result<bool, Fault> {
+        if self.owner != task.raw() as usize {
+            return Err(Fault::NativeObject);
+        }
+        match unsafe { read_word(task.raw(), 0x10) } {
+            2 | 3 => {
+                let original: unsafe extern "aapcs" fn(*mut u8) -> u32 =
+                    unsafe { transmute(0x002a_e568usize) };
+                unsafe { original(task.raw()) };
+                Ok(false)
+            }
+            4 => {
+                storage_activity(true);
+                if self.home_pending() {
+                    return Ok(false);
+                }
+                unsafe { crate::ui::loading(task.ui()?, crate::ui::CREATING_MESSAGE) }
+                    .map_err(|_| Fault::NativeObject)?;
+                task.begin_busy();
+                unsafe { write_word(task.raw(), 0x10, 1) };
+                self.create_bank(task)?;
+                Ok(false)
+            }
+            _ => Err(Fault::NativeObject),
+        }
+    }
     unsafe fn load(&mut self, task: Task) -> Result<bool, Fault> {
+        if self.step == Step::Introduce {
+            return unsafe { self.introduce(task) };
+        }
         if self.step == Step::NoGames {
             if self.owner != task.raw() as usize {
                 return Err(Fault::NativeObject);
@@ -679,12 +722,10 @@ impl Runtime {
             }
             task.local_date()?;
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
-            let message = if opening {
-                crate::ui::OPENING_MESSAGE
-            } else {
-                crate::ui::BANK_LOADING_MESSAGE
-            };
-            unsafe { crate::ui::loading(task.ui()?, message) }.map_err(|_| Fault::NativeObject)?;
+            // The original shows this message for both: opening an existing
+            // Bank and loading it for the chosen game.
+            unsafe { crate::ui::loading(task.ui()?, crate::ui::BANK_LOADING_MESSAGE) }
+                .map_err(|_| Fault::NativeObject)?;
             // The task's +1c continuation is patched to this same poller before
             // enabling busy protection. No blocking join or FS call occurs here.
             task.begin_busy();
@@ -712,14 +753,17 @@ impl Runtime {
         };
         match (self.step, reply) {
             (Step::Open, Reply::Missing) => {
-                // Only an explicit NotFound for our private file permits fresh
-                // initialization. Native defaults/translated names stay on UI.
-                let defaults: unsafe extern "aapcs" fn(*mut u8) =
-                    unsafe { transmute(0x002a_e8b0usize) };
-                unsafe { defaults(task.raw()) };
-                // A fresh Bank has no Miles record until its first save.
-                self.stage_bank(task)?;
-                self.submit(task, Step::Initialize, Job::Initialize)?;
+                // No Bank yet: the original's welcome comes first, as where
+                // its server reported none. Nothing is read or written while
+                // it is shown, so HOME works.
+                self.step = Step::Introduce;
+                task.end_busy();
+                storage_activity(false);
+                unsafe { crate::ui::welcome(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
+                unsafe {
+                    task.raw().add(0x54).write(0);
+                    write_word(task.raw(), 0x10, 2);
+                }
                 Ok(false)
             }
             (
@@ -928,10 +972,18 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
         unsafe { transmute(0x002a_5580usize) };
     let next = unsafe { original(manager, current) };
+    // A task that ended during the welcome was cancelled; nothing was begun.
+    if state.step == Step::Introduce {
+        state.step = Step::Idle;
+        state.owner = 0;
+    }
     if cancelled {
         return 0x14;
     }
-    if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 0x14 | 0x15) {
+    // After an error nothing is opened again in this session. The game scan
+    // still leads to task 9, whose hook shows the error again; everything
+    // else ends in cleanup.
+    if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
         return 0x14;
     }
     if matches!((current, outcome), (3, 4 | 0x17)) {

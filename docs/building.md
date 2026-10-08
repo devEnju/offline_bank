@@ -30,7 +30,7 @@ build/bank/<package>/           code.ips, exheader.bin, manifest.json, report.md
 build/transporter/<package>/    code.ips, exheader.bin, manifest.json, report.md
 ```
 
-`<package>` is the first 16 hex digits of the hash of the compiled code, so the same source gives the same name. An existing package is never replaced.
+`<package>` is the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` or `transporter15.rs`, which lists the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. An existing package is never replaced.
 
 ## Verify
 
@@ -78,7 +78,7 @@ In this order, stopping at the first problem, it:
 
 1. checks that you are on `main`, that nothing is uncommitted, and that the tag does not exist yet;
 2. runs the tests, Clippy and the formatting check;
-3. builds both patches from the committed sources and verifies them (a package that already exists for the same code is reused);
+3. builds both patches from the committed sources and verifies them (a package that already exists for the same sources is reused);
 4. writes `build/release/offline_bank-v1.0.0.zip`;
 5. writes the release notes `build/release/offline_bank-v1.0.0.md`;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
