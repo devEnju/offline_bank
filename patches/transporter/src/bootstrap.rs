@@ -6,6 +6,13 @@
 //! makes the payload's code pages executable. Failure exits the process
 //! before control can reach code that cannot run.
 //!
+//! `transporter_layout_check` also lies here. It stands at 0013AEE4, on the
+//! way of every layout the application builds, and the first layouts are
+//! built during start-up, before the payload can run: branching into the
+//! payload from there was a prefetch abort at its entry word. The check runs
+//! in this already executable place and enters the payload only for the
+//! language screen's layout, which is built when that screen is opened.
+//!
 //! The code lies in the zero bytes after the original text, which are already
 //! executable. The cache system calls require Luma3DS. No heap or thread-local
 //! storage is touched.
@@ -42,6 +49,27 @@ transporter_bootstrap_startup:
     svc #0x03
     b .Ltransporter_bootstrap_exit
     .size transporter_bootstrap_startup, .-transporter_bootstrap_startup
+
+    @ 0013AEE4 (was: mov r1, r0, the layout binary on its way to
+    @ Layout::Build). Twelve words after the start of this section; the
+    @ builder checks the place. A layout binary starts with "CLYT" and has
+    @ its size at +0xC; only the language screen's (0x3188 bytes) goes on to
+    @ the payload, which checks its content. r2 and r12 are free here: the
+    @ original sets r2 next and does not use r12.
+    .balign 4
+    .global transporter_layout_check
+    .type transporter_layout_check, %function
+transporter_layout_check:
+    mov r1, r0
+    cmp r0, #0
+    bxeq lr
+    ldr r12, [r0, #0xc]
+    ldr r2, =0x3188
+    cmp r12, r2
+    bxne lr
+    ldr r12, =transporter_layout_adjust
+    bx r12
+    .size transporter_layout_check, .-transporter_layout_check
 
     .balign 4
     .global transporter_bootstrap_enable_rx

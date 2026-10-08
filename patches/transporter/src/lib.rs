@@ -14,9 +14,15 @@
 //!
 //! Without a Gen 5 cartridge, `cart` presents Black/White saves from the SD
 //! card to the original's cartridge code (`sdsave` holds the rules).
+//!
+//! The original language screen chooses which language's games are listed
+//! (`language`); it no longer changes the language of the screens. Its list
+//! ends in a Back button that `lytpatch` makes of an unused entry.
 
 pub mod gen5;
+pub mod language;
 pub mod layout;
+pub mod lytpatch;
 pub mod sdsave;
 
 pub mod bootstrap;

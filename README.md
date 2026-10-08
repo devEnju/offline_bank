@@ -22,6 +22,7 @@ Details: [docs/bank.md](docs/bank.md).
 - Works with wireless off: connection and server checks are removed.
 - Reads Gen 5 cartridges and Gen 1/2 Virtual Console games and converts the Pokémon with Transporter's own code.
 - Also lists Black, White, Black 2 and White 2 saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps on the SD card, beside a cartridge and the Virtual Console titles ([details](docs/transporter.md#blackwhite-saves-on-the-sd-card)).
+- The language screen chooses which language's games are listed, so the list stays short ([details](docs/transporter.md#choosing-the-language-of-the-games)).
 - Writes the Pokémon into Bank's transport box first, then removes them from the source game. A power cut in between never loses a Pokémon.
 
 Details: [docs/transporter.md](docs/transporter.md).

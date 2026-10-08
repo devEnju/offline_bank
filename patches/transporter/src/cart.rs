@@ -18,6 +18,7 @@ use crate::{
         transporter_close_handle, FILE_CLOSE, FILE_READ, FILE_SIZE, FILE_WRITE, FLUSH_FLAGS,
         FS_SESSION, OPEN_FILE_DIRECTLY,
     },
+    language,
     sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE},
 };
 use core::{cell::UnsafeCell, mem::transmute};
@@ -190,14 +191,21 @@ pub unsafe extern "aapcs" fn transporter_cart_id(out: *mut u32, task: *const u8)
     let code = unsafe { original(out) };
     let saves = saves();
     if unsafe { task.add(TASK_MODE).read() } == MODE_SCAN {
-        // A new session starts. A Gen 5 cartridge is listed first and hides
-        // the saves of its own game.
+        // A new session starts. Only games in the language chosen on the
+        // language screen are offered; a Gen 5 cartridge in that language
+        // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
-        saves.scan(cartridge, usable);
+        saves.scan(cartridge, language::filter_letter(), usable);
     }
     match saves.current() {
         Some(save) => {
             unsafe { out.write(save.game_code()) };
+            0
+        }
+        // A Gen 5 cartridge in another language: the original treats a game
+        // code that does not start with "IR" as no Pokémon cartridge.
+        None if saves.hides_cartridge() => {
+            unsafe { out.write(0) };
             0
         }
         None => code,
