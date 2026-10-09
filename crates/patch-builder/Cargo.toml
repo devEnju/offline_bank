@@ -6,3 +6,6 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# For the tables the Transporter hooks copied from the original, which the
+# builder compares with the input.
+transporter-payload = { path = "../../patches/transporter" }

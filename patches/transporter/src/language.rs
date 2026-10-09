@@ -23,8 +23,8 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 pub const ENGLISH: u8 = 2;
 /// The language id of each row of the original's Virtual Console table
-/// (`002AFE0C`, 39 rows of `{ version, language, title }`; the builder only
-/// accepts the executable these were read from). Rows are in the order
+/// (`002AFE0C`, 39 rows of `{ version, language, title }`; the builder
+/// compares them with the executable it patches). Rows are in the order
 /// Red, Green or Blue, Japanese Blue, Yellow, Gold, Silver, Crystal.
 pub const VC_LANGUAGES: [u8; 39] = [
     1, 2, 3, 4, 5, 7, // Red
@@ -449,7 +449,8 @@ mod tests {
             .unwrap();
         assert_eq!(most, 7);
         // Nothing in the patch stops the list at its capacity, as nothing
-        // in the original does; this is what keeps it below.
+        // in the original does; this is what keeps it below. The builder
+        // holds the same bound against the original's own table.
         assert_eq!(crate::sdsave::GAMES.len() + most, 11);
         assert!(crate::sdsave::GAMES.len() + most <= LIST_CAPACITY);
         // Every row is in a language whose games can be listed.

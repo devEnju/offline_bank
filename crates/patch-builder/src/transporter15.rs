@@ -14,6 +14,8 @@ use crate::{encode_arm_branch, fail, hex, le16, le32, sha256, CheckedEdit, Resul
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES};
+use transporter_payload::sdsave::GAMES;
 
 pub const TITLE_ID: u64 = 0x0004_0000_000c_9c00;
 pub const TMD_VERSION: u16 = 5200;
@@ -366,12 +368,41 @@ pub fn edits(image: &HookImage) -> Result<Vec<CheckedEdit>> {
     Ok(out)
 }
 
+/// The original's table of the Virtual Console titles: 39 rows of
+/// `{ version, language id, title index }`, three words each.
+pub const VC_TABLE: u32 = 0x002a_fe0c;
+const VC_ROW: usize = 12;
+const VC_ROW_LANGUAGE: usize = 4;
+
+/// The hooks list the games of one language and leave the original's game
+/// list unbounded, as it is. That holds only while the payload's copy of the
+/// table's languages is the original's and one language cannot fill the list.
+fn check_game_list(code: &[u8]) -> Result<()> {
+    let table = (VC_TABLE - CODE_BASE) as usize;
+    for (row, &language) in VC_LANGUAGES.iter().enumerate() {
+        if le32(code, table + row * VC_ROW + VC_ROW_LANGUAGE)? != u32::from(language) {
+            return fail(format!(
+                "Virtual Console table row {row} is not in the language the hooks expect"
+            ));
+        }
+    }
+    let most = (0..=u8::MAX)
+        .map(|language| VC_LANGUAGES.iter().filter(|&&row| row == language).count())
+        .max()
+        .unwrap_or(0);
+    if GAMES.len() + most > LIST_CAPACITY {
+        return fail("the games of one language do not fit the original game list");
+    }
+    Ok(())
+}
+
 /// Checks the whole input pair and every original word, then builds the
 /// paired IPS and exheader.
 pub fn prepare(code: &[u8], exheader: &[u8], elf: &[u8]) -> Result<PreparedPlacement> {
     if code.len() != CODE_LENGTH || sha256(code) != CODE_SHA256 {
         return fail("code.bin is not the reviewed Poké Transporter 1.5 executable");
     }
+    check_game_list(code)?;
     let image = inspect_image(elf)?;
     let edits = edits(&image)?;
     let prepared = prepare_expanded_data(
@@ -736,6 +767,24 @@ mod tests {
         );
         // The reference patch's own branch, for comparison with its source.
         assert_eq!(word(0x0024_8d58, &Branch(0x0024_8e44)), 0xea00_0039);
+    }
+
+    #[test]
+    fn the_virtual_console_table_must_be_the_one_the_hooks_copied() {
+        let table = (VC_TABLE - CODE_BASE) as usize;
+        let mut code = vec![0u8; table + VC_LANGUAGES.len() * VC_ROW];
+        for (row, &language) in VC_LANGUAGES.iter().enumerate() {
+            let at = table + row * VC_ROW + VC_ROW_LANGUAGE;
+            code[at..at + 4].copy_from_slice(&u32::from(language).to_le_bytes());
+        }
+        assert!(check_game_list(&code).is_ok());
+        for row in [0, 12, VC_LANGUAGES.len() - 1] {
+            let mut other = code.clone();
+            other[table + row * VC_ROW + VC_ROW_LANGUAGE] ^= 8;
+            assert!(check_game_list(&other).is_err());
+        }
+        // A table cut short is refused, not read past its end.
+        assert!(check_game_list(&code[..code.len() - VC_ROW]).is_err());
     }
 
     #[test]
