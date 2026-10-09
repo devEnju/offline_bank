@@ -179,6 +179,9 @@ mod arm {
         fs_session: u32,
         missing: bool,
         poisoned: bool,
+        /// The secure pair of the game image the last `Prepare` allowed to
+        /// be written, until `Finalize` has looked for it.
+        written: Option<SecureValues>,
     }
     impl StorageWorker {
         pub const fn new() -> Self {
@@ -187,6 +190,7 @@ mod arm {
                 fs_session: 0,
                 missing: false,
                 poisoned: false,
+                written: None,
             }
         }
         pub fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
@@ -196,6 +200,7 @@ mod arm {
                 }
                 self.fs_session = 0;
                 self.missing = false;
+                self.written = None;
                 return Ok(Reply::Closed);
             }
             if self.poisoned {
@@ -384,12 +389,30 @@ mod arm {
                     let Phase::Prepared(pending) = self.phase()? else {
                         return Err(WorkerError::operation(16, 0));
                     };
+                    // The save is resolved as soon as the game is known to
+                    // hold the image this worker prepared, so that a cut
+                    // after the game's write rarely finds it in progress.
+                    // The secure pair tells: it is new with every prepared
+                    // image, and the game's commit replaces the file whole.
+                    let written = self.written.take();
+                    let mut main = unsafe { GameMainReader::open(game.session, game.archive) }
+                        .map_err(|e| fs_error(e, 10))?;
+                    let secure = file_secure(game, &mut main)?;
+                    main.close().map_err(|e| fs_error(e, 10))?;
+                    if written != Some(secure) || secure.current == secure.previous {
+                        return Err(WorkerError::operation(17, 0));
+                    }
+                    finish_secure(game, secure)?;
+                    let decision = self
+                        .files
+                        .reconcile_as(RecoveryDecision::CommitAfter)
+                        .map_err(|e| files_error(e, 16))?;
+                    // The complete image is still checked; it is also what
+                    // the next save of this session starts from.
                     let evidence = inspect(game)?;
                     if matched(&pending, &evidence)? != Match::After {
                         return Err(WorkerError::operation(17, 0));
                     }
-                    finish_secure(game, evidence.secure)?;
-                    let decision = self.reconcile(&pending, &evidence)?;
                     self.settled(staging, Some(evidence), decision)
                 }
                 Job::Prepare {
@@ -474,6 +497,7 @@ mod arm {
                         return Err(WorkerError::operation(11, 0));
                     }
                     require_secure(game, unchanged.secure.current)?;
+                    self.written = Some(prepared.secure);
                     Ok(Reply::ReadyToWrite)
                 }
                 Job::Close => Err(WorkerError::control(WorkerErrorKind::Stopped)),
