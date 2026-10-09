@@ -44,7 +44,6 @@ pub struct PayloadElf {
     pub entry: u32,
     pub load_entry: u32,
     pub save_entry: u32,
-    pub validate_game_entry: u32,
     pub rewards_entry: u32,
     pub timestamp_entry: u32,
     pub dex_save_request_entry: u32,
@@ -367,7 +366,6 @@ pub fn inspect_payload_elf(elf: &[u8]) -> Result<PayloadElf> {
             "bank_offline_next",
             "bank_offline_load",
             "bank_offline_save",
-            "bank_offline_validate_game",
             "bank_offline_rewards",
             "bank_offline_timestamp",
             "bank_offline_dex_save_request",
@@ -451,7 +449,6 @@ pub fn inspect_payload_elf(elf: &[u8]) -> Result<PayloadElf> {
     let next = get_export("bank_offline_next")?;
     let load = get_export("bank_offline_load")?;
     let save = get_export("bank_offline_save")?;
-    let validate_game = get_export("bank_offline_validate_game")?;
     let rewards = get_export("bank_offline_rewards")?;
     let timestamp = get_export("bank_offline_timestamp")?;
     let dex_save_request = get_export("bank_offline_dex_save_request")?;
@@ -489,7 +486,6 @@ pub fn inspect_payload_elf(elf: &[u8]) -> Result<PayloadElf> {
         entry,
         load_entry: load,
         save_entry: save,
-        validate_game_entry: validate_game,
         rewards_entry: rewards,
         timestamp_entry: timestamp,
         dex_save_request_entry: dex_save_request,
@@ -667,7 +663,7 @@ mod tests {
             (3, ".data", 1, 3, 0x3fc000, 0x2000, 4, 0, 4, 0),
             (4, ".bss", 8, 3, 0x3fc004, 0x2004, 0xffc, 0, 4, 0),
             (5, ".ARM.attributes", 0x70000003, 0, 0, 0x2100, 24, 0, 1, 0),
-            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 352, 8, 4, 16),
+            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 336, 8, 4, 16),
             (7, ".shstrtab", 3, 0, 0, 0x2400, 0, 0, 1, 0),
             (8, ".strtab", 3, 0, 0, 0x2500, 0, 0, 1, 0),
         ] {
@@ -692,7 +688,6 @@ mod tests {
             ("bank_offline_next", 0x3fb000, 4, 0x12, 2),
             ("bank_offline_load", 0x3fb004, 4, 0x12, 2),
             ("bank_offline_save", 0x3fb008, 4, 0x12, 2),
-            ("bank_offline_validate_game", 0x3fb00c, 4, 0x12, 2),
             ("bank_offline_rewards", 0x3fb014, 4, 0x12, 2),
             ("bank_offline_timestamp", 0x3fb018, 4, 0x12, 2),
             ("bank_offline_dex_save_request", 0x3fb028, 4, 0x12, 2),
@@ -750,7 +745,7 @@ mod tests {
     #[test]
     fn every_kernel_wrapper_is_required_as_a_global_arm_rx_function() {
         for (index, (name, _)) in KERNEL_WRAPPERS.iter().enumerate() {
-            let symbol = SYMOFF + (17 + index) * 16;
+            let symbol = SYMOFF + (16 + index) * 16;
             let mut missing = fixture();
             u32_at(&mut missing, symbol, 0);
             assert!(inspect_payload_elf(&missing)
@@ -808,7 +803,7 @@ mod tests {
         for (index, (_, words)) in KERNEL_WRAPPERS.iter().enumerate() {
             for size in [4, words.len() as u32 * 4 - 4, words.len() as u32 * 4 + 4] {
                 let mut invalid = fixture();
-                u32_at(&mut invalid, SYMOFF + (17 + index) * 16 + 8, size);
+                u32_at(&mut invalid, SYMOFF + (16 + index) * 16 + 8, size);
                 assert!(inspect_payload_elf(&invalid)
                     .unwrap_err()
                     .to_string()
@@ -823,18 +818,18 @@ mod tests {
     #[test]
     fn timestamp_export_must_be_present_and_arm_aligned() {
         let mut missing = fixture();
-        u32_at(&mut missing, SYMOFF + 6 * 16, 0); // remove timestamp's name
+        u32_at(&mut missing, SYMOFF + 5 * 16, 0); // remove timestamp's name
         assert!(inspect_payload_elf(&missing)
             .unwrap_err()
             .to_string()
             .contains("missing ELF export bank_offline_timestamp"));
         let mut thumb = fixture();
-        u32_at(&mut thumb, SYMOFF + 6 * 16 + 4, 0x3fb019);
+        u32_at(&mut thumb, SYMOFF + 5 * 16 + 4, 0x3fb019);
         assert!(inspect_payload_elf(&thumb).is_err());
     }
     #[test]
     fn dex_hooks_require_independent_arm_exports() {
-        for symbol_index in 7..=9 {
+        for symbol_index in 6..=8 {
             let mut missing = fixture();
             u32_at(&mut missing, SYMOFF + symbol_index * 16, 0);
             assert!(inspect_payload_elf(&missing)
@@ -859,7 +854,7 @@ mod tests {
             (SHOFF + 3 * 40 + 4, 14),
             (SYMOFF + 16 + 4, 0x3fb001),
             (SYMOFF + 16 + 8, 0),
-            (SYMOFF + 6 * 16 + 4, 0x3fc004),
+            (SYMOFF + 5 * 16 + 4, 0x3fc004),
         ] {
             let mut wrong = elf.clone();
             u32_at(&mut wrong, at, value);

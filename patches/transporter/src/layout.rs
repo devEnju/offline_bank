@@ -28,7 +28,8 @@ pub const CHECK_PENDING: u32 = 0;
 pub const CHECK_ALLOWED: u32 = 3;
 pub const CHECK_REFUSED: u32 = 7;
 
-/// Answers of the delivery entry, as the patched site at `0024A158` tests them.
+/// Answers of the delivery entry, as the stub of the patched site at
+/// `0024A150` tests them (link.rs).
 pub const DELIVER_FAILED: u32 = 0;
 pub const DELIVER_DONE: u32 = 1;
 pub const DELIVER_PENDING: u32 = 2;

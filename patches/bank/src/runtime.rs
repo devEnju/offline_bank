@@ -1052,17 +1052,6 @@ pub unsafe extern "aapcs" fn bank_offline_save(raw: *mut u8) -> u32 {
         }
     }
 }
-/// Preserves the native selected-game secure-value check. Pending transfers
-/// have already been reconciled asynchronously by task9 before this callback.
-/// # Safety
-/// Only callsite002D1034 supplies the live coordinator and writable result byte.
-#[no_mangle]
-pub unsafe extern "aapcs" fn bank_offline_validate_game(manager: *mut u8, matched: *mut u8) -> u32 {
-    let original: unsafe extern "aapcs" fn(*mut u8, *mut u8) -> u32 =
-        unsafe { transmute(0x0029_2d64usize) };
-    unsafe { original(manager, matched) }
-}
-
 fn freeze_accrual_date(task: Task) -> Result<(), Fault> {
     let session = task.pointer(0x28)?;
     let bank = task.bank_pointer()?;

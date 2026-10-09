@@ -27,7 +27,7 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 
 ### Edits to the original
 
-27 regions and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
+25 regions (24 words and the start-up hook) and eight entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -37,7 +37,6 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | `001d3bf4` | Timestamp helper with an online-client check | Tail branch to `bank_offline_timestamp` (local clock `0023a754`) |
 | `002a5a2c` | `BL 002a5580`, task router | `bank_offline_next` |
 | `00361e84` | Task `0xB` update `002af034`, a server check | The original "finished" stub `002af124`; the task's start-up routine stays |
-| `002d1034` | `BL 00292d64`, selected-game secure-value check | `bank_offline_validate_game` (forwards the original) |
 | `00361cfc`, `00361d0c` | Task 9 update `002ae568` and busy poll `002b4a20` | `bank_offline_load` |
 | `00361ed4`, `00361ee4` | Task `0x10` update `002af460` and busy poll | `bank_offline_load` |
 | `00362034`, `00362044` | Task 7 update `002b1cf8` and busy poll | `bank_offline_save` |
@@ -49,7 +48,6 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | `002a4898` | `BL 0025c08c`: apply the language of Bank's save | Nothing; the console's language stays |
 | `002a4940` | "Language known" flag is 0 without a saved language | 1: the language screen is never entered |
 | `002ac5b0` | Task 3 without a valid save: show the "Precaution for Use" notice | Branch to `002ac8a8`, where accepting it continues |
-| `002ac6ec` | Task 3: store a picked language in a new save | Never |
 | `002ac61c`, `002ac628`, `002ac62c`, `002ac640`, `002ac648` | Task 3, valid save: store a picked language and write the save | The same store and write for a save that holds a language, with language 0 and kanji 0 |
 
 The last rows, from `002a4898` on, are plain instruction words; see [First start](#first-start).
@@ -91,7 +89,7 @@ Both first-start prompts depend on Bank's own save data (`data:`, 128 KiB), not 
 
 - **Save object** `[app + 0x74]`, with `app = [[003ab90c] + 0x1c]`: language at `+0x30` (u16, 0 = none), kanji at `+0x32`. `002cb914` and `002cb8f4` read them, `002baf00(save, language, kanji)` writes them. `0015dbf0(app, heap)` loads and checks the file (1 = valid); `0015dc50` clears a new one, language 0.
 - **Language.** At every start `00105c2c` takes the console's language and `00105c44`..`00105cc0` the text set for it; for Japanese that is text set 0, kana. The manager set-up `002a47f4` then loads the save: if it is valid and holds a language, it applies it (`0025c08c(language, heap, kanji)`, the only way to text set 1, kanji) and sets the manager's flag `+0x1b`; otherwise the flag is 0. The router sends task 0 to task 2, the start screen, with the flag set, and to task 1, the language screen (vtable `00361954`, screen `0025ce8c`), without it. The patch leaves the saved language unapplied and always sets the flag.
-- **Notice.** Task 3 (`002abe08`), states `0x12` and `0x13`: without a valid save it shows the notice at `002ac5b0` (`002b2dbc(ui, 0)`; messages `0x4f` and `0x50` of text file 39) and waits. Accepting is state `0x1d`: from `002ac8a8` it clears the listener, shows the loading panel, and state `0x14` creates the save (`002bb380`), state `0x16` clears it, stores the language picked on the language screen if there is one (`002ac6ec`) and writes it. Declining exits. With a valid save, `002ac618` stores a newly picked language (`002ac630`) and writes, or goes on. The patch branches from `002ac5b0` to `002ac8a8`, makes the store for a new save unreachable, and turns the one for a valid save into a reset: `002ac618` now takes the save (`[app + 0x74]`) and its language (`[[save + 4] + 0x30]`), goes on if that is 0, and otherwise runs the original's `002baf00(save, 0, 0)` and save write.
+- **Notice.** Task 3 (`002abe08`), states `0x12` and `0x13`: without a valid save it shows the notice at `002ac5b0` (`002b2dbc(ui, 0)`; messages `0x4f` and `0x50` of text file 39) and waits. Accepting is state `0x1d`: from `002ac8a8` it clears the listener, shows the loading panel, and state `0x14` creates the save (`002bb380`), state `0x16` clears it, stores the language picked on the language screen if there is one (`002ac6ec`) and writes it. The pick (`[[manager + 0xf0] + 4]`, kanji at `+8`) is written by `0025d1d0` alone, whose one caller is the language task's listener `002d0b88`; without that screen it stays 0 and nothing is stored, so this code is not edited. Declining exits. With a valid save, `002ac618` stores a newly picked language (`002ac630`) and writes, or goes on. The patch branches from `002ac5b0` to `002ac8a8` and turns the store for a valid save into a reset: `002ac618` now takes the save (`[app + 0x74]`) and its language (`[[save + 4] + 0x30]`), goes on if that is 0, and otherwise runs the original's `002baf00(save, 0, 0)` and save write.
 
 A save written by the patched Bank is therefore valid with language 0, which to the original means: notice accepted, language not chosen. It then asks for the language only. A save that holds a language loses it at the first patched start, in one write.
 
@@ -251,14 +249,15 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 
 ### Edits to the original
 
-42 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with sixteen entry branches, in this order: check, deliver, session, slot, cartridge id, cartridge read, cartridge write, list next, select, title scan, language chosen, language order, language buttons, language back, title begin, title end. One edit, at `0013AEE4`, does not branch to an entry but to the layout check beside the start-up hook (see [Placement](#placement-1)).
+30 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with seventeen entry branches, in this order: check, deliver, session, slot, cartridge id, cartridge read, cartridge write, list next, select, title scan, language chosen, language order, language buttons, language back, title begin, title end, next check. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One edit, at `0013AEE4`, does not branch to an entry but to the layout check beside the start-up hook (see [Placement](#placement-1)).
 
 | Address | Purpose | Replacement |
 | --- | --- | --- |
 | `00103D9C` | `BL 00104644`, application init | Start-up hook |
 | `00242D10` | `get_next_state`: after the game list comes "connect" | Session entry: refuses HOME and sleep as the connect step did, answers GET_POKEMON |
-| `00242D28`, `00242D2C` | `get_next_state`: after GET_POKEMON | Next is the Bank check |
-| `00248CDC`, `00248D58` | Bank check: create the request, parse the reply | Skipped |
+| `00242D28` | `get_next_state`: after GET_POKEMON, choose by the step's outcome | Next-check entry: answers the Bank check |
+| `00248CDC` | Bank check, sub-state 0: create the request | Check entry; its result is the next sub-state |
+| `00248D58` | Bank check, sub-state 3: parse the reply | Skipped |
 | `00245728`, `002460B8`, `002488A0`, `002483CC` | Reading Gen 5 and Gen 1/2: remote validation | Skipped |
 | `002458DC` | Reading Gen 5: per-slot result code | Slot entry: answers the "skip" code for empty slots |
 | `00247478` | Question step: nickname notice (message `0x10`) | Branch to the original "go to sub-state 4" (`002474E0`) |
@@ -276,9 +275,8 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | `0022B3B8` | Language screen: B on a part without a Back button does nothing | Language-back entry: on the list, presses the Back button |
 | `0024BA44`, `0024BA74` | Title screen: before and after it loads its archives | Title-begin and title-end entries: the archive with logo and start prompt is read in the chosen language |
 | `0013AEE4` | Building a layout: the layout binary on its way to `Layout::Build` | Layout check: the same, and the payload adjusts the language screen's layout first |
-| `00248D3C`..`00248D44` | Bank check: the answer | Check entry; its result is the next sub-state |
-| `0024A150`..`0024A16C` | Transfer, sub-state 0: create the upload request | Deliver entry, then branch on its result |
-| `0024A3D8`, `0024A3DC` | Transfer, sub-state `0xA`: commit request | Continue with sub-state `0xE` |
+| `0024A150` | Transfer, sub-state 0: create the upload request | Deliver entry, which goes on by its result |
+| `0024A3C0` | Transfer: `mov r0, #0xa`, the one place that selects the commit request (sub-state `0xA`) | `mov r0, #0xe`: the final save comes next |
 
 The offline flow follows zaksabeast's Transporter-Offline-Patch. Unlike that patch, the transfer ends with the original final save and success message.
 
@@ -298,9 +296,9 @@ The patch copies the 30 records and 30 tags as they are.
 
 ### Session flow
 
-- **Bank check** (`00248C68`). Sub-state 0 jumps to `00248D3C`, which calls the check entry and stores its answer as the next sub-state: 0 come back next frame, 3 continue, 7 the original "not empty" message. The check consults Bank whatever Box 1 held, as the original asked the server.
+- **Bank check** (`00248C68`). Sub-state 0 (`00248CDC`) branches to the check entry's stub, which calls the entry with the task (`r4`) and stores its answer as the next sub-state through the original's store at `00248EC8`: 0 come back next frame, 3 continue, 7 the original "not empty" message. The check consults Bank whatever Box 1 held, as the original asked the server.
 - **Question step** (`00247304`). Counts the transport box (`0024D624`) and at zero shows its own message and ends the session. It runs after the Bank check, so a full transport box is refused first.
-- **Transfer** (`0024A0C4`). Original sub-states: 0 create request, 1 serialize the data object and upload it, 3 save the source game without the Pokémon, `0xA` commit request, `0xE` final save, `0x10` success message, `0x11` failure message. Patched: sub-state 0 calls the deliver entry; 1 continues at the original removal code `0024A274`, 2 returns and comes back next frame, anything else selects `0x11`; sub-state `0xA` selects `0xE`.
+- **Transfer** (`0024A0C4`). Original sub-states: 0 create request, 1 serialize the data object and upload it, 3 save the source game without the Pokémon, `0xA` commit request, `0xE` final save, `0x10` success message, `0x11` failure message. Patched: sub-state 0 (`0024A150`) branches to the deliver entry's stub; on 1 the stub continues at the original removal code `0024A274`, on 2 at the original return `0024A5DC` to come back next frame, and on anything else it selects `0x11` through the store at `0024A4C0`. Sub-state `0xA` is never selected: its one setter (`0024A3C0`) selects `0xE`.
 - **Nickname notice.** Sub-state 2 of the question step shows message `0x10` unless a flag in the Bank data object says it was shown. Names were only ever erased on the server's per-slot codes (`0xFA`..`0xFC`, `0xFE`, `0xFF`), which never arrive offline.
 
 ### Empty Gen 5 slots

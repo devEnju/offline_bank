@@ -29,8 +29,8 @@ mod linked {
         ".arm",
         ".global transporter_entry",
         "transporter_entry:",
-        "b {check}",
-        "b {deliver}",
+        "b transporter_check_stub",
+        "b transporter_deliver_stub",
         "b transporter_session",
         "b transporter_slot",
         "b transporter_cart_id_stub",
@@ -45,8 +45,7 @@ mod linked {
         "b transporter_language_back_stub",
         "b transporter_title_begin_stub",
         "b transporter_title_end_stub",
-        check = sym transporter_check,
-        deliver = sym transporter_deliver,
+        "b transporter_next_check",
         cart_read = sym transporter_cart_read,
         cart_write = sym transporter_cart_write,
         language_chosen = sym transporter_language_chosen,
@@ -164,6 +163,38 @@ mod linked {
         "blx r12",
         "mov r0, #9",
         "pop {{r4, pc}}",
+        // get_next_state, after GET_POKEMON (00242D28, was: cmp r2, #2).
+        // Answers CHECK_IF_USER_CAN_TRANSFER and returns as the original
+        // cases do.
+        "transporter_next_check:",
+        "mov r0, #0xb",
+        "pop {{r4, pc}}",
+        // Bank check, sub-state 0 (00248CDC, was: the start of creating the
+        // request). r4 = task; lr is free, the original function saved its
+        // own. The answer becomes the next sub-state through the original's
+        // store at 00248EC8 (str r0, [r4, #0x10], then its return).
+        "transporter_check_stub:",
+        "mov r0, r4",
+        "bl {check}",
+        "ldr r12, =0x00248ec8",
+        "bx r12",
+        // Transfer, sub-state 0 (0024A150, was: the start of creating the
+        // upload request). r4 = task; lr is free as above. 1: delivered, on
+        // to the original removal code. 2: still working, the original
+        // return, to come back next frame. Else: sub-state 0x11, the
+        // original failure message, through the store at 0024A4C0.
+        "transporter_deliver_stub:",
+        "mov r0, r4",
+        "bl {deliver}",
+        "cmp r0, #1",
+        "ldreq r12, =0x0024a274",
+        "bxeq r12",
+        "cmp r0, #2",
+        "ldreq r12, =0x0024a5dc",
+        "bxeq r12",
+        "mov r0, #0x11",
+        "ldr r12, =0x0024a4c0",
+        "bx r12",
         // Gen 5 reader, per-slot result code (was: ldr r0, [r1, r7]). Without
         // a code, a slot that holds no species gets the original skip code
         // 0x14, as the server used to answer. r8 is the slot; in the caller's
@@ -189,6 +220,8 @@ mod linked {
         "svc #0x23",
         "bx lr",
         ".ltorg",
+        check = sym transporter_check,
+        deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,
     );
 

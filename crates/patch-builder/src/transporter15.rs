@@ -65,7 +65,8 @@ pub const ENTRY_LANGUAGE_BUTTONS: u32 = PAYLOAD_ADDRESS + 48;
 pub const ENTRY_LANGUAGE_BACK: u32 = PAYLOAD_ADDRESS + 52;
 pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 56;
 pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 60;
-pub const ENTRY_COUNT: u32 = 16;
+pub const ENTRY_NEXT_CHECK: u32 = PAYLOAD_ADDRESS + 64;
+pub const ENTRY_COUNT: u32 = 17;
 
 enum Word {
     Raw(u32),
@@ -86,11 +87,14 @@ const EDITS: &[(u32, u32, Word)] = &[
     // refuses HOME and sleep as the connect step did, then answers
     // GET_POKEMON.
     (0x0024_2d10, 0x03a0_0003, BranchIf(ENTRY_SESSION, EQUAL)),
-    // get_next_state, GET_POKEMON: next is CHECK_IF_USER_CAN_TRANSFER.
-    (0x0024_2d28, 0xe352_0002, Raw(0xe3a0_000b)),
-    (0x0024_2d2c, 0x0a00_002f, Branch(0x0024_2c4c)),
-    // Bank check, sub-state 0: no request object; go to the answer.
-    (0x0024_8cdc, 0xe59f_0304, Branch(0x0024_8d3c)),
+    // get_next_state, GET_POKEMON (was: cmp r2, #2, the start of choosing by
+    // the step's outcome): next is CHECK_IF_USER_CAN_TRANSFER, whatever the
+    // outcome. The stub answers it and returns as the original cases do.
+    (0x0024_2d28, 0xe352_0002, Branch(ENTRY_NEXT_CHECK)),
+    // Bank check, sub-state 0 (was: the start of creating the request). The
+    // stub asks the check entry with the task (r4) and stores its answer as
+    // the next sub-state through the original's own store at 00248EC8.
+    (0x0024_8cdc, 0xe59f_0304, Branch(ENTRY_CHECK)),
     // Bank check, sub-state 3: no server reply to parse.
     (0x0024_8d58, 0xe1a0_0004, Branch(0x0024_8e44)),
     // Reading Gen 5 and Gen 1/2: skip the remote validation.
@@ -158,27 +162,19 @@ const EDITS: &[(u32, u32, Word)] = &[
     // are left out here and not when the list is built. The list holds 40
     // entries as the original built it; one language gives at most 11.
     (0x0024_12d4, 0xeb00_3ff3, BranchLink(ENTRY_VC_SCAN)),
-    // --- Bank check: r0 = task; the entry answers the next sub-state. ---
-    (0x0024_8d3c, 0xe594_003c, Raw(0xe1a0_0004)),
-    (0x0024_8d40, 0xe594_1028, BranchLink(ENTRY_CHECK)),
-    (0x0024_8d44, 0xebff_da5a, Branch(0x0024_8ec8)),
-    // --- Transfer, sub-state 0: deliver first. ---
-    // 1: delivered, continue with the original removal code (0024A274).
+    // --- Transfer, sub-state 0 (was: the start of creating the upload
+    // request): deliver first. The stub calls the deliver entry with the
+    // task (r4) and goes on inside the original by its answer:
+    // 1: delivered, the original removal code (0024A274).
     // 2: still working, return and come back next frame (0024A5DC).
-    // else: the original failure message (sub-state 0x11); the game is
-    // left alone.
-    (0x0024_a150, 0xe59f_04f4, Raw(0xe1a0_0004)),
-    (0x0024_a154, 0xe594_100c, BranchLink(ENTRY_DELIVER)),
-    (0x0024_a158, 0xe590_5000, Raw(0xe350_0001)),
-    (0x0024_a15c, 0xe3a0_0050, BranchIf(0x0024_a274, EQUAL)),
-    (0x0024_a160, 0xebfe_707e, Raw(0xe350_0002)),
-    (0x0024_a164, 0xe350_0000, BranchIf(0x0024_a5dc, EQUAL)),
-    (0x0024_a168, 0xe320_f000, Raw(0xe3a0_0011)),
-    (0x0024_a16c, 0x1bfd_46ec, Branch(0x0024_a4c0)),
-    // Transfer, sub-state 0xA: no commit request; continue with the
-    // original final save and success message (sub-state 0xE).
-    (0x0024_a3d8, 0xe594_003c, Raw(0xe3a0_000e)),
-    (0x0024_a3dc, 0xe594_1028, Branch(0x0024_a4c0)),
+    // else: the original failure message (sub-state 0x11, stored at
+    // 0024A4C0); the game is left alone.
+    (0x0024_a150, 0xe59f_04f4, Branch(ENTRY_DELIVER)),
+    // Transfer, after the source game is saved (was: mov r0, #0xa, the one
+    // place that selects the commit request, sub-state 0xA): no commit
+    // request; the original final save and success message (sub-state 0xE)
+    // come next.
+    (0x0024_a3c0, 0xe3a0_000a, Raw(0xe3a0_000e)),
 ];
 
 fn word_edit(address: u32, original: u32, word: &Word) -> Result<CheckedEdit> {
@@ -663,8 +659,6 @@ mod tests {
             )
         };
         for (address, entry) in [
-            (0x0024_8d40, ENTRY_CHECK),
-            (0x0024_a154, ENTRY_DELIVER),
             (0x0024_58dc, ENTRY_SLOT),
             (0x0024_3528, ENTRY_CART_ID),
             (0x0024_39a8, ENTRY_CART_READ),
@@ -713,6 +707,16 @@ mod tests {
             ),
             Some(ENTRY_LANGUAGE_BACK)
         );
+        // Sites that leave the original for good: plain branches to stubs
+        // that go on inside the original themselves.
+        for (address, entry) in [
+            (0x0024_8cdc, ENTRY_CHECK),
+            (0x0024_a150, ENTRY_DELIVER),
+            (0x0024_2d28, ENTRY_NEXT_CHECK),
+        ] {
+            let jump = word(address, &Branch(entry));
+            assert_eq!(branch_target(address, jump, false), Some(entry));
+        }
         // The original start-up call that the hook replaces and then makes.
         assert_eq!(
             branch_target(STARTUP_CALL, 0xeb00_0228, true),
@@ -730,8 +734,7 @@ mod tests {
             word(0x0024_a15c, &BranchIf(0x0024_a274, EQUAL)),
             0x0a00_0044
         );
-        // The reference patch's own branches, for comparison with its source.
-        assert_eq!(word(0x0024_8cdc, &Branch(0x0024_8d3c)), 0xea00_0016);
+        // The reference patch's own branch, for comparison with its source.
         assert_eq!(word(0x0024_8d58, &Branch(0x0024_8e44)), 0xea00_0039);
     }
 

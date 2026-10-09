@@ -276,7 +276,8 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
 /// Replaces the server question "is Bank's transport box empty?". Returns the
 /// next sub-state of the original task.
 /// # Safety
-/// Called only from the patched site at 00248D40 with the live task in `r0`.
+/// Called only from the stub of the patched site at 00248CDC (link.rs) with
+/// the live task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
     // Bank is asked whatever Box 1 held, as the original asked the server.
@@ -297,7 +298,8 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
 /// `DELIVER_FAILED` when nothing was delivered, in which case the original
 /// must not remove anything from the source game.
 /// # Safety
-/// Called only from the patched site at 0024A154 with the live task in `r0`.
+/// Called only from the stub of the patched site at 0024A150 (link.rs) with
+/// the live task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
     match unsafe { step(task, JOB_DELIVER) } {

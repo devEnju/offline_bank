@@ -24,10 +24,6 @@ mod linked {
 
     #[used]
     #[link_section = ".bank.link_roots"]
-    static VALIDATE_GAME: unsafe extern "aapcs" fn(*mut u8, *mut u8) -> u32 =
-        bank_payload::runtime::bank_offline_validate_game;
-    #[used]
-    #[link_section = ".bank.link_roots"]
     static REWARDS: unsafe extern "aapcs" fn(*mut u8) -> u32 =
         bank_payload::runtime::bank_offline_rewards;
     #[used]

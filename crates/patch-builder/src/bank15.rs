@@ -42,7 +42,7 @@ pub fn archive_preservation_candidate() -> CheckedEdit {
 /// (virtual address, original word, replacement word). Bank asks for a
 /// language while its own save holds none, and shows its "Precaution for
 /// Use" notice while it has no valid save.
-pub const FIRST_START_EDITS: [(u32, u32, u32); 9] = [
+pub const FIRST_START_EDITS: [(u32, u32, u32); 8] = [
     // Manager set-up (002a47f4): a saved language is not applied (was:
     // bl 0025c08c), so the console's language stays...
     (0x002a4898, 0xebfeddfb, 0xe320f000),
@@ -53,9 +53,11 @@ pub const FIRST_START_EDITS: [(u32, u32, u32); 9] = [
     // showing the notice): b 002ac8a8, where accepting it continues. The
     // save is created and written as after "accept".
     (0x002ac5b0, 0xe5945040, FIRST_START_ACCEPT_BRANCH),
-    // Task 3 never stores a language in a new save (was: beq 002ac710). A
-    // save made here holds language 0, for which the original asks.
-    (0x002ac6ec, 0x0a000007, 0xea000007),
+    // Task 3 stores a language in a new save only if one was picked
+    // (002ac6ec, beq 002ac710). That is left as it is: the pick is written
+    // by 0025d1d0 alone, whose one caller is the language screen's listener
+    // (002d0b88), and that screen is never entered. A save made here holds
+    // language 0, for which the original asks.
     // Task 3 with a valid save (002ac618) stored a language picked on the
     // language screen and wrote the save. It now does that for a save that
     // holds a language, with language 0 and kanji 0, so the original asks
@@ -72,9 +74,9 @@ pub const FIRST_START_EDITS: [(u32, u32, u32); 9] = [
 /// `b 002ac8a8` at 002ac5b0.
 pub const FIRST_START_ACCEPT_BRANCH: u32 = 0xea0000bc;
 
-/// Native edit regions in the current profile: twenty-two hooks plus the linked
-/// bootstrap bytes.
-pub const NATIVE_EDIT_REGIONS: usize = 27;
+/// Native edit regions in the current profile: twenty-four edited words plus
+/// the linked bootstrap bytes.
+pub const NATIVE_EDIT_REGIONS: usize = 25;
 
 /// Task 0xb (scene set-up between game selection and Bank loading): the
 /// update slot of its vtable, the update it holds (a server check), and the
@@ -109,7 +111,6 @@ pub fn prepare_development_patch(
         next: payload.entry,
         load: payload.load_entry,
         save: payload.save_entry,
-        validate_game: payload.validate_game_entry,
         rewards: payload.rewards_entry,
         timestamp: payload.timestamp_entry,
         dex_save_request: payload.dex_save_request_entry,
@@ -154,7 +155,6 @@ struct HookTargets {
     next: u32,
     load: u32,
     save: u32,
-    validate_game: u32,
     rewards: u32,
     timestamp: u32,
     dex_save_request: u32,
@@ -188,11 +188,6 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
             0x002a5a2c,
             0xebfffed3,
             crate::encode_arm_branch(0x002a5a2c, targets.next, true)?,
-        ),
-        word(
-            0x002d1034,
-            0xebff074a,
-            crate::encode_arm_branch(0x002d1034, targets.validate_game, true)?,
         ),
     ];
     // Original read-only vtables: taskC/D rewards, task9 open, task0x10 load, task7 normal /
@@ -242,7 +237,6 @@ mod tests {
             next: 0x3fb000,
             load: 0x3fb200,
             save: 0x3fb400,
-            validate_game: 0x3fb600,
             rewards: 0x3fba00,
             timestamp: 0x3fbc00,
             dex_save_request: 0x3fc400,
@@ -260,7 +254,6 @@ mod tests {
         for (source, original, destination) in [
             (0x1040a4, 0x10494c, targets.startup),
             (0x2a5a2c, 0x2a5580, targets.next),
-            (0x2d1034, 0x292d64, targets.validate_game),
         ] {
             let edit = edits
                 .iter()
@@ -309,17 +302,6 @@ mod tests {
             FIRST_START_ACCEPT_BRANCH.to_le_bytes(),
             encode_arm_branch(0x002ac5b0, 0x002ac8a8, false).unwrap()
         );
-        // The conditional branch becomes unconditional, same target.
-        let (address, original, replacement) = FIRST_START_EDITS
-            .into_iter()
-            .find(|edit| edit.0 == 0x002ac6ec)
-            .unwrap();
-        assert_eq!(original >> 28, 0x0);
-        assert_eq!(
-            replacement.to_le_bytes(),
-            encode_arm_branch(address, 0x002ac710, false).unwrap()
-        );
-        assert_eq!(original & 0x0fff_ffff, replacement & 0x0fff_ffff);
         let timestamp = edits.iter().find(|e| e.offset == 0x000d3bf4).unwrap();
         assert_eq!(timestamp.expected, [0xf3, 0x4f, 0x2d, 0xe9]);
         assert_eq!(

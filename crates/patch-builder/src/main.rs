@@ -131,8 +131,8 @@ fn run() -> Result<(), String> {
                 info.memory_size
             );
             println!(
-                "Exports: next={:#010x}, load={:#010x}, save={:#010x}, validate-game={:#010x}, rewards={:#010x}, timestamp={:#010x}",
-                info.entry, info.load_entry, info.save_entry, info.validate_game_entry, info.rewards_entry, info.timestamp_entry
+                "Exports: next={:#010x}, load={:#010x}, save={:#010x}, rewards={:#010x}, timestamp={:#010x}",
+                info.entry, info.load_entry, info.save_entry, info.rewards_entry, info.timestamp_entry
             );
             println!(
                 "Dex hooks: request={:#010x}, update={:#010x}, finish={:#010x}",

@@ -26,7 +26,6 @@ SECTIONS {
         KEEP(*(.text.bank_offline_next))
         KEEP(*(.text.bank_offline_load))
         KEEP(*(.text.bank_offline_save))
-        KEEP(*(.text.bank_offline_validate_game))
         KEEP(*(.text.bank_offline_rewards))
         KEEP(*(.text.bank_offline_timestamp))
         KEEP(*(.text.bank_offline_dex_save_request))
