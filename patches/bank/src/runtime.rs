@@ -47,7 +47,6 @@ pub enum Fault {
     StorageInvalid = 5,
     Clock = 6,
     RecoveryRequired = 7,
-    TransferNotIntegrated = 8,
     StorageLoad = 9,
     GameRead = 10,
     GameChanged = 11,

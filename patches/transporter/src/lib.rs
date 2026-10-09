@@ -12,8 +12,8 @@
 //! transport box of that object into `/transport.bin` of Bank's extdata
 //! through `offline_core::transport::deliver`. Nothing is converted here.
 //!
-//! Without a Gen 5 cartridge, `cart` presents Black/White saves from the SD
-//! card to the original's cartridge code (`sdsave` holds the rules).
+//! `cart` presents Black/White saves from the SD card to the original's
+//! cartridge code, beside a Gen 5 cartridge (`sdsave` holds the rules).
 //!
 //! The original language screen chooses which language's games are listed
 //! (`language`); it no longer changes the language of the screens. Its list
