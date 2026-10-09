@@ -436,7 +436,8 @@ mod tests {
 
     #[test]
     fn one_language_never_fills_the_game_list() {
-        // The cartridge, every SD save, and the titles of one language.
+        // One entry per DS game (the cartridge stands in for the save of
+        // its own game, `Saves::scan`) and the titles of one language.
         let most = (0..=u8::MAX)
             .map(|language| {
                 VC_LANGUAGES
@@ -449,7 +450,8 @@ mod tests {
         assert_eq!(most, 7);
         // Nothing in the patch stops the list at its capacity, as nothing
         // in the original does; this is what keeps it below.
-        assert!(1 + crate::sdsave::MAX_SAVES + most <= LIST_CAPACITY);
+        assert_eq!(crate::sdsave::GAMES.len() + most, 11);
+        assert!(crate::sdsave::GAMES.len() + most <= LIST_CAPACITY);
         // Every row is in a language whose games can be listed.
         for row in VC_LANGUAGES {
             assert_eq!(normalise(row), row);

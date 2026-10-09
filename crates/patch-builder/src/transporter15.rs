@@ -156,7 +156,7 @@ const EDITS: &[(u32, u32, Word)] = &[
     // a row in another language than the listed one. The scanner files the
     // trainer names under the number of each title it finds, so the titles
     // are left out here and not when the list is built. The list holds 40
-    // entries as the original built it; one language gives at most 12.
+    // entries as the original built it; one language gives at most 11.
     (0x0024_12d4, 0xeb00_3ff3, BranchLink(ENTRY_VC_SCAN)),
     // --- Bank check: r0 = task; the entry answers the next sub-state. ---
     (0x0024_8d3c, 0xe594_003c, Raw(0xe1a0_0004)),
