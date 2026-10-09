@@ -30,11 +30,10 @@ const TASK_REWARDS: u32 = 0x0036_19fc;
 const TASK_REWARD_GUARD: u32 = 0x0036_1bd8;
 const FS_SESSION: *const u32 = 0x0039_0100 as *const u32;
 /// Set by the original main loop (0010ba04) when HOME is pressed while the
-/// activity mask is zero; cleared by its HOME handlers once the jump to the
-/// HOME Menu has been carried out. That can be several frames later.
-const HOME_ACCEPTED: *const u8 = 0x0037_2989 as *const u8;
-/// Longest wait for an accepted HOME press before a job starts anyway.
-const HOME_WAIT_FRAMES: u16 = 600;
+/// activity mask is zero, and nothing else is done for the press then
+/// (0010ba7c). The loop carries the press out once the current scene is
+/// ready, which can be several frames later, whatever the mask says by then.
+const HOME_ACCEPTED: *mut u8 = 0x0037_2989 as *mut u8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -87,7 +86,6 @@ struct Runtime {
     pending: bool,
     error_shown: bool,
     no_games: bool,
-    home_wait: u16,
     rewards: RewardSession,
     /// The native blank transport-box record and its format tag, captured from
     /// the freshly constructed Bank before the first restore.
@@ -135,7 +133,6 @@ static STATE: Shared = Shared(UnsafeCell::new(Runtime {
     pending: false,
     error_shown: false,
     no_games: false,
-    home_wait: 0,
     rewards: RewardSession::NONE,
     blank: None,
 }));
@@ -271,6 +268,12 @@ impl Task {
 /// Sets or clears bit 1 of Bank's activity mask through the original
 /// functions. While the mask is not zero the original main loop refuses the
 /// HOME button and sleep, as it does during its own transfers.
+///
+/// The mask only refuses new HOME presses. One accepted just before it was
+/// set would still be carried out, so setting the mask also takes that press
+/// back: accepting it did nothing but set the one byte cleared here. From
+/// then on the original refuses every press itself, and the HOME Menu, and
+/// closing Bank from it, never meet a loading screen or a running job.
 fn storage_activity(active: bool) {
     let address = if active {
         0x001d_4d90usize
@@ -279,6 +282,9 @@ fn storage_activity(active: bool) {
     };
     let mark: unsafe extern "aapcs" fn(u32) = unsafe { transmute(address) };
     unsafe { mark(1) };
+    if active {
+        unsafe { HOME_ACCEPTED.write_volatile(0) };
+    }
 }
 fn today() -> Result<Date, Fault> {
     let mut words = [0u32; 2];
@@ -387,19 +393,6 @@ impl Runtime {
             self.worker = Some(unsafe { BankWorker::start() }.map_err(|e| self.worker_error(e))?);
         }
         self.worker.as_mut().ok_or(Fault::StorageOpen)
-    }
-    /// The mask only refuses new HOME presses. One accepted just before it
-    /// was set is still carried out by the main loop, whatever the mask says
-    /// by then. No job starts until that has happened, so the HOME Menu, and
-    /// closing Bank from it, never meet a running job.
-    fn home_pending(&mut self) -> bool {
-        let accepted = unsafe { HOME_ACCEPTED.read_volatile() } != 0;
-        if accepted && self.home_wait < HOME_WAIT_FRAMES {
-            self.home_wait += 1;
-            return true;
-        }
-        self.home_wait = 0;
-        false
     }
     fn submit(&mut self, task: Task, step: Step, job: Job) -> Result<(), Fault> {
         if self.job.is_some() {
@@ -688,9 +681,6 @@ impl Runtime {
             }
             4 => {
                 storage_activity(true);
-                if self.home_pending() {
-                    return Ok(false);
-                }
                 unsafe { crate::ui::loading(task.ui()?, crate::ui::CREATING_MESSAGE) }
                     .map_err(|_| Fault::NativeObject)?;
                 task.begin_busy();
@@ -716,9 +706,6 @@ impl Runtime {
             };
         }
         if self.step == Step::Idle {
-            if self.home_pending() {
-                return Ok(false);
-            }
             task.local_date()?;
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
             // The original shows this message for both: opening an existing
@@ -839,9 +826,6 @@ impl Runtime {
     }
     unsafe fn save(&mut self, task: Task) -> Result<bool, Fault> {
         if self.step == Step::Idle {
-            if self.home_pending() {
-                return Ok(false);
-            }
             self.baseline.ok_or(Fault::GameRead)?;
             let coordinator = task.pointer(8)?;
             // Save-request hooks already ran any required native trainer
