@@ -158,7 +158,7 @@ An error ends the session; restart Bank afterwards. Stored data is kept. Bank ha
 | `3`, `4` | Opening or creating the files |
 | `5` | The stored data is not valid |
 | `6` | Console clock |
-| `7` | An interrupted Save and Quit is waiting for its game. That game is not there, or another copy of it with another trainer is inserted. Insert or install the game the save was for and start Bank again. |
+| `7` | An interrupted Save and Quit that moved Pokémon both ways is waiting for its game. That game is not there, or another copy of it with another trainer is inserted. Insert or install the game the save was for and start Bank again. |
 | `9` | Loading |
 | `A`–`E` | Game save |
 | `F` | Preparing the save |
@@ -198,6 +198,8 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
   | moved none between Bank and the game | undoes its save | Miles of a claim count twice |
   | did both | keeps its save | the withdrawn Pokémon are lost, the deposited ones exist twice |
 
-  Only the last row can lose anything, and only if the power failed before the game's save was written. Bank does this for the copy of the game the session was with, which it knows by the trainer's name and ID; with another copy of the same game inserted it waits (error `7`). While a Save and Quit is unfinished, Bank opens with no other game either.
+  Only the last row can lose anything, and only if the power failed before the game's save was written. Bank knows the copy of the game the session was with by the trainer's name and ID.
+
+  If that game is not there at the next start, or another copy of it is inserted, Bank does not wait for it in the first three cases: it decides by the same table and opens. Keep the game inserted if you can, though. With it Bank sees what the game's save holds and nothing ends up twice. Only a session that did both waits for its game (error `7`), because without the game either answer could lose Pokémon.
 - **Clock.** A console date set ahead is paid as if the days had passed.
 - **Errors are final for the session.** After an error with the two numbers, restart Bank. Until then, pressing START shows the same error again and opens nothing.

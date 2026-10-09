@@ -1127,6 +1127,13 @@ mod tests {
             // Looking wrote nothing, and the save is still in progress.
             assert!(matches!(files.phase(), Ok(Phase::Prepared(_))));
             assert_eq!(moved::choose(moved), decision, "{name}");
+            // Without the game the same answer, except for the session
+            // that moved Pokémon both ways: that one waits for its game.
+            assert_eq!(
+                moved::choose_unseen(moved),
+                (name != "both ways").then_some(decision),
+                "{name}"
+            );
             assert_eq!(files.reconcile_as(decision), Ok(decision), "{name}");
             files.tidy_transport().unwrap();
             let (bytes, loaded) = load(&mut files);

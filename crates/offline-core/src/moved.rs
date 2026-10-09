@@ -74,6 +74,18 @@ pub fn choose(moved: Moved) -> RecoveryDecision {
     }
 }
 
+/// The snapshot Bank goes on with when the game is not there to be asked,
+/// or another copy of it is. Its save may be either image or a later one,
+/// so only the answer that cannot lose is taken: `None` for a session that
+/// moved Pokémon both ways, which waits for its game.
+pub fn choose_unseen(moved: Moved) -> Option<RecoveryDecision> {
+    if moved.deposited != 0 && moved.withdrawn != 0 {
+        None
+    } else {
+        Some(choose(moved))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -136,5 +148,23 @@ mod tests {
         // Both ways: the save is taken to have gone through.
         assert_eq!(choice(3, 2), RecoveryDecision::CommitAfter);
         assert_eq!(choice(1, 500), RecoveryDecision::CommitAfter);
+    }
+
+    #[test]
+    fn without_the_game_only_a_one_way_session_is_settled() {
+        let choice = |deposited, withdrawn| {
+            choose_unseen(Moved {
+                deposited,
+                withdrawn,
+            })
+        };
+        assert_eq!(choice(1, 0), Some(RecoveryDecision::CommitAfter));
+        assert_eq!(choice(900, 0), Some(RecoveryDecision::CommitAfter));
+        assert_eq!(choice(0, 1), Some(RecoveryDecision::KeepBefore));
+        assert_eq!(choice(0, 30), Some(RecoveryDecision::KeepBefore));
+        assert_eq!(choice(0, 0), Some(RecoveryDecision::KeepBefore));
+        // Both ways: either answer could lose a Pokémon; the game decides.
+        assert_eq!(choice(3, 2), None);
+        assert_eq!(choice(1, 1), None);
     }
 }

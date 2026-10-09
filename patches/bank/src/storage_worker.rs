@@ -26,8 +26,9 @@ pub enum Job {
         session: u32,
     },
     Initialize,
+    /// `game` is `None` when the game of the save in progress is not there.
     Recover {
-        game: GameIoDescriptor,
+        game: Option<GameIoDescriptor>,
     },
     InspectAndLoad {
         game: GameIoDescriptor,
@@ -145,7 +146,7 @@ mod arm {
         moved,
         native_blob::NativeBlobView,
         sections::{Identity, HELD},
-        GameObservation, Storage, StoreError,
+        GameObservation, PendingTransfer, Storage, StoreError,
     };
 
     /// Working room for comparing the two snapshots of a save in progress:
@@ -213,6 +214,70 @@ mod arm {
         fn read_bank(&mut self, staging: &mut [u8]) -> Result<bank_files::Loaded, WorkerError> {
             self.files.read(staging).map_err(|e| files_error(e, 9))
         }
+        /// Resolves the save in progress from a game save that is one of
+        /// its two images.
+        fn reconcile(
+            &mut self,
+            pending: &PendingTransfer,
+            evidence: &GameEvidence,
+        ) -> Result<RecoveryDecision, WorkerError> {
+            self.files
+                .reconcile(GameObservation::Present {
+                    game: pending.game,
+                    fingerprint: evidence.fingerprint,
+                })
+                .map_err(|e| files_error(e, 16))
+        }
+        /// Resolves the save in progress from what it moved, toward the
+        /// snapshot that cannot lose a Pokémon. `seen` says that its game
+        /// is there and has saved since. Without the game only a save that
+        /// moved Pokémon one way, or none, is resolved; one that moved them
+        /// both ways waits for its game, and nothing is written.
+        fn settle_by_moves(
+            &mut self,
+            staging: &mut [u8],
+            seen: bool,
+        ) -> Result<RecoveryDecision, WorkerError> {
+            // SAFETY: see `Held`; no other reference exists.
+            let [before, after] = unsafe { &mut *HELD_LISTS.0.get() };
+            let moved = self
+                .files
+                .pending_moves(staging, before, after)
+                .map_err(|e| files_error(e, 16))?;
+            let decision = if seen {
+                moved::choose(moved)
+            } else {
+                moved::choose_unseen(moved).ok_or(WorkerError::operation(7, 0))?
+            };
+            self.files
+                .reconcile_as(decision)
+                .map_err(|e| files_error(e, 16))
+        }
+        /// The end of a recovery or a Save and Quit, once the save in
+        /// progress is resolved.
+        fn settled(
+            &mut self,
+            staging: &mut [u8],
+            evidence: Option<GameEvidence>,
+            decision: RecoveryDecision,
+        ) -> Result<Reply, WorkerError> {
+            if !matches!(
+                decision,
+                RecoveryDecision::KeepBefore | RecoveryDecision::CommitAfter
+            ) {
+                return Err(WorkerError::operation(16, 0));
+            }
+            // Remove transport slots the published save made obsolete. A
+            // failure here is retried by the next save and must not undo
+            // this one.
+            let _ = self.files.tidy_transport();
+            let loaded = self.read_bank(staging)?;
+            Ok(Reply::BankReady {
+                evidence,
+                decision: Some(decision),
+                loaded: Some(loaded),
+            })
+        }
         fn execute(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             match job {
                 Job::Open { session } => {
@@ -271,7 +336,9 @@ mod arm {
                         return Err(WorkerError::operation(7, 0));
                     }
                     let evidence = inspect(game)?;
-                    require_secure(game, evidence.secure.current)?;
+                    // A save in progress that was settled without its game
+                    // may have left the platform value one step behind.
+                    finish_secure(game, evidence.secure)?;
                     let loaded = self.read_bank(staging)?;
                     Ok(Reply::BankReady {
                         evidence: Some(evidence),
@@ -279,74 +346,51 @@ mod arm {
                         loaded: Some(loaded),
                     })
                 }
-                Job::Recover { game } | Job::Finalize { game } => {
-                    let finalizing = matches!(job, Job::Finalize { .. });
+                Job::Recover { game } => {
+                    let Phase::Prepared(pending) = self.phase()? else {
+                        return Err(WorkerError::operation(16, 0));
+                    };
+                    let Some(game) = game else {
+                        let decision = self.settle_by_moves(staging, false)?;
+                        return self.settled(staging, None, decision);
+                    };
+                    let evidence = inspect(game)?;
+                    let matched = matched(&pending, &evidence)?;
+                    let decision = match matched {
+                        Match::Before => {
+                            require_secure(game, evidence.secure.current)?;
+                            self.reconcile(&pending, &evidence)?
+                        }
+                        Match::After => {
+                            finish_secure(game, evidence.secure)?;
+                            self.reconcile(&pending, &evidence)?
+                        }
+                        // Another copy of the title says nothing about this
+                        // save: as for a game that is not there.
+                        Match::Other(Owner::Different) => self.settle_by_moves(staging, false)?,
+                        // The same copy, saved by the game since the cut (or
+                        // a save in progress that names no trainer). The
+                        // game no longer shows whether Bank's write went
+                        // through.
+                        Match::Other(Owner::Same | Owner::Unrecorded) => {
+                            // The game wrote this save itself.
+                            require_secure(game, evidence.secure.current)?;
+                            self.settle_by_moves(staging, true)?
+                        }
+                    };
+                    self.settled(staging, Some(evidence), decision)
+                }
+                Job::Finalize { game } => {
                     let Phase::Prepared(pending) = self.phase()? else {
                         return Err(WorkerError::operation(16, 0));
                     };
                     let evidence = inspect(game)?;
-                    let matched = transaction::match_pending_image(
-                        &pending,
-                        evidence.title,
-                        evidence.fingerprint,
-                        evidence.trainer.as_ref(),
-                    )
-                    .map_err(|_| WorkerError::operation(11, 0))?;
-                    if finalizing && matched != Match::After {
+                    if matched(&pending, &evidence)? != Match::After {
                         return Err(WorkerError::operation(17, 0));
                     }
-                    let observed = GameObservation::Present {
-                        game: pending.game,
-                        fingerprint: evidence.fingerprint,
-                    };
-                    let decision = match matched {
-                        Match::Before => {
-                            require_secure(game, evidence.secure.current)?;
-                            self.files.reconcile(observed)
-                        }
-                        Match::After => {
-                            finish_secure(game, evidence.secure)?;
-                            self.files.reconcile(observed)
-                        }
-                        // Another copy of the title: wait for the right one,
-                        // as for a game that is not there.
-                        Match::Other(Owner::Different) => {
-                            return Err(WorkerError::operation(7, 0));
-                        }
-                        // The same copy, saved by the game since the cut (or
-                        // a save in progress that names no trainer). The
-                        // game no longer shows whether Bank's write went
-                        // through, so the Bank takes the snapshot that
-                        // cannot lose a Pokémon for what this save moved.
-                        Match::Other(Owner::Same | Owner::Unrecorded) => {
-                            // The game wrote this save itself.
-                            require_secure(game, evidence.secure.current)?;
-                            // SAFETY: see `Held`; no other reference exists.
-                            let [before, after] = unsafe { &mut *HELD_LISTS.0.get() };
-                            let moved = self
-                                .files
-                                .pending_moves(staging, before, after)
-                                .map_err(|e| files_error(e, 16))?;
-                            self.files.reconcile_as(moved::choose(moved))
-                        }
-                    }
-                    .map_err(|e| files_error(e, 16))?;
-                    if !matches!(
-                        decision,
-                        RecoveryDecision::KeepBefore | RecoveryDecision::CommitAfter
-                    ) {
-                        return Err(WorkerError::operation(16, 0));
-                    }
-                    // The end of a Save and Quit: remove transport slots the
-                    // published save made obsolete. A failure here is retried
-                    // by the next save and must not undo this one.
-                    let _ = self.files.tidy_transport();
-                    let loaded = self.read_bank(staging)?;
-                    Ok(Reply::BankReady {
-                        evidence: Some(evidence),
-                        decision: Some(decision),
-                        loaded: Some(loaded),
-                    })
+                    finish_secure(game, evidence.secure)?;
+                    let decision = self.reconcile(&pending, &evidence)?;
+                    self.settled(staging, Some(evidence), decision)
                 }
                 Job::Prepare {
                     game,
@@ -435,6 +479,16 @@ mod arm {
                 Job::Close => Err(WorkerError::control(WorkerErrorKind::Stopped)),
             }
         }
+    }
+    /// Which image of the save in progress the game's save is, if either.
+    fn matched(pending: &PendingTransfer, evidence: &GameEvidence) -> Result<Match, WorkerError> {
+        transaction::match_pending_image(
+            pending,
+            evidence.title,
+            evidence.fingerprint,
+            evidence.trainer.as_ref(),
+        )
+        .map_err(|_| WorkerError::operation(11, 0))
     }
     fn fs_error(error: fs::Error, fault: u32) -> WorkerError {
         WorkerError::operation(fault, error.diagnostic())
@@ -566,7 +620,9 @@ mod arm {
         }
     }
     fn finish_secure(game: GameIoDescriptor, verified: SecureValues) -> Result<(), WorkerError> {
-        // Called only after exact title and complete trusted AFTER-image match.
+        // `verified` is read from the game's actual save. Only the one step
+        // a completed save takes is made: from that save's own previous
+        // value to its current one.
         let observed = platform(game)?;
         if observed.matches_native_rule(verified.current) {
             return Ok(());

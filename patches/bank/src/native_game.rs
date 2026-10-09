@@ -90,6 +90,7 @@ pub enum NativeGameError {
     InvalidFileLength,
     BlockOutsideFile,
     WrongMetadataVtable(u32),
+    NotLoaded,
     Busy,
     InvalidPhase,
     MissingArchive,
@@ -769,6 +770,10 @@ mod arm {
                 .checked_add(0x100)
                 .ok_or(NativeGameError::AddressOverflow)?;
             let offset = kind as usize * 12;
+            // The scan found no usable save of this game.
+            if unsafe { raw.add(offset + 1).read() } == 0 {
+                return Err(NativeGameError::NotLoaded);
+            }
             if unsafe { raw.add(offset).read() } != kind as u8
                 || unsafe { raw.add(offset + 1).read() } != 1
             {

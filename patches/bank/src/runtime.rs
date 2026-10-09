@@ -6,7 +6,7 @@
 use crate::{
     bank_files::Loaded,
     native_bank::NativeBank,
-    native_game::{GameIoDescriptor, GameKind, NativeGameSession, NativePoll},
+    native_game::{GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll},
     storage_worker::{GameEvidence, Job, Reply},
     worker::{BankWorker, JobId, WorkerError},
 };
@@ -764,8 +764,14 @@ impl Runtime {
                     .filter_map(|id| GameKind::try_from(id).ok())
                     .find(|kind| kind.title_id() == pending.game.title_id)
                     .ok_or(Fault::RecoveryRequired)?;
-                let game = unsafe { GameIoDescriptor::from_loaded_kind(task.pointer(8)?, kind) }
-                    .map_err(|_| Fault::RecoveryRequired)?;
+                // A game that is not there is not waited for when the save
+                // can be settled without it; the worker decides.
+                let game =
+                    match unsafe { GameIoDescriptor::from_loaded_kind(task.pointer(8)?, kind) } {
+                        Ok(game) => Some(game),
+                        Err(NativeGameError::NotLoaded) => None,
+                        Err(_) => return Err(Fault::RecoveryRequired),
+                    };
                 self.submit(task, Step::Recover, Job::Recover { game })?;
                 Ok(false)
             }
