@@ -133,7 +133,7 @@ Save manager (0x100 bytes): selected kind at `+c8`; per kind `k` (1..8 = X, Y, O
 - **Prepare** `002bc4bc` regenerates checksums (and Gen 7 signatures) after rotating the secure-value pair. Hash only after it.
 - **Blocks** `002bc460(game, i)`: 55/58/37/39 data blocks (XY/ORAS/SM/USUM) plus a 0x1e8-byte metadata block, each written at a 512-aligned offset. Gaps and the file tail are not rewritten, so the expected after-image keeps their old bytes.
 - **Write** uses the original writer thread (`001d37ec`, mode 4) and completion `0015dc74`, launched only after the journal is durable.
-- **Secure value** slot `0x1000`. The platform value is advanced only by the one step a completed save takes, from the game file's own previous value to its current one: by a recovery whose journal matches the complete after-image, and by a load, for a save in progress that was settled without its game ([below](#a-game-saved-again-after-an-interrupted-save)). Any other difference is fault `E`.
+- **Secure value** slot `0x1000`. The platform value is advanced only by the one step a completed save takes, from the game file's own previous value to its current one: by a recovery whose journal matches the complete after-image, and by a load, for a save in progress that was settled without its game ([below](#an-interrupted-save)). Any other difference is fault `E`.
 
 ### Rewards
 
@@ -188,7 +188,7 @@ File names in 3DS extdata are limited to 16 characters including the leading sla
 [store.rs](../crates/offline-core/src/store.rs), [format.rs](../crates/offline-core/src/format.rs). Two 192-byte metadata records (`BKOFMETA`), then two slots of a 32-byte snapshot header (`BKOFSNAP`) plus the payload. Field offsets are in the [crate docs](../crates/offline-core/src/lib.rs).
 
 - A new snapshot goes to the inactive slot and is synced and read back; metadata is written to one replica, synced, then the other.
-- A save: verify the game's before-image, `prepare_transfer`, write the game, `reconcile`, read the game back. A before-image keeps the old snapshot, an after-image commits the new one. Right after its own write (`Job::Finalize`) the worker does not wait for the complete read to commit: the 16-byte secure pair in the game's file must be the pair of the image it prepared, which is new with every prepared image, and the game's commit replaces the file whole. The complete fingerprint is checked after the commit; a difference is fault `11` with the new snapshot current. The store blocks on anything else; for a save of the same game that is neither image, the worker chooses the snapshot itself ([below](#a-game-saved-again-after-an-interrupted-save)).
+- A save: verify the game's before-image, `prepare_transfer`, write the game, `reconcile`, read the game back. A before-image keeps the old snapshot, an after-image commits the new one. Right after its own write (`Job::Finalize`) the worker does not wait for the complete read to commit: the 16-byte secure pair in the game's file must be the pair of the image it prepared, which is new with every prepared image, and the game's commit replaces the file whole. The complete fingerprint is checked after the commit; a difference is fault `11` with the new snapshot current. The store blocks on anything else; the worker then chooses the snapshot itself ([below](#an-interrupted-save)).
 - A load checks the journal and the 32-byte header, then reads the payload once and checks its CRC on that pass.
 - A new Bank writes the side files first, then creates `/bank.bin`, zero-fills it, writes the first snapshot, and publishes the first journal record last. A start that finds `/bank.bin` without any journal record (both records zero, or the first-written one torn beside a zero one) and with no snapshot other than a first one treats it as "no Bank yet" and finishes the creation in place (`BankStore::reinitialize`). No file in which a Bank was ever current can be in that state: it has a journal record, and after its first save a second snapshot. A delivery Transporter made in between is kept and shown.
 
@@ -215,15 +215,40 @@ The payload follows at +64. An all-zero or damaged header is a void slot. Writin
 
 **Rewards record** (16 bytes, [rewards.rs](../crates/offline-core/src/rewards.rs)): u32 balance; u8 state (0 none, 1 record); u8 fraction 0..29; u16 saved count; accounted-through date (u16 year, month, day); 4 zero bytes.
 
-### A game saved again after an interrupted save
+### An interrupted save
 
-A save in progress is settled by the fingerprint of the complete game save. A game that was played and saved before Bank is opened again matches neither image, and nothing in its save tells for certain which one it was made from. The Bank must not stay closed for that, so the worker chooses (`Job::Recover` in [storage_worker.rs](../patches/bank/src/storage_worker.rs)); right after Bank's own write (`Job::Finalize`) a game file that does not carry the prepared secure pair stays fault `11`, and the next start chooses.
+A save in progress (`Phase::Prepared`) is settled by the next start, in `Job::Recover` ([storage_worker.rs](../patches/bank/src/storage_worker.rs)). The journal holds the fingerprint of the game's complete save before and after, and a 32-byte binding, a SHA-256 over the title and both fingerprints ([transaction.rs](../patches/bank/src/transaction.rs)). The worker compares the game's file with the two images:
 
-- **The same copy of the game.** The journal names the title. The binding in its 32-byte identity field ([transaction.rs](../patches/bank/src/transaction.rs)) is a SHA-256 over the title and the two fingerprints and, since this rule, over the trainer of the save: ID, secret ID and name. A save that is neither image but gives the same binding with its own trainer is the same copy, saved since. One that does not is another copy and says nothing about this save. A binding without a trainer (made by an earlier build, or for a save whose trainer could not be read) cannot tell, and the choice is made without it. An earlier build does not accept a binding with a trainer and reports fault `B` for it.
-- **The trainer** ([game_save.rs](../crates/offline-core/src/game_save.rs)) is read from the save file. Its last 512 bytes are a footer: two secure values, the magic `FEEB`, then 8 bytes per data block (u32 length, u16 id, u16 checksum); blocks start on multiples of 512 in table order and the footer follows the last. The trainer block is the one block of length `170` (Gen 6) or `C0` (Gen 7): trainer ID at 0, secret ID at 2, the game's version number at 4 (X 24, Y 25, Alpha Sapphire 26, Omega Ruby 27, Sun 30, Moon 31, Ultra Sun 32, Ultra Moon 33), the name at `48` or `38`. Checked on saves of Alpha Sapphire (block at `14000`) and Ultra Moon (`1400`), where none of its bytes changed across a save of the game. No such block, more than one, or another version number means no trainer. It is read with every inspection of a game save, two small reads beside the fingerprint's pass over the file.
-- **The choice** ([moved.rs](../crates/offline-core/src/moved.rs)). Both snapshots are still in the Bank file. Each is read into the staging buffer in turn, and the identity of every occupied record of its 100 boxes is collected (`sections::stored_identity`: encryption constant, personality value, trainer ID and secret ID, all in the record's first block), together with the transport box that snapshot shows (`transport::on_load` for the one before, which is a delivery if one was taken; the tagged slot for the one after). What only the snapshot after holds was deposited, what only the one before holds was withdrawn or released; a Pokémon moved inside the Bank is in both. Deposits and nothing else: commit. Withdrawals and nothing else, or nothing at all: keep the old snapshot. Either cannot lose a Pokémon whichever way the game's save went. Both: commit, on the view that a player who played on found the game as expected; if the game's save had not been written, the withdrawn Pokémon are in neither place.
-- **Without the game.** The game of the save in progress is not among those the scan loaded (`NativeGameError::NotLoaded`, `Job::Recover { game: None }`), or another copy of it is. Its save may then be either image or a later one. The same choice is made as long as it cannot lose a Pokémon: deposits only, withdrawals only, or nothing (`moved::choose_unseen`). A save that moved Pokémon both ways waits for its game: fault `7`, nothing is changed. No secure value is checked or changed here. If the absent game holds the after-image and the cut came before the original writer advanced the platform value, that value is one step behind; the next load of that game advances it (`finish_secure` in `Job::InspectAndLoad`).
-- The chosen snapshot is published through `reconcile` with that image's fingerprint (`BankFiles::reconcile_as`); `decide_recovery` itself is unchanged. For a game that is there, the platform secure value must be the observed save's own, as for any save the game wrote.
+| The game of the journal's title | Decision | Code |
+| --- | --- | --- |
+| Its file is the before-image | Keep the old snapshot | `reconcile`; the platform secure value must be the file's (`require_secure`) |
+| Its file is the after-image | Commit the new snapshot | `reconcile`; the platform secure value is advanced if the cut came before that (`finish_secure`) |
+| Its file is neither (`Match::Other`) | By what the save moved | `settle_by_moves(.., true)`, `moved::choose` |
+| Not among the games the scan loaded (`NativeGameError::NotLoaded`, `Job::Recover { game: None }`) | By what the save moved if that was one way; otherwise fault `7` and nothing is written | `settle_by_moves(.., false)`, `moved::choose_unseen` |
+
+A file that is neither image was written since the cut: by the game played on, by a new game started on it, or it is another copy of the title. Nothing in it tells for certain which image it was made from, and the three are not told apart.
+
+**What a save moved** (`BankFiles::pending_moves`). Both snapshots are still in the Bank file. Each is read into the staging buffer in turn, and the identity of every occupied record is collected (`sections::stored_identity`: encryption constant, personality value, trainer ID and secret ID, all in the record's first block):
+
+| | Snapshot before | Snapshot after |
+| --- | --- | --- |
+| The 100 boxes | Every occupied record | Every occupied record |
+| The transport box | What a load showed: its own box, or a delivery it took (`transport::on_load`) | The slot the save wrote (tagged with the snapshot after) |
+
+The two lists are compared as multisets ([moved.rs](../crates/offline-core/src/moved.rs)). What only the snapshot after holds was deposited; what only the one before holds was withdrawn or released; a Pokémon moved inside the Bank is in both.
+
+| Deposited | Withdrawn | `choose` (a game is there) | `choose_unseen` (none is) |
+| --- | --- | --- | --- |
+| some | none | Commit | Commit |
+| none | some | Keep | Keep |
+| none | none | Keep | Keep |
+| some | some | Commit | Wait |
+
+The first two rows cannot lose a Pokémon whichever way the game's save went, and the third cannot lose the Miles of a claim. The last row has no such answer: after a commit, if the game's save had not been written, the withdrawn Pokémon are in neither place.
+
+- The chosen snapshot is published through `reconcile` with that image's fingerprint (`BankFiles::reconcile_as`); `decide_recovery` itself is unchanged.
+- No secure value is checked or changed in the last two rows of the first table. If a game that was not there holds the after-image and the cut came before the original writer advanced the platform value, that value is one step behind; the next load of that game advances it (`finish_secure` in `Job::InspectAndLoad`).
+- Right after Bank's own write (`Job::Finalize`), a game file that does not carry the prepared secure pair is fault `11`; the journal stays in progress and the next start settles it by the table.
 
 ### Hand-over from Transporter
 

@@ -10,7 +10,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | --- | --- |
 | Connects, checks the account and pass, then shows the main menu. | No connection. Start screen → game scan → open the local Bank → **game selection**. There is no main menu; Back on game selection returns to the start screen. |
 | Downloads the Bank from the server and uploads it on save. | Reads and writes local files on a background thread while the original loading screen keeps animating. |
-| The server resolves interrupted saves. | A local journal does. An interruption leaves either the old or the new state, never a mix. |
+| The server resolves interrupted saves. | A local journal does. An interruption leaves either the old or the new state, never a mix ([below](#if-save-and-quit-is-interrupted)). |
 | Loading screens, messages, sounds. | The originals. |
 | First start: asks for a language, which cannot be changed later. | Never asks. Bank is always in the console's language ([below](#first-start)). |
 | First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
@@ -149,6 +149,38 @@ The first Save and Quit only records the date and your Pokémon count N.
 | Save with Y, then with Ultra Sun. | A species known only to Y and one known only to Ultra Sun both show in the National Pokédex. |
 | Same version, different trainer (for example two Omega Ruby saves). | The original replacement prompt. Accept: that version's entries and records become the new save's. Decline: unchanged. |
 
+## If Save and Quit is interrupted
+
+Save and Quit writes to two places, always in this order:
+
+| Step | What is written |
+| --- | --- |
+| 1 | Bank's new boxes, beside the old ones, and a mark that a save is in progress |
+| 2 | The game's save |
+| 3 | The mark is removed |
+
+Until step 3 Bank still holds both sets of boxes. If the power fails, the next start finds the mark and looks at the game's save to see how far the save got:
+
+| The game's save at the next start | What that means | Bank |
+| --- | --- | --- |
+| Unchanged | The power failed before step 2 was finished. | Goes back to its old boxes. Nothing was moved. |
+| The one Bank wrote | The power failed after step 2. | Keeps its new boxes. Everything was moved. |
+| Something else: the game was played and saved, a new game was started on it, or it is another copy of the game | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. |
+| The game is not inserted | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game (error `7`). |
+
+In the first two cases nothing is lost and nothing exists twice. **So after an interrupted Save and Quit, start Bank again with the same game inserted before you play it.**
+
+When the game's save cannot say, Bank takes the boxes that cannot lose a Pokémon:
+
+| The interrupted session | Bank | Worst case |
+| --- | --- | --- |
+| Only deposited Pokémon | Keeps its new boxes | The deposited Pokémon exist twice. |
+| Only withdrew or released Pokémon | Goes back to its old boxes | The withdrawn Pokémon exist twice. |
+| Moved none between Bank and the game | Goes back to its old boxes | Miles of a claim count twice. |
+| Did both | Keeps its new boxes | If the power failed before step 2, the withdrawn Pokémon are lost and the deposited ones exist twice. |
+
+Only the last row can lose Pokémon. Pokémon moved between Bank's own boxes, and a delivery from Poké Transporter taken in that session, count as neither deposited nor withdrawn.
+
 ## Troubleshooting
 
 An error ends the session; restart Bank afterwards. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language) with two numbers on the third line: `XXXXXXXX YYYYYYYY`. Only the numbers tell what happened; the sentence about the server is not to be taken literally. The first number says which step failed, the second why.
@@ -158,7 +190,7 @@ An error ends the session; restart Bank afterwards. Stored data is kept. Bank ha
 | `3`, `4` | Opening or creating the files |
 | `5` | The stored data is not valid |
 | `6` | Console clock |
-| `7` | An interrupted Save and Quit that moved Pokémon both ways is waiting for its game. That game is not there, or another copy of it with another trainer is inserted. Insert or install the game the save was for and start Bank again. |
+| `7` | An interrupted Save and Quit that moved Pokémon both ways is waiting for its game. Insert that game and start Bank again ([details](#if-save-and-quit-is-interrupted)). |
 | `9` | Loading |
 | `A`–`E` | Game save |
 | `F` | Preparing the save |
@@ -189,17 +221,6 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 
 - **First start.** Creating the files runs in the background, but two original steps still run on the main thread and can cause short pauses: the game scan creates the extdata archive, and the default box and group names are formatted in one call. If the power fails while the Bank is being created ("Preparing Pokémon Bank for your use…"), the next start creates it again from the beginning, welcome included; nothing has to be deleted.
 - **Backups.** The journal cannot repair a game save damaged mid-write, and cannot detect restoring a Bank backup and a game backup from different times. Always back up Bank's extdata and your games together.
-- **After an interrupted Save and Quit, open Bank before playing that game on.** If the power fails during Save and Quit, the next start of Bank looks at the game's save to see whether it was written, and then keeps or undoes its own save to match; nothing is lost. If you have played that game and saved in it first, its save no longer shows that. Bank then decides by what the interrupted session moved, and opens:
-
-  | The interrupted session | Bank | If the game's save had gone the other way |
-  | --- | --- | --- |
-  | only deposited Pokémon | keeps its save | they exist twice; none is lost |
-  | only withdrew or released Pokémon | undoes its save | they exist twice; none is lost |
-  | moved none between Bank and the game | undoes its save | Miles of a claim count twice |
-  | did both | keeps its save | the withdrawn Pokémon are lost, the deposited ones exist twice |
-
-  Only the last row can lose anything, and only if the power failed before the game's save was written. Bank knows the copy of the game the session was with by the trainer's name and ID.
-
-  If that game is not there at the next start, or another copy of it is inserted, Bank does not wait for it in the first three cases: it decides by the same table and opens. Keep the game inserted if you can, though. With it Bank sees what the game's save holds and nothing ends up twice. Only a session that did both waits for its game (error `7`), because without the game either answer could lose Pokémon.
+- **Interrupted Save and Quit.** One case can lose Pokémon: see [If Save and Quit is interrupted](#if-save-and-quit-is-interrupted).
 - **Clock.** A console date set ahead is paid as if the days had passed.
 - **Errors are final for the session.** After an error with the two numbers, restart Bank. Until then, pressing START shows the same error again and opens nothing.
