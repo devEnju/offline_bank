@@ -5,16 +5,13 @@ use crate::{
     bank_files::Loaded,
     native_game::{GameIoDescriptor, PreparedImage, SecureValues},
 };
-use offline_core::{game_save::Trainer, rewards::Stored, Fingerprint, Phase, RecoveryDecision};
+use offline_core::{rewards::Stored, Fingerprint, Phase, RecoveryDecision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameEvidence {
     pub title: u64,
     pub fingerprint: Fingerprint,
     pub secure: SecureValues,
-    /// The trainer of the save, if its trainer block is where it is known
-    /// to be; it tells two copies of one title apart.
-    pub trainer: Option<Trainer>,
 }
 
 // Fixed descriptors live directly in the one static mailbox; no allocator or
@@ -137,12 +134,11 @@ mod arm {
         fs::{self, ExtdataStorage, GameMainReader, ReportedAbsence},
         native_game::{PlatformSecureValue, MAX_PREPARED_BLOCKS},
         session,
-        transaction::{self, Match, Owner},
+        transaction::{self, Match},
     };
     use core::{cell::UnsafeCell, convert::Infallible, mem::transmute};
     use offline_core::{
         game_image::{fingerprint_images, Overlay},
-        game_save::{self, FOOTER_SIZE},
         moved,
         native_blob::NativeBlobView,
         sections::{Identity, HELD},
@@ -234,10 +230,11 @@ mod arm {
                 .map_err(|e| files_error(e, 16))
         }
         /// Resolves the save in progress from what it moved, toward the
-        /// snapshot that cannot lose a Pokémon. `seen` says that its game
-        /// is there and has saved since. Without the game only a save that
-        /// moved Pokémon one way, or none, is resolved; one that moved them
-        /// both ways waits for its game, and nothing is written.
+        /// snapshot that cannot lose a Pokémon. `seen` says that a game of
+        /// its title is there, with a save that is neither image. Without
+        /// one only a save that moved Pokémon one way, or none, is
+        /// resolved; one that moved them both ways waits for its game, and
+        /// nothing is written.
         fn settle_by_moves(
             &mut self,
             staging: &mut [u8],
@@ -370,18 +367,12 @@ mod arm {
                             finish_secure(game, evidence.secure)?;
                             self.reconcile(&pending, &evidence)?
                         }
-                        // Another copy of the title says nothing about this
-                        // save: as for a game that is not there.
-                        Match::Other(Owner::Different) => self.settle_by_moves(staging, false)?,
-                        // The same copy, saved by the game since the cut (or
-                        // a save in progress that names no trainer). The
-                        // game no longer shows whether Bank's write went
-                        // through.
-                        Match::Other(Owner::Same | Owner::Unrecorded) => {
-                            // The game wrote this save itself.
-                            require_secure(game, evidence.secure.current)?;
-                            self.settle_by_moves(staging, true)?
-                        }
+                        // A save of the title that is neither image: the
+                        // game was played on, a new game was started on it,
+                        // or it is another copy. It no longer shows whether
+                        // Bank's write went through. Its secure value is not
+                        // this save's to judge; a load of that game does.
+                        Match::Other => self.settle_by_moves(staging, true)?,
                     };
                     self.settled(staging, Some(evidence), decision)
                 }
@@ -478,15 +469,9 @@ mod arm {
                     if images.before != baseline.fingerprint {
                         return Err(WorkerError::operation(11, 0));
                     }
-                    // Bound to the trainer of this save, so that a recovery
-                    // can tell this copy of the game from another.
-                    let identity = transaction::identity(
-                        baseline.title,
-                        images.before,
-                        images.after,
-                        baseline.trainer.as_ref(),
-                    )
-                    .map_err(|_| WorkerError::operation(12, 0))?;
+                    let identity =
+                        transaction::identity(baseline.title, images.before, images.after)
+                            .map_err(|_| WorkerError::operation(12, 0))?;
                     // Side files first, then the Bank journal.
                     self.files
                         .prepare(staging, rewards, identity, images.before, images.after)
@@ -506,13 +491,8 @@ mod arm {
     }
     /// Which image of the save in progress the game's save is, if either.
     fn matched(pending: &PendingTransfer, evidence: &GameEvidence) -> Result<Match, WorkerError> {
-        transaction::match_pending_image(
-            pending,
-            evidence.title,
-            evidence.fingerprint,
-            evidence.trainer.as_ref(),
-        )
-        .map_err(|_| WorkerError::operation(11, 0))
+        transaction::match_pending_image(pending, evidence.title, evidence.fingerprint)
+            .map_err(|_| WorkerError::operation(11, 0))
     }
     fn fs_error(error: fs::Error, fault: u32) -> WorkerError {
         WorkerError::operation(fault, error.diagnostic())
@@ -577,37 +557,12 @@ mod arm {
             offline_core::game_image::ImageError::Read(e) => fs_error(e, 10),
             _ => WorkerError::operation(10, 0),
         })?;
-        let trainer = trainer(game, &mut main, length)?;
         main.close().map_err(|e| fs_error(e, 10))?;
         Ok(GameEvidence {
             title: game.kind.title_id(),
             fingerprint: images.before,
             secure,
-            trainer,
         })
-    }
-    /// The trainer of the save, from its trainer block. `None` when the
-    /// block is not where it is known to be for this title.
-    fn trainer(
-        game: GameIoDescriptor,
-        main: &mut GameMainReader<'_>,
-        length: u64,
-    ) -> Result<Option<Trainer>, WorkerError> {
-        let Some(footer_at) = length.checked_sub(FOOTER_SIZE as u64) else {
-            return Ok(None);
-        };
-        let mut footer = [0u8; FOOTER_SIZE];
-        main.read(footer_at, &mut footer)
-            .map_err(|e| fs_error(e, 10))?;
-        let generation = game.kind.generation();
-        let Some(at) = game_save::trainer_block(&footer, length, generation) else {
-            return Ok(None);
-        };
-        // The longer of the two trainer blocks.
-        let mut block = [0u8; 0x170];
-        let block = &mut block[..generation.trainer_len()];
-        main.read(at, block).map_err(|e| fs_error(e, 10))?;
-        Ok(game_save::trainer(block, generation, game.kind.version()))
     }
     fn platform(game: GameIoDescriptor) -> Result<PlatformSecureValue, WorkerError> {
         type Get =

@@ -46,27 +46,6 @@ impl GameKind {
         };
         0x0004_0000_0000_0000 | (unique << 8)
     }
-    /// The version number the game's own save holds for it.
-    pub const fn version(self) -> u8 {
-        match self {
-            Self::X => 24,
-            Self::Y => 25,
-            Self::AlphaSapphire => 26,
-            Self::OmegaRuby => 27,
-            Self::Sun => 30,
-            Self::Moon => 31,
-            Self::UltraSun => 32,
-            Self::UltraMoon => 33,
-        }
-    }
-    pub const fn generation(self) -> offline_core::game_save::Generation {
-        match self {
-            Self::X | Self::Y | Self::OmegaRuby | Self::AlphaSapphire => {
-                offline_core::game_save::Generation::Six
-            }
-            _ => offline_core::game_save::Generation::Seven,
-        }
-    }
     /// Native constructor's data-block count, excluding the final metadata block.
     pub const fn data_block_count(self) -> u32 {
         match self {

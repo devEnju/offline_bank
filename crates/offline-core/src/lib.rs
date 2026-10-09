@@ -45,11 +45,11 @@
 //! mutate the game ONLY after that call succeeds. Then read the game back and
 //! call `reconcile`. A matching before state aborts to the old snapshot; a
 //! matching after state commits the new one. Missing, different, or modified
-//! saves block recovery here; for a modified save of the same trainer, and
-//! for a transfer that moved Pokémon one way only whatever game is there,
-//! the runtime chooses the snapshot itself, from what the transfer moved
-//! (`moved`), and names that image to `reconcile`. Startup must reconcile
-//! prepared transactions before allowing any Bank or game edits.
+//! saves block recovery here; for a modified save, and for a missing one if
+//! the transfer moved Pokémon one way only, the runtime chooses the snapshot
+//! itself, from what the transfer moved (`moved`), and names that image to
+//! `reconcile`. Startup must reconcile prepared transactions before allowing
+//! any Bank or game edits.
 //!
 //! The adapter must implement exact reads/writes and durable `sync`. After ANY
 //! I/O error, stop the operation, reopen storage and inspect it before continuing.
@@ -65,7 +65,6 @@
 //! all local records also needs an external monotonic reference to be detectable.
 
 pub mod game_image;
-pub mod game_save;
 pub mod moved;
 pub mod native_blob;
 pub mod rewards;

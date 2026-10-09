@@ -4,7 +4,8 @@
 //!
 //! A recovery decides by the game's save: unchanged, the old Bank snapshot
 //! stays; exactly the save Bank prepared, the new one is committed. A game
-//! that was played and saved in between shows neither. Bank still holds both
+//! that was played and saved in between shows neither, and so does a new
+//! game started on it or another copy of the title. Bank still holds both
 //! snapshots, though, and for most sessions one of the two answers cannot
 //! lose a Pokémon whichever way the game's save went:
 //!
@@ -59,13 +60,14 @@ pub fn moved(before: &mut [Identity], after: &mut [Identity]) -> Moved {
     out
 }
 
-/// The snapshot Bank goes on with when the game's save cannot say.
+/// The snapshot Bank goes on with when a game of the title is there and its
+/// save cannot say.
 ///
 /// One-way sessions take the side that cannot lose a Pokémon. A session
 /// that moved none takes the old snapshot, which cannot lose the Miles of a
-/// claim. A session that moved Pokémon both ways commits: a player who found
-/// the game as expected and played on is the likelier case, and neither
-/// answer is free of risk there.
+/// claim. A session that moved Pokémon both ways commits: whoever went on
+/// with that game, or began a new one on it, is taken to have found it as
+/// expected, and neither answer is free of risk there.
 pub fn choose(moved: Moved) -> RecoveryDecision {
     if moved.deposited != 0 {
         RecoveryDecision::CommitAfter
@@ -74,10 +76,10 @@ pub fn choose(moved: Moved) -> RecoveryDecision {
     }
 }
 
-/// The snapshot Bank goes on with when the game is not there to be asked,
-/// or another copy of it is. Its save may be either image or a later one,
-/// so only the answer that cannot lose is taken: `None` for a session that
-/// moved Pokémon both ways, which waits for its game.
+/// The snapshot Bank goes on with when no game of the title is there to be
+/// asked. Its save may be either image or a later one, so only the answer
+/// that cannot lose is taken: `None` for a session that moved Pokémon both
+/// ways, which waits for its game.
 pub fn choose_unseen(moved: Moved) -> Option<RecoveryDecision> {
     if moved.deposited != 0 && moved.withdrawn != 0 {
         None
