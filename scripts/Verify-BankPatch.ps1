@@ -6,8 +6,11 @@ build inputs and writes verification.json into the package folder.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{16}$')][string]$Package,
-    [string]$ElfPath = 'build/intermediate/bank/bank-payload.elf'
+    [ValidatePattern('^[0-9a-f]{16}$')][string]$Package,
+    [string]$ElfPath = 'build/intermediate/bank/bank-payload.elf',
+    # A console test build (docs/building.md): its folder, relative to the
+    # repository, in place of a package name. Give its own ELF as well.
+    [string]$TestPackagePath = ''
 )
 Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
 $ErrorActionPreference = 'Stop'
@@ -28,7 +31,14 @@ function CString([byte[]]$bytes,[int]$offset) {
     Assert-Check ($end -ge $offset) 'Unterminated ELF string'
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
-$packagePath=Join-Path 'build/bank' $Package
+if ($TestPackagePath) {
+    $packagePath=$TestPackagePath
+    $packageName=Split-Path -Leaf $TestPackagePath
+} else {
+    Assert-Check ([bool]$Package) 'Give -Package or -TestPackagePath'
+    $packagePath=Join-Path 'build/bank' $Package
+    $packageName=$Package
+}
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
     $manifest=Get-Content -LiteralPath (Join-Path $packagePath 'manifest.json') -Raw | ConvertFrom-Json
@@ -45,7 +55,7 @@ try {
     Assert-Check ($original.Length -eq 0x2ac000 -and $originalHeader.Length -eq 0x800) 'Original input lengths'
     Assert-Check ($manifest.source_code_sha256 -eq $codeHash -and $manifest.source_exheader_sha256 -eq $headerHash) 'Manifest input hashes'
     Assert-Check ($manifest.source_elf_sha256 -eq $elfHash) 'Manifest ELF hash'
-    Assert-Check ($Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank)) 'Package is not the one of the current payload and profile'
+    Assert-Check ($TestPackagePath -or $Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank)) 'Package is not the one of the current payload and profile'
     Assert-Check ($manifest.title_id -eq '00040000000c9b00' -and $manifest.tmd_version -eq 6272 -and $manifest.remaster_version -eq 6) 'Manifest version'
     foreach($name in @('code.ips','exheader.bin')) {
         $bytes=if($name -eq 'code.ips'){$ips}else{$header}
@@ -261,7 +271,7 @@ try {
 
     Assert-Check ($branches.Count+$pointers.Count+1 -eq 25 -and $manifest.native_edits -eq 25 -and $manifest.main_menu_edits -eq 0) 'Native region count'
     $report=[ordered]@{
-        status='passed'; package=$Package; source_elf_sha256=$elfHash
+        status='passed'; package=$packageName; source_elf_sha256=$elfHash
         ips_sha256=(Hash $ips); paired_exheader_sha256=(Hash $header)
         ips_records=$records; native_regions=25; runtime_exports=$exportNames.Count
         system_call_wrappers=$wrapperNames.Count
@@ -274,7 +284,7 @@ try {
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8
     $report | ConvertTo-Json -Depth 8
 } catch {
-    [ordered]@{status='failed';package=$Package;reason=$_.Exception.Message;line=$_.InvocationInfo.ScriptLineNumber} |
+    [ordered]@{status='failed';package=$packageName;reason=$_.Exception.Message;line=$_.InvocationInfo.ScriptLineNumber} |
         ConvertTo-Json | Set-Content -LiteralPath $reportPath -Encoding utf8
     throw
 }

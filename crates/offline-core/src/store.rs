@@ -329,6 +329,60 @@ impl<S: Storage> BankStore<S> {
         Ok(Reconciled { head, decision })
     }
 
+    /// Test builds only: writes the current clean journal record again, with
+    /// the next sequence number. Every state on the way is a valid Bank, so
+    /// a power cut during it must leave the Bank as it was.
+    #[cfg(feature = "tear-test")]
+    pub fn republish(&mut self, head: &Head) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        if !matches!(head.phase(), Phase::Clean(_)) {
+            return Err(StoreError::PendingRecovery);
+        }
+        let sequence = head
+            .metadata
+            .sequence
+            .checked_add(1)
+            .ok_or(StoreError::CounterExhausted)?;
+        self.publish(
+            head.preferred,
+            Metadata {
+                sequence,
+                ..head.metadata
+            },
+        )
+    }
+
+    /// Test builds only: writes `payload` into the snapshot slot that is not
+    /// current, as the first half of a save does, `passes` times, and each
+    /// time with every byte inverted from the time before so that no two
+    /// writes are alike. An even number of passes leaves `payload` as it
+    /// was. No journal record names what is written; a power cut during it
+    /// must leave the Bank as it was.
+    #[cfg(feature = "tear-test")]
+    pub fn rewrite_spare(
+        &mut self,
+        head: &Head,
+        payload: &mut [u8],
+        passes: u32,
+    ) -> Result<(), StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        let Phase::Clean(current) = head.phase() else {
+            return Err(StoreError::PendingRecovery);
+        };
+        let generation = current
+            .header
+            .generation
+            .checked_add(1)
+            .ok_or(StoreError::CounterExhausted)?;
+        for _ in 0..passes {
+            for byte in payload.iter_mut() {
+                *byte = !*byte;
+            }
+            self.write_snapshot(current.slot.other(), generation, payload)?;
+        }
+        Ok(())
+    }
+
     /// Reads the visible payload only when there is no unresolved transaction.
     /// The full payload is checksummed again after reading into the caller's buffer.
     pub fn read_current(

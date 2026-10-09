@@ -5,4 +5,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Store operations that only the console test builds use (docs/building.md).
+tear-test = []
+
 [dependencies]

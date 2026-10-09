@@ -98,6 +98,15 @@ pub enum Error<E> {
 }
 type Outcome<T, F> = Result<T, Error<<<F as Files>::Storage as Storage>::Error>>;
 
+/// Test builds: how often a Save and Quit writes the journal record again
+/// before it goes on.
+#[cfg(feature = "test-tear-record")]
+const TEAR_RECORD_PASSES: u32 = 150;
+/// Test builds: how often a Save and Quit writes the spare snapshot slot
+/// before it goes on. Even, so that the payload ends as it began.
+#[cfg(feature = "test-tear-boxes")]
+const TEAR_BOXES_PASSES: u32 = 30;
+
 /// What a load found beside the Bank regions now in the staging buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loaded {
@@ -390,7 +399,18 @@ impl<F: Files> BankFiles<F> {
         after: Fingerprint,
     ) -> Outcome<(), F> {
         let current = self.bank()?.tag().map_err(Error::Bank)?;
+        // Test builds: keep the record being written for a while, so that a
+        // real power cut lands inside one of its writes.
+        #[cfg(feature = "test-tear-record")]
+        self.bank()?
+            .tear_record(TEAR_RECORD_PASSES)
+            .map_err(Error::Bank)?;
         let next = self.write_sides(staging, Some(current), current.generation + 1, stored)?;
+        // Test builds: the same for the spare snapshot slot.
+        #[cfg(feature = "test-tear-boxes")]
+        self.bank()?
+            .tear_boxes(&mut staging[..BANK_SIZE], TEAR_BOXES_PASSES)
+            .map_err(Error::Bank)?;
         let prepared = self
             .bank()?
             .prepare_bytes(&staging[..BANK_SIZE], game, before, after)

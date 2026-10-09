@@ -51,6 +51,32 @@ cargo +stable fmt --all -- --check
 
 The tests run on the PC and cover the storage format, a power cut injected at every write of a save, Miles rules, routing, deliveries into the transport box, the SD-save rules, and the builder.
 
+### Test builds for an interrupted save
+
+Recovery after a power cut cannot be triggered on demand on a console, so four extra Bank packages exist for rehearsing it. They are built behind cargo features that are off by default and are never part of a release.
+
+```powershell
+./scripts/Build-BankTestPatches.ps1
+```
+
+This builds and verifies each into `build/bank-test/<name>/`:
+
+| Name | What Save and Quit does | The card afterwards |
+| --- | --- | --- |
+| `stop-before-game` | Stops after the Bank has marked its save as in progress, before the game is written. Shows error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
+| `stop-after-game` | Stops after the game is written, before the mark is cleared. Shows error `00007E57 00000002`. | Mark set, the game has its new save. |
+| `tear-record` | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
+| `tear-boxes` | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+
+The two stop packages test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)). The two tear packages give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. Back up Bank's extdata and the game saves first, and put the normal package back afterwards.
+
+The PC tests run the same loops under a simulated cut at every write:
+
+```powershell
+cargo +stable test -p bank-payload --features test-tear-record --release --locked --offline
+cargo +stable test -p bank-payload --features test-tear-boxes --release --locked --offline
+```
+
 ## Release
 
 A release is one zip file that holds both patches in the folder layout of the SD card, so that it can be extracted onto the card as it is:

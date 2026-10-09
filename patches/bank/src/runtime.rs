@@ -57,6 +57,9 @@ pub enum Fault {
     TransferRolledBack = 17,
     RewardState = 18,
     RewardClaim = 19,
+    /// Test builds: a Save and Quit stopped on purpose.
+    #[cfg(feature = "test-build")]
+    TestStop = crate::storage_worker::TEST_STOP,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -385,6 +388,8 @@ impl Runtime {
             15 => Fault::JournalPrepare,
             16 => Fault::JournalRecovery,
             17 => Fault::TransferRolledBack,
+            #[cfg(feature = "test-build")]
+            crate::storage_worker::TEST_STOP => Fault::TestStop,
             _ => Fault::StorageInvalid,
         }
     }

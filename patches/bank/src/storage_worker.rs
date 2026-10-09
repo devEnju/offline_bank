@@ -78,6 +78,13 @@ pub enum Reply {
     Closed,
 }
 
+/// Test builds: the fault of a Save and Quit stopped on purpose. Its second
+/// number is the stop point: 1 after the journal is prepared and before the
+/// game is written, 2 after the game is written and before the journal is
+/// resolved. The files are left as a power cut at that point leaves them.
+#[cfg(feature = "test-build")]
+pub const TEST_STOP: u32 = 0x7e57;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerErrorKind {
     Operation,
@@ -280,6 +287,8 @@ mod arm {
                 loaded: Some(loaded),
             })
         }
+        // A test build's stop point leaves the rest of its job unreached.
+        #[cfg_attr(feature = "test-build", allow(unreachable_code, unused_variables))]
         fn execute(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             match job {
                 Job::Open { session } => {
@@ -380,6 +389,8 @@ mod arm {
                     let Phase::Prepared(pending) = self.phase()? else {
                         return Err(WorkerError::operation(16, 0));
                     };
+                    #[cfg(feature = "test-stop-after-game")]
+                    return Err(WorkerError::operation(TEST_STOP, 2));
                     // The save is resolved as soon as the game is known to
                     // hold the image this worker prepared, so that a cut
                     // after the game's write rarely finds it in progress.
@@ -482,6 +493,8 @@ mod arm {
                         return Err(WorkerError::operation(11, 0));
                     }
                     require_secure(game, unchanged.secure.current)?;
+                    #[cfg(feature = "test-stop-before-game")]
+                    return Err(WorkerError::operation(TEST_STOP, 1));
                     self.written = Some(prepared.secure);
                     Ok(Reply::ReadyToWrite)
                 }

@@ -151,6 +151,25 @@ impl<S: Storage> BankSession<S> {
         }
     }
 
+    /// Test builds only: see `BankStore::republish`.
+    #[cfg(feature = "test-tear-record")]
+    pub fn tear_record(&mut self, passes: u32) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        for _ in 0..passes {
+            let result = self.store.republish(&self.head);
+            self.head = self.storage_result(result)?;
+        }
+        Ok(())
+    }
+
+    /// Test builds only: see `BankStore::rewrite_spare`.
+    #[cfg(feature = "test-tear-boxes")]
+    pub fn tear_boxes(&mut self, payload: &mut [u8], passes: u32) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        let result = self.store.rewrite_spare(&self.head, payload, passes);
+        self.storage_result(result)
+    }
+
     pub fn phase(&self) -> Result<Phase, Error<S::Error>> {
         self.ensure_usable()?;
         Ok(self.head.phase())
