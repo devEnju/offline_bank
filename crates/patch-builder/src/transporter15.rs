@@ -58,15 +58,14 @@ pub const ENTRY_CART_READ: u32 = PAYLOAD_ADDRESS + 20;
 pub const ENTRY_CART_WRITE: u32 = PAYLOAD_ADDRESS + 24;
 pub const ENTRY_LIST_NEXT: u32 = PAYLOAD_ADDRESS + 28;
 pub const ENTRY_SELECT: u32 = PAYLOAD_ADDRESS + 32;
-pub const ENTRY_LIST_LIMIT: u32 = PAYLOAD_ADDRESS + 36;
+pub const ENTRY_VC_SCAN: u32 = PAYLOAD_ADDRESS + 36;
 pub const ENTRY_LANGUAGE_CHOSEN: u32 = PAYLOAD_ADDRESS + 40;
 pub const ENTRY_LANGUAGE_ORDER: u32 = PAYLOAD_ADDRESS + 44;
 pub const ENTRY_LANGUAGE_BUTTONS: u32 = PAYLOAD_ADDRESS + 48;
-pub const ENTRY_LIST_KEEP: u32 = PAYLOAD_ADDRESS + 52;
-pub const ENTRY_LANGUAGE_BACK: u32 = PAYLOAD_ADDRESS + 56;
-pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 60;
-pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 64;
-pub const ENTRY_COUNT: u32 = 17;
+pub const ENTRY_LANGUAGE_BACK: u32 = PAYLOAD_ADDRESS + 52;
+pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 56;
+pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 60;
+pub const ENTRY_COUNT: u32 = 16;
 
 enum Word {
     Raw(u32),
@@ -120,10 +119,6 @@ const EDITS: &[(u32, u32, Word)] = &[
     // Game list (002445A4), a DS entry was confirmed (was: mov r0, #0). The
     // entry notes which one and returns 0.
     (0x0024_4908, 0xe3a0_0000, BranchLink(ENTRY_SELECT)),
-    // Game list (00244D2C), the loop that appends the Virtual Console titles
-    // (was: ldrh r1, [r1, #0x58], its bound). The entry ends the loop when
-    // the list holds its 40 entries.
-    (0x0024_508c, 0xe1d1_15b8, BranchLink(ENTRY_LIST_LIMIT)),
     // --- The language screen chooses which language's games are listed. ---
     // The screen ending (0025C5BC): no switch of the screens' language (was:
     // bl 0022AF28); the entry notes the choice. The record of the language
@@ -156,9 +151,13 @@ const EDITS: &[(u32, u32, Word)] = &[
     // Layout::Build (was: mov r1, r0): the check does the same and lets the
     // payload give the language screen's layout its Back button first.
     (0x0013_aee4, 0xe1a0_1000, BranchLink(LAYOUT_CHECK)),
-    // Game list (00244D2C), appending a Virtual Console title (was:
-    // add r1, r1, #1): the entry counts it only in the listed language.
-    (0x0024_5080, 0xe281_1001, BranchLink(ENTRY_LIST_KEEP)),
+    // Scanner of the Virtual Console titles (0024120C), asking whether a
+    // row's title is installed (was: bl 002512A8): the entry answers no for
+    // a row in another language than the listed one. The scanner files the
+    // trainer names under the number of each title it finds, so the titles
+    // are left out here and not when the list is built. The list holds 40
+    // entries as the original built it; one language gives at most 11.
+    (0x0024_12d4, 0xeb00_3ff3, BranchLink(ENTRY_VC_SCAN)),
     // --- Bank check: r0 = task; the entry answers the next sub-state. ---
     (0x0024_8d3c, 0xe594_003c, Raw(0xe1a0_0004)),
     (0x0024_8d40, 0xe594_1028, BranchLink(ENTRY_CHECK)),
@@ -673,11 +672,10 @@ mod tests {
             (0x0024_397c, ENTRY_CART_WRITE),
             (0x0024_4f10, ENTRY_LIST_NEXT),
             (0x0024_4908, ENTRY_SELECT),
-            (0x0024_508c, ENTRY_LIST_LIMIT),
             (0x0025_c5fc, ENTRY_LANGUAGE_CHOSEN),
             (0x0022_bee0, ENTRY_LANGUAGE_ORDER),
             (0x0022_b5b0, ENTRY_LANGUAGE_BUTTONS),
-            (0x0024_5080, ENTRY_LIST_KEEP),
+            (0x0024_12d4, ENTRY_VC_SCAN),
             (0x0013_aee4, LAYOUT_CHECK),
             (0x0024_ba44, ENTRY_TITLE_BEGIN),
             (0x0024_ba74, ENTRY_TITLE_END),
@@ -697,6 +695,8 @@ mod tests {
             (0x0025_c618, 0xebff_3e93, 0x0022_c06c),
             (0x0022_bee0, 0xebff_ff49, 0x0022_bc0c),
             (0x0022_b5b0, 0xebfd_da8a, 0x001a_1fe0),
+            // The scanner's "is this title installed?".
+            (0x0024_12d4, 0xeb00_3ff3, 0x0025_12a8),
         ] {
             assert_eq!(branch_target(address, original, true), Some(target));
         }

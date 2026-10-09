@@ -19,7 +19,7 @@ $dataSize = 0x3D3FC
 $bssSize = 0x3A4A8
 $originalAppInit = 0x00104644
 $startupCall = 0x00103D9C
-$entryCount = 17
+$entryCount = 16
 
 function Get-Sha256([byte[]]$bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -50,7 +50,7 @@ $directory = Join-Path $projectRoot ('build/transporter/' + $Package)
 
 # Whole-word edits: address -> expected new word, or a branch form checked
 # separately. Plain hashtable: an ordered dictionary would treat these integer
-# keys as positions. Entry words are the first seventeen words of the payload.
+# keys as positions. Entry words are the first sixteen words of the payload.
 $allowed = @{
     0x00103D9C = 'bl:0028D1AC'
     0x00242D10 = 'beq:00364008'; 0x00242D28 = 0xE3A0000B; 0x00242D2C = 'b:00242C4C'
@@ -62,13 +62,12 @@ $allowed = @{
     0x00243528 = 'bl:00364010'; 0x002439A8 = 'bl:00364014'
     0x002437F4 = 'bl:00364018'; 0x0024397C = 'bl:00364018'
     0x00244F10 = 'bl:0036401C'; 0x00244908 = 'bl:00364020'
-    0x0024508C = 'bl:00364024'
     0x0025C5FC = 'bl:00364028'; 0x0025C618 = 0xE320F000
     0x0022BEE0 = 'bl:0036402C'; 0x0022B5B0 = 'bl:00364030'
     0x0022B6E0 = 0xE3500007; 0x0022B6E4 = 0x03A01003
-    0x00245080 = 'bl:00364034'
-    0x0022B3B8 = 'b:00364038'; 0x0013AEE4 = 'bl:0028D1DC'
-    0x0024BA44 = 'bl:0036403C'; 0x0024BA74 = 'bl:00364040'
+    0x002412D4 = 'bl:00364024'
+    0x0022B3B8 = 'b:00364034'; 0x0013AEE4 = 'bl:0028D1DC'
+    0x0024BA44 = 'bl:00364038'; 0x0024BA74 = 'bl:0036403C'
     0x00248D3C = 0xE1A00004; 0x00248D40 = 'bl:00364000'; 0x00248D44 = 'b:00248EC8'
     0x0024A150 = 0xE1A00004; 0x0024A154 = 'bl:00364004'; 0x0024A158 = 0xE3500001
     0x0024A15C = 'beq:0024A274'; 0x0024A160 = 0xE3500002; 0x0024A164 = 'beq:0024A5DC'
@@ -214,7 +213,7 @@ $report = [ordered]@{
         'start-up hook replaces only zero bytes and calls the original application init first',
         'original read-only data and data unchanged',
         'former zero-initialised data written as zero; every added byte written',
-        'payload starts with seventeen distinct branches into its own code pages',
+        'payload starts with sixteen distinct branches into its own code pages',
         'only exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image',
         'manifest hashes match'
     )

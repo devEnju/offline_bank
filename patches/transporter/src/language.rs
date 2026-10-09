@@ -22,10 +22,21 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 pub const ENGLISH: u8 = 2;
-/// First list kind of a Virtual Console title; kinds 1..4 are the DS games.
-pub const FIRST_VC_KIND: u32 = 5;
-/// Rows of the original's Virtual Console table (`002AFE0C`).
-pub const VC_ROWS: u32 = 39;
+/// The language id of each row of the original's Virtual Console table
+/// (`002AFE0C`, 39 rows of `{ version, language, title }`; the builder only
+/// accepts the executable these were read from). Rows are in the order
+/// Red, Green or Blue, Japanese Blue, Yellow, Gold, Silver, Crystal.
+pub const VC_LANGUAGES: [u8; 39] = [
+    1, 2, 3, 4, 5, 7, // Red
+    1, 2, 3, 4, 5, 7, // Green in Japanese, Blue elsewhere
+    1, // Blue in Japanese
+    1, 2, 3, 4, 5, 7, // Yellow
+    1, 2, 3, 4, 5, 7, 8, // Gold
+    1, 2, 3, 4, 5, 7, 8, // Silver
+    1, 2, 3, 4, 5, 7, // Crystal
+];
+/// Entries the original's game list and its table of trainer names hold.
+pub const LIST_CAPACITY: usize = 40;
 
 /// Entries of the language screen's list. The original numbers its buttons,
 /// and what it calls the picked language, by these list indices.
@@ -171,10 +182,6 @@ mod hooks {
 
     /// Points at the byte holding the language of the screens (`001E356C`).
     const UI_LANGUAGE: *const *const u8 = 0x0032_938c as *const *const u8;
-    /// 39 rows of `{ version: u32, language: u32, title: u32 }`; row `i` is
-    /// list kind `i + 5` (`00241448`).
-    const VC_TABLE: *const u32 = 0x002a_fe0c as *const u32;
-
     /// `(language id)`: the language in which archives with one variant per
     /// language are read. The original calls it once per change of the
     /// screens' language, with that language (`00104EBC`).
@@ -236,15 +243,12 @@ mod hooks {
         choose(id as u8);
     }
 
-    /// Whether the list entry of `kind`, just appended by the loop over the
-    /// Virtual Console titles (`00245080`), stays.
+    /// Whether the scanner of the Virtual Console titles (`0024120C`) looks
+    /// at a row of its table in `language` at all (`002412D4`). It numbers
+    /// the titles it finds and files their trainer names under that number,
+    /// so a title that is not listed must not be found.
     #[no_mangle]
-    pub extern "aapcs" fn transporter_vc_listed(kind: u32) -> u32 {
-        let row = kind.wrapping_sub(FIRST_VC_KIND);
-        if row >= VC_ROWS {
-            return 1;
-        }
-        let language = unsafe { VC_TABLE.add(row as usize * 3 + 1).read() };
+    pub extern "aapcs" fn transporter_vc_listed(language: u32) -> u32 {
         u32::from(vc_listed(filter(), language))
     }
 
@@ -428,6 +432,30 @@ mod tests {
         assert_eq!(title(3, 5), 3);
         assert_eq!(title(1, 9), 1);
         assert_eq!(title(5, 5), 5);
+    }
+
+    #[test]
+    fn one_language_never_fills_the_game_list() {
+        // One entry per DS game (the cartridge stands in for the save of
+        // its own game, `Saves::scan`) and the titles of one language.
+        let most = (0..=u8::MAX)
+            .map(|language| {
+                VC_LANGUAGES
+                    .iter()
+                    .filter(|&&row| vc_listed(language, u32::from(row)))
+                    .count()
+            })
+            .max()
+            .unwrap();
+        assert_eq!(most, 7);
+        // Nothing in the patch stops the list at its capacity, as nothing
+        // in the original does; this is what keeps it below.
+        assert_eq!(crate::sdsave::GAMES.len() + most, 11);
+        assert!(crate::sdsave::GAMES.len() + most <= LIST_CAPACITY);
+        // Every row is in a language whose games can be listed.
+        for row in VC_LANGUAGES {
+            assert_eq!(normalise(row), row);
+        }
     }
 
     #[test]
