@@ -189,6 +189,7 @@ File names in 3DS extdata are limited to 16 characters including the leading sla
 - A new snapshot goes to the inactive slot and is synced and read back; metadata is written to one replica, synced, then the other.
 - A save: verify the game's before-image, `prepare_transfer`, write the game, read it back, `reconcile`. A before-image keeps the old snapshot, an after-image commits the new one, anything else blocks.
 - A load checks the journal and the 32-byte header, then reads the payload once and checks its CRC on that pass.
+- A new Bank writes the side files first, then creates `/bank.bin`, zero-fills it, writes the first snapshot, and publishes the first journal record last. A start that finds `/bank.bin` without any journal record (both records zero, or the first-written one torn beside a zero one) and with no snapshot other than a first one treats it as "no Bank yet" and finishes the creation in place (`BankStore::reinitialize`). No file in which a Bank was ever current can be in that state: it has a journal record, and after its first save a second snapshot. A delivery Transporter made in between is kept and shown.
 
 ### Side files
 

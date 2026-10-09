@@ -43,6 +43,10 @@ pub enum StoreError<E> {
     Format(FormatError),
     /// Only returned for a completely zero-filled, correctly sized container.
     Uninitialized,
+    /// An initialization was begun and cut before its journal record became
+    /// durable: no journal record exists, and no snapshot other than a first
+    /// one. No Bank was ever current in this container.
+    NeverPublished,
     AlreadyContainsData,
     NoValidMetadata,
     ConflictingMetadata,
@@ -128,9 +132,16 @@ impl<S: Storage> BankStore<S> {
             (Record::Empty, Record::Empty) => {
                 return Err(if self.zero_filled()? {
                     StoreError::Uninitialized
+                } else if self.only_a_first_snapshot()? {
+                    StoreError::NeverPublished
                 } else {
                     StoreError::NoValidMetadata
                 });
+            }
+            // Initialization writes replica A first: its torn record beside
+            // an untouched B is the same unfinished initialization.
+            (Record::Damaged, Record::Empty) if self.only_a_first_snapshot()? => {
+                return Err(StoreError::NeverPublished);
             }
             _ => return Err(StoreError::NoValidMetadata),
         };
@@ -156,7 +167,8 @@ impl<S: Storage> BankStore<S> {
 
     /// Explicitly initializes a newly created, completely zero-filled file.
     /// The caller supplies the native Bank representation of an empty payload.
-    /// Interrupted initialization is reported for explicit repair, never reset.
+    /// An interrupted initialization is reported as `NeverPublished` and is
+    /// finished by `reinitialize`, never here.
     pub fn initialize_new(&mut self, payload: &[u8]) -> Result<Head, StoreError<S::Error>> {
         if !self.zero_filled()? {
             return Err(StoreError::AlreadyContainsData);
@@ -170,6 +182,34 @@ impl<S: Storage> BankStore<S> {
                 phase: Phase::Clean(current),
             },
         )
+    }
+
+    /// Finishes an initialization that was cut before its journal record
+    /// became durable (`NeverPublished`), or initializes a zero-filled
+    /// container. Anything else is refused: a container that ever held a
+    /// current Bank has a journal record or a later snapshot, and neither
+    /// state is touched here.
+    pub fn reinitialize(&mut self, payload: &[u8]) -> Result<Head, StoreError<S::Error>> {
+        match self.select(false) {
+            Err(StoreError::Uninitialized) => return self.initialize_new(payload),
+            Err(StoreError::NeverPublished) => {}
+            Ok(_) => return Err(StoreError::AlreadyContainsData),
+            Err(error) => return Err(error),
+        }
+        // From the start, so the journal records are the first to be zero
+        // again: a cut here leaves the same state, to be finished next time.
+        let zeros = [0; 512];
+        let length = self.layout.file_len();
+        let mut at = 0;
+        while at < length {
+            let count = (length - at).min(zeros.len() as u64) as usize;
+            self.storage
+                .write(at, &zeros[..count])
+                .map_err(StoreError::Io)?;
+            at += count as u64;
+        }
+        self.storage.sync().map_err(StoreError::Io)?;
+        self.initialize_new(payload)
     }
 
     /// Commits changes involving ONLY local Bank state, such as box names.
@@ -445,6 +485,23 @@ impl<S: Storage> BankStore<S> {
             metadata,
             preferred: Slot::A,
         })
+    }
+
+    /// True when the snapshot slots hold nothing but what an initialization
+    /// writes: at most a first snapshot (generation 1) in slot A, and no
+    /// valid snapshot in slot B, which only a later save writes.
+    fn only_a_first_snapshot(&mut self) -> Result<bool, StoreError<S::Error>> {
+        let mut first = true;
+        for slot in [Slot::A, Slot::B] {
+            let mut header = [0; SNAPSHOT_HEADER_SIZE];
+            self.storage
+                .read(self.layout.snapshot_offset(slot), &mut header)
+                .map_err(StoreError::Io)?;
+            if let Ok(header) = SnapshotHeader::decode(&header, self.layout.capacity) {
+                first &= slot == Slot::A && header.generation == 1;
+            }
+        }
+        Ok(first)
     }
 
     fn zero_filled(&mut self) -> Result<bool, StoreError<S::Error>> {

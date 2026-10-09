@@ -34,7 +34,9 @@ pub struct BankSession<S: Storage> {
 
 impl<S: Storage> BankSession<S> {
     /// Opens only existing, valid storage. Missing/zero/corrupt data never
-    /// triggers initialization here. Prepared state is retained for recovery.
+    /// triggers initialization here; `never_held_a_bank` tells the caller
+    /// when the file is an unfinished initialization. Prepared state is
+    /// retained for recovery.
     /// Only the journal and snapshot headers are read; `read_bank` verifies
     /// the payload on its single pass.
     pub fn open_existing(storage: S) -> Result<Self, Error<S::Error>> {
@@ -60,6 +62,30 @@ impl<S: Storage> BankSession<S> {
             poisoned: false,
             loaded: true,
         })
+    }
+
+    /// Finishes the initialization of an existing file that never held a
+    /// Bank: zero-filled, or cut before its first journal record. Refused
+    /// by the store for any file that has a journal record or a later
+    /// snapshot.
+    pub fn reinitialize_bytes(storage: S, payload: &[u8]) -> Result<Self, Error<S::Error>> {
+        sections::validate_bank(payload).map_err(Error::Payload)?;
+        let mut store = BankStore::new(storage, BANK_LAYOUT);
+        let head = store.reinitialize(payload).map_err(Error::Storage)?;
+        Ok(Self {
+            store,
+            head,
+            poisoned: false,
+            loaded: true,
+        })
+    }
+
+    /// True for the error of a file in which no Bank was ever current.
+    pub fn never_held_a_bank(error: &Error<S::Error>) -> bool {
+        matches!(
+            error,
+            Error::Storage(StoreError::Uninitialized | StoreError::NeverPublished)
+        )
     }
 
     /// The committed snapshot, when no transfer is pending.

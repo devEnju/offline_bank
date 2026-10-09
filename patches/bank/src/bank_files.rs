@@ -167,13 +167,21 @@ impl<F: Files> BankFiles<F> {
         }
     }
 
-    /// Opens the Bank file. `None` means it does not exist yet.
+    /// Opens the Bank file. `None` means no Bank exists yet: the file is
+    /// absent, or its creation was cut before a Bank became current in it.
+    /// `initialize` finishes either.
     pub fn open(&mut self) -> Outcome<Option<Phase>, F> {
         if self.bank.is_none() {
             let Some(storage) = self.files.open(FileName::Bank).map_err(Error::Io)? else {
                 return Ok(None);
             };
-            self.bank = Some(BankSession::open_existing(storage).map_err(Error::Bank)?);
+            match BankSession::open_existing(storage) {
+                Ok(session) => self.bank = Some(session),
+                Err(error) if BankSession::<F::Storage>::never_held_a_bank(&error) => {
+                    return Ok(None)
+                }
+                Err(error) => return Err(Error::Bank(error)),
+            }
         }
         self.phase().map(Some)
     }
@@ -251,17 +259,24 @@ impl<F: Files> BankFiles<F> {
     }
 
     /// Creates a new Bank from the full native body in `staging`. Afterwards
-    /// `staging` holds the compact Bank payload, not a body.
+    /// `staging` holds the compact Bank payload, not a body. A Bank file left
+    /// by a creation that was cut is finished in place; the store refuses
+    /// that for any file in which a Bank was ever current.
     pub fn initialize(&mut self, staging: &mut [u8]) -> Outcome<(), F> {
         if self.bank.is_some() {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         }
         self.adopted = None;
         self.write_sides(staging, None, 1, Stored::NONE)?;
-        let storage = self.files.create(FileName::Bank).map_err(Error::Io)?;
-        self.bank = Some(
-            BankSession::initialize_bytes(storage, &staging[..BANK_SIZE]).map_err(Error::Bank)?,
-        );
+        let payload = &staging[..BANK_SIZE];
+        let session = match self.files.open(FileName::Bank).map_err(Error::Io)? {
+            Some(storage) => BankSession::reinitialize_bytes(storage, payload),
+            None => {
+                let storage = self.files.create(FileName::Bank).map_err(Error::Io)?;
+                BankSession::initialize_bytes(storage, payload)
+            }
+        };
+        self.bank = Some(session.map_err(Error::Bank)?);
         Ok(())
     }
 
@@ -873,6 +888,88 @@ mod tests {
             // Pokémon are still in the box: Transporter must wait.
             assert!(!transport_ok(&published.reboot()), "cut {cut}");
         }
+    }
+
+    #[test]
+    fn a_first_start_cut_at_every_write_is_finished_by_the_next_one() {
+        let original = body(0x31, 0x44, 0);
+        let create = |disk: &Shared, body: &[u8]| {
+            let mut files = BankFiles::new(disk.clone());
+            match files.open()? {
+                Some(_) => Ok(false),
+                None => files.initialize(&mut body.to_vec()).map(|_| true),
+            }
+        };
+        let counting = Shared::default().cut_after(usize::MAX);
+        assert_eq!(create(&counting, &original), Ok(true));
+        let total = counting.0.borrow().operations;
+        assert!(total > 20);
+
+        let mut finished_later = 0;
+        let mut deliveries = 0;
+        for cut in 0..=total {
+            let disk = Shared::default().cut_after(cut);
+            assert_eq!(create(&disk, &original).is_ok(), cut == total, "cut {cut}");
+            let disk = disk.reboot();
+            // Transporter may already find the transport file and deliver
+            // into it; those Pokémon have left their game.
+            let delivered = disk
+                .0
+                .borrow()
+                .files
+                .contains_key(&(FileName::Transport as u8))
+                && transport_ok(&disk);
+            if delivered {
+                deliver(&disk, 5);
+                deliveries += 1;
+            }
+            // The next start: no Bank yet means it is created now, with the
+            // body of that start.
+            let second = body(0x32, 0x45, 0);
+            let created = create(&disk, &second)
+                .unwrap_or_else(|error| panic!("start after cut {cut} cannot finish: {error:?}"));
+            finished_later += usize::from(created);
+            let expected = if created { &second } else { &original };
+            let (bytes, loaded) = load(&mut opened(&disk.reboot()));
+            assert!(
+                !loaded.dex_missing && !loaded.transport_missing,
+                "cut {cut}"
+            );
+            let shown = if delivered { 5 } else { 0 };
+            assert_eq!(loaded.delivered, shown, "cut {cut}");
+            let mut with_box = expected.clone();
+            let source = body(0, 0, shown as usize);
+            with_box[TRANSPORT_RECORDS].copy_from_slice(&source[TRANSPORT_RECORDS]);
+            with_box[TRANSPORT_TAGS].copy_from_slice(&source[TRANSPORT_TAGS]);
+            assert!(bytes == with_box, "cut {cut}: body differs");
+        }
+        // Both happened: starts that had to finish the creation, and
+        // deliveries into a Bank that did not exist yet.
+        assert!(finished_later > 20 && deliveries > 0);
+    }
+
+    #[test]
+    fn a_bank_file_that_held_a_bank_is_never_created_anew() {
+        let disk = fresh(&body(0x31, 0x44, 0));
+        let mut files = opened(&disk);
+        load(&mut files);
+        files
+            .prepare(&mut body(0x52, 0x44, 0), Stored::NONE, GAME, BEFORE, AFTER)
+            .unwrap();
+        files.reconcile(observed(AFTER)).unwrap();
+        // Both journal records are lost.
+        disk.0
+            .borrow_mut()
+            .files
+            .get_mut(&(FileName::Bank as u8))
+            .unwrap()[..2 * offline_core::METADATA_SIZE]
+            .fill(0);
+        let mut files = BankFiles::new(disk.reboot());
+        assert!(matches!(files.open(), Err(Error::Bank(_))));
+        assert!(matches!(
+            files.initialize(&mut body(0, 0, 0)),
+            Err(Error::Bank(_))
+        ));
     }
 
     #[test]

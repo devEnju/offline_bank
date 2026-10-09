@@ -180,7 +180,8 @@ fn nonzero_or_truncated_uninitialized_storage_is_not_empty() {
     let mut memory = Memory::new(layout);
     *memory.bytes.last_mut().unwrap() = 1;
     let mut store = BankStore::new(memory, layout);
-    assert_eq!(store.inspect(), Err(StoreError::NoValidMetadata));
+    // No journal record and no snapshot: an initialization that was cut.
+    assert_eq!(store.inspect(), Err(StoreError::NeverPublished));
     assert_eq!(
         store.initialize_new(b""),
         Err(StoreError::AlreadyContainsData)
@@ -453,7 +454,7 @@ fn every_local_commit_write_boundary_exposes_a_complete_snapshot() {
 }
 
 #[test]
-fn every_initialization_boundary_is_valid_or_requires_explicit_repair() {
+fn every_initialization_boundary_is_valid_or_can_be_finished() {
     let layout = Layout::new(CAPACITY);
     let mut full = BankStore::new(Memory::new(layout), layout);
     full.initialize_new(OLD).unwrap();
@@ -463,16 +464,87 @@ fn every_initialization_boundary_is_valid_or_requires_explicit_repair() {
         let _ = store.initialize_new(OLD);
         let mut recovered = BankStore::new(store.into_inner().reboot(), layout);
         match recovered.inspect() {
-            Ok(head) => assert_eq!(payload(&mut recovered, &head), OLD),
+            Ok(head) => {
+                assert_eq!(payload(&mut recovered, &head), OLD);
+                // A Bank is current: it is never initialized again.
+                assert_eq!(
+                    recovered.reinitialize(NEW),
+                    Err(StoreError::AlreadyContainsData)
+                );
+            }
             Err(StoreError::Uninitialized) => assert_eq!(cut, 0),
-            Err(StoreError::NoValidMetadata) => {
+            Err(StoreError::NeverPublished) => {
+                // Only the explicit continuation finishes it, with whatever
+                // the caller supplies now.
                 assert_eq!(
                     recovered.initialize_new(OLD),
                     Err(StoreError::AlreadyContainsData)
                 );
+                let head = recovered
+                    .reinitialize(NEW)
+                    .unwrap_or_else(|err| panic!("finish after cut {cut}: {err:?}"));
+                assert_eq!(payload(&mut recovered, &head), NEW);
+                let mut reopened = BankStore::new(recovered.into_inner().reboot(), layout);
+                let head = reopened.inspect().unwrap();
+                assert_eq!(payload(&mut reopened, &head), NEW);
             }
             other => panic!("initialization cut {cut}: {other:?}"),
         }
+    }
+}
+
+#[test]
+fn finishing_an_initialization_can_itself_be_cut_at_every_write() {
+    let layout = Layout::new(CAPACITY);
+    // Cut in the middle of the first snapshot: no journal record yet.
+    let mut store = BankStore::new(Memory::new(layout).cut_after(40), layout);
+    assert!(store.initialize_new(OLD).is_err());
+    let unfinished = store.into_inner().reboot();
+    let mut full = BankStore::new(unfinished.clone(), layout);
+    assert_eq!(full.inspect(), Err(StoreError::NeverPublished));
+    full.reinitialize(NEW).unwrap();
+    let total = full.into_inner().operations;
+    for cut in 0..=total {
+        let mut store = BankStore::new(unfinished.clone().cut_after(cut), layout);
+        let _ = store.reinitialize(NEW);
+        let mut recovered = BankStore::new(store.into_inner().reboot(), layout);
+        let head = match recovered.inspect() {
+            Ok(head) => head,
+            Err(StoreError::Uninitialized | StoreError::NeverPublished) => recovered
+                .reinitialize(NEW)
+                .unwrap_or_else(|err| panic!("second finish after cut {cut}: {err:?}")),
+            other => panic!("finish cut {cut}: {other:?}"),
+        };
+        assert_eq!(payload(&mut recovered, &head), NEW, "finish cut {cut}");
+    }
+}
+
+#[test]
+fn a_bank_that_was_ever_saved_is_never_taken_for_an_unfinished_one() {
+    let layout = Layout::new(CAPACITY);
+    // One save after initialization: slot B holds the second snapshot.
+    let mut store = BankStore::new(baseline(), layout);
+    let head = store.inspect().unwrap();
+    store.commit_bank_only(&head, NEW).unwrap();
+    let saved = store.into_inner();
+    // Both journal records lost, in every way a record can be lost.
+    for (a, b) in [(0u8, 0u8), (1, 0), (0, 1), (1, 1)] {
+        let mut memory = saved.clone();
+        for (slot, damage) in [(Slot::A, a), (Slot::B, b)] {
+            let at = layout.metadata_offset(slot) as usize;
+            if damage == 0 {
+                memory.bytes[at..at + METADATA_SIZE].fill(0);
+            } else {
+                memory.bytes[at + 144] ^= 1;
+            }
+        }
+        let mut store = BankStore::new(memory, layout);
+        assert_eq!(store.inspect(), Err(StoreError::NoValidMetadata), "{a}{b}");
+        assert_eq!(
+            store.reinitialize(OLD),
+            Err(StoreError::NoValidMetadata),
+            "{a}{b}"
+        );
     }
 }
 
