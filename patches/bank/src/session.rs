@@ -114,6 +114,19 @@ impl<S: Storage> BankSession<S> {
         Ok(tag)
     }
 
+    /// Reads one of the two payloads of a prepared transfer into
+    /// `scratch[..BANK_SIZE]`, checked like `read_bank`, for comparing them.
+    /// Neither becomes the loaded Bank by this.
+    pub fn read_pending(&mut self, after: bool, scratch: &mut [u8]) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        let Some(scratch) = scratch.get_mut(..BANK_SIZE) else {
+            return Err(Error::ScratchTooSmall);
+        };
+        let read = self.store.read_pending(&self.head, after, scratch);
+        let length = self.storage_result(read)?;
+        sections::validate_bank(&scratch[..length]).map_err(Error::Payload)
+    }
+
     /// Returns success only after the new payload and both prepare records are
     /// durable. The native game writer MUST NOT run if this returns an error.
     /// Fingerprints must describe the verified complete before/after game

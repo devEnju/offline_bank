@@ -5,13 +5,16 @@ use crate::{
     bank_files::Loaded,
     native_game::{GameIoDescriptor, PreparedImage, SecureValues},
 };
-use offline_core::{rewards::Stored, Fingerprint, Phase, RecoveryDecision};
+use offline_core::{game_save::Trainer, rewards::Stored, Fingerprint, Phase, RecoveryDecision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameEvidence {
     pub title: u64,
     pub fingerprint: Fingerprint,
     pub secure: SecureValues,
+    /// The trainer of the save, if its trainer block is where it is known
+    /// to be; it tells two copies of one title apart.
+    pub trainer: Option<Trainer>,
 }
 
 // Fixed descriptors live directly in the one static mailbox; no allocator or
@@ -133,14 +136,24 @@ mod arm {
         fs::{self, ExtdataStorage, GameMainReader, ReportedAbsence},
         native_game::{PlatformSecureValue, MAX_PREPARED_BLOCKS},
         session,
-        transaction::{self, Match},
+        transaction::{self, Match, Owner},
     };
-    use core::{convert::Infallible, mem::transmute};
+    use core::{cell::UnsafeCell, convert::Infallible, mem::transmute};
     use offline_core::{
         game_image::{fingerprint_images, Overlay},
+        game_save::{self, FOOTER_SIZE},
+        moved,
         native_blob::NativeBlobView,
+        sections::{Identity, HELD},
         GameObservation, Storage, StoreError,
     };
+
+    /// Working room for comparing the two snapshots of a save in progress:
+    /// everything the Bank held before it and after it.
+    struct Held(UnsafeCell<[[Identity; HELD]; 2]>);
+    // SAFETY: only the one storage worker thread uses it, inside one job.
+    unsafe impl Sync for Held {}
+    static HELD_LISTS: Held = Held(UnsafeCell::new([[[0; 3]; HELD]; 2]));
 
     /// The four files in Bank's extdata, opened through the borrowed session.
     struct ExtFiles {
@@ -276,22 +289,48 @@ mod arm {
                         &pending,
                         evidence.title,
                         evidence.fingerprint,
+                        evidence.trainer.as_ref(),
                     )
                     .map_err(|_| WorkerError::operation(11, 0))?;
                     if finalizing && matched != Match::After {
                         return Err(WorkerError::operation(17, 0));
                     }
-                    match matched {
-                        Match::Before => require_secure(game, evidence.secure.current)?,
-                        Match::After => finish_secure(game, evidence.secure)?,
+                    let observed = GameObservation::Present {
+                        game: pending.game,
+                        fingerprint: evidence.fingerprint,
+                    };
+                    let decision = match matched {
+                        Match::Before => {
+                            require_secure(game, evidence.secure.current)?;
+                            self.files.reconcile(observed)
+                        }
+                        Match::After => {
+                            finish_secure(game, evidence.secure)?;
+                            self.files.reconcile(observed)
+                        }
+                        // Another copy of the title: wait for the right one,
+                        // as for a game that is not there.
+                        Match::Other(Owner::Different) => {
+                            return Err(WorkerError::operation(7, 0));
+                        }
+                        // The same copy, saved by the game since the cut (or
+                        // a save in progress that names no trainer). The
+                        // game no longer shows whether Bank's write went
+                        // through, so the Bank takes the snapshot that
+                        // cannot lose a Pokémon for what this save moved.
+                        Match::Other(Owner::Same | Owner::Unrecorded) => {
+                            // The game wrote this save itself.
+                            require_secure(game, evidence.secure.current)?;
+                            // SAFETY: see `Held`; no other reference exists.
+                            let [before, after] = unsafe { &mut *HELD_LISTS.0.get() };
+                            let moved = self
+                                .files
+                                .pending_moves(staging, before, after)
+                                .map_err(|e| files_error(e, 16))?;
+                            self.files.reconcile_as(moved::choose(moved))
+                        }
                     }
-                    let decision = self
-                        .files
-                        .reconcile(GameObservation::Present {
-                            game: pending.game,
-                            fingerprint: evidence.fingerprint,
-                        })
-                        .map_err(|e| files_error(e, 16))?;
+                    .map_err(|e| files_error(e, 16))?;
                     if !matches!(
                         decision,
                         RecoveryDecision::KeepBefore | RecoveryDecision::CommitAfter
@@ -372,9 +411,15 @@ mod arm {
                     if images.before != baseline.fingerprint {
                         return Err(WorkerError::operation(11, 0));
                     }
-                    let identity =
-                        transaction::identity(baseline.title, images.before, images.after)
-                            .map_err(|_| WorkerError::operation(12, 0))?;
+                    // Bound to the trainer of this save, so that a recovery
+                    // can tell this copy of the game from another.
+                    let identity = transaction::identity(
+                        baseline.title,
+                        images.before,
+                        images.after,
+                        baseline.trainer.as_ref(),
+                    )
+                    .map_err(|_| WorkerError::operation(12, 0))?;
                     // Side files first, then the Bank journal.
                     self.files
                         .prepare(staging, rewards, identity, images.before, images.after)
@@ -454,12 +499,37 @@ mod arm {
             offline_core::game_image::ImageError::Read(e) => fs_error(e, 10),
             _ => WorkerError::operation(10, 0),
         })?;
+        let trainer = trainer(game, &mut main, length)?;
         main.close().map_err(|e| fs_error(e, 10))?;
         Ok(GameEvidence {
             title: game.kind.title_id(),
             fingerprint: images.before,
             secure,
+            trainer,
         })
+    }
+    /// The trainer of the save, from its trainer block. `None` when the
+    /// block is not where it is known to be for this title.
+    fn trainer(
+        game: GameIoDescriptor,
+        main: &mut GameMainReader<'_>,
+        length: u64,
+    ) -> Result<Option<Trainer>, WorkerError> {
+        let Some(footer_at) = length.checked_sub(FOOTER_SIZE as u64) else {
+            return Ok(None);
+        };
+        let mut footer = [0u8; FOOTER_SIZE];
+        main.read(footer_at, &mut footer)
+            .map_err(|e| fs_error(e, 10))?;
+        let generation = game.kind.generation();
+        let Some(at) = game_save::trainer_block(&footer, length, generation) else {
+            return Ok(None);
+        };
+        // The longer of the two trainer blocks.
+        let mut block = [0u8; 0x170];
+        let block = &mut block[..generation.trainer_len()];
+        main.read(at, block).map_err(|e| fs_error(e, 10))?;
+        Ok(game_save::trainer(block, generation, game.kind.version()))
     }
     fn platform(game: GameIoDescriptor) -> Result<PlatformSecureValue, WorkerError> {
         type Get =

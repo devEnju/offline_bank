@@ -12,11 +12,12 @@
 
 use crate::session::{self, BankSession};
 use offline_core::{
+    moved::{self, Moved},
     native_blob::BLOB_SIZE,
     rewards::{self, Stored},
     sections::{
-        self, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, MILES, TRANSPORT_RECORDS, TRANSPORT_SIZE,
-        TRANSPORT_TAGS,
+        self, Identity, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, HELD, MILES, RECORD_SIZE,
+        TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
     sidecar::{matching, spare, Kind, Sidecar, SidecarError, Tag},
     transport, Fingerprint, GameIdentity, GameObservation, Phase, RecoveryDecision, Storage,
@@ -405,6 +406,80 @@ impl<F: Files> BankFiles<F> {
     pub fn reconcile(&mut self, observed: GameObservation) -> Outcome<RecoveryDecision, F> {
         self.bank()?.reconcile_game(observed).map_err(Error::Bank)
     }
+
+    /// What the prepared save moved between Bank and the game: everything
+    /// the Bank held before it, in its boxes and in the transport box it
+    /// showed, against everything it holds after it. `staging` is used for
+    /// one snapshot at a time and holds nothing of use afterwards; the two
+    /// lists are working room. Nothing is written.
+    pub fn pending_moves(
+        &mut self,
+        staging: &mut [u8],
+        before: &mut [Identity; HELD],
+        after: &mut [Identity; HELD],
+    ) -> Outcome<Moved, F> {
+        let Phase::Prepared(pending) = self.phase()? else {
+            return Err(Error::Side(FileName::Bank, Problem::NotReady));
+        };
+        if staging.len() != BLOB_SIZE {
+            return Err(Error::Side(FileName::Bank, Problem::Layout));
+        }
+        let layout = |_| Error::Side(FileName::Bank, Problem::Layout);
+        let mut counts = [0; 2];
+        for (side, list) in [&mut *before, &mut *after].into_iter().enumerate() {
+            self.bank()?
+                .read_pending(side == 1, staging)
+                .map_err(Error::Bank)?;
+            counts[side] =
+                sections::box_identities(&staging[..BANK_SIZE], list, 0).map_err(layout)?;
+        }
+        // The transport box: before, what a load showed (its own box, or a
+        // delivery it took); after, the box the save wrote.
+        if let Some(mut file) = self.open_side(FileName::Transport, transport::KIND)? {
+            let slots = file.slots().map_err(side(FileName::Transport))?;
+            let shown = transport::on_load(&slots, Tag::of(&pending.before)).source;
+            let written = matching(&slots, Tag::of(&pending.after));
+            let records = &mut staging[..TRANSPORT_SIZE];
+            for (index, list, count) in [(shown, &mut *before, 0), (written, &mut *after, 1)] {
+                let Some(index) = index else { continue };
+                let slot = slots[index].filter(|slot| slot.len as usize == TRANSPORT_SIZE);
+                let slot = slot.ok_or(Error::Side(FileName::Transport, Problem::Damaged))?;
+                file.read(index, &slot, records)
+                    .map_err(side(FileName::Transport))?;
+                counts[count] = sections::identities(
+                    &records[..TRANSPORT_SLOTS * RECORD_SIZE],
+                    list,
+                    counts[count],
+                );
+            }
+        }
+        Ok(moved::moved(
+            &mut before[..counts[0]],
+            &mut after[..counts[1]],
+        ))
+    }
+
+    /// Resolves a prepared save toward the snapshot `decision` names, for a
+    /// game whose save is neither of its two images (`moved::choose`). The
+    /// journal's own rule is not loosened: this names the image the game is
+    /// taken to have been saved from. Follow it with `tidy_transport` and
+    /// `read`, as `reconcile`.
+    pub fn reconcile_as(&mut self, decision: RecoveryDecision) -> Outcome<RecoveryDecision, F> {
+        let Phase::Prepared(pending) = self.phase()? else {
+            return Err(Error::Side(FileName::Bank, Problem::NotReady));
+        };
+        let fingerprint = match decision {
+            RecoveryDecision::KeepBefore => pending.before_fingerprint,
+            RecoveryDecision::CommitAfter => pending.after_fingerprint,
+            RecoveryDecision::Blocked(_) => {
+                return Err(Error::Side(FileName::Bank, Problem::NotReady))
+            }
+        };
+        self.reconcile(GameObservation::Present {
+            game: pending.game,
+            fingerprint,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -415,7 +490,7 @@ mod tests {
         rewards::{enter, settle, Accounting, Date},
         sections::RECORD_SIZE,
     };
-    use std::{cell::RefCell, collections::BTreeMap, format, rc::Rc, vec, vec::Vec};
+    use std::{boxed::Box, cell::RefCell, collections::BTreeMap, format, rc::Rc, vec, vec::Vec};
 
     #[derive(Default)]
     struct Disk {
@@ -946,6 +1021,223 @@ mod tests {
         // Both happened: starts that had to finish the creation, and
         // deliveries into a Bank that did not exist yet.
         assert!(finished_later > 20 && deliveries > 0);
+    }
+
+    /// An occupied record of its own identity; `id` must stay below 0x1000.
+    fn pokemon(id: u32) -> [u8; RECORD_SIZE] {
+        let mut out = [0u8; RECORD_SIZE];
+        // Bits 13..18 of the key choose the block order; they stay zero.
+        let key = id << 20 | 0x155;
+        out[..4].copy_from_slice(&key.to_le_bytes());
+        let mut seed = key;
+        for index in 0..112 {
+            seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
+            let plain = if index == 0 { 133 } else { 0 };
+            out[8 + index * 2..10 + index * 2]
+                .copy_from_slice(&(plain ^ (seed >> 16) as u16).to_le_bytes());
+        }
+        out
+    }
+    /// A body whose boxes hold exactly `boxed`, each at (box, slot), and
+    /// whose transport box holds `transport` Pokémon.
+    fn bank(fill: u8, boxed: &[(usize, usize, [u8; RECORD_SIZE])], transport: usize) -> Vec<u8> {
+        let mut bytes = body(fill, 0x44, transport);
+        let place = |index: usize, slot: usize| 0x17C + index * 0x1B56 + slot * RECORD_SIZE;
+        for index in 0..100 {
+            for slot in 0..30 {
+                let at = place(index, slot);
+                bytes[at..at + RECORD_SIZE].copy_from_slice(&record(0));
+            }
+        }
+        for (index, slot, record) in boxed {
+            let at = place(*index, *slot);
+            bytes[at..at + RECORD_SIZE].copy_from_slice(record);
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_save_in_progress_is_settled_by_what_it_moved_when_the_game_cannot_say() {
+        let old = bank(
+            0x31,
+            &[(0, 0, pokemon(1)), (0, 1, pokemon(2)), (99, 29, pokemon(3))],
+            0,
+        );
+        let disk = fresh(&bank(0, &[], 0));
+        let mut files = opened(&disk);
+        load(&mut files);
+        files
+            .prepare(&mut old.clone(), stored(7, 1, 3), GAME, [8; 32], [9; 32])
+            .unwrap();
+        files.reconcile(observed([9; 32])).unwrap();
+        files.tidy_transport().unwrap();
+        assert!(load(&mut files).0 == old);
+        let base = disk.reboot();
+
+        // Each session: the boxes it leaves, what it moved, and the snapshot
+        // that cannot lose a Pokémon.
+        let keep = RecoveryDecision::KeepBefore;
+        let commit = RecoveryDecision::CommitAfter;
+        let sessions = [
+            (
+                "deposits only",
+                vec![
+                    (0, 0, pokemon(1)),
+                    (0, 1, pokemon(2)),
+                    (99, 29, pokemon(3)),
+                    (5, 5, pokemon(4)),
+                    (5, 6, pokemon(5)),
+                ],
+                (2, 0),
+                commit,
+            ),
+            ("withdrawals only", vec![(0, 0, pokemon(1))], (0, 2), keep),
+            (
+                "both ways",
+                vec![(0, 0, pokemon(1)), (0, 1, pokemon(2)), (3, 3, pokemon(9))],
+                (1, 1),
+                commit,
+            ),
+            (
+                "only rearranged in Bank",
+                vec![(7, 7, pokemon(3)), (7, 8, pokemon(1)), (50, 0, pokemon(2))],
+                (0, 0),
+                keep,
+            ),
+        ];
+        for (name, boxes, expected, decision) in sessions {
+            let new = bank(0x52, &boxes, 0);
+            let prepared = base.copy();
+            let mut files = opened(&prepared);
+            load(&mut files);
+            files
+                .prepare(&mut new.clone(), stored(9, 2, 5), GAME, BEFORE, AFTER)
+                .unwrap();
+            let operations = prepared.0.borrow().operations;
+
+            // The next start: the game shows some save of its own.
+            let mut files = BankFiles::new(prepared.reboot());
+            assert!(matches!(files.open(), Ok(Some(Phase::Prepared(_)))));
+            let mut staging = vec![0xEE; BLOB_SIZE];
+            let (mut before, mut after) = (Box::new([[0; 3]; HELD]), Box::new([[0; 3]; HELD]));
+            let moved = files
+                .pending_moves(&mut staging, &mut before, &mut after)
+                .unwrap();
+            assert_eq!((moved.deposited, moved.withdrawn), expected, "{name}");
+            // Looking wrote nothing, and the save is still in progress.
+            assert!(matches!(files.phase(), Ok(Phase::Prepared(_))));
+            assert_eq!(moved::choose(moved), decision, "{name}");
+            assert_eq!(files.reconcile_as(decision), Ok(decision), "{name}");
+            files.tidy_transport().unwrap();
+            let (bytes, loaded) = load(&mut files);
+            let (state, rewards) = if decision == commit {
+                (&new, stored(9, 2, 5))
+            } else {
+                (&old, stored(7, 1, 3))
+            };
+            assert!(bytes == *state, "{name}: body differs");
+            assert_eq!(loaded.rewards, rewards, "{name}");
+            assert!(!loaded.dex_missing && !loaded.transport_missing, "{name}");
+            // It stays settled, and the transport box is free again.
+            let (again, _) = load(&mut opened(&files.files_mut().reboot()));
+            assert!(again == *state, "{name}: after a restart");
+            assert!(transport_ok(files.files_mut()), "{name}");
+            assert!(operations > 0);
+        }
+    }
+
+    #[test]
+    fn a_taken_delivery_and_a_release_are_counted_for_what_they_are() {
+        let old = bank(0x31, &[(0, 0, pokemon(1)), (0, 1, pokemon(2))], 0);
+        let disk = fresh(&bank(0, &[], 0));
+        let mut files = opened(&disk);
+        load(&mut files);
+        files
+            .prepare(&mut old.clone(), Stored::NONE, GAME, [8; 32], [9; 32])
+            .unwrap();
+        files.reconcile(observed([9; 32])).unwrap();
+        files.tidy_transport().unwrap();
+        let base = disk.reboot();
+        let count = |disk: &Shared| {
+            let mut files = BankFiles::new(disk.reboot());
+            files.open().unwrap();
+            let mut staging = vec![0; BLOB_SIZE];
+            let (mut before, mut after) = (Box::new([[0; 3]; HELD]), Box::new([[0; 3]; HELD]));
+            let moved = files
+                .pending_moves(&mut staging, &mut before, &mut after)
+                .unwrap();
+            (moved.deposited, moved.withdrawn)
+        };
+
+        // Transporter delivered five; the session moved three of them into
+        // boxes and left two in the transport box. Nothing came from or went
+        // to the game.
+        let delivered = base.copy();
+        deliver(&delivered, 5);
+        let mut files = opened(&delivered);
+        assert_eq!(load(&mut files).1.delivered, 5);
+        let source = body(0, 0, 5);
+        let from_box = |slot: usize| -> [u8; RECORD_SIZE] {
+            let at = TRANSPORT_RECORDS.start + slot * RECORD_SIZE;
+            source[at..at + RECORD_SIZE].try_into().unwrap()
+        };
+        // `body` keeps the first Pokémon in the transport box, so the two
+        // that stay are the first two; the other three go into boxes.
+        let moved_in = bank(
+            0x52,
+            &[
+                (0, 0, pokemon(1)),
+                (0, 1, pokemon(2)),
+                (4, 0, from_box(2)),
+                (4, 1, from_box(3)),
+                (4, 2, from_box(4)),
+            ],
+            2,
+        );
+        files
+            .prepare(&mut moved_in.clone(), Stored::NONE, GAME, BEFORE, AFTER)
+            .unwrap();
+        assert_eq!(count(&delivered), (0, 0));
+
+        // The same with one of the Bank's own Pokémon deposited beside it.
+        let delivered = base.copy();
+        deliver(&delivered, 5);
+        let mut files = opened(&delivered);
+        load(&mut files);
+        let mut with_deposit = moved_in.clone();
+        let at = 0x17C + 9 * 0x1B56;
+        with_deposit[at..at + RECORD_SIZE].copy_from_slice(&pokemon(7));
+        files
+            .prepare(&mut with_deposit, Stored::NONE, GAME, BEFORE, AFTER)
+            .unwrap();
+        assert_eq!(count(&delivered), (1, 0));
+
+        // A release leaves Bank like a withdrawal: the old boxes keep it.
+        let released = base.copy();
+        let mut files = opened(&released);
+        load(&mut files);
+        files
+            .prepare(
+                &mut bank(0x52, &[(0, 0, pokemon(1))], 0),
+                Stored::NONE,
+                GAME,
+                BEFORE,
+                AFTER,
+            )
+            .unwrap();
+        assert_eq!(count(&released), (0, 1));
+
+        // Without a save in progress there is nothing to compare.
+        let mut files = opened(&base);
+        let (mut before, mut after) = (Box::new([[0; 3]; HELD]), Box::new([[0; 3]; HELD]));
+        assert_eq!(
+            files.pending_moves(&mut vec![0; BLOB_SIZE], &mut before, &mut after),
+            Err(Error::Side(FileName::Bank, Problem::NotReady))
+        );
+        assert_eq!(
+            files.reconcile_as(RecoveryDecision::KeepBefore),
+            Err(Error::Side(FileName::Bank, Problem::NotReady))
+        );
     }
 
     #[test]

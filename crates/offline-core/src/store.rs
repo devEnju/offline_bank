@@ -341,19 +341,45 @@ impl<S: Storage> BankStore<S> {
             Phase::Clean(current) => current,
             Phase::Prepared(_) => return Err(StoreError::PendingRecovery),
         };
-        let length = current.header.payload_len as usize;
+        self.read_snapshot(current, out)
+    }
+
+    /// Reads the payload of one snapshot of a prepared transfer, checked
+    /// like `read_current`. Showing either as the Bank still requires
+    /// `reconcile`; this is for comparing the two.
+    pub fn read_pending(
+        &mut self,
+        head: &Head,
+        after: bool,
+        out: &mut [u8],
+    ) -> Result<usize, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        let snapshot = match head.phase() {
+            Phase::Prepared(pending) if after => pending.after,
+            Phase::Prepared(pending) => pending.before,
+            Phase::Clean(_) => return Err(StoreError::NoPendingTransfer),
+        };
+        self.read_snapshot(snapshot, out)
+    }
+
+    fn read_snapshot(
+        &mut self,
+        snapshot: SnapshotRef,
+        out: &mut [u8],
+    ) -> Result<usize, StoreError<S::Error>> {
+        let length = snapshot.header.payload_len as usize;
         if out.len() < length {
             return Err(StoreError::BufferTooSmall {
-                needed: current.header.payload_len,
+                needed: snapshot.header.payload_len,
             });
         }
         self.storage
             .read(
-                self.layout.snapshot_offset(current.slot) + SNAPSHOT_HEADER_SIZE as u64,
+                self.layout.snapshot_offset(snapshot.slot) + SNAPSHOT_HEADER_SIZE as u64,
                 &mut out[..length],
             )
             .map_err(StoreError::Io)?;
-        if crate::crc32(&out[..length]) != current.header.payload_crc32 {
+        if crate::crc32(&out[..length]) != snapshot.header.payload_crc32 {
             return Err(StoreError::PayloadChecksum);
         }
         Ok(length)
