@@ -38,11 +38,10 @@ mod linked {
         "b {cart_write}",
         "b transporter_list_next_stub",
         "b transporter_select_stub",
-        "b transporter_list_limit_stub",
+        "b transporter_vc_scan_stub",
         "b {language_chosen}",
         "b transporter_language_order_stub",
         "b {language_buttons}",
-        "b transporter_list_keep_stub",
         "b transporter_language_back_stub",
         "b transporter_title_begin_stub",
         "b transporter_title_end_stub",
@@ -74,30 +73,21 @@ mod linked {
         "bl {select}",
         "mov r0, #0",
         "pop {{r4, pc}}",
-        // 0024508C (was: ldrh r1, [r1, #0x58], the number of Virtual Console
-        // titles found, read as the bound of the loop that appends them).
-        // The list holds 40 entries, which the original could not exceed
-        // with one cartridge and 39 titles. Once it is full the bound reads
-        // as zero and the loop ends. r4 = list task; r0 and r2 stay live.
-        "transporter_list_limit_stub:",
-        "ldrh r1, [r1, #0x58]",
-        "ldrh r12, [r4, #0x64]",
-        "cmp r12, #40",
-        "movhs r1, #0",
-        "bx lr",
-        // 00245080 (was: add r1, r1, #1, the list count after a Virtual
-        // Console title was appended). The kind byte was just written at
-        // kinds[r2] (r5 = kinds); the count only advances when the title is
-        // in the listed language, so the next one overwrites it otherwise.
-        // r0, the loop index, stays live.
-        "transporter_list_keep_stub:",
-        "push {{r0-r3, r12, lr}}",
-        "ldrb r0, [r5, r2]",
+        // 002412D4 (was: bl 002512A8, "is the title of this row installed?",
+        // r0 = version, r1 = language id). A row in another language than
+        // the listed one answers no; the original answers for the others.
+        // It runs on the scanner's thread and only reads the filter.
+        "transporter_vc_scan_stub:",
+        "push {{r0, r1, r4, lr}}",
+        "mov r0, r1",
         "bl {vc_listed}",
-        "cmp r0, #0",
-        "pop {{r0-r3, r12, lr}}",
-        "addne r1, r1, #1",
-        "bx lr",
+        "movs r12, r0",
+        "pop {{r0, r1, r4, lr}}",
+        "moveq r0, #0",
+        "bxeq lr",
+        "ldr r12, =0x002512a8",
+        "bx r12",
+        ".ltorg",
         cart_id = sym transporter_cart_id,
         list_next = sym transporter_list_next,
         select = sym transporter_select,
