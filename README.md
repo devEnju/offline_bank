@@ -43,7 +43,7 @@ The repository itself holds no patch files. Without a release, [build them yours
 
 ## Install
 
-You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS), and Pokémon Bank and Poké Transporter installed in version 1.5, their final updates.
+You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS) v10.0 or later, and Pokémon Bank and Poké Transporter installed in version 1.5, their final updates.
 
 1. Back up your game saves and Bank's extra data. The boxes are in Bank's *extdata*, not in its save ([how to back them up](docs/bank.md#backing-up-the-bank)).
 2. Extract the zip and copy its `luma` folder to the root of the SD card, merging it with the one that is there.

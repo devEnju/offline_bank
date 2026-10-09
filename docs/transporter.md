@@ -150,7 +150,7 @@ The saves are in the chosen language.
 | What you see | Likely cause |
 | --- | --- |
 | Transporter does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Transporter is not version 1.5. |
-| Every transfer is refused with "not empty". | Open Bank, empty the transport box, and Save and Quit. If Bank's transport box is empty and saved and the refusal stays, Transporter cannot open Bank's data on this setup; please report it. |
+| Every transfer is refused with "not empty". | Open Bank, empty the transport box, and Save and Quit. If Bank's transport box is empty and saved and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later, and otherwise please report it. |
 | The original failure message after confirming a transfer. | The delivery could not be written. The source game was not changed. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |
 | A save on the SD card is not listed. | Its language is not the chosen one; a cartridge of the same game in that language is inserted; the name or folder differs from the pattern above; or the file is not 524,288 bytes. |
@@ -163,6 +163,6 @@ The saves are in the chosen language.
 ## Limits
 
 - **Wording of refusals.** The original app has no text for "open Bank first" or "Bank not set up", so every refusal uses the "not empty" message.
-- **Access to Bank's data.** Transporter's own header grants no access to Bank's extdata. Opening it worked under Luma on one console; other setups are untested.
+- **Access to Bank's data and to the SD card.** Transporter's own header grants neither. Luma3DS gives every application full filesystem access, which is what makes both work; this needs Luma3DS v10.0 or later.
 - **Saves on the SD card.** Only revisions `00` and `01` are looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
 - **Language of the screens.** It can no longer be changed inside Transporter; it is the console's.
