@@ -1,0 +1,24 @@
+[package]
+name = "bank-migrate-payload"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bank-common = { path = "../../crates/bank-common" }
+offline-core = { path = "../../crates/offline-core" }
+
+[dev-dependencies]
+bank-common = { path = "../../crates/bank-common", features = ["test-support"] }
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+linked-image = []
+
+[[bin]]
+name = "bank-migrate-payload-link"
+path = "src/link.rs"
+required-features = ["linked-image"]

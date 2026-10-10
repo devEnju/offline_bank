@@ -1,15 +1,14 @@
-//! One-time conversion of a Bank that an earlier version stored.
+//! One-time conversion of the Bank that v0.2.1 stored, for v0.3.0.
 //!
-//! Versions up to 0.2.1 kept each container in one file: `/bank.bin`,
+//! Version 0.2.1 kept each container in one file: `/bank.bin`,
 //! `/dex.bin`, `/transport.bin`, `/rewards.bin`. Every unit of a container is
 //! a file of its own now (`bank_files`), and the containers themselves are
 //! byte for byte what they were, so converting is cutting the four files at
 //! their unit boundaries. Three of the new files have the names of old ones,
 //! which is why the new files are first written under temporary names.
 //!
-//! This is built only into the migration package (feature `migrate`), which
-//! does nothing else: it never opens the Bank. The normal package has no
-//! knowledge of the earlier files and refuses them by their size.
+//! Only this patch knows the earlier files, and it does nothing else: it
+//! never opens the Bank. The offline patch refuses them by their size.
 //!
 //! The steps, each safe to interrupt:
 //!
@@ -26,13 +25,13 @@ use bank_common::{
     bank_files::{FileName, UnitFile, RECORD, SNAPSHOT},
     session::{self, BankSession},
 };
-use offline_core::{rewards, sections::DEX_FILE, transport, Phase, Storage};
+use offline_core::{rewards, sections::DEX_FILE, transport, Phase, Storage, StoreError};
 
 /// First number of the result screen when nothing went wrong; the second
 /// number is the `Done`.
 pub const DONE: u32 = 0x600d;
-/// First number when the old Bank has a save in progress. The version that
-/// began it has to finish it.
+/// First number when the old Bank has a save in progress. Version 0.2.1,
+/// which began it, has to finish it.
 pub const REFUSED: u32 = 0xbad;
 /// First number of a failed step, plus the `Step`.
 pub const FAILED: u32 = 0xba0;
@@ -86,6 +85,26 @@ pub enum Stopped<E> {
     /// The old Bank has a save in progress. Nothing was changed.
     InProgress,
     Failed(Step, Cause<E>),
+}
+
+/// The two numbers of the result screen. `diagnostic` gives the console's
+/// code for a file error.
+pub fn numbers<E>(result: Result<Done, Stopped<E>>, diagnostic: impl Fn(E) -> u32) -> [u32; 2] {
+    match result {
+        Ok(done) => [DONE, done as u32],
+        Err(Stopped::InProgress) => [REFUSED, 7],
+        Err(Stopped::Failed(step, cause)) => [
+            FAILED + step as u32,
+            match cause {
+                Cause::Io(error) | Cause::Bank(session::Error::Storage(StoreError::Io(error))) => {
+                    diagnostic(error)
+                }
+                Cause::Bank(_) => 5,
+                Cause::Mismatch => 1,
+                Cause::Missing => 2,
+            },
+        ],
+    }
 }
 
 const fn single(path: &'static str, len: u64) -> [UnitFile; 1] {
@@ -674,6 +693,29 @@ mod tests {
             Err(Stopped::Failed(Step::ReadOld, Cause::Bank(_)))
         ));
         assert!(card.files() == before);
+    }
+
+    #[test]
+    fn every_result_has_its_two_numbers() {
+        let code = |_: ()| 0xd900_458b;
+        assert_eq!(numbers(Ok(Done::NoBank), code), [0x600d, 0]);
+        assert_eq!(numbers(Ok(Done::Converted), code), [0x600d, 1]);
+        assert_eq!(numbers(Ok(Done::AlreadyNew), code), [0x600d, 2]);
+        assert_eq!(numbers(Err(Stopped::InProgress), code), [0xbad, 7]);
+        for (step, first) in [
+            (Step::ReadOld, 0xba1),
+            (Step::WriteTemporary, 0xba2),
+            (Step::RemoveOld, 0xba3),
+            (Step::WriteNew, 0xba4),
+        ] {
+            let failed = |cause| numbers(Err(Stopped::Failed(step, cause)), code);
+            assert_eq!(failed(Cause::Io(())), [first, 0xd900_458b]);
+            assert_eq!(failed(Cause::Mismatch), [first, 1]);
+            assert_eq!(failed(Cause::Missing), [first, 2]);
+            assert_eq!(failed(Cause::Bank(session::Error::Poisoned)), [first, 5]);
+            let unreadable = session::Error::Storage(StoreError::Io(()));
+            assert_eq!(failed(Cause::Bank(unreadable)), [first, 0xd900_458b]);
+        }
     }
 
     #[test]

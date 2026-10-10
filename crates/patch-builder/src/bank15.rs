@@ -8,6 +8,7 @@
 
 use crate::{elf::PayloadElf, placement::InputIdentity, CheckedEdit, BANK_TITLE_ID};
 
+pub mod migrate;
 pub mod offline;
 
 pub const TMD_VERSION: u16 = 6272;
@@ -46,7 +47,7 @@ pub struct Profile {
     edits: fn(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>>,
 }
 
-pub const PROFILES: [&Profile; 1] = [&offline::PROFILE];
+pub const PROFILES: [&Profile; 2] = [&offline::PROFILE, &migrate::PROFILE];
 
 pub fn profile(name: &str) -> crate::Result<&'static Profile> {
     PROFILES

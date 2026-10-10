@@ -7,8 +7,6 @@
 //! The builder must verify the complete input before emitting any patch.
 
 pub mod local_clock;
-#[cfg(feature = "migrate")]
-pub mod migrate;
 pub mod native_bank;
 pub mod navigation;
 

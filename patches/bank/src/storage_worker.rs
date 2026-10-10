@@ -128,54 +128,6 @@ mod arm {
             unsafe { ExtdataStorage::create_new(self.session, file.units()) }
         }
     }
-    #[cfg(feature = "migrate")]
-    impl crate::migrate::Card for ExtFiles {
-        type Error = fs::Error;
-        type Storage = ExtdataStorage;
-        fn exists(&mut self, files: &'static [bank_files::UnitFile]) -> Result<bool, fs::Error> {
-            unsafe { ExtdataStorage::exists(self.session, files) }
-        }
-        fn open(
-            &mut self,
-            files: &'static [bank_files::UnitFile],
-        ) -> Result<Option<ExtdataStorage>, fs::Error> {
-            unsafe { ExtdataStorage::open_existing(self.session, files) }
-        }
-        fn create(
-            &mut self,
-            files: &'static [bank_files::UnitFile],
-        ) -> Result<ExtdataStorage, fs::Error> {
-            unsafe { ExtdataStorage::create_new(self.session, files) }
-        }
-        fn remove(&mut self, files: &'static [bank_files::UnitFile]) -> Result<(), fs::Error> {
-            unsafe { ExtdataStorage::remove(self.session, files) }
-        }
-    }
-    /// The migration package answers every start with its result: two
-    /// numbers on the error screen, also when nothing went wrong.
-    #[cfg(feature = "migrate")]
-    fn migrated(
-        result: Result<crate::migrate::Done, crate::migrate::Stopped<fs::Error>>,
-    ) -> WorkerError {
-        use crate::migrate::{Cause, Stopped, DONE, FAILED, REFUSED};
-        match result {
-            Ok(done) => WorkerError::operation(DONE, done as u32),
-            Err(Stopped::InProgress) => WorkerError::operation(REFUSED, 7),
-            Err(Stopped::Failed(step, cause)) => WorkerError::operation(
-                FAILED + step as u32,
-                match cause {
-                    Cause::Io(error)
-                    | Cause::Bank(session::Error::Storage(StoreError::Io(error))) => {
-                        error.diagnostic()
-                    }
-                    Cause::Bank(_) => 5,
-                    Cause::Mismatch => 1,
-                    Cause::Missing => 2,
-                },
-            ),
-        }
-    }
-
     static SHARED: Shared<StorageWorker> = Shared::new();
     /// The worker of the offline patch.
     pub(crate) type BankWorker = Worker<StorageWorker>;
@@ -306,25 +258,10 @@ mod arm {
             })
         }
         // A test build's stop point leaves the rest of its job unreached.
-        #[cfg_attr(
-            any(feature = "test-build", feature = "migrate"),
-            allow(unreachable_code, unused_variables)
-        )]
+        #[cfg_attr(feature = "test-build", allow(unreachable_code, unused_variables))]
         fn execute(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             match job {
                 Job::Open { session } => {
-                    // The migration package converts and never opens.
-                    #[cfg(feature = "migrate")]
-                    {
-                        if session == 0 {
-                            return Err(WorkerError::operation(3, 0x7800_0000));
-                        }
-                        self.files.files_mut().session = session;
-                        return Err(migrated(crate::migrate::run(
-                            self.files.files_mut(),
-                            staging,
-                        )));
-                    }
                     if !self.files.is_open() {
                         if self.missing {
                             return Err(WorkerError::operation(5, 0));

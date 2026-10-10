@@ -103,6 +103,23 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     Ok(edits)
 }
 
+/// The edits for made-up entry addresses, for the tests of other profiles.
+#[cfg(test)]
+pub(super) fn sample_edits() -> Vec<CheckedEdit> {
+    native_hook_edits(HookTargets {
+        startup: 0x313910,
+        next: 0x3fb000,
+        load: 0x3fb200,
+        save: 0x3fb400,
+        rewards: 0x3fba00,
+        timestamp: 0x3fbc00,
+        dex_save_request: 0x3fc400,
+        dex_records_update: 0x3fc600,
+        dex_records_finish: 0x3fc800,
+    })
+    .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{FIRST_START_EDITS, RETIRED_MENU_EDITS};

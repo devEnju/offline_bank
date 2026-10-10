@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bank-migrate-payload"
+version = "0.1.0"
+dependencies = [
+ "bank-common",
+ "offline-core",
+]
+
+[[package]]
 name = "bank-payload"
 version = "0.1.0"
 dependencies = [
