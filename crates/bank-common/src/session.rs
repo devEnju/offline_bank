@@ -34,7 +34,9 @@ pub struct BankSession<S: Storage> {
 
 impl<S: Storage> BankSession<S> {
     /// Opens only existing, valid storage. Missing/zero/corrupt data never
-    /// triggers initialization here. Prepared state is retained for recovery.
+    /// triggers initialization here; `never_held_a_bank` tells the caller
+    /// when the file is an unfinished initialization. Prepared state is
+    /// retained for recovery.
     /// Only the journal and snapshot headers are read; `read_bank` verifies
     /// the payload on its single pass.
     pub fn open_existing(storage: S) -> Result<Self, Error<S::Error>> {
@@ -60,6 +62,30 @@ impl<S: Storage> BankSession<S> {
             poisoned: false,
             loaded: true,
         })
+    }
+
+    /// Finishes the initialization of an existing file that never held a
+    /// Bank: zero-filled, or cut before its first journal record. Refused
+    /// by the store for any file that has a journal record or a later
+    /// snapshot.
+    pub fn reinitialize_bytes(storage: S, payload: &[u8]) -> Result<Self, Error<S::Error>> {
+        sections::validate_bank(payload).map_err(Error::Payload)?;
+        let mut store = BankStore::new(storage, BANK_LAYOUT);
+        let head = store.reinitialize(payload).map_err(Error::Storage)?;
+        Ok(Self {
+            store,
+            head,
+            poisoned: false,
+            loaded: true,
+        })
+    }
+
+    /// True for the error of a file in which no Bank was ever current.
+    pub fn never_held_a_bank(error: &Error<S::Error>) -> bool {
+        matches!(
+            error,
+            Error::Storage(StoreError::Uninitialized | StoreError::NeverPublished)
+        )
     }
 
     /// The committed snapshot, when no transfer is pending.
@@ -88,6 +114,19 @@ impl<S: Storage> BankSession<S> {
         Ok(tag)
     }
 
+    /// Reads one of the two payloads of a prepared transfer into
+    /// `scratch[..BANK_SIZE]`, checked like `read_bank`, for comparing them.
+    /// Neither becomes the loaded Bank by this.
+    pub fn read_pending(&mut self, after: bool, scratch: &mut [u8]) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        let Some(scratch) = scratch.get_mut(..BANK_SIZE) else {
+            return Err(Error::ScratchTooSmall);
+        };
+        let read = self.store.read_pending(&self.head, after, scratch);
+        let length = self.storage_result(read)?;
+        sections::validate_bank(&scratch[..length]).map_err(Error::Payload)
+    }
+
     /// Returns success only after the new payload and both prepare records are
     /// durable. The native game writer MUST NOT run if this returns an error.
     /// Fingerprints must describe the verified complete before/after game
@@ -110,6 +149,25 @@ impl<S: Storage> BankSession<S> {
             Phase::Prepared(pending) => Ok(Tag::of(&pending.after)),
             Phase::Clean(current) => Ok(Tag::of(&current)),
         }
+    }
+
+    /// Test builds only: see `BankStore::republish`.
+    #[cfg(feature = "test-tear-record")]
+    pub fn tear_record(&mut self, passes: u32) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        for _ in 0..passes {
+            let result = self.store.republish(&self.head);
+            self.head = self.storage_result(result)?;
+        }
+        Ok(())
+    }
+
+    /// Test builds only: see `BankStore::rewrite_spare`.
+    #[cfg(feature = "test-tear-boxes")]
+    pub fn tear_boxes(&mut self, payload: &mut [u8], passes: u32) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        let result = self.store.rewrite_spare(&self.head, payload, passes);
+        self.storage_result(result)
     }
 
     pub fn phase(&self) -> Result<Phase, Error<S::Error>> {
@@ -200,6 +258,10 @@ mod tests {
         }
         fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
             self.bytes[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        }
+        fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+            self.bytes[at as usize..(at + length) as usize].fill(0);
             Ok(())
         }
         fn sync(&mut self) -> Result<(), ()> {

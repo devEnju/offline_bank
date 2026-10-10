@@ -3,8 +3,11 @@
 //! The main thread never waits for I/O or joins an active worker. Native SDK
 //! 002320d4 enters through001211e4, which initializes native TLS before Rust.
 //! The worker owns storage; the UI owns native game objects and all rendering.
+//!
+//! What the worker does is a patch's own: its `Service` names the jobs and
+//! runs them. The thread, the mailbox and the staging buffer are the same for
+//! every patch.
 
-pub use crate::storage_worker::{GameEvidence, Job, Reply, WorkerError, WorkerErrorKind};
 #[cfg(any(test, target_arch = "arm"))]
 use core::{
     cell::UnsafeCell,
@@ -14,6 +17,53 @@ use core::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JobId(u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerErrorKind {
+    Operation,
+    Busy,
+    StaleJob,
+    Cancelled,
+    Resource,
+    Stopped,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkerError {
+    pub kind: WorkerErrorKind,
+    fault: u32,
+    native: u32,
+}
+impl WorkerError {
+    pub const fn fault_code(self) -> u32 {
+        self.fault
+    }
+    pub const fn native_result(self) -> u32 {
+        self.native
+    }
+    /// A job that failed: the two numbers of the error screen.
+    pub const fn operation(fault: u32, native: u32) -> Self {
+        Self {
+            kind: WorkerErrorKind::Operation,
+            fault,
+            native,
+        }
+    }
+    pub const fn control(kind: WorkerErrorKind) -> Self {
+        Self {
+            kind,
+            fault: 2,
+            native: 0,
+        }
+    }
+    #[cfg(target_arch = "arm")]
+    pub(crate) const fn resource(native: u32) -> Self {
+        Self {
+            kind: WorkerErrorKind::Resource,
+            fault: 2,
+            native,
+        }
+    }
+}
 
 #[cfg(any(test, target_arch = "arm"))]
 const IDLE: u32 = 0;
@@ -135,7 +185,6 @@ impl<T: Copy, R: Copy> Mailbox<T, R> {
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::*;
-    use crate::storage_worker::StorageWorker;
     use core::{marker::PhantomData, mem::transmute, sync::atomic::AtomicBool};
     use offline_core::native_blob::BLOB_SIZE;
 
@@ -153,8 +202,28 @@ mod arm {
     }
     #[repr(C, align(4))]
     struct Event([u32; 2]);
-    struct Shared {
-        mailbox: Mailbox<Job, Result<Reply, WorkerError>>,
+
+    /// What one patch runs on the worker thread.
+    pub trait Service: Sized + 'static {
+        type Job: Copy;
+        type Reply: Copy;
+        /// Threads the process must have room for when the worker starts:
+        /// the worker itself and any the patch starts while it exists.
+        const THREADS: i64;
+        /// The statics of this payload's one worker.
+        fn shared() -> &'static Shared<Self>;
+        /// The state the worker thread owns, made on that thread.
+        fn start() -> Self;
+        fn run(&mut self, job: Self::Job, staging: &mut [u8]) -> Result<Self::Reply, WorkerError>;
+        /// A job whose result may be discarded once cancellation was asked
+        /// for. Every other job finishes what it began.
+        fn cancellable(job: &Self::Job) -> bool;
+    }
+
+    /// The mailbox, staging buffer and thread of a payload's one worker. A
+    /// patch holds it in a static and names it in `Service::shared`.
+    pub struct Shared<S: Service> {
+        mailbox: Mailbox<S::Job, Result<S::Reply, WorkerError>>,
         staging: UnsafeCell<[u8; BLOB_SIZE]>,
         stack: UnsafeCell<Stack>,
         event: UnsafeCell<Event>,
@@ -162,110 +231,103 @@ mod arm {
         claimed: AtomicBool,
     }
     // SAFETY: staging ownership moves with the mailbox state. The singleton
-    // main-thread BankWorker is the only producer. The SDK thread alone owns
-    // StorageWorker and accesses staging only while its job is RUNNING.
-    unsafe impl Sync for Shared {}
-    static SHARED: Shared = Shared {
-        mailbox: Mailbox::new(),
-        staging: UnsafeCell::new([0; BLOB_SIZE]),
-        stack: UnsafeCell::new(Stack([0; STACK_SIZE])),
-        event: UnsafeCell::new(Event([0; 2])),
-        thread: UnsafeCell::new(Thread {
-            handle: 0,
-            joined: 0,
-            detached: 0,
-            padding: [0; 2],
-        }),
-        claimed: AtomicBool::new(false),
-    };
+    // main-thread Worker is the only producer. The SDK thread alone owns the
+    // Service and accesses staging only while its job is RUNNING.
+    unsafe impl<S: Service> Sync for Shared<S> {}
+    impl<S: Service> Shared<S> {
+        #[allow(clippy::new_without_default)]
+        pub const fn new() -> Self {
+            Self {
+                mailbox: Mailbox::new(),
+                staging: UnsafeCell::new([0; BLOB_SIZE]),
+                stack: UnsafeCell::new(Stack([0; STACK_SIZE])),
+                event: UnsafeCell::new(Event([0; 2])),
+                thread: UnsafeCell::new(Thread {
+                    handle: 0,
+                    joined: 0,
+                    detached: 0,
+                    padding: [0; 2],
+                }),
+                claimed: AtomicBool::new(false),
+            }
+        }
+    }
 
-    /// Main-thread owner of the one worker. Drop deliberately never joins or
-    /// frees an active native thread; process lifetime owns its static memory.
-    pub struct BankWorker {
+    /// Main-thread owner of the one worker. The thread is started once and
+    /// waits for jobs until the process ends; no job ends it, and Drop never
+    /// joins or frees it. Process lifetime owns its static memory.
+    pub struct Worker<S: Service> {
         current: Option<JobId>,
         cancellable: bool,
-        closing: bool,
-        closed: bool,
         thread: PhantomData<*mut ()>,
+        service: PhantomData<S>,
     }
-    impl BankWorker {
+    impl<S: Service> Worker<S> {
         /// # Safety
         /// Requires the exact reviewed executable after native OS/FS setup.
         /// Call once from the UI thread. Keep the initialized native FS service
-        /// and application manager alive until worker Close has completed or
-        /// process exit. An idle worker touches only its private event and does
+        /// and application manager alive until process exit. An idle worker
+        /// touches only its private event and does
         /// not access native owners while the application tears down.
         pub unsafe fn start() -> Result<Self, WorkerError> {
-            SHARED
+            S::shared()
                 .claimed
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
                 .map_err(|_| WorkerError::control(WorkerErrorKind::Busy))?;
-            let result = unsafe { start_thread() };
+            let result = unsafe { start_thread::<S>() };
             if let Err(error) = result {
                 // No worker exists after a failed Result from SDK create.
                 if error.kind != WorkerErrorKind::Stopped {
-                    SHARED.claimed.store(false, Ordering::Release);
+                    S::shared().claimed.store(false, Ordering::Release);
                 }
                 return Err(error);
             }
             Ok(Self {
                 current: None,
                 cancellable: false,
-                closing: false,
-                closed: false,
                 thread: PhantomData,
+                service: PhantomData,
             })
         }
         /// # Safety
-        /// Keep every borrowed game archive and frozen prepared block alive and
-        /// immutable until poll returns a terminal result. Protect the owning
-        /// native task against teardown/unmount. No native writer may overlap
-        /// worker access to that game's main file. Staged bytes are exclusively
+        /// Keep everything the job borrows from the original alive and
+        /// immutable until poll returns a terminal result, and protect the
+        /// owning native task against teardown. Staged bytes are exclusively
         /// transferred to the worker until completion is collected.
-        pub unsafe fn submit(&mut self, job: Job) -> Result<JobId, WorkerError> {
-            if self.closing || self.closed {
-                return Err(WorkerError::control(WorkerErrorKind::Stopped));
-            }
+        pub unsafe fn submit(&mut self, job: S::Job) -> Result<JobId, WorkerError> {
             if self.current.is_some() {
                 return Err(WorkerError::control(WorkerErrorKind::Busy));
             }
-            if thread_exited()? {
+            if thread_exited::<S>()? {
                 return Err(WorkerError::control(WorkerErrorKind::Stopped));
             }
-            let id = SHARED.mailbox.submit(job)?;
+            let id = S::shared().mailbox.submit(job)?;
             self.current = Some(id);
-            self.cancellable = job.cancellable();
-            self.closing = matches!(job, Job::Close);
-            signal();
+            self.cancellable = S::cancellable(&job);
+            signal::<S>();
             Ok(id)
         }
-        pub fn poll(&mut self, id: JobId) -> Result<Option<Reply>, WorkerError> {
+        pub fn poll(&mut self, id: JobId) -> Result<Option<S::Reply>, WorkerError> {
             if self.current != Some(id) {
                 return Err(WorkerError::control(WorkerErrorKind::StaleJob));
             }
-            if let Some(result) = SHARED.mailbox.poll(id)? {
+            if let Some(result) = S::shared().mailbox.poll(id)? {
                 self.current = None;
-                if !stack_guard_valid() {
+                if !stack_guard_valid::<S>() {
                     return Err(WorkerError::control(WorkerErrorKind::Resource));
-                }
-                if self.closing {
-                    // poll_closed separately waits for the SDK epilogue to exit.
-                    self.closed = true;
                 }
                 return result.map(Some);
             }
-            if thread_exited()? {
-                // Completion can race the first mailbox check. Collect it if
-                // the worker published immediately before SDK thread exit.
-                if let Some(result) = SHARED.mailbox.poll(id)? {
+            if thread_exited::<S>()? {
+                // The thread is gone, which no job asks for. Collect a result
+                // it published immediately before that.
+                if let Some(result) = S::shared().mailbox.poll(id)? {
                     self.current = None;
-                    self.closed = true;
                     return result.map(Some);
                 }
                 // Only confirmed kernel termination releases borrowed native
                 // owners. Leave a nonterminal mailbox poisoned/inaccessible.
                 self.current = None;
-                self.closed = true;
                 return Err(WorkerError::control(WorkerErrorKind::Stopped));
             }
             Ok(None)
@@ -279,7 +341,7 @@ mod arm {
             if !self.cancellable {
                 return Ok(false);
             }
-            SHARED.mailbox.request_cancel(id)?;
+            S::shared().mailbox.request_cancel(id)?;
             Ok(true)
         }
         /// True until a terminal result has been collected. Errors such as a
@@ -289,87 +351,70 @@ mod arm {
         }
         pub fn staging(&self) -> Result<&[u8], WorkerError> {
             self.ensure_idle()?;
-            Ok(unsafe { &*SHARED.staging.get() })
+            Ok(unsafe { &*S::shared().staging.get() })
         }
         pub fn staging_mut(&mut self) -> Result<&mut [u8], WorkerError> {
             self.ensure_idle()?;
-            Ok(unsafe { &mut *SHARED.staging.get() })
+            Ok(unsafe { &mut *S::shared().staging.get() })
         }
         fn ensure_idle(&self) -> Result<(), WorkerError> {
-            if self.current.is_some() || !SHARED.mailbox.idle() {
+            if self.current.is_some() || !S::shared().mailbox.idle() {
                 return Err(WorkerError::control(WorkerErrorKind::Busy));
             }
             Ok(())
         }
-        /// Checks room for the retained native game-writer thread immediately
-        /// before launching it. Does not raise resource limits or block on I/O.
-        pub fn ensure_writer_capacity(&self) -> Result<(), WorkerError> {
-            thread_capacity(1)
-        }
-        /// Nonblocking cleanup after Close. Returns false until SDK exit; the
-        /// static stack is never recycled while a thread could still use it.
-        pub fn poll_closed(&mut self) -> Result<bool, WorkerError> {
-            if !self.closed {
-                return Ok(false);
-            }
-            if !thread_exited()? {
-                return Ok(false);
-            }
-            let thread = unsafe { &mut *SHARED.thread.get() };
-            if thread.handle != 0 {
-                close_handle(thread.handle)?;
-                thread.handle = 0;
-            }
-            Ok(true)
+        /// Checks room for `additional` threads immediately before the patch
+        /// starts them. Does not raise resource limits or block on I/O.
+        pub fn ensure_thread_capacity(&self, additional: i64) -> Result<(), WorkerError> {
+            thread_capacity(additional)
         }
     }
-    unsafe extern "aapcs" fn worker_entry(_: *mut u8) {
-        let mut storage = StorageWorker::new();
+    unsafe extern "aapcs" fn worker_entry<S: Service>(_: *mut u8) {
+        let shared = S::shared();
+        let mut service = S::start();
         loop {
-            if let Some((id, job)) = SHARED.mailbox.take() {
-                let cancelled = job.cancellable() && SHARED.mailbox.cancelled(id);
+            if let Some((id, job)) = shared.mailbox.take() {
+                let cancellable = S::cancellable(&job);
+                let cancelled = cancellable && shared.mailbox.cancelled(id);
                 let mut result = if cancelled {
                     Err(WorkerError::control(WorkerErrorKind::Cancelled))
                 } else {
-                    storage.run(job, unsafe { &mut *SHARED.staging.get() })
+                    service.run(job, unsafe { &mut *shared.staging.get() })
                 };
-                if job.cancellable() && SHARED.mailbox.cancelled(id) {
+                if cancellable && shared.mailbox.cancelled(id) {
                     result = Err(WorkerError::control(WorkerErrorKind::Cancelled));
                 }
-                let closing = matches!(job, Job::Close);
-                if SHARED.mailbox.finish(id, result).is_err() {
-                    return;
-                }
-                if closing {
+                if shared.mailbox.finish(id, result).is_err() {
                     return;
                 }
             } else {
-                wait();
+                wait::<S>();
             }
         }
     }
-    fn signal() {
+    fn signal<S: Service>() {
         let signal: unsafe extern "aapcs" fn(*mut Event) = unsafe { transmute(0x00234a00usize) };
         unsafe {
-            signal(SHARED.event.get());
+            signal(S::shared().event.get());
         }
     }
-    fn wait() {
+    fn wait<S: Service>() {
         let wait: unsafe extern "aapcs" fn(*mut Event) = unsafe { transmute(0x00231e70usize) };
         unsafe {
-            wait(SHARED.event.get());
+            wait(S::shared().event.get());
         }
     }
-    unsafe fn start_thread() -> Result<(), WorkerError> {
-        thread_capacity(2)?; // this worker plus the retained native game writer
-        let stack = SHARED.stack.get().cast::<u8>();
+    unsafe fn start_thread<S: Service>() -> Result<(), WorkerError> {
+        thread_capacity(S::THREADS)?;
+        let shared = S::shared();
+        let stack = shared.stack.get().cast::<u8>();
         unsafe {
             core::ptr::write_bytes(stack, GUARD_BYTE, GUARD_SIZE);
         }
         let init: unsafe extern "aapcs" fn(*mut Event, u32) -> u32 =
             unsafe { transmute(0x00235c6cusize) };
         unsafe {
-            init(SHARED.event.get(), 0);
+            init(shared.event.get(), 0);
         }
         // Native delegate: copies one context pointer onto the supplied stack,
         // invokes entry(context), and has a no-op destructor. SDK001211e4 owns
@@ -387,11 +432,12 @@ mod arm {
             u32,
         ) -> i32;
         let create: Create = unsafe { transmute(0x002320d4usize) };
+        let entry: unsafe extern "aapcs" fn(*mut u8) = worker_entry::<S>;
         let code = unsafe {
             create(
-                SHARED.thread.get(),
+                shared.thread.get(),
                 descriptor.as_ptr(),
-                worker_entry as *const () as usize,
+                entry as *const () as usize,
                 &context,
                 stack.add(STACK_SIZE),
                 31,
@@ -404,17 +450,17 @@ mod arm {
         }
         // SDK success must supply a real handle. A missing handle cannot safely
         // authorize another creation attempt or any reuse of the static stack.
-        if unsafe { (*SHARED.thread.get()).handle } == 0 {
+        if unsafe { (*shared.thread.get()).handle } == 0 {
             return Err(WorkerError::control(WorkerErrorKind::Stopped));
         }
         Ok(())
     }
-    fn stack_guard_valid() -> bool {
-        let bottom = SHARED.stack.get().cast::<u8>();
+    fn stack_guard_valid<S: Service>() -> bool {
+        let bottom = S::shared().stack.get().cast::<u8>();
         (0..GUARD_SIZE).all(|i| unsafe { bottom.add(i).read_volatile() } == GUARD_BYTE)
     }
-    fn thread_exited() -> Result<bool, WorkerError> {
-        let handle = unsafe { (*SHARED.thread.get()).handle };
+    fn thread_exited<S: Service>() -> Result<bool, WorkerError> {
+        let handle = unsafe { (*S::shared().thread.get()).handle };
         if handle == 0 {
             return Ok(true);
         }
@@ -429,14 +475,6 @@ mod arm {
             Err(WorkerError::resource(result as u32))
         }
     }
-    fn close_handle(handle: u32) -> Result<(), WorkerError> {
-        let result = unsafe { crate::kernel::close_handle(handle) };
-        if result < 0 {
-            Err(WorkerError::resource(result as u32))
-        } else {
-            Ok(())
-        }
-    }
     fn thread_capacity(additional: i64) -> Result<(), WorkerError> {
         crate::kernel::check_thread_capacity(additional).map_err(|error| match error {
             crate::kernel::CapacityError::Native(code) => WorkerError::resource(code),
@@ -447,7 +485,7 @@ mod arm {
     }
 }
 #[cfg(target_arch = "arm")]
-pub use arm::BankWorker;
+pub use arm::{Service, Shared, Worker};
 
 #[cfg(test)]
 mod tests {
@@ -547,12 +585,6 @@ mod tests {
             assert_eq!(reply, core::array::from_fn(|i| sequence ^ i as u32));
         }
         worker.join().unwrap();
-    }
-    #[test]
-    fn mutation_commands_do_not_accept_cooperative_discard() {
-        assert!(!Job::Initialize.cancellable());
-        assert!(!Job::Close.cancellable());
-        assert!(Job::Open { session: 1 }.cancellable());
     }
     #[test]
     fn sequence_exhaustion_never_reuses_an_old_id() {

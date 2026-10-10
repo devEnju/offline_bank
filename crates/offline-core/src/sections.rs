@@ -136,6 +136,76 @@ pub fn stored_species(record: &[u8; RECORD_SIZE]) -> u16 {
     u16::from_le_bytes([record[at], record[at + 1]]) ^ (seed >> 16) as u16
 }
 
+/// What makes one Pokémon that Pokémon wherever its record is stored and
+/// whatever else about it changes: the encryption constant, the personality
+/// value, and the original trainer's ID and secret ID.
+pub type Identity = [u32; 3];
+
+/// The identity of a stored record; `None` for an empty slot. The three
+/// fields besides the encryption constant lie in the block that starts with
+/// the species (words 2, 3 and 8..10 of it).
+pub fn stored_identity(record: &[u8; RECORD_SIZE]) -> Option<Identity> {
+    let key = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
+    let shuffle = (key >> 13) & 31;
+    let shuffle = if shuffle >= 24 { shuffle - 24 } else { shuffle };
+    let first = usize::from(BLOCK_POSITION[shuffle as usize * 4]) * 28;
+    let mut plain = [0u16; 10];
+    let mut seed = key;
+    for word in 0..first + plain.len() {
+        seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
+        if word >= first {
+            let at = 8 + word * 2;
+            plain[word - first] =
+                u16::from_le_bytes([record[at], record[at + 1]]) ^ (seed >> 16) as u16;
+        }
+    }
+    if plain[0] == 0 {
+        return None;
+    }
+    Some([
+        key,
+        u32::from(plain[8]) | u32::from(plain[9]) << 16,
+        u32::from(plain[2]) | u32::from(plain[3]) << 16,
+    ])
+}
+
+/// The 100 boxes in a body or a Bank file payload: 30 records each, then
+/// the box's name and index.
+pub const BOXES: usize = 100;
+pub const BOX_SLOTS: usize = 30;
+const BOXES_START: usize = 0x17C;
+const BOX_STRIDE: usize = 0x1B56;
+/// Most Pokémon one Bank snapshot holds: its boxes and the transport box.
+pub const HELD: usize = BOXES * BOX_SLOTS + TRANSPORT_SLOTS;
+
+/// Appends the identity of every occupied record among whole stored records
+/// to `out[count..]` and returns the new count. Records beyond the room in
+/// `out` are not counted.
+pub fn identities(records: &[u8], out: &mut [Identity], mut count: usize) -> usize {
+    for record in records.chunks_exact(RECORD_SIZE) {
+        let identity = record.try_into().ok().and_then(stored_identity);
+        if let (Some(identity), Some(place)) = (identity, out.get_mut(count)) {
+            *place = identity;
+            count += 1;
+        }
+    }
+    count
+}
+
+/// `identities` for the 100 boxes of a Bank file payload.
+pub fn box_identities(
+    payload: &[u8],
+    out: &mut [Identity],
+    mut count: usize,
+) -> Result<usize, SectionError> {
+    sized(payload.len(), BANK_SIZE)?;
+    for index in 0..BOXES {
+        let at = BOXES_START + index * BOX_STRIDE;
+        count = identities(&payload[at..at + BOX_SLOTS * RECORD_SIZE], out, count);
+    }
+    Ok(count)
+}
+
 /// Occupied slots among whole stored records.
 pub fn occupied(records: &[u8]) -> u32 {
     let mut count = 0;
@@ -266,6 +336,114 @@ mod tests {
             assert_eq!(stored_species(&record(key, 151)), 151, "shuffle {shuffle}");
             assert_eq!(stored_species(&record(key, 807)), 807, "shuffle {shuffle}");
         }
+    }
+
+    /// Like `record`, with the fields of an identity and others beside them.
+    fn pokemon(key: u32, species: u16, identity: (u32, u16, u16), other: u16) -> [u8; RECORD_SIZE] {
+        let mut plain = [0u16; 112];
+        plain[0] = species;
+        plain[1] = other; // held item
+        plain[2] = identity.1;
+        plain[3] = identity.2;
+        plain[4] = other; // experience
+        plain[8] = identity.0 as u16;
+        plain[9] = (identity.0 >> 16) as u16;
+        plain[30] = other;
+        plain[90] = other;
+        let shuffle = (((key >> 13) & 31) % 24) as usize;
+        let mut stored = [0u16; 112];
+        for block in 0..4 {
+            let position = usize::from(BLOCK_POSITION[shuffle * 4 + block]);
+            stored[position * 28..position * 28 + 28]
+                .copy_from_slice(&plain[block * 28..block * 28 + 28]);
+        }
+        let mut out = [0u8; RECORD_SIZE];
+        out[..4].copy_from_slice(&key.to_le_bytes());
+        let mut seed = key;
+        for (index, word) in stored.iter().enumerate() {
+            seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
+            out[8 + index * 2..10 + index * 2]
+                .copy_from_slice(&(word ^ (seed >> 16) as u16).to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn identity_is_found_for_every_block_order_and_ignores_everything_else() {
+        for shuffle in 0..32u32 {
+            let key = 0x4321_0000 | (shuffle << 13) | 0x0aa;
+            let identity = (0x89ab_cdef, 0x1234, 0x5678);
+            let expected = Some([key, 0x89ab_cdef, 0x5678_1234]);
+            assert_eq!(
+                stored_identity(&pokemon(key, 25, identity, 0)),
+                expected,
+                "shuffle {shuffle}"
+            );
+            // Evolved, levelled, given an item: the same Pokémon.
+            assert_eq!(
+                stored_identity(&pokemon(key, 26, identity, 0x7e57)),
+                expected,
+                "shuffle {shuffle}"
+            );
+            // An empty slot is nobody, whatever else it holds.
+            assert_eq!(stored_identity(&pokemon(key, 0, identity, 9)), None);
+            // Each field counts.
+            for other in [(0x89ab_cdee, 0x1234, 0x5678), (0x89ab_cdef, 0x1235, 0x5678)] {
+                assert_ne!(stored_identity(&pokemon(key, 25, other, 0)), expected);
+            }
+            assert_ne!(
+                stored_identity(&pokemon(key, 25, (0x89ab_cdef, 0x1234, 0x5679), 0)),
+                expected
+            );
+        }
+        // The species agrees with `stored_species` on the same record.
+        let both = pokemon(0x0bad_f00d, 151, (1, 2, 3), 4);
+        assert_eq!(stored_species(&both), 151);
+        assert!(stored_identity(&both).is_some());
+    }
+
+    #[test]
+    fn the_boxes_end_where_the_transport_box_begins_and_all_slots_are_read() {
+        assert_eq!(BOXES_START + BOXES * BOX_STRIDE, TRANSPORT_RECORDS.start);
+        assert_eq!(BOX_STRIDE, BOX_SLOTS * RECORD_SIZE + 0x24 + 2);
+        assert_eq!(HELD, 3030);
+
+        let mut work = vec![0u8; BLOB_SIZE];
+        work[0x15C..0x15E].copy_from_slice(&2u16.to_le_bytes());
+        work[0x15E..0x160].copy_from_slice(&100u16.to_le_bytes());
+        // Every slot holds an encrypted empty record, as in a real Bank,
+        // and the box names hold bytes that are not records.
+        for index in 0..BOXES {
+            let at = BOXES_START + index * BOX_STRIDE;
+            for slot in 0..BOX_SLOTS {
+                let key = (index * 64 + slot) as u32 | 0x5000_0000;
+                work[at + slot * RECORD_SIZE..at + (slot + 1) * RECORD_SIZE]
+                    .copy_from_slice(&pokemon(key, 0, (1, 2, 3), 0));
+            }
+            work[at + BOX_SLOTS * RECORD_SIZE..at + BOX_STRIDE].fill(0xEE);
+        }
+        compact(&mut work).unwrap();
+        let mut found = vec![[0; 3]; HELD];
+        assert_eq!(box_identities(&work[..BANK_SIZE], &mut found, 0), Ok(0));
+
+        // The first and the last slot of the first and the last box.
+        let mut expected = Vec::new();
+        for (index, slot) in [(0, 0), (0, 29), (57, 13), (99, 0), (99, 29)] {
+            let key = (index * 64 + slot) as u32 | 0x7000_0000;
+            let at = BOXES_START + index * BOX_STRIDE + slot * RECORD_SIZE;
+            work[at..at + RECORD_SIZE].copy_from_slice(&pokemon(key, 133, (key ^ 5, 77, 88), 0));
+            expected.push([key, key ^ 5, 88 << 16 | 77]);
+        }
+        assert_eq!(box_identities(&work[..BANK_SIZE], &mut found, 0), Ok(5));
+        assert_eq!(&found[..5], expected.as_slice());
+        // Appending keeps what is there; a full list takes no more.
+        assert_eq!(box_identities(&work[..BANK_SIZE], &mut found, 5), Ok(10));
+        assert_eq!(&found[..5], expected.as_slice());
+        assert_eq!(
+            box_identities(&work[..BANK_SIZE], &mut found[..7], 5),
+            Ok(7)
+        );
+        assert!(box_identities(&work[..BANK_SIZE - 1], &mut found, 0).is_err());
     }
 
     #[test]

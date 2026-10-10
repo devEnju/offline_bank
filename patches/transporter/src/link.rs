@@ -10,7 +10,9 @@ mod linked {
         transporter_select,
     };
     use transporter_payload::gen5::transporter_slot_holds;
-    use transporter_payload::hooks::{transporter_check, transporter_deliver};
+    use transporter_payload::hooks::{
+        transporter_check, transporter_deliver, transporter_list_ready, transporter_next,
+    };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
         transporter_layout_built, transporter_title_language, transporter_vc_listed,
@@ -29,9 +31,9 @@ mod linked {
         ".arm",
         ".global transporter_entry",
         "transporter_entry:",
-        "b {check}",
-        "b {deliver}",
-        "b transporter_session",
+        "b transporter_check_stub",
+        "b transporter_deliver_stub",
+        "b {next}",
         "b transporter_slot",
         "b transporter_cart_id_stub",
         "b {cart_read}",
@@ -45,8 +47,8 @@ mod linked {
         "b transporter_language_back_stub",
         "b transporter_title_begin_stub",
         "b transporter_title_end_stub",
-        check = sym transporter_check,
-        deliver = sym transporter_deliver,
+        "b transporter_list_ready_stub",
+        next = sym transporter_next,
         cart_read = sym transporter_cart_read,
         cart_write = sym transporter_cart_write,
         language_chosen = sym transporter_language_chosen,
@@ -154,16 +156,58 @@ mod linked {
     core::arch::global_asm!(
         ".section .text.transporter_stubs,\"ax\",%progbits",
         ".arm",
-        // get_next_state, leaving the game list (was: connect). Sets bit 1 of
-        // the original activity mask through 0022AEEC, as the original connect
-        // step did; the original disconnect step clears it. Then answers
-        // GET_POKEMON and returns as the original case does.
-        "transporter_session:",
-        "mov r0, #1",
-        "ldr r12, =0x0022aeec",
-        "blx r12",
-        "mov r0, #9",
-        "pop {{r4, pc}}",
+        // Game list, the first instruction of its update (002445EC, was:
+        // ldr r0, [r4, #0x38]): its set-up is done and it is on screen.
+        // r4 = task; the instruction is run here and every other register
+        // the original still uses is returned as it came.
+        "transporter_list_ready_stub:",
+        "push {{r1-r3, r12, lr}}",
+        "sub sp, sp, #4",
+        "bl {list_ready}",
+        "add sp, sp, #4",
+        "pop {{r1-r3, r12, lr}}",
+        "ldr r0, [r4, #0x38]",
+        "bx lr",
+        // Game search, first step (00246F48, was: ldr r0, [r0], the start
+        // of the cartridge scan). r4 = task; lr is free, the original
+        // function saved its own. 1: still checking, the search's "nothing
+        // this frame" return. 2: a message is on screen; 00247000 selects
+        // the search's own step that waits for it and ends the search.
+        // 3: its ending without a message. Else: the replaced instruction,
+        // with r0 as the search had loaded it, and on with the search.
+        "transporter_check_stub:",
+        "mov r0, r4",
+        "bl {check}",
+        "cmp r0, #1",
+        "ldreq r12, =0x00247024",
+        "bxeq r12",
+        "cmp r0, #2",
+        "ldreq r12, =0x00247000",
+        "bxeq r12",
+        "cmp r0, #3",
+        "ldreq r12, =0x0024702c",
+        "bxeq r12",
+        "ldr r0, =0x00329380",
+        "ldr r0, [r0]",
+        "ldr r12, =0x00246f4c",
+        "bx r12",
+        // Transfer, sub-state 0 (0024A150, was: the start of creating the
+        // upload request). r4 = task; lr is free as above. 1: delivered, on
+        // to the original removal code. 2: still working, the original
+        // return, to come back next frame. Else: sub-state 0x11, the
+        // original failure message, through the store at 0024A4C0.
+        "transporter_deliver_stub:",
+        "mov r0, r4",
+        "bl {deliver}",
+        "cmp r0, #1",
+        "ldreq r12, =0x0024a274",
+        "bxeq r12",
+        "cmp r0, #2",
+        "ldreq r12, =0x0024a5dc",
+        "bxeq r12",
+        "mov r0, #0x11",
+        "ldr r12, =0x0024a4c0",
+        "bx r12",
         // Gen 5 reader, per-slot result code (was: ldr r0, [r1, r7]). Without
         // a code, a slot that holds no species gets the original skip code
         // 0x14, as the server used to answer. r8 is the slot; in the caller's
@@ -189,6 +233,9 @@ mod linked {
         "svc #0x23",
         "bx lr",
         ".ltorg",
+        check = sym transporter_check,
+        list_ready = sym transporter_list_ready,
+        deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,
     );
 

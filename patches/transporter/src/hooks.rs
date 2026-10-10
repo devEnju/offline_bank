@@ -3,7 +3,7 @@
 //! wrappers. The original task calls an entry every frame until it answers;
 //! the main thread never waits for a file operation.
 
-use crate::layout::*;
+use crate::{layout::*, navigation};
 use core::{
     cell::UnsafeCell,
     mem::transmute,
@@ -12,7 +12,7 @@ use core::{
 };
 use offline_core::{
     sections::TRANSPORT_SLOTS,
-    sidecar::Sidecar,
+    sidecar::{Sidecar, SLOTS},
     transport::{self, KIND},
     Storage,
 };
@@ -24,6 +24,27 @@ pub(crate) const FILE_READ: usize = 0x0015_930c;
 pub(crate) const FILE_WRITE: usize = 0x0015_9390;
 pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
 pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
+/// The original's "show this message and wait for it to be acknowledged":
+/// `(ui, message, 1)`, as every one of its tasks calls it.
+const SHOW_MESSAGE: usize = 0x0019_b50c;
+/// The original's router, `get_next_state(manager, current)`, and what it
+/// reads: the finished task at `manager + 0x10` with its outcome byte at
+/// `+0x30`, and the manager's "cancelled" flag, which it clears.
+const NEXT_STATE: usize = 0x0024_2ba0;
+const MANAGER_TASK: usize = 0x10;
+const MANAGER_CANCELLED: usize = 0x1a;
+const TASK_OUTCOME: usize = 0x30;
+/// The original's HOME and sleep block: `0022AEEC(bit)` sets a bit of its
+/// activity mask and `0011A5FC(bit)` clears it. While the mask is not zero
+/// the original refuses both, as it did from its connect step to its
+/// disconnect step.
+const BLOCK_SET: usize = 0x0022_aeec;
+const BLOCK_CLEAR: usize = 0x0011_a5fc;
+/// Set by the original (0010AD84) when HOME is pressed while the mask is
+/// zero, and nothing else is done for the press then. Its main loop
+/// (001044D0) carries the press out some frames later, whatever the mask
+/// says by then.
+const HOME_ACCEPTED: *mut u8 = 0x002f_49e9 as *mut u8;
 /// Flush and update the file's time, as Bank's writer does.
 pub(crate) const FLUSH_FLAGS: u32 = 0x0001_0001;
 /// The original's `svcCreateThread(out, entry, arg, stack_top, priority,
@@ -71,12 +92,36 @@ struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
 unsafe impl Sync for Stack {}
 static STACK: Stack = Stack(UnsafeCell::new([0; WORKER_STACK_SIZE]));
 
-/// `/transport.bin` in Bank's extdata, open for reading and writing.
-struct File(u32);
+/// The transport box in Bank's extdata, open for reading and writing: its
+/// two slots (`offline_core::sidecar`) are the files `/mover.bin` and
+/// `/mover.alt.bin`, addressed as one range. Bank keeps every slot in a file
+/// of its own, because the console leaves a file that was being written
+/// unreadable when the power fails.
+///
+/// A file that is missing or cannot be opened makes every read of its slot
+/// fail, and so the check and the delivery refuse: Transporter neither
+/// creates nor replaces a file. Bank's next Save and Quit does.
+struct File {
+    handles: [Option<u32>; SLOTS],
+    written: [bool; SLOTS],
+}
 impl File {
-    /// `None` when Bank's extdata or the file does not exist, access is
-    /// refused, or the file is not exactly the size Bank creates.
+    /// `None` when Bank's extdata or both files do not exist, access is
+    /// refused, or a file is not exactly the size Bank creates.
     unsafe fn open() -> Option<Self> {
+        let mut handles = [None; SLOTS];
+        for (handle, path) in handles.iter_mut().zip(MOVER_PATHS) {
+            *handle = unsafe { Self::open_one(path) }.ok()?;
+        }
+        let file = Self {
+            handles,
+            written: [false; SLOTS],
+        };
+        file.handles.iter().any(Option::is_some).then_some(file)
+    }
+    /// `Ok(None)` for a file that is not there or cannot be opened, `Err`
+    /// for one of another size: that is not a file of this layout.
+    unsafe fn open_one(path: &[u8]) -> Result<Option<u32>, ()> {
         type Open = unsafe extern "aapcs" fn(
             *const u32,
             *mut u32,
@@ -106,31 +151,40 @@ impl File {
                 archive.as_ptr().cast(),
                 12,
                 3,
-                TRANSPORT_PATH.as_ptr(),
-                TRANSPORT_PATH.len() as u32,
+                path.as_ptr(),
+                path.len() as u32,
                 3,
                 0,
             )
         };
         if code < 0 || handle == 0 {
-            return None;
+            return Ok(None);
         }
-        let file = Self(handle);
         let size: Size = unsafe { transmute(FILE_SIZE) };
         let mut length = 0;
-        if unsafe { size(&file.0, &mut length) } < 0 || length != KIND.file_len() {
-            return None;
+        if unsafe { size(&handle, &mut length) } < 0 || length != KIND.slot_len() {
+            unsafe { close(handle) };
+            return Err(());
         }
-        Some(file)
+        Ok(Some(handle))
     }
-    fn put(&mut self, offset: u64, bytes: &[u8], flags: u32) -> Result<(), ()> {
+    /// The slot file that holds `offset..offset + length`, and where in it.
+    fn locate(&self, offset: u64, length: usize) -> Result<(usize, u32, u64), ()> {
+        let index = (offset / KIND.slot_len()) as usize;
+        let within = offset % KIND.slot_len();
+        if index >= SLOTS || within + length as u64 > KIND.slot_len() {
+            return Err(());
+        }
+        Ok((index, self.handles[index].ok_or(())?, within))
+    }
+    fn put(&mut self, handle: u32, offset: u64, bytes: &[u8], flags: u32) -> Result<(), ()> {
         type Write =
             unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
         let write: Write = unsafe { transmute(FILE_WRITE) };
         let mut count = 0;
         let code = unsafe {
             write(
-                &self.0,
+                &handle,
                 &mut count,
                 offset,
                 bytes.as_ptr(),
@@ -144,13 +198,18 @@ impl File {
         Ok(())
     }
 }
+unsafe fn close(handle: u32) {
+    type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
+    let close: Close = unsafe { transmute(FILE_CLOSE) };
+    unsafe {
+        close(&handle);
+        transporter_close_handle(handle);
+    }
+}
 impl Drop for File {
     fn drop(&mut self) {
-        type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
-        let close: Close = unsafe { transmute(FILE_CLOSE) };
-        unsafe {
-            close(&self.0);
-            transporter_close_handle(self.0);
+        for handle in self.handles.into_iter().flatten() {
+            unsafe { close(handle) };
         }
     }
 }
@@ -158,13 +217,14 @@ impl Storage for File {
     type Error = ();
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), ()> {
         type Read = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
+        let (_, handle, within) = self.locate(offset, bytes.len())?;
         let read: Read = unsafe { transmute(FILE_READ) };
         let mut count = 0;
         let code = unsafe {
             read(
-                &self.0,
+                &handle,
                 &mut count,
-                offset,
+                within,
                 bytes.as_mut_ptr(),
                 bytes.len() as u32,
             )
@@ -175,11 +235,25 @@ impl Storage for File {
         Ok(())
     }
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), ()> {
-        self.put(offset, bytes, 0)
+        let (index, handle, within) = self.locate(offset, bytes.len())?;
+        self.written[index] = true;
+        self.put(handle, within, bytes, 0)
     }
+    /// Only a file that was written is flushed: the one that holds Bank's
+    /// own box is never sent a write of any kind.
     fn sync(&mut self) -> Result<(), ()> {
         let dummy = [0u8; 1];
-        self.put(0, &dummy[..0], FLUSH_FLAGS)
+        for index in 0..SLOTS {
+            if let (Some(handle), true) = (self.handles[index], self.written[index]) {
+                self.put(handle, 0, &dummy[..0], FLUSH_FLAGS)?;
+                self.written[index] = false;
+            }
+        }
+        Ok(())
+    }
+    /// Transporter replaces no file of Bank's.
+    fn recreate(&mut self, _: u64, _: u64) -> Result<(), ()> {
+        Err(())
     }
 }
 
@@ -210,18 +284,16 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
 /// The file work of one job. Runs on the worker thread.
 unsafe fn work(job: u32, task: *const u8) -> u32 {
     let Some(file) = (unsafe { File::open() }) else {
-        return if job == JOB_CHECK { CHECK_REFUSED } else { 0 };
+        return if job == JOB_CHECK {
+            refusal_message(None).unwrap_or(0)
+        } else {
+            0
+        };
     };
     let mut file = Sidecar::new(file, KIND);
     if job == JOB_CHECK {
-        let allowed = file
-            .slots()
-            .is_ok_and(|slots| transport::may_deliver(&slots));
-        return if allowed {
-            CHECK_ALLOWED
-        } else {
-            CHECK_REFUSED
-        };
+        // The message to show, or 0 for none.
+        return refusal_message(file.slots().ok().as_ref()).unwrap_or(0);
     }
     let Some((records, tags)) = (unsafe { native_box(task) }) else {
         return 0;
@@ -273,23 +345,90 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
     }
 }
 
-/// Replaces the server question "is Bank's transport box empty?". Returns the
-/// next sub-state of the original task.
+/// Sets or clears bit 1 of the original's activity mask through the
+/// original functions.
+///
+/// The mask only refuses new HOME presses. One accepted just before it was
+/// set would still be carried out, so setting the mask also takes that press
+/// back: accepting it did nothing but set the one byte cleared here. From
+/// then on the original refuses every press itself, and the HOME Menu, and
+/// closing Transporter from it, never meet a file being read or written.
+unsafe fn refuse_home(refuse: bool) {
+    let address = if refuse { BLOCK_SET } else { BLOCK_CLEAR };
+    let mark: unsafe extern "aapcs" fn(u32) = unsafe { transmute(address) };
+    unsafe { mark(1) };
+    if refuse {
+        unsafe { HOME_ACCEPTED.write_volatile(0) };
+    }
+}
+
+/// Replaces the one call of the original's router (`00242EF8`). The
+/// original is asked first; its answer is changed where the offline flow
+/// differs, and HOME and sleep are refused or let through by the kind of
+/// the step that comes next (`navigation`).
 /// # Safety
-/// Called only from the patched site at 00248D40 with the live task in `r0`.
+/// Called only from the patched call site, on the main thread, with the
+/// live manager whose current task has ended.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) -> u32 {
+    let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(NEXT_STATE) };
+    // Read before the original runs, which clears the flag.
+    let cancelled = unsafe { manager.add(MANAGER_CANCELLED).read() } != 0;
+    let outcome = unsafe { follow(manager, MANAGER_TASK) }
+        .map(|task| unsafe { task.add(TASK_OUTCOME).read() });
+    let native = unsafe { original(manager, current) };
+    let Some(outcome) = outcome else {
+        return native;
+    };
+    let next = navigation::destination(current, outcome, native, cancelled);
+    unsafe { refuse_home(navigation::loads(next)) };
+    next
+}
+
+/// The game list is set up and on screen: every save has been read, and it
+/// waits for the user.
+/// # Safety
+/// Called only from the stub of the patched site at 002445EC (link.rs), on
+/// the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_ready() {
+    unsafe { refuse_home(false) };
+}
+
+/// Asks, when START was pressed and before the original searches for games,
+/// whether Bank can take a delivery: the question the original put to the
+/// server after a game was chosen. If not, the original's message for it is
+/// shown here and the search ends as it does for "no game found": back to
+/// the title screen.
+/// # Safety
+/// Called only from the stub of the patched site at 00246F48 (link.rs) with
+/// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    // Bank is asked whatever Box 1 held, as the original asked the server.
-    // An empty box is reported afterwards by the original's next step.
     match unsafe { step(task, JOB_CHECK) } {
-        None => CHECK_PENDING,
-        Some(CHECK_ALLOWED) => CHECK_ALLOWED,
-        Some(_) => {
-            // First entry of the original message table.
-            unsafe { task.add(TASK_MESSAGE_INDEX).write(0) };
-            CHECK_REFUSED
+        None => SEARCH_PENDING,
+        Some(0) => SEARCH_GO,
+        Some(message) => {
+            // Nothing more is read: HOME and sleep work on the message.
+            unsafe { refuse_home(false) };
+            if unsafe { show(task, message) } {
+                SEARCH_SHOWN
+            } else {
+                SEARCH_END
+            }
         }
     }
+}
+
+/// Shows an original message the way the game search shows its own.
+/// `false` when the task's dialog owner is not a pointer.
+unsafe fn show(task: *const u8, message: u32) -> bool {
+    let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
+        return false;
+    };
+    let show: unsafe extern "aapcs" fn(*const u8, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
+    unsafe { show(ui, message, 1) };
+    true
 }
 
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
@@ -297,7 +436,8 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
 /// `DELIVER_FAILED` when nothing was delivered, in which case the original
 /// must not remove anything from the source game.
 /// # Safety
-/// Called only from the patched site at 0024A154 with the live task in `r0`.
+/// Called only from the stub of the patched site at 0024A150 (link.rs) with
+/// the live task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
     match unsafe { step(task, JOB_DELIVER) } {

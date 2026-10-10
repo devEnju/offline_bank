@@ -26,7 +26,6 @@ SECTIONS {
         KEEP(*(.text.bank_offline_next))
         KEEP(*(.text.bank_offline_load))
         KEEP(*(.text.bank_offline_save))
-        KEEP(*(.text.bank_offline_validate_game))
         KEEP(*(.text.bank_offline_rewards))
         KEEP(*(.text.bank_offline_timestamp))
         KEEP(*(.text.bank_offline_dex_save_request))
@@ -57,8 +56,6 @@ SECTIONS {
     __bank_payload_end = .;
 
     ASSERT(__bank_payload_rx_size > 0, "empty executable payload")
-    /* See src/bootstrap.rs: the range cache calls need a large range. */
-    ASSERT(__bank_payload_rx_size >= 0x10000, "executable payload too small for the range cache calls")
     ASSERT((__bank_payload_rx_end & 0xfff) == 0, "unaligned RX/RW boundary")
     ASSERT(__bank_payload_end < 0x08000000, "payload reaches application heap")
     /DISCARD/ : { *(.comment .note .note.* .eh_frame .eh_frame_hdr) }

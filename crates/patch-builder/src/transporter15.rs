@@ -14,6 +14,8 @@ use crate::{encode_arm_branch, fail, hex, le16, le32, sha256, CheckedEdit, Resul
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES};
+use transporter_payload::sdsave::GAMES;
 
 pub const TITLE_ID: u64 = 0x0004_0000_000c_9c00;
 pub const TMD_VERSION: u16 = 5200;
@@ -51,7 +53,7 @@ pub const PAYLOAD_ADDRESS: u32 = 0x0036_4000;
 /// Entry words at the start of the payload, in this order.
 pub const ENTRY_CHECK: u32 = PAYLOAD_ADDRESS;
 pub const ENTRY_DELIVER: u32 = PAYLOAD_ADDRESS + 4;
-pub const ENTRY_SESSION: u32 = PAYLOAD_ADDRESS + 8;
+pub const ENTRY_NEXT: u32 = PAYLOAD_ADDRESS + 8;
 pub const ENTRY_SLOT: u32 = PAYLOAD_ADDRESS + 12;
 pub const ENTRY_CART_ID: u32 = PAYLOAD_ADDRESS + 16;
 pub const ENTRY_CART_READ: u32 = PAYLOAD_ADDRESS + 20;
@@ -65,34 +67,42 @@ pub const ENTRY_LANGUAGE_BUTTONS: u32 = PAYLOAD_ADDRESS + 48;
 pub const ENTRY_LANGUAGE_BACK: u32 = PAYLOAD_ADDRESS + 52;
 pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 56;
 pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 60;
-pub const ENTRY_COUNT: u32 = 16;
+pub const ENTRY_LIST_READY: u32 = PAYLOAD_ADDRESS + 64;
+pub const ENTRY_COUNT: u32 = 17;
 
 enum Word {
     Raw(u32),
     Branch(u32),
     BranchLink(u32),
-    /// A branch with the given condition nibble (0 equal, 1 not equal).
-    BranchIf(u32, u8),
 }
 use Word::*;
-const EQUAL: u8 = 0;
 
 /// (address, original word, replacement).
 const EDITS: &[(u32, u32, Word)] = &[
     // --- Start-up: run application init, then make the payload executable. ---
     (STARTUP_CALL, 0xeb00_0228, BranchLink(BOOTSTRAP_ADDRESS)),
     // --- Offline flow: the server steps are removed. ---
-    // get_next_state, SHOW_GAMES (was: next is CONNECT_ONLINE). The stub
-    // refuses HOME and sleep as the connect step did, then answers
-    // GET_POKEMON.
-    (0x0024_2d10, 0x03a0_0003, BranchIf(ENTRY_SESSION, EQUAL)),
-    // get_next_state, GET_POKEMON: next is CHECK_IF_USER_CAN_TRANSFER.
-    (0x0024_2d28, 0xe352_0002, Raw(0xe3a0_000b)),
-    (0x0024_2d2c, 0x0a00_002f, Branch(0x0024_2c4c)),
-    // Bank check, sub-state 0: no request object; go to the answer.
-    (0x0024_8cdc, 0xe59f_0304, Branch(0x0024_8d3c)),
-    // Bank check, sub-state 3: no server reply to parse.
-    (0x0024_8d58, 0xe1a0_0004, Branch(0x0024_8e44)),
+    // The one call of the router, get_next_state (was: bl 00242BA0). The
+    // entry asks the original and changes its answer in two places: after
+    // SHOW_GAMES comes GET_POKEMON, where the original connected, and after
+    // GET_POKEMON comes CHECK_IF_USER_CAN_TRANSFER. It also refuses HOME and
+    // sleep for the steps that read or write, as the connect step did for
+    // the whole session.
+    (0x0024_2ef8, 0xebff_ff28, BranchLink(ENTRY_NEXT)),
+    // Game list, the first instruction of its update (was: ldr r0, [r4,
+    // #0x38]): the list is set up and on screen. The stub lets HOME and
+    // sleep through again and runs the instruction.
+    (0x0024_45ec, 0xe594_0038, BranchLink(ENTRY_LIST_READY)),
+    // Game search, first step (was: ldr r0, [r0], the start of the cartridge
+    // scan). The stub asks the check entry with the task (r4) whether Bank
+    // can take a delivery, and either goes on with the search or ends it
+    // through the search's own steps.
+    (0x0024_6f48, 0xe590_0000, Branch(ENTRY_CHECK)),
+    // Bank step, sub-state 0 (was: the start of creating the server
+    // request): on to where the original continues after a "yes", which
+    // stores its record in the chosen game and saves it. Sub-states 1 to 3,
+    // the request and its reply, are never entered.
+    (0x0024_8cdc, 0xe59f_0304, Branch(0x0024_8e44)),
     // Reading Gen 5 and Gen 1/2: skip the remote validation.
     (0x0024_5728, 0xe59f_0c74, Branch(0x0024_5800)),
     (0x0024_60b8, 0xe59f_02e4, Branch(0x0024_61d0)),
@@ -158,27 +168,19 @@ const EDITS: &[(u32, u32, Word)] = &[
     // are left out here and not when the list is built. The list holds 40
     // entries as the original built it; one language gives at most 11.
     (0x0024_12d4, 0xeb00_3ff3, BranchLink(ENTRY_VC_SCAN)),
-    // --- Bank check: r0 = task; the entry answers the next sub-state. ---
-    (0x0024_8d3c, 0xe594_003c, Raw(0xe1a0_0004)),
-    (0x0024_8d40, 0xe594_1028, BranchLink(ENTRY_CHECK)),
-    (0x0024_8d44, 0xebff_da5a, Branch(0x0024_8ec8)),
-    // --- Transfer, sub-state 0: deliver first. ---
-    // 1: delivered, continue with the original removal code (0024A274).
+    // --- Transfer, sub-state 0 (was: the start of creating the upload
+    // request): deliver first. The stub calls the deliver entry with the
+    // task (r4) and goes on inside the original by its answer:
+    // 1: delivered, the original removal code (0024A274).
     // 2: still working, return and come back next frame (0024A5DC).
-    // else: the original failure message (sub-state 0x11); the game is
-    // left alone.
-    (0x0024_a150, 0xe59f_04f4, Raw(0xe1a0_0004)),
-    (0x0024_a154, 0xe594_100c, BranchLink(ENTRY_DELIVER)),
-    (0x0024_a158, 0xe590_5000, Raw(0xe350_0001)),
-    (0x0024_a15c, 0xe3a0_0050, BranchIf(0x0024_a274, EQUAL)),
-    (0x0024_a160, 0xebfe_707e, Raw(0xe350_0002)),
-    (0x0024_a164, 0xe350_0000, BranchIf(0x0024_a5dc, EQUAL)),
-    (0x0024_a168, 0xe320_f000, Raw(0xe3a0_0011)),
-    (0x0024_a16c, 0x1bfd_46ec, Branch(0x0024_a4c0)),
-    // Transfer, sub-state 0xA: no commit request; continue with the
-    // original final save and success message (sub-state 0xE).
-    (0x0024_a3d8, 0xe594_003c, Raw(0xe3a0_000e)),
-    (0x0024_a3dc, 0xe594_1028, Branch(0x0024_a4c0)),
+    // else: the original failure message (sub-state 0x11, stored at
+    // 0024A4C0); the game is left alone.
+    (0x0024_a150, 0xe59f_04f4, Branch(ENTRY_DELIVER)),
+    // Transfer, after the source game is saved (was: mov r0, #0xa, the one
+    // place that selects the commit request, sub-state 0xA): no commit
+    // request; the original final save and success message (sub-state 0xE)
+    // come next.
+    (0x0024_a3c0, 0xe3a0_000a, Raw(0xe3a0_000e)),
 ];
 
 fn word_edit(address: u32, original: u32, word: &Word) -> Result<CheckedEdit> {
@@ -186,12 +188,6 @@ fn word_edit(address: u32, original: u32, word: &Word) -> Result<CheckedEdit> {
         Raw(value) => value.to_le_bytes(),
         Branch(target) => encode_arm_branch(address, target, false)?,
         BranchLink(target) => encode_arm_branch(address, target, true)?,
-        BranchIf(target, condition) => {
-            let mut bytes = encode_arm_branch(address, target, false)?;
-            // Condition field: always (E) becomes the given condition.
-            bytes[3] = (bytes[3] & 0x0f) | (condition << 4);
-            bytes
-        }
     };
     Ok(CheckedEdit {
         offset: (address - CODE_BASE) as usize,
@@ -370,12 +366,41 @@ pub fn edits(image: &HookImage) -> Result<Vec<CheckedEdit>> {
     Ok(out)
 }
 
+/// The original's table of the Virtual Console titles: 39 rows of
+/// `{ version, language id, title index }`, three words each.
+pub const VC_TABLE: u32 = 0x002a_fe0c;
+const VC_ROW: usize = 12;
+const VC_ROW_LANGUAGE: usize = 4;
+
+/// The hooks list the games of one language and leave the original's game
+/// list unbounded, as it is. That holds only while the payload's copy of the
+/// table's languages is the original's and one language cannot fill the list.
+fn check_game_list(code: &[u8]) -> Result<()> {
+    let table = (VC_TABLE - CODE_BASE) as usize;
+    for (row, &language) in VC_LANGUAGES.iter().enumerate() {
+        if le32(code, table + row * VC_ROW + VC_ROW_LANGUAGE)? != u32::from(language) {
+            return fail(format!(
+                "Virtual Console table row {row} is not in the language the hooks expect"
+            ));
+        }
+    }
+    let most = (0..=u8::MAX)
+        .map(|language| VC_LANGUAGES.iter().filter(|&&row| row == language).count())
+        .max()
+        .unwrap_or(0);
+    if GAMES.len() + most > LIST_CAPACITY {
+        return fail("the games of one language do not fit the original game list");
+    }
+    Ok(())
+}
+
 /// Checks the whole input pair and every original word, then builds the
 /// paired IPS and exheader.
 pub fn prepare(code: &[u8], exheader: &[u8], elf: &[u8]) -> Result<PreparedPlacement> {
     if code.len() != CODE_LENGTH || sha256(code) != CODE_SHA256 {
         return fail("code.bin is not the reviewed Poké Transporter 1.5 executable");
     }
+    check_game_list(code)?;
     let image = inspect_image(elf)?;
     let edits = edits(&image)?;
     let prepared = prepare_expanded_data(
@@ -663,8 +688,6 @@ mod tests {
             )
         };
         for (address, entry) in [
-            (0x0024_8d40, ENTRY_CHECK),
-            (0x0024_a154, ENTRY_DELIVER),
             (0x0024_58dc, ENTRY_SLOT),
             (0x0024_3528, ENTRY_CART_ID),
             (0x0024_39a8, ENTRY_CART_READ),
@@ -713,26 +736,57 @@ mod tests {
             ),
             Some(ENTRY_LANGUAGE_BACK)
         );
+        // Sites that leave the original for good: plain branches to stubs
+        // that go on inside the original themselves.
+        for (address, entry) in [(0x0024_6f48, ENTRY_CHECK), (0x0024_a150, ENTRY_DELIVER)] {
+            let jump = word(address, &Branch(entry));
+            assert_eq!(branch_target(address, jump, false), Some(entry));
+        }
         // The original start-up call that the hook replaces and then makes.
         assert_eq!(
             branch_target(STARTUP_CALL, 0xeb00_0228, true),
             Some(ORIGINAL_APP_INIT)
         );
-        let session = word(0x0024_2d10, &BranchIf(ENTRY_SESSION, EQUAL));
-        assert_eq!(session >> 24, 0x0a);
+        // The router is called through the entry, which calls it in turn;
+        // nothing inside it is edited.
         assert_eq!(
-            branch_target(0x0024_2d10, (session & 0x00ff_ffff) | 0xea00_0000, false),
-            Some(ENTRY_SESSION)
+            branch_target(0x0024_2ef8, 0xebff_ff28, true),
+            Some(0x0024_2ba0)
         );
-        // beq keeps the offset of the unconditional form.
+        assert_eq!(
+            branch_target(
+                0x0024_2ef8,
+                word(0x0024_2ef8, &BranchLink(ENTRY_NEXT)),
+                true
+            ),
+            Some(ENTRY_NEXT)
+        );
+        assert!(EDITS
+            .iter()
+            .all(|(address, _, _)| !(0x0024_2ba0..0x0024_2e08).contains(address)));
         assert_eq!(word(0x0024_a15c, &Branch(0x0024_a274)), 0xea00_0044);
-        assert_eq!(
-            word(0x0024_a15c, &BranchIf(0x0024_a274, EQUAL)),
-            0x0a00_0044
-        );
-        // The reference patch's own branches, for comparison with its source.
-        assert_eq!(word(0x0024_8cdc, &Branch(0x0024_8d3c)), 0xea00_0016);
-        assert_eq!(word(0x0024_8d58, &Branch(0x0024_8e44)), 0xea00_0039);
+        // The Bank step goes from its first instruction to where the
+        // original continues after a "yes"; its reply parsing is not edited.
+        assert_eq!(word(0x0024_8cdc, &Branch(0x0024_8e44)), 0xea00_0058);
+        assert!(EDITS.iter().all(|(address, _, _)| *address != 0x0024_8d58));
+    }
+
+    #[test]
+    fn the_virtual_console_table_must_be_the_one_the_hooks_copied() {
+        let table = (VC_TABLE - CODE_BASE) as usize;
+        let mut code = vec![0u8; table + VC_LANGUAGES.len() * VC_ROW];
+        for (row, &language) in VC_LANGUAGES.iter().enumerate() {
+            let at = table + row * VC_ROW + VC_ROW_LANGUAGE;
+            code[at..at + 4].copy_from_slice(&u32::from(language).to_le_bytes());
+        }
+        assert!(check_game_list(&code).is_ok());
+        for row in [0, 12, VC_LANGUAGES.len() - 1] {
+            let mut other = code.clone();
+            other[table + row * VC_ROW + VC_ROW_LANGUAGE] ^= 8;
+            assert!(check_game_list(&other).is_err());
+        }
+        // A table cut short is refused, not read past its end.
+        assert!(check_game_list(&code[..code.len() - VC_ROW]).is_err());
     }
 
     #[test]

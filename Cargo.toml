@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/offline-core", "crates/patch-builder", "patches/bank", "patches/transporter"]
+members = ["crates/bank-common", "crates/offline-core", "crates/patch-builder", "patches/bank", "patches/bank-migrate", "patches/transporter"]
 resolver = "2"
 
 [workspace.package]

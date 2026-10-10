@@ -9,11 +9,11 @@
 //! The original Transporter converts every Pokémon itself and stores it in a
 //! Bank data object of the same class and layout Bank uses, records and
 //! format tags included; it used to upload that object. The hooks copy the
-//! transport box of that object into `/transport.bin` of Bank's extdata
+//! transport box of that object into the transport-box files of Bank's extdata
 //! through `offline_core::transport::deliver`. Nothing is converted here.
 //!
-//! Without a Gen 5 cartridge, `cart` presents Black/White saves from the SD
-//! card to the original's cartridge code (`sdsave` holds the rules).
+//! `cart` presents Black/White saves from the SD card to the original's
+//! cartridge code, beside a Gen 5 cartridge (`sdsave` holds the rules).
 //!
 //! The original language screen chooses which language's games are listed
 //! (`language`); it no longer changes the language of the screens. Its list
@@ -23,6 +23,7 @@ pub mod gen5;
 pub mod language;
 pub mod layout;
 pub mod lytpatch;
+pub mod navigation;
 pub mod sdsave;
 
 pub mod bootstrap;

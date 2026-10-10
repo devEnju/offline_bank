@@ -69,6 +69,7 @@ pub enum NativeGameError {
     InvalidFileLength,
     BlockOutsideFile,
     WrongMetadataVtable(u32),
+    NotLoaded,
     Busy,
     InvalidPhase,
     MissingArchive,
@@ -77,7 +78,7 @@ pub enum NativeGameError {
     NativeResult { operation: GameOperation, code: u32 },
     NativeStatus(u32),
     Validation { status: u32, detail: u32 },
-    Storage(crate::fs::Error),
+    Storage(bank_common::fs::Error),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,13 +98,16 @@ pub enum GameOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlatformSecureValue {
     pub value_present: bool,
-    /// The native predicate accepts a mismatch when its second response flag is set.
-    pub mismatch_check_bypassed: bool,
+    /// The console's answer to whether the title is on a game card. The
+    /// native predicate accepts a mismatch then: a cartridge keeps its value
+    /// in its own save image. It is also what tells a cartridge copy of a
+    /// game from an installed one.
+    pub gamecard: bool,
     pub value: u64,
 }
 impl PlatformSecureValue {
     pub const fn matches_native_rule(self, expected: u64) -> bool {
-        self.mismatch_check_bypassed || !self.value_present || self.value == expected
+        self.gamecard || !self.value_present || self.value == expected
     }
 }
 
@@ -247,7 +251,7 @@ mod arm {
         FrozenBlock, GameIoDescriptor, GameKind, GameOperation, NativeGameError, NativePoll,
         PlatformSecureValue, PreparedImage, SecureValues, MAX_PREPARED_BLOCKS,
     };
-    use crate::fs::GameMainReader;
+    use bank_common::fs::GameMainReader;
     use core::{marker::PhantomData, mem::transmute, ptr::NonNull};
     use offline_core::game_image::Overlay;
     use offline_core::Storage;
@@ -603,7 +607,7 @@ mod arm {
             }
             Ok(PlatformSecureValue {
                 value_present: first != 0,
-                mismatch_check_bypassed: second != 0,
+                gamecard: second != 0,
                 value,
             })
         }
@@ -723,7 +727,7 @@ mod arm {
             }
             let after = self.read_platform_secure_value()?;
             if after.value_present != observed.value_present
-                || after.mismatch_check_bypassed != observed.mismatch_check_bypassed
+                || after.gamecard != observed.gamecard
                 || !after.matches_native_rule(verified.current)
             {
                 return Err(NativeGameError::SecureValueMismatch);
@@ -748,6 +752,10 @@ mod arm {
                 .checked_add(0x100)
                 .ok_or(NativeGameError::AddressOverflow)?;
             let offset = kind as usize * 12;
+            // The scan found no usable save of this game.
+            if unsafe { raw.add(offset + 1).read() } == 0 {
+                return Err(NativeGameError::NotLoaded);
+            }
             if unsafe { raw.add(offset).read() } != kind as u8
                 || unsafe { raw.add(offset + 1).read() } != 1
             {

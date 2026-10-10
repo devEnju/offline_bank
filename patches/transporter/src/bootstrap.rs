@@ -20,9 +20,8 @@
 //! The caches are flushed whole (Luma SVC 0x92 and 0x94), never by address
 //! range (0x91, 0x93). The kernel carries a range operation out on every
 //! core, by virtual address, whatever process runs there; for this payload's
-//! 8 KiB that faulted on core 1 under another process's address space
-//! (data abort at 00364000). Bank's range is large enough that the kernel
-//! flushes everything anyway. The whole-cache calls involve no address.
+//! few pages that faulted on core 1 under another process's address space
+//! (data abort at 00364000). The whole-cache calls involve no address.
 
 #[cfg(target_arch = "arm")]
 core::arch::global_asm!(

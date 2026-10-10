@@ -39,7 +39,7 @@ try {
     }
     $parent = Split-Path -Parent $output
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    & cargo +stable run --locked --offline -p patch-builder -- build-development $inputRecord.code $inputRecord.exheader $elf $output
+    & cargo +stable run --locked --offline -p patch-builder -- build-development offline $inputRecord.code $inputRecord.exheader $elf $output
     if ($LASTEXITCODE -ne 0) { throw "Development patch build failed: $LASTEXITCODE" }
     Write-Host "Reviewable development patch: $output"
     Write-Host 'No SD deployment performed. Console validation remains required.'

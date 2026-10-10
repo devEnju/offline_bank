@@ -134,9 +134,6 @@ mod native {
         gate: Option<Gate>,
         decision: Option<(Key, Decision)>,
         failure: Option<DexError>,
-        before_import: Option<Evidence>,
-        after_import: Option<Evidence>,
-        after_restore: Option<Evidence>,
     }
     struct MainThread(UnsafeCell<State>);
     // SAFETY: every entry point is restricted to the native UI thread. The
@@ -146,9 +143,6 @@ mod native {
         gate: None,
         decision: None,
         failure: None,
-        before_import: None,
-        after_import: None,
-        after_restore: None,
     }));
 
     fn read_state() -> State {
@@ -316,17 +310,10 @@ mod native {
             reload(dex);
             invalidate(dex);
         }
-        let view = unsafe { NativeBank::from_raw(bank) }.map_err(|_| DexError::NativeObject)?;
-        let restored = evidence(
-            view.snapshot()
-                .map_err(|_| DexError::NativeObject)?
-                .as_bytes(),
-        )?;
         let mut state = read_state();
         state.gate = None;
         state.decision = None;
         state.failure = None;
-        state.after_restore = Some(restored);
         write_state(state);
         Ok(())
     }
@@ -344,15 +331,6 @@ mod native {
         write_state(state);
     }
 
-    /// Last save-import and restore digests for development diagnostics.
-    ///
-    /// # Safety
-    /// Call only on Bank's UI thread while no other Dex hook is executing.
-    pub unsafe fn diagnostics() -> (Option<Evidence>, Option<Evidence>, Option<Evidence>) {
-        let state = read_state();
-        (state.before_import, state.after_import, state.after_restore)
-    }
-
     /// Imports records and Dex immediately before freezing the Bank snapshot.
     /// A declined replacement keeps the prior family. An unconfirmed mismatch
     /// fails before a journal or game write can start.
@@ -362,7 +340,7 @@ mod native {
     /// manager and bank must be the selected session's exclusively accessible
     /// native objects, with no outstanding game/storage worker access.
     pub unsafe fn sync_before_save(manager: *mut u8, bank: *mut u8) -> Result<(), DexError> {
-        let mut state = read_state();
+        let state = read_state();
         if let Some(error) = state.failure {
             return Err(error);
         }
@@ -408,9 +386,6 @@ mod native {
         if action == Import::Preserve && before != after {
             return Err(DexError::NativeObject);
         }
-        state.before_import = Some(before);
-        state.after_import = Some(after);
-        write_state(state);
         Ok(())
     }
 

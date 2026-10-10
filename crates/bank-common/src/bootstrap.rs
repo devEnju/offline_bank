@@ -1,4 +1,4 @@
-//! Bootstrap for the reviewed ARM Bank image; not an installed hook.
+//! Start-up hook for the reviewed ARM Bank image.
 //!
 //! `bank_bootstrap_startup` replaces only the reviewed BL to application init.
 //! It calls that original function first, then enables payload RX pages. Failure
@@ -9,11 +9,12 @@
 //! Custom cache SVCs require the audited Luma extension. Linker symbols provide
 //! exact page-aligned payload boundaries; no heap or TLS accesses are made.
 //!
-//! The range cache calls (0x91, 0x93) are safe here only because the range is
-//! large: the kernel then flushes the whole cache. A small range is flushed
-//! by virtual address on every core and faults under another process's
-//! address space (seen with Transporter's 8 KiB). The linker script asserts
-//! the size; a smaller payload must use 0x92 and 0x94 as Transporter does.
+//! The caches are flushed whole (Luma SVC 0x92 and 0x94), as in the
+//! Transporter patch, never by address range (0x91, 0x93). The kernel carries
+//! a small range out by virtual address on every core and faults under
+//! another process's address space (seen with Transporter's payload); only a
+//! large range makes it flush everything. The whole-cache calls involve no
+//! address and do not depend on the payload's size.
 
 #[cfg(target_arch = "arm")]
 core::arch::global_asm!(
@@ -68,12 +69,8 @@ bank_bootstrap_enable_rx:
     blt .Lbank_bootstrap_return
     cmp r0, #0
     blt .Lbank_bootstrap_return
-    ldr r0, =__bank_payload_start
-    ldr r1, =__bank_payload_rx_size
-    svc #0x91
-    ldr r0, =__bank_payload_start
-    ldr r1, =__bank_payload_rx_size
-    svc #0x93
+    svc #0x92
+    svc #0x94
     mov r0, #0
 .Lbank_bootstrap_return:
     pop {r12}

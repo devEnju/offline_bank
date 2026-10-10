@@ -1,10 +1,8 @@
 //! Storage operations executed only by the dedicated native SDK worker.
 //! No job calls UI functions or accesses a live NativeBank object.
 
-use crate::{
-    bank_files::Loaded,
-    native_game::{GameIoDescriptor, PreparedImage, SecureValues},
-};
+use crate::native_game::{GameIoDescriptor, PreparedImage, SecureValues};
+use bank_common::bank_files::Loaded;
 use offline_core::{rewards::Stored, Fingerprint, Phase, RecoveryDecision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,6 +10,9 @@ pub struct GameEvidence {
     pub title: u64,
     pub fingerprint: Fingerprint,
     pub secure: SecureValues,
+    /// Whether this copy of the game is a cartridge; otherwise it is the
+    /// installed copy. Bank holds one copy per title, the cartridge first.
+    pub cartridge: bool,
 }
 
 // Fixed descriptors live directly in the one static mailbox; no allocator or
@@ -23,8 +24,9 @@ pub enum Job {
         session: u32,
     },
     Initialize,
+    /// `game` is `None` when the game of the save in progress is not there.
     Recover {
-        game: GameIoDescriptor,
+        game: Option<GameIoDescriptor>,
     },
     InspectAndLoad {
         game: GameIoDescriptor,
@@ -77,111 +79,99 @@ pub enum Reply {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorkerErrorKind {
-    Operation,
-    Busy,
-    StaleJob,
-    Cancelled,
-    Resource,
-    Stopped,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorkerError {
-    pub kind: WorkerErrorKind,
-    fault: u32,
-    native: u32,
-}
-impl WorkerError {
-    pub const fn fault_code(self) -> u32 {
-        self.fault
-    }
-    pub const fn native_result(self) -> u32 {
-        self.native
-    }
-    #[cfg(target_arch = "arm")]
-    pub(crate) const fn operation(fault: u32, native: u32) -> Self {
-        Self {
-            kind: WorkerErrorKind::Operation,
-            fault,
-            native,
-        }
-    }
-    #[cfg(any(test, target_arch = "arm"))]
-    pub(crate) const fn control(kind: WorkerErrorKind) -> Self {
-        Self {
-            kind,
-            fault: 2,
-            native: 0,
-        }
-    }
-    #[cfg(target_arch = "arm")]
-    pub(crate) const fn resource(native: u32) -> Self {
-        Self {
-            kind: WorkerErrorKind::Resource,
-            fault: 2,
-            native,
-        }
-    }
-}
+/// Test builds: the fault of a Save and Quit stopped on purpose. Its second
+/// number is the stop point: 1 after the journal is prepared and before the
+/// game is written, 2 after the game is written and before the journal is
+/// resolved. The files are left as a power cut at that point leaves them.
+#[cfg(feature = "test-build")]
+pub const TEST_STOP: u32 = 0x7e57;
 
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::*;
     use crate::{
-        bank_files::{self, BankFiles, FileName, Files},
-        fs::{self, ExtdataStorage, GameMainReader, ReportedAbsence},
         native_game::{PlatformSecureValue, MAX_PREPARED_BLOCKS},
-        session,
-        transaction::{self, Match},
+        transaction::{self, Found, Match, Medium},
     };
-    use core::{convert::Infallible, mem::transmute};
+    use bank_common::{
+        bank_files::{self, BankFiles, FileName, Files},
+        fs::{self, ExtdataStorage, GameMainReader},
+        session,
+        worker::{Service, Shared, Worker, WorkerError, WorkerErrorKind},
+    };
+    use core::{cell::UnsafeCell, convert::Infallible, mem::transmute};
     use offline_core::{
         game_image::{fingerprint_images, Overlay},
+        moved,
         native_blob::NativeBlobView,
-        GameObservation, Storage, StoreError,
+        sections::{Identity, HELD},
+        GameObservation, PendingTransfer, Storage, StoreError,
     };
 
-    /// The four files in Bank's extdata, opened through the borrowed session.
+    /// Working room for comparing the two snapshots of a save in progress:
+    /// everything the Bank held before it and after it.
+    struct Held(UnsafeCell<[[Identity; HELD]; 2]>);
+    // SAFETY: only the one storage worker thread uses it, inside one job.
+    unsafe impl Sync for Held {}
+    static HELD_LISTS: Held = Held(UnsafeCell::new([[[0; 3]; HELD]; 2]));
+
+    /// The files in Bank's extdata, opened through the borrowed session.
     struct ExtFiles {
         session: u32,
     }
     impl Files for ExtFiles {
         type Storage = ExtdataStorage;
         fn open(&mut self, file: FileName) -> Result<Option<ExtdataStorage>, fs::Error> {
-            match unsafe { ExtdataStorage::open_existing(self.session, file) } {
-                Ok(storage) => Ok(Some(storage)),
-                Err(error) if error.reported_absence() == Some(ReportedAbsence::File) => Ok(None),
-                Err(error) => Err(error),
-            }
+            unsafe { ExtdataStorage::open_existing(self.session, file.units()) }
         }
         fn create(&mut self, file: FileName) -> Result<ExtdataStorage, fs::Error> {
-            unsafe { ExtdataStorage::create_new(self.session, file) }
+            unsafe { ExtdataStorage::create_new(self.session, file.units()) }
         }
     }
+    static SHARED: Shared<StorageWorker> = Shared::new();
+    /// The worker of the offline patch.
+    pub(crate) type BankWorker = Worker<StorageWorker>;
 
     pub(crate) struct StorageWorker {
         files: BankFiles<ExtFiles>,
         fs_session: u32,
         missing: bool,
         poisoned: bool,
+        /// The secure pair of the game image the last `Prepare` allowed to
+        /// be written, until `Finalize` has looked for it.
+        written: Option<SecureValues>,
     }
-    impl StorageWorker {
-        pub const fn new() -> Self {
+    impl Service for StorageWorker {
+        type Job = Job;
+        type Reply = Reply;
+        // This worker plus the retained native game writer.
+        const THREADS: i64 = 2;
+        fn shared() -> &'static Shared<Self> {
+            &SHARED
+        }
+        fn start() -> Self {
             Self {
                 files: BankFiles::new(ExtFiles { session: 0 }),
                 fs_session: 0,
                 missing: false,
                 poisoned: false,
+                written: None,
             }
         }
-        pub fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
+        fn cancellable(job: &Job) -> bool {
+            job.cancellable()
+        }
+        fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
+            // A session has ended: nothing of the Bank stays open. This is
+            // done whatever state an error left, and the thread goes on
+            // waiting for the next session.
             if matches!(job, Job::Close) {
                 if let Some(mut storage) = self.files.close() {
                     storage.close().map_err(|e| fs_error(e, 3))?;
                 }
                 self.fs_session = 0;
                 self.missing = false;
+                self.written = None;
                 return Ok(Reply::Closed);
             }
             if self.poisoned {
@@ -193,6 +183,8 @@ mod arm {
             }
             result
         }
+    }
+    impl StorageWorker {
         fn phase(&mut self) -> Result<Phase, WorkerError> {
             self.files.phase().map_err(|e| files_error(e, 5))
         }
@@ -200,6 +192,73 @@ mod arm {
         fn read_bank(&mut self, staging: &mut [u8]) -> Result<bank_files::Loaded, WorkerError> {
             self.files.read(staging).map_err(|e| files_error(e, 9))
         }
+        /// Resolves the save in progress from a game save that is one of
+        /// its two images.
+        fn reconcile(
+            &mut self,
+            pending: &PendingTransfer,
+            evidence: &GameEvidence,
+        ) -> Result<RecoveryDecision, WorkerError> {
+            self.files
+                .reconcile(GameObservation::Present {
+                    game: pending.game,
+                    fingerprint: evidence.fingerprint,
+                })
+                .map_err(|e| files_error(e, 16))
+        }
+        /// Resolves the save in progress from what it moved, toward the
+        /// snapshot that cannot lose a Pokémon. `seen` says that a game of
+        /// its title is there, with a save that is neither image. Without
+        /// one only a save that moved Pokémon one way, or none, is
+        /// resolved; one that moved them both ways waits for its game, and
+        /// nothing is written.
+        fn settle_by_moves(
+            &mut self,
+            staging: &mut [u8],
+            seen: bool,
+        ) -> Result<RecoveryDecision, WorkerError> {
+            // SAFETY: see `Held`; no other reference exists.
+            let [before, after] = unsafe { &mut *HELD_LISTS.0.get() };
+            let moved = self
+                .files
+                .pending_moves(staging, before, after)
+                .map_err(|e| files_error(e, 16))?;
+            let decision = if seen {
+                moved::choose(moved)
+            } else {
+                moved::choose_unseen(moved).ok_or(WorkerError::operation(7, 0))?
+            };
+            self.files
+                .reconcile_as(decision)
+                .map_err(|e| files_error(e, 16))
+        }
+        /// The end of a recovery or a Save and Quit, once the save in
+        /// progress is resolved.
+        fn settled(
+            &mut self,
+            staging: &mut [u8],
+            evidence: Option<GameEvidence>,
+            decision: RecoveryDecision,
+        ) -> Result<Reply, WorkerError> {
+            if !matches!(
+                decision,
+                RecoveryDecision::KeepBefore | RecoveryDecision::CommitAfter
+            ) {
+                return Err(WorkerError::operation(16, 0));
+            }
+            // Remove transport slots the published save made obsolete. A
+            // failure here is retried by the next save and must not undo
+            // this one.
+            let _ = self.files.tidy_transport();
+            let loaded = self.read_bank(staging)?;
+            Ok(Reply::BankReady {
+                evidence,
+                decision: Some(decision),
+                loaded: Some(loaded),
+            })
+        }
+        // A test build's stop point leaves the rest of its job unreached.
+        #[cfg_attr(feature = "test-build", allow(unreachable_code, unused_variables))]
         fn execute(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             match job {
                 Job::Open { session } => {
@@ -258,7 +317,9 @@ mod arm {
                         return Err(WorkerError::operation(7, 0));
                     }
                     let evidence = inspect(game)?;
-                    require_secure(game, evidence.secure.current)?;
+                    // A save in progress that was settled without its game
+                    // may have left the platform value one step behind.
+                    finish_secure(game, evidence.secure)?;
                     let loaded = self.read_bank(staging)?;
                     Ok(Reply::BankReady {
                         evidence: Some(evidence),
@@ -266,48 +327,70 @@ mod arm {
                         loaded: Some(loaded),
                     })
                 }
-                Job::Recover { game } | Job::Finalize { game } => {
-                    let finalizing = matches!(job, Job::Finalize { .. });
+                Job::Recover { game } => {
                     let Phase::Prepared(pending) = self.phase()? else {
                         return Err(WorkerError::operation(16, 0));
                     };
+                    let Some(game) = game else {
+                        let decision = self.settle_by_moves(staging, false)?;
+                        return self.settled(staging, None, decision);
+                    };
                     let evidence = inspect(game)?;
-                    let matched = transaction::match_pending_image(
-                        &pending,
-                        evidence.title,
-                        evidence.fingerprint,
-                    )
-                    .map_err(|_| WorkerError::operation(11, 0))?;
-                    if finalizing && matched != Match::After {
+                    let matched = matched(&pending, &evidence)?;
+                    let decision = match matched {
+                        Match::Before => {
+                            require_secure(game, evidence.secure.current)?;
+                            self.reconcile(&pending, &evidence)?
+                        }
+                        Match::After => {
+                            finish_secure(game, evidence.secure)?;
+                            self.reconcile(&pending, &evidence)?
+                        }
+                        // A save that is neither image, on the kind of
+                        // copy the save in progress was made with: the game
+                        // was played on, a new game was started on it, or it
+                        // is another cartridge. It no longer shows whether
+                        // Bank's write went through. Its secure value is not
+                        // this save's to judge; a load of that game does.
+                        Match::Other(Found::SameKind) => self.settle_by_moves(staging, true)?,
+                        // The other kind of copy stands in for one that is
+                        // gone and says nothing about this save: as for a
+                        // game that is not there.
+                        Match::Other(Found::StandIn) => self.settle_by_moves(staging, false)?,
+                    };
+                    self.settled(staging, Some(evidence), decision)
+                }
+                Job::Finalize { game } => {
+                    let Phase::Prepared(pending) = self.phase()? else {
+                        return Err(WorkerError::operation(16, 0));
+                    };
+                    #[cfg(feature = "test-stop-after-game")]
+                    return Err(WorkerError::operation(TEST_STOP, 2));
+                    // The save is resolved as soon as the game is known to
+                    // hold the image this worker prepared, so that a cut
+                    // after the game's write rarely finds it in progress.
+                    // The secure pair tells: it is new with every prepared
+                    // image, and the game's commit replaces the file whole.
+                    let written = self.written.take();
+                    let mut main = unsafe { GameMainReader::open(game.session, game.archive) }
+                        .map_err(|e| fs_error(e, 10))?;
+                    let secure = file_secure(game, &mut main)?;
+                    main.close().map_err(|e| fs_error(e, 10))?;
+                    if written != Some(secure) || secure.current == secure.previous {
                         return Err(WorkerError::operation(17, 0));
                     }
-                    match matched {
-                        Match::Before => require_secure(game, evidence.secure.current)?,
-                        Match::After => finish_secure(game, evidence.secure)?,
-                    }
+                    finish_secure(game, secure)?;
                     let decision = self
                         .files
-                        .reconcile(GameObservation::Present {
-                            game: pending.game,
-                            fingerprint: evidence.fingerprint,
-                        })
+                        .reconcile_as(RecoveryDecision::CommitAfter)
                         .map_err(|e| files_error(e, 16))?;
-                    if !matches!(
-                        decision,
-                        RecoveryDecision::KeepBefore | RecoveryDecision::CommitAfter
-                    ) {
-                        return Err(WorkerError::operation(16, 0));
+                    // The complete image is still checked; it is also what
+                    // the next save of this session starts from.
+                    let evidence = inspect(game)?;
+                    if matched(&pending, &evidence)? != Match::After {
+                        return Err(WorkerError::operation(17, 0));
                     }
-                    // The end of a Save and Quit: remove transport slots the
-                    // published save made obsolete. A failure here is retried
-                    // by the next save and must not undo this one.
-                    let _ = self.files.tidy_transport();
-                    let loaded = self.read_bank(staging)?;
-                    Ok(Reply::BankReady {
-                        evidence: Some(evidence),
-                        decision: Some(decision),
-                        loaded: Some(loaded),
-                    })
+                    self.settled(staging, Some(evidence), decision)
                 }
                 Job::Prepare {
                     game,
@@ -372,9 +455,15 @@ mod arm {
                     if images.before != baseline.fingerprint {
                         return Err(WorkerError::operation(11, 0));
                     }
-                    let identity =
-                        transaction::identity(baseline.title, images.before, images.after)
-                            .map_err(|_| WorkerError::operation(12, 0))?;
+                    // Bound to the kind of copy, so that a recovery can
+                    // tell this copy from one that stands in for it.
+                    let identity = transaction::identity(
+                        baseline.title,
+                        images.before,
+                        images.after,
+                        Medium::of(baseline.cartridge),
+                    )
+                    .map_err(|_| WorkerError::operation(12, 0))?;
                     // Side files first, then the Bank journal.
                     self.files
                         .prepare(staging, rewards, identity, images.before, images.after)
@@ -385,11 +474,24 @@ mod arm {
                         return Err(WorkerError::operation(11, 0));
                     }
                     require_secure(game, unchanged.secure.current)?;
+                    #[cfg(feature = "test-stop-before-game")]
+                    return Err(WorkerError::operation(TEST_STOP, 1));
+                    self.written = Some(prepared.secure);
                     Ok(Reply::ReadyToWrite)
                 }
                 Job::Close => Err(WorkerError::control(WorkerErrorKind::Stopped)),
             }
         }
+    }
+    /// Which image of the save in progress the game's save is, if either.
+    fn matched(pending: &PendingTransfer, evidence: &GameEvidence) -> Result<Match, WorkerError> {
+        transaction::match_pending_image(
+            pending,
+            evidence.title,
+            evidence.fingerprint,
+            Medium::of(evidence.cartridge),
+        )
+        .map_err(|_| WorkerError::operation(11, 0))
     }
     fn fs_error(error: fs::Error, fault: u32) -> WorkerError {
         WorkerError::operation(fault, error.diagnostic())
@@ -459,6 +561,7 @@ mod arm {
             title: game.kind.title_id(),
             fingerprint: images.before,
             secure,
+            cartridge: platform(game)?.gamecard,
         })
     }
     fn platform(game: GameIoDescriptor) -> Result<PlatformSecureValue, WorkerError> {
@@ -484,7 +587,7 @@ mod arm {
         }
         Ok(PlatformSecureValue {
             value_present: first != 0,
-            mismatch_check_bypassed: second != 0,
+            gamecard: second != 0,
             value,
         })
     }
@@ -496,7 +599,9 @@ mod arm {
         }
     }
     fn finish_secure(game: GameIoDescriptor, verified: SecureValues) -> Result<(), WorkerError> {
-        // Called only after exact title and complete trusted AFTER-image match.
+        // `verified` is read from the game's actual save. Only the one step
+        // a completed save takes is made: from that save's own previous
+        // value to its current one.
         let observed = platform(game)?;
         if observed.matches_native_rule(verified.current) {
             return Ok(());
@@ -512,7 +617,7 @@ mod arm {
         }
         let after = platform(game)?;
         if after.value_present != observed.value_present
-            || after.mismatch_check_bypassed != observed.mismatch_check_bypassed
+            || after.gamecard != observed.gamecard
             || !after.matches_native_rule(verified.current)
         {
             return Err(WorkerError::operation(14, 0));
@@ -521,4 +626,16 @@ mod arm {
     }
 }
 #[cfg(target_arch = "arm")]
-pub(crate) use arm::StorageWorker;
+pub(crate) use arm::BankWorker;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutation_commands_do_not_accept_cooperative_discard() {
+        assert!(!Job::Initialize.cancellable());
+        assert!(!Job::Close.cancellable());
+        assert!(Job::Open { session: 1 }.cancellable());
+    }
+}

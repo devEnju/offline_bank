@@ -1,5 +1,5 @@
-//! Presents a Black/White save from the SD card where the original expects a
-//! DS cartridge, when no Gen 5 cartridge is inserted.
+//! Presents Black/White saves from the SD card where the original expects a
+//! DS cartridge, beside a Gen 5 cartridge if one is inserted.
 //!
 //! The original reaches a cartridge through three functions, all called from
 //! its own cartridge task (`00243510`), which runs on a worker thread of the
