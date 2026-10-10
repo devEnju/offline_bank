@@ -105,6 +105,7 @@ The first argument is a pointer to the session or file handle; a negative `i32` 
 | --- | --- | --- |
 | `0020a468` / `0020a438` | OpenArchive / CloseArchive | `out: *mut u64, id: u32, path: Path` / `archive: u64` |
 | `001654f8` | CreateFile | `transaction: u32, archive: u64, path: Path, attributes: u32, length: u64` |
+| `00165554` | DeleteFile | `transaction: u32, archive: u64, path: Path` |
 | `001657ec` | OpenFile | `out: *mut u32, transaction: u32, archive: u64, path: Path, flags: u32, attributes: u32` |
 | `001658c8` / `0016594c` | Read / Write | `out_count, offset: u64, buffer, length: u32` (+ `flags: u32` for Write) |
 | `001659ac` / `00165920` | GetSize / CloseFile | `out: *mut u64` / none |
@@ -170,31 +171,58 @@ Pokémon records are encrypted with the LCG `seed * 0x41C64E6D + 0x6073`; the ch
 
 ### Files
 
-All files are in SD extdata archive `0x00000C9B`. The body is cut at fixed offsets and each piece is stored unchanged, in body order ([sections.rs](../crates/offline-core/src/sections.rs)).
+All files are in SD extdata archive `0x00000C9B` (created by the original with room for 10 directories and 100 files). The body is cut at fixed offsets and each piece is stored unchanged, in body order ([sections.rs](../crates/offline-core/src/sections.rs)). There are four containers; each is a range of fixed layout:
 
-| File | Size | Body ranges |
+| Container | Length | Body ranges of one payload |
 | --- | --- | --- |
-| `/bank.bin` | 1,461,332 | `0..AAF14`, `ACA44..AD5FC`, `AD61A..AD61C`, `B4A9C..BB518` (730,442 bytes). The Miles field `170` is stored as zero. |
-| `/dex.bin` | 59,776 | `AD61C..B4A9C` (29,824 bytes) |
-| `/transport.bin` | 14,112 | `AAF14..ACA44` then `AD5FC..AD61A` (6,990 bytes) |
-| `/rewards.bin` | 160 | none; a 16-byte record |
+| Bank | 1,461,332 | `0..AAF14`, `ACA44..AD5FC`, `AD61A..AD61C`, `B4A9C..BB518` (730,442 bytes). The Miles field `170` is stored as zero. |
+| Pokédex | 59,776 | `AD61C..B4A9C` (29,824 bytes) |
+| Transport box | 14,112 | `AAF14..ACA44` then `AD5FC..AD61A` (6,990 bytes) |
+| Rewards | 160 | none; a 16-byte record |
 
-File names in 3DS extdata are limited to 16 characters including the leading slash; a longer name fails at creation with `E0E046C7`. `FileName::path` refuses longer names at compile time.
+**Every unit of a container is a file of its own** ([bank_files.rs](../patches/bank/src/bank_files.rs), `FileName::units`), in the order of the container's layout:
 
-**Rule for new features:** add a new file with tagged slots. Never change the size or layout of an existing file. A build that does not know a file ignores it; its saves advance the Bank snapshot, so the unknown file's slots stop matching and a later build treats them as "no data yet".
+| Container | Files | Unit |
+| --- | --- | --- |
+| Bank | `/journal.bin`, `/journal.alt.bin` (192 each) | journal record A, B |
+| | `/bank.bin`, `/bank.alt.bin` (730,474 each) | snapshot slot A, B |
+| Pokédex | `/dex.bin`, `/dex.alt.bin` (29,888 each) | slot 0, 1 |
+| Transport box | `/mover.bin`, `/mover.alt.bin` (7,056 each) | slot 0, 1 |
+| Rewards | `/rewards.bin`, `/rewards.alt.bin` (80 each) | slot 0, 1 |
+
+The reason is how the console writes extdata. Each file is its own container with check values over blocks of its contents; new data is written in place before the check values are updated. A write that the power interrupts leaves the blocks it touched failing their check: reads return a result of the corrupted-data class (`D900458B` was seen), not bad bytes. Units that share a file share blocks at their edges, so in one file a write to the spare slot could take the slot in use with it, and did. With one file per unit, only the unit being written can be lost, and by the order of a save that unit never holds anything still needed.
+
+`Split` in [fs.rs](../patches/bank/src/fs.rs) presents the unit files of a container as one range to the unchanged store and side-file code:
+
+| A unit file that is | Reads | Writes |
+| --- | --- | --- |
+| there | as stored; an error if the console refuses | as written |
+| absent | as zeros | are preceded by creating it, zero-filled |
+| there but not to be opened | an error | an error |
+| there with another size | the container does not open: a hard error, and it is never replaced | |
+
+- A container counts as missing only when none of its files exists.
+- `Storage::recreate` deletes one unit file, which leaves it absent. The store and the side files ask for it when writing, syncing or reading back a unit fails, and then write once more; they only ever write units that are not in use.
+- An unreadable journal record counts as a damaged one. An unreadable side slot is void where that is certain: for the Pokédex and rewards always (they never block the Bank), for the transport box only beside a slot that is seen to belong to the current snapshot (`Sidecar::slots_beside`), and never for Transporter, which uses the strict `Sidecar::slots`.
+
+File names in 3DS extdata are limited to 16 characters without the leading slash; a longer name fails at creation with `E0E046C7`. `UnitFile::new` refuses longer names at compile time.
+
+**Rule for new features:** add a new container with tagged slots, each slot a file of its own. Never change the size or layout of an existing file. A build that does not know a file ignores it; its saves advance the Bank snapshot, so the unknown file's slots stop matching and a later build treats them as "no data yet".
+
+**Banks of versions up to 0.2.1** kept each container in one file (`/bank.bin`, `/dex.bin`, `/transport.bin`, `/rewards.bin`) with exactly the container layout above. The current code does not read them: their `/bank.bin`, `/dex.bin` and `/rewards.bin` have another size than the files of those names now, which is a hard error. They are converted by the migration package ([migrate.rs](../patches/bank/src/migrate.rs), feature `migrate`, [building.md](building.md#the-migration-package)), which cuts the four files at the unit boundaries: it copies them into temporary files (`/m0.tmp` to `/m9.tmp`) and compares, creates the marker `/migrate.ok`, removes the old files, writes the final files from the temporary ones (journal records last) and compares, removes the marker, then the temporary files. Without the marker a start begins again from the untouched old files; with it, from the temporary ones.
 
 ### Bank file
 
-[store.rs](../crates/offline-core/src/store.rs), [format.rs](../crates/offline-core/src/format.rs). Two 192-byte metadata records (`BKOFMETA`), then two slots of a 32-byte snapshot header (`BKOFSNAP`) plus the payload. Field offsets are in the [crate docs](../crates/offline-core/src/lib.rs).
+[store.rs](../crates/offline-core/src/store.rs), [format.rs](../crates/offline-core/src/format.rs). The container is two 192-byte metadata records (`BKOFMETA`), then two slots of a 32-byte snapshot header (`BKOFSNAP`) plus the payload; each of the four is a file (above). Field offsets are in the [crate docs](../crates/offline-core/src/lib.rs).
 
 - A new snapshot goes to the inactive slot and is synced and read back; metadata is written to one replica, synced, then the other.
 - A save: verify the game's before-image, `prepare_transfer`, write the game, `reconcile`, read the game back. A before-image keeps the old snapshot, an after-image commits the new one. Right after its own write (`Job::Finalize`) the worker does not wait for the complete read to commit: the 16-byte secure pair in the game's file must be the pair of the image it prepared, which is new with every prepared image, and the game's commit replaces the file whole. The complete fingerprint is checked after the commit; a difference is fault `11` with the new snapshot current. The store blocks on anything else; the worker then chooses the snapshot itself ([below](#an-interrupted-save)).
 - A load checks the journal and the 32-byte header, then reads the payload once and checks its CRC on that pass.
-- A new Bank writes the side files first, then creates `/bank.bin`, zero-fills it, writes the first snapshot, and publishes the first journal record last. A start that finds `/bank.bin` without any journal record (both records zero, or the first-written one torn beside a zero one) and with no snapshot other than a first one treats it as "no Bank yet" and finishes the creation in place (`BankStore::reinitialize`). No file in which a Bank was ever current can be in that state: it has a journal record, and after its first save a second snapshot. A delivery Transporter made in between is kept and shown.
+- A new Bank writes the side files first, then creates the four Bank files zero-filled, writes the first snapshot, and publishes the first journal record last. A start that finds Bank files without any valid journal record, with at least one record still empty (zero or absent) and with no snapshot other than a first one, treats it as "no Bank yet" and finishes the creation in place (`BankStore::reinitialize`, which discards the four units and begins again). No Bank that was ever current can be in that state: it has a journal record, and after its first save a second snapshot. Two unreadable records are never taken for it; that is fault `5`. A delivery Transporter made in between is kept and shown.
 
 ### Side files
 
-[sidecar.rs](../crates/offline-core/src/sidecar.rs). `/dex.bin`, `/transport.bin` and `/rewards.bin` each hold two slots at `index * slot_len`, where `slot_len = 64 + capacity rounded up to 4`. Slot header, little endian:
+[sidecar.rs](../crates/offline-core/src/sidecar.rs). The Pokédex, transport and rewards containers each hold two slots at `index * slot_len`, where `slot_len = 64 + capacity rounded up to 4`; each slot is a file (above). Slot header, little endian:
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -363,7 +391,7 @@ The check and the delivery run on a thread created per job through the original 
 
 Transporter's SDK wrappers: open-directly `001DF448`, read `0015930C`, write `00159390`, size `001593F0`, close `00159364`; `fs:USER` handle at `00311F80`.
 
-- Bank's extdata: archive 6, binary path `{1, C9B, 0}`, ASCII file path `/transport.bin`. Transporter's exheader grants neither: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
+- Bank's extdata: archive 6, binary path `{1, C9B, 0}`, ASCII file paths `/mover.bin` and `/mover.alt.bin`, one per slot of the transport box. A file that is missing or does not open makes its slot unreadable, and the strict slot read then refuses; Transporter never creates, deletes or replaces a file. Transporter's exheader grants neither: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
 - SD card: archive 9 with an empty path.
 
 ### Cartridge and game list

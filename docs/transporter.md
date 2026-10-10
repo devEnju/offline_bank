@@ -11,8 +11,8 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Connect, disconnect | Nintendo's servers | Skipped; wireless can stay off |
 | Read the source game and convert the Pokémon | Transporter itself | Unchanged |
 | Legality check | Server | None. Whatever Transporter itself accepts is transferred (eggs, for example, are still refused). |
-| "Is Bank's transport box empty?" | Server | Reads `/transport.bin` in Bank's extdata |
-| Store the Pokémon in Bank | Server | Writes one delivery into `/transport.bin` |
+| "Is Bank's transport box empty?" | Server | Reads `/mover.bin` and `/mover.alt.bin` in Bank's extdata |
+| Store the Pokémon in Bank | Server | Writes one delivery into the one of those two files that Bank is not using |
 | Remove the Pokémon from the source game | Transporter itself | Unchanged |
 | Source of a Gen 5 game | Cartridge | Cartridge and saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)) |
 | Language screen | Switches the language of the screens | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
@@ -36,7 +36,9 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 - the offline Bank has never been started on this console, or
 - Transporter cannot open Bank's data.
 
-Transporter never creates files and touches no Bank file other than `/transport.bin`.
+Transporter never creates or deletes files and touches no Bank file other than `/mover.bin` and `/mover.alt.bin`; it only ever writes to the one of the two that Bank is not using. If that file is missing or unreadable, for example after a power cut, Transporter refuses; open Bank and Save and Quit once, which writes it anew.
+
+**Bank and Transporter belong together.** A Bank stored by version 0.2.1 or earlier keeps its transport box in a file of another name. This Transporter does not find it and refuses, and a Transporter of 0.2.1 or earlier refuses with a converted Bank. Update both, after converting the Bank ([bank.md](bank.md#updating-from-021-or-earlier)).
 
 ## Choosing the language of the games
 
