@@ -53,7 +53,7 @@ pub const PAYLOAD_ADDRESS: u32 = 0x0036_4000;
 /// Entry words at the start of the payload, in this order.
 pub const ENTRY_CHECK: u32 = PAYLOAD_ADDRESS;
 pub const ENTRY_DELIVER: u32 = PAYLOAD_ADDRESS + 4;
-pub const ENTRY_SESSION: u32 = PAYLOAD_ADDRESS + 8;
+pub const ENTRY_NEXT: u32 = PAYLOAD_ADDRESS + 8;
 pub const ENTRY_SLOT: u32 = PAYLOAD_ADDRESS + 12;
 pub const ENTRY_CART_ID: u32 = PAYLOAD_ADDRESS + 16;
 pub const ENTRY_CART_READ: u32 = PAYLOAD_ADDRESS + 20;
@@ -67,32 +67,32 @@ pub const ENTRY_LANGUAGE_BUTTONS: u32 = PAYLOAD_ADDRESS + 48;
 pub const ENTRY_LANGUAGE_BACK: u32 = PAYLOAD_ADDRESS + 52;
 pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 56;
 pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 60;
-pub const ENTRY_NEXT_CHECK: u32 = PAYLOAD_ADDRESS + 64;
+pub const ENTRY_LIST_READY: u32 = PAYLOAD_ADDRESS + 64;
 pub const ENTRY_COUNT: u32 = 17;
 
 enum Word {
     Raw(u32),
     Branch(u32),
     BranchLink(u32),
-    /// A branch with the given condition nibble (0 equal, 1 not equal).
-    BranchIf(u32, u8),
 }
 use Word::*;
-const EQUAL: u8 = 0;
 
 /// (address, original word, replacement).
 const EDITS: &[(u32, u32, Word)] = &[
     // --- Start-up: run application init, then make the payload executable. ---
     (STARTUP_CALL, 0xeb00_0228, BranchLink(BOOTSTRAP_ADDRESS)),
     // --- Offline flow: the server steps are removed. ---
-    // get_next_state, SHOW_GAMES (was: next is CONNECT_ONLINE). The stub
-    // refuses HOME and sleep as the connect step did, then answers
-    // GET_POKEMON.
-    (0x0024_2d10, 0x03a0_0003, BranchIf(ENTRY_SESSION, EQUAL)),
-    // get_next_state, GET_POKEMON (was: cmp r2, #2, the start of choosing by
-    // the step's outcome): next is CHECK_IF_USER_CAN_TRANSFER, whatever the
-    // outcome. The stub answers it and returns as the original cases do.
-    (0x0024_2d28, 0xe352_0002, Branch(ENTRY_NEXT_CHECK)),
+    // The one call of the router, get_next_state (was: bl 00242BA0). The
+    // entry asks the original and changes its answer in two places: after
+    // SHOW_GAMES comes GET_POKEMON, where the original connected, and after
+    // GET_POKEMON comes CHECK_IF_USER_CAN_TRANSFER. It also refuses HOME and
+    // sleep for the steps that read or write, as the connect step did for
+    // the whole session.
+    (0x0024_2ef8, 0xebff_ff28, BranchLink(ENTRY_NEXT)),
+    // Game list, the first instruction of its update (was: ldr r0, [r4,
+    // #0x38]): the list is set up and on screen. The stub lets HOME and
+    // sleep through again and runs the instruction.
+    (0x0024_45ec, 0xe594_0038, BranchLink(ENTRY_LIST_READY)),
     // Game search, first step (was: ldr r0, [r0], the start of the cartridge
     // scan). The stub asks the check entry with the task (r4) whether Bank
     // can take a delivery, and either goes on with the search or ends it
@@ -188,12 +188,6 @@ fn word_edit(address: u32, original: u32, word: &Word) -> Result<CheckedEdit> {
         Raw(value) => value.to_le_bytes(),
         Branch(target) => encode_arm_branch(address, target, false)?,
         BranchLink(target) => encode_arm_branch(address, target, true)?,
-        BranchIf(target, condition) => {
-            let mut bytes = encode_arm_branch(address, target, false)?;
-            // Condition field: always (E) becomes the given condition.
-            bytes[3] = (bytes[3] & 0x0f) | (condition << 4);
-            bytes
-        }
     };
     Ok(CheckedEdit {
         offset: (address - CODE_BASE) as usize,
@@ -744,11 +738,7 @@ mod tests {
         );
         // Sites that leave the original for good: plain branches to stubs
         // that go on inside the original themselves.
-        for (address, entry) in [
-            (0x0024_6f48, ENTRY_CHECK),
-            (0x0024_a150, ENTRY_DELIVER),
-            (0x0024_2d28, ENTRY_NEXT_CHECK),
-        ] {
+        for (address, entry) in [(0x0024_6f48, ENTRY_CHECK), (0x0024_a150, ENTRY_DELIVER)] {
             let jump = word(address, &Branch(entry));
             assert_eq!(branch_target(address, jump, false), Some(entry));
         }
@@ -757,18 +747,24 @@ mod tests {
             branch_target(STARTUP_CALL, 0xeb00_0228, true),
             Some(ORIGINAL_APP_INIT)
         );
-        let session = word(0x0024_2d10, &BranchIf(ENTRY_SESSION, EQUAL));
-        assert_eq!(session >> 24, 0x0a);
+        // The router is called through the entry, which calls it in turn;
+        // nothing inside it is edited.
         assert_eq!(
-            branch_target(0x0024_2d10, (session & 0x00ff_ffff) | 0xea00_0000, false),
-            Some(ENTRY_SESSION)
+            branch_target(0x0024_2ef8, 0xebff_ff28, true),
+            Some(0x0024_2ba0)
         );
-        // beq keeps the offset of the unconditional form.
+        assert_eq!(
+            branch_target(
+                0x0024_2ef8,
+                word(0x0024_2ef8, &BranchLink(ENTRY_NEXT)),
+                true
+            ),
+            Some(ENTRY_NEXT)
+        );
+        assert!(EDITS
+            .iter()
+            .all(|(address, _, _)| !(0x0024_2ba0..0x0024_2e08).contains(address)));
         assert_eq!(word(0x0024_a15c, &Branch(0x0024_a274)), 0xea00_0044);
-        assert_eq!(
-            word(0x0024_a15c, &BranchIf(0x0024_a274, EQUAL)),
-            0x0a00_0044
-        );
         // The Bank step goes from its first instruction to where the
         // original continues after a "yes"; its reply parsing is not edited.
         assert_eq!(word(0x0024_8cdc, &Branch(0x0024_8e44)), 0xea00_0058);

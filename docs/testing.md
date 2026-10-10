@@ -27,7 +27,7 @@ What the four test packages do is in [building.md](building.md#test-builds-for-a
 | Anything, before a release | [Normal use](#normal-use) |
 | How or where files are stored, or the file access | [Normal use](#normal-use), [A power cut during a save](#a-power-cut-during-a-save) |
 | The rules for an interrupted save | [An interrupted Save and Quit](#an-interrupted-save-and-quit) |
-| The Transporter patch, or the transport box files | Run 3 of [Normal use](#normal-use) |
+| The Transporter patch, or the transport box files | Run 3 of [Normal use](#normal-use), and the HOME rows of the checklist in [transporter.md](transporter.md#transfers) |
 | How or where files are stored, with a migration for it | [Updating from the version before](#updating-from-the-version-before) as well |
 | A migration patch | [Updating from the version before](#updating-from-the-version-before) |
 

@@ -23,6 +23,7 @@ pub mod gen5;
 pub mod language;
 pub mod layout;
 pub mod lytpatch;
+pub mod navigation;
 pub mod sdsave;
 
 pub mod bootstrap;

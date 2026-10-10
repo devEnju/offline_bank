@@ -11,7 +11,7 @@ mod linked {
     };
     use transporter_payload::gen5::transporter_slot_holds;
     use transporter_payload::hooks::{
-        transporter_check, transporter_deliver, transporter_session_begin,
+        transporter_check, transporter_deliver, transporter_list_ready, transporter_next,
     };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
@@ -33,7 +33,7 @@ mod linked {
         "transporter_entry:",
         "b transporter_check_stub",
         "b transporter_deliver_stub",
-        "b transporter_session",
+        "b {next}",
         "b transporter_slot",
         "b transporter_cart_id_stub",
         "b {cart_read}",
@@ -47,7 +47,8 @@ mod linked {
         "b transporter_language_back_stub",
         "b transporter_title_begin_stub",
         "b transporter_title_end_stub",
-        "b transporter_next_check",
+        "b transporter_list_ready_stub",
+        next = sym transporter_next,
         cart_read = sym transporter_cart_read,
         cart_write = sym transporter_cart_write,
         language_chosen = sym transporter_language_chosen,
@@ -155,21 +156,18 @@ mod linked {
     core::arch::global_asm!(
         ".section .text.transporter_stubs,\"ax\",%progbits",
         ".arm",
-        // get_next_state, leaving the game list (was: connect). Refuses HOME
-        // and sleep as the original connect step did, and takes back a HOME
-        // press accepted just before (hooks.rs); the original disconnect
-        // step lets them through again. Then answers GET_POKEMON and returns
-        // as the original case does. lr is free, the function saved its own.
-        "transporter_session:",
-        "bl {session_begin}",
-        "mov r0, #9",
-        "pop {{r4, pc}}",
-        // get_next_state, after GET_POKEMON (00242D28, was: cmp r2, #2).
-        // Answers CHECK_IF_USER_CAN_TRANSFER and returns as the original
-        // cases do.
-        "transporter_next_check:",
-        "mov r0, #0xb",
-        "pop {{r4, pc}}",
+        // Game list, the first instruction of its update (002445EC, was:
+        // ldr r0, [r4, #0x38]): its set-up is done and it is on screen.
+        // r4 = task; the instruction is run here and every other register
+        // the original still uses is returned as it came.
+        "transporter_list_ready_stub:",
+        "push {{r1-r3, r12, lr}}",
+        "sub sp, sp, #4",
+        "bl {list_ready}",
+        "add sp, sp, #4",
+        "pop {{r1-r3, r12, lr}}",
+        "ldr r0, [r4, #0x38]",
+        "bx lr",
         // Game search, first step (00246F48, was: ldr r0, [r0], the start
         // of the cartridge scan). r4 = task; lr is free, the original
         // function saved its own. 1: still checking, the search's "nothing
@@ -236,7 +234,7 @@ mod linked {
         "bx lr",
         ".ltorg",
         check = sym transporter_check,
-        session_begin = sym transporter_session_begin,
+        list_ready = sym transporter_list_ready,
         deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,
     );

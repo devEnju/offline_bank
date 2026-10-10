@@ -53,7 +53,7 @@ $directory = Join-Path $projectRoot ('build/transporter/' + $Package)
 # keys as positions. Entry words are the first seventeen words of the payload.
 $allowed = @{
     0x00103D9C = 'bl:0028D1AC'
-    0x00242D10 = 'beq:00364008'; 0x00242D28 = 'b:00364040'
+    0x00242EF8 = 'bl:00364008'; 0x002445EC = 'bl:00364040'
     0x00246F48 = 'b:00364000'; 0x00248CDC = 'b:00248E44'
     0x00245728 = 'b:00245800'; 0x002460B8 = 'b:002461D0'
     0x002488A0 = 0xE3A00001; 0x002483CC = 0xE3A00001
@@ -133,7 +133,7 @@ foreach ($address in $allowed.Keys) {
     $want = $allowed[$address]
     if ($want -is [string]) {
         $kind, $target = $want.Split(':')
-        $top = @{ 'b' = 0xEA; 'bl' = 0xEB; 'beq' = 0x0A }[$kind]
+        $top = @{ 'b' = 0xEA; 'bl' = 0xEB }[$kind]
         Assert-That (($new -shr 24) -eq $top) ("{0:X8} is not '$kind'" -f $address)
         Assert-That ((Get-BranchTarget $address $new) -eq [Convert]::ToInt32($target, 16)) ("{0:X8} branch target" -f $address)
     } else {

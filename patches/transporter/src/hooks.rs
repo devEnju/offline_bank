@@ -3,7 +3,7 @@
 //! wrappers. The original task calls an entry every frame until it answers;
 //! the main thread never waits for a file operation.
 
-use crate::layout::*;
+use crate::{layout::*, navigation};
 use core::{
     cell::UnsafeCell,
     mem::transmute,
@@ -27,6 +27,13 @@ pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
 /// The original's "show this message and wait for it to be acknowledged":
 /// `(ui, message, 1)`, as every one of its tasks calls it.
 const SHOW_MESSAGE: usize = 0x0019_b50c;
+/// The original's router, `get_next_state(manager, current)`, and what it
+/// reads: the finished task at `manager + 0x10` with its outcome byte at
+/// `+0x30`, and the manager's "cancelled" flag, which it clears.
+const NEXT_STATE: usize = 0x0024_2ba0;
+const MANAGER_TASK: usize = 0x10;
+const MANAGER_CANCELLED: usize = 0x1a;
+const TASK_OUTCOME: usize = 0x30;
 /// The original's HOME and sleep block: `0022AEEC(bit)` sets a bit of its
 /// activity mask and `0011A5FC(bit)` clears it. While the mask is not zero
 /// the original refuses both, as it did from its connect step to its
@@ -355,14 +362,37 @@ unsafe fn refuse_home(refuse: bool) {
     }
 }
 
-/// A game was chosen: HOME and sleep are refused until the original's
-/// disconnect step, which every way back to the title screen passes, lets
-/// them through again.
+/// Replaces the one call of the original's router (`00242EF8`). The
+/// original is asked first; its answer is changed where the offline flow
+/// differs, and HOME and sleep are refused or let through by the kind of
+/// the step that comes next (`navigation`).
 /// # Safety
-/// Called only from the session stub (link.rs), on the main thread.
+/// Called only from the patched call site, on the main thread, with the
+/// live manager whose current task has ended.
 #[no_mangle]
-pub unsafe extern "aapcs" fn transporter_session_begin() {
-    unsafe { refuse_home(true) };
+pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) -> u32 {
+    let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(NEXT_STATE) };
+    // Read before the original runs, which clears the flag.
+    let cancelled = unsafe { manager.add(MANAGER_CANCELLED).read() } != 0;
+    let outcome = unsafe { follow(manager, MANAGER_TASK) }
+        .map(|task| unsafe { task.add(TASK_OUTCOME).read() });
+    let native = unsafe { original(manager, current) };
+    let Some(outcome) = outcome else {
+        return native;
+    };
+    let next = navigation::destination(current, outcome, native, cancelled);
+    unsafe { refuse_home(navigation::loads(next)) };
+    next
+}
+
+/// The game list is set up and on screen: every save has been read, and it
+/// waits for the user.
+/// # Safety
+/// Called only from the stub of the patched site at 002445EC (link.rs), on
+/// the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_ready() {
+    unsafe { refuse_home(false) };
 }
 
 /// Asks, when START was pressed and before the original searches for games,
@@ -375,15 +405,12 @@ pub unsafe extern "aapcs" fn transporter_session_begin() {
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    let answer = unsafe { step(task, JOB_CHECK) };
-    // HOME and sleep are refused while Bank's files are being read, and no
-    // longer: they work on the message and during the game search, as in
-    // the original.
-    unsafe { refuse_home(answer.is_none()) };
-    match answer {
+    match unsafe { step(task, JOB_CHECK) } {
         None => SEARCH_PENDING,
         Some(0) => SEARCH_GO,
         Some(message) => {
+            // Nothing more is read: HOME and sleep work on the message.
+            unsafe { refuse_home(false) };
             if unsafe { show(task, message) } {
                 SEARCH_SHOWN
             } else {
