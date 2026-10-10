@@ -40,6 +40,7 @@ With the normal Bank and Transporter packages.
 | 1 | Start Bank on a console whose Bank extdata is empty | The welcome, then an empty Bank |
 | 2 | Pick a game, move Pokémon both ways, Save and Quit. Open the same game again in the same session, move again, Save and Quit a second time. Close Bank and start it again. Once with an installed game and once with a cartridge, if you have both. | Everything where it was put, in Bank and in the game; nothing twice; Pokédex and Poké Miles as expected |
 | 3 | Transfer from a Generation 5 game with Transporter. Back on its title screen, press START again. Then open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again and press START. | The transfer completes. The second START answers with the "Pokémon remains in the Transport Box" message and returns to the title screen, without a game list. In Bank the Pokémon are there once. Afterwards START leads to the game list again. |
+| 4 | Start a game, press HOME, and start Bank from the HOME Menu without closing the game first. Press START, pick a game, look at the boxes, and leave; once with Save and Quit and once without saving. Back on the start screen, press HOME. | The HOME Menu appears, both times |
 
 ## An interrupted Save and Quit
 
@@ -51,12 +52,12 @@ Package `stop-before-game`. Save and Quit shows `00007E57 00000001`.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
-| 4 | deposit one, withdraw one | start Bank, the game still there | boxes as before the session; the game unchanged |
-| 5 | deposit one | play the game, save, start Bank | the deposited Pokémon in Bank; it is also still in the game |
-| 6 | withdraw one | play the game, save, start Bank | the Pokémon still in Bank; not in the game |
-| 7 | deposit one, withdraw one | play the game, save, start Bank | the deposited one in Bank and in the game; the withdrawn one is gone |
+| 5 | deposit one, withdraw one | start Bank, the game still there | boxes as before the session; the game unchanged |
+| 6 | deposit one | play the game, save, start Bank | the deposited Pokémon in Bank; it is also still in the game |
+| 7 | withdraw one | play the game, save, start Bank | the Pokémon still in Bank; not in the game |
+| 8 | deposit one, withdraw one | play the game, save, start Bank | the deposited one in Bank and in the game; the withdrawn one is gone |
 
-Run 7 is the one case in which a Pokémon is lost by design; use one you do not need.
+Run 8 is the one case in which a Pokémon is lost by design; use one you do not need.
 
 ### The game is not inserted
 
@@ -64,8 +65,8 @@ Still `stop-before-game`, with a cartridge game that is not also installed.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
-| 8 | deposit one | take the cartridge out, start Bank | Bank opens; the deposited Pokémon is in Bank, and still on the cartridge |
-| 9 | deposit one, withdraw one | take the cartridge out, start Bank | error `00000007`; with the cartridge back in: boxes as before the session |
+| 9 | deposit one | take the cartridge out, start Bank | Bank opens; the deposited Pokémon is in Bank, and still on the cartridge |
+| 10 | deposit one, withdraw one | take the cartridge out, start Bank | error `00000007`; with the cartridge back in: boxes as before the session |
 
 ### The same game as cartridge and installed
 
@@ -73,11 +74,11 @@ Still `stop-before-game`. This needs one game both as a cartridge and installed,
 
 | Run | Session on | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- | --- |
-| 10 | cartridge | deposit one | take the cartridge out, start Bank | Bank opens; the deposited Pokémon is in Bank, and still on the cartridge |
-| 11 | cartridge | deposit one, withdraw one | take the cartridge out, start Bank | error `00000007`; with the cartridge back in: boxes as before the session |
-| 12 | installed copy, cartridge out | deposit one, withdraw one | put the cartridge in, start Bank | error `00000007`; with the cartridge out again: boxes as before the session |
+| 11 | cartridge | deposit one | take the cartridge out, start Bank | Bank opens; the deposited Pokémon is in Bank, and still on the cartridge |
+| 12 | cartridge | deposit one, withdraw one | take the cartridge out, start Bank | error `00000007`; with the cartridge back in: boxes as before the session |
+| 13 | installed copy, cartridge out | deposit one, withdraw one | put the cartridge in, start Bank | error `00000007`; with the cartridge out again: boxes as before the session |
 
-If run 11 or 12 opens Bank with the new boxes and no error, Bank did not tell the cartridge from the installed copy.
+If run 12 or 13 opens Bank with the new boxes and no error, Bank did not tell the cartridge from the installed copy.
 
 ### The game has its new save
 
@@ -85,8 +86,8 @@ Package `stop-after-game`. Save and Quit shows `00007E57 00000002`.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
-| 13 | deposit one, withdraw one | start Bank, the game still there | both moves done, in Bank and in the game |
-| 14 | withdraw one | play the game, save, start Bank | the Pokémon back in Bank; it is also in the game |
+| 14 | deposit one, withdraw one | start Bank, the game still there | both moves done, in Bank and in the game |
+| 15 | withdraw one | play the game, save, start Bank | the Pokémon back in Bank; it is also in the game |
 
 ## A power cut during a save
 
@@ -111,18 +112,18 @@ Pulling a card that is being written is at your own risk. Only Bank's own files 
 
 A release that changes how the Bank is stored ships one migration patch, for the Bank of the one version before it ([building.md](building.md#release)). The normal patches never read the earlier files; they have to refuse them, and the migration has to convert them. These runs check both. *Old* is the version before, *new* the release.
 
-Start from a console whose Bank was last used with the old version, and from a backup of it: after run 17 the old version cannot open the Bank any more.
+Start from a console whose Bank was last used with the old version, and from a backup of it: after run 18 the old version cannot open the Bank any more.
 
 | Run | Installed | Do | Must show |
 | --- | --- | --- | --- |
-| 15 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number; nothing changed |
-| 16 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
-| 17 | migration | start Bank, press START | a loading screen, then `0000600D 00000001` |
-| 18 | migration | the same again | `0000600D 00000002` |
-| 19 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
-| 20 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
+| 16 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number; nothing changed |
+| 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
+| 18 | migration | start Bank, press START | a loading screen, then `0000600D 00000001` |
+| 19 | migration | the same again | `0000600D 00000002` |
+| 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
+| 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
-Runs 15 and 16 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
+Runs 16 and 17 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
 
 A migration patch never opens the Bank. Its result is always two numbers:
 

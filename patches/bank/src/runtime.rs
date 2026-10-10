@@ -81,6 +81,11 @@ struct Runtime {
     owner: usize,
     step: Step,
     job: Option<JobId>,
+    /// A job was given to the worker since the files were last closed.
+    files_used: bool,
+    /// The job that closes the files at the end of a session, until its
+    /// reply is collected.
+    closing: Option<JobId>,
     baseline: Option<GameEvidence>,
     save_dex: Option<crate::dex::Evidence>,
     fault: Fault,
@@ -128,6 +133,8 @@ static STATE: Shared = Shared(UnsafeCell::new(Runtime {
     owner: 0,
     step: Step::Idle,
     job: None,
+    files_used: false,
+    closing: None,
     baseline: None,
     save_dex: None,
     fault: Fault::None,
@@ -305,7 +312,40 @@ impl Runtime {
         self.owner = task.raw() as usize;
         self.step = step;
         self.job = Some(id);
+        self.files_used = true;
         Ok(())
+    }
+    /// A session ends: the worker closes the Bank's files, so that nothing
+    /// of them is open on the start screen, where HOME works and Bank can be
+    /// closed. The next session opens them as a first one does.
+    fn close_files(&mut self) {
+        if !self.files_used || self.job.is_some() || self.closing.is_some() {
+            return;
+        }
+        let Some(worker) = self.worker.as_mut() else {
+            return;
+        };
+        if let Ok(id) = unsafe { worker.submit(Job::Close) } {
+            self.closing = Some(id);
+            self.files_used = false;
+        }
+    }
+    /// Collects the reply of `close_files`. False while it is still out.
+    fn files_closed(&mut self) -> bool {
+        let (Some(id), Some(worker)) = (self.closing, self.worker.as_mut()) else {
+            self.closing = None;
+            return true;
+        };
+        match worker.poll(id) {
+            Ok(None) => false,
+            Err(_) if worker.active() => false,
+            // What closing returned changes nothing here: a file that could
+            // not be closed shows when the next session opens it.
+            _ => {
+                self.closing = None;
+                true
+            }
+        }
     }
     fn poll(&mut self, task: Task) -> Result<Option<Reply>, Fault> {
         if self.owner != task.raw() as usize {
@@ -605,6 +645,10 @@ impl Runtime {
             };
         }
         if self.step == Step::Idle {
+            // The files of the session before are closed first.
+            if !self.files_closed() {
+                return Ok(false);
+            }
             local_date(task)?;
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
             // The original shows this message for both: opening an existing
@@ -866,28 +910,38 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         state.step = Step::Idle;
         state.owner = 0;
     }
-    if cancelled {
-        return 0x14;
-    }
-    // After an error nothing is opened again in this session. The game scan
-    // still leads to task 9, whose hook shows the error again; everything
-    // else ends in cleanup.
-    if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
-        return 0x14;
-    }
-    if matches!((current, outcome), (3, 4 | 0x17)) {
-        unsafe {
-            manager.add(0x1c).write(0);
+    let destination = 'route: {
+        if cancelled {
+            break 'route 0x14;
         }
-    }
-    // The main menu (task 4) is never created; see navigation.rs.
-    let destination = crate::navigation::destination(current, outcome, next, state.no_games);
-    // Refuse HOME and sleep across a whole chain of loading tasks, not only
-    // while one of their jobs runs.
-    if crate::navigation::loads(destination) {
-        storage_activity(true);
-    } else if state.job.is_none() {
-        storage_activity(false);
+        // After an error nothing is opened again in this session. The game
+        // scan still leads to task 9, whose hook shows the error again;
+        // everything else ends in cleanup.
+        if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
+            break 'route 0x14;
+        }
+        if matches!((current, outcome), (3, 4 | 0x17)) {
+            unsafe {
+                manager.add(0x1c).write(0);
+            }
+        }
+        // The main menu (task 4) is never created; see navigation.rs.
+        let destination = crate::navigation::destination(current, outcome, next, state.no_games);
+        // Refuse HOME and sleep across a whole chain of loading tasks, not
+        // only while one of their jobs runs.
+        if crate::navigation::loads(destination) {
+            storage_activity(true);
+        } else if state.job.is_none() {
+            storage_activity(false);
+        }
+        destination
+    };
+    // Every session ends in cleanup (task 0x14), and from there the start
+    // screen follows. The files are closed on the way in; the way out
+    // collects the reply, and closes them if that could not be asked before.
+    state.files_closed();
+    if destination == 0x14 || current == 0x14 {
+        state.close_files();
     }
     destination
 }

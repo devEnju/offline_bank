@@ -89,9 +89,6 @@ impl Service for Converter {
     fn cancellable(_: &Convert) -> bool {
         false
     }
-    fn closes(_: &Convert) -> bool {
-        false
-    }
 }
 
 struct Runtime {

@@ -162,7 +162,7 @@ mod arm {
 }
 
 #[cfg(target_arch = "arm")]
-pub(crate) use arm::{check_thread_capacity, close_handle, wait_thread};
+pub(crate) use arm::{check_thread_capacity, wait_thread};
 
 #[cfg(test)]
 mod tests {

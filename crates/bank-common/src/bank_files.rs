@@ -1341,4 +1341,108 @@ mod tests {
         assert!(bytes == body(0x31, 0x44, 0));
         assert!(disk.0.borrow().files[&(FileName::Transport as u8)] == damaged);
     }
+
+    /// What the end of a session does: the Bank file is given back and
+    /// closed. Nothing of Bank's is open afterwards.
+    fn end_session(files: &mut BankFiles<Shared>, disk: &Shared) {
+        drop(files.close());
+        assert_eq!(disk.0.borrow().open, 0);
+    }
+
+    #[test]
+    fn each_session_of_one_run_loads_what_the_one_before_saved() {
+        let first = body(0x31, 0x44, 0);
+        let second = body(0x52, 0x66, 0);
+        let third = body(0x73, 0x11, 0);
+        let disk = fresh(&first);
+        // One worker for the whole run: the same object opens every session.
+        let mut files = BankFiles::new(disk.clone());
+        let mut expected = (first, Stored::NONE);
+        for (next, rewards) in [(second, stored(7, 1, 30)), (third, stored(9, 2, 60))] {
+            assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
+            let (bytes, loaded) = load(&mut files);
+            assert!(bytes == expected.0);
+            assert_eq!(loaded.rewards, expected.1);
+            files
+                .prepare(&mut next.clone(), rewards, GAME, BEFORE, AFTER)
+                .unwrap();
+            files.reconcile(observed(AFTER)).unwrap();
+            files.tidy_transport().unwrap();
+            end_session(&mut files, &disk);
+            expected = (next, rewards);
+        }
+        assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
+        let (bytes, loaded) = load(&mut files);
+        assert!(bytes == expected.0);
+        assert_eq!(loaded.rewards, expected.1);
+        // A session that only looks is closed the same way.
+        end_session(&mut files, &disk);
+        assert!(!files.is_open());
+    }
+
+    #[test]
+    fn a_session_that_failed_is_closed_all_the_same() {
+        let old = body(0x31, 0x44, 0);
+        let base = fresh(&old);
+        let counting = base.cut_after(usize::MAX);
+        let mut files = opened(&counting);
+        load(&mut files);
+        files
+            .prepare(
+                &mut body(0x52, 0x66, 0),
+                stored(7, 1, 30),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
+            .unwrap();
+        let total = counting.0.borrow().operations;
+        drop(files);
+        for cut in 0..total {
+            let disk = base.cut_after(cut);
+            let mut files = BankFiles::new(disk.clone());
+            let failed = files.open().is_err()
+                || files.read(&mut vec![0; BLOB_SIZE]).is_err()
+                || files
+                    .prepare(
+                        &mut body(0x52, 0x66, 0),
+                        stored(7, 1, 30),
+                        GAME,
+                        BEFORE,
+                        AFTER,
+                    )
+                    .is_err();
+            assert!(failed, "cut {cut}");
+            end_session(&mut files, &disk);
+        }
+    }
+
+    #[test]
+    fn a_save_in_progress_is_settled_after_closing_as_after_a_restart() {
+        let old = body(0x31, 0x44, 0);
+        let new = body(0x52, 0x66, 0);
+        for (game, kept) in [(BEFORE, &old), (AFTER, &new)] {
+            let disk = fresh(&old);
+            let mut files = opened(&disk);
+            load(&mut files);
+            files
+                .prepare(&mut new.clone(), stored(7, 1, 30), GAME, BEFORE, AFTER)
+                .unwrap();
+            // The session ends before the game answered.
+            end_session(&mut files, &disk);
+            assert!(matches!(files.open(), Ok(Some(Phase::Prepared(_)))));
+            files.reconcile(observed(game)).unwrap();
+            let (bytes, _) = load(&mut files);
+            assert!(&bytes == kept);
+            // A restart at the same point comes to the same Bank.
+            let restarted = fresh(&old);
+            let mut first = opened(&restarted);
+            load(&mut first);
+            first
+                .prepare(&mut new.clone(), stored(7, 1, 30), GAME, BEFORE, AFTER)
+                .unwrap();
+            drop(first);
+            assert!(recovered(&restarted, game).0 == bytes);
+        }
+    }
 }

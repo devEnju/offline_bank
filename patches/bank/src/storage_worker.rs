@@ -161,10 +161,10 @@ mod arm {
         fn cancellable(job: &Job) -> bool {
             job.cancellable()
         }
-        fn closes(job: &Job) -> bool {
-            matches!(job, Job::Close)
-        }
         fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
+            // A session has ended: nothing of the Bank stays open. This is
+            // done whatever state an error left, and the thread goes on
+            // waiting for the next session.
             if matches!(job, Job::Close) {
                 if let Some(mut storage) = self.files.close() {
                     storage.close().map_err(|e| fs_error(e, 3))?;

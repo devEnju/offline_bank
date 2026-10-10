@@ -218,8 +218,6 @@ mod arm {
         /// A job whose result may be discarded once cancellation was asked
         /// for. Every other job finishes what it began.
         fn cancellable(job: &Self::Job) -> bool;
-        /// The job after which the worker thread ends.
-        fn closes(job: &Self::Job) -> bool;
     }
 
     /// The mailbox, staging buffer and thread of a payload's one worker. A
@@ -255,13 +253,12 @@ mod arm {
         }
     }
 
-    /// Main-thread owner of the one worker. Drop deliberately never joins or
-    /// frees an active native thread; process lifetime owns its static memory.
+    /// Main-thread owner of the one worker. The thread is started once and
+    /// waits for jobs until the process ends; no job ends it, and Drop never
+    /// joins or frees it. Process lifetime owns its static memory.
     pub struct Worker<S: Service> {
         current: Option<JobId>,
         cancellable: bool,
-        closing: bool,
-        closed: bool,
         thread: PhantomData<*mut ()>,
         service: PhantomData<S>,
     }
@@ -269,8 +266,8 @@ mod arm {
         /// # Safety
         /// Requires the exact reviewed executable after native OS/FS setup.
         /// Call once from the UI thread. Keep the initialized native FS service
-        /// and application manager alive until worker Close has completed or
-        /// process exit. An idle worker touches only its private event and does
+        /// and application manager alive until process exit. An idle worker
+        /// touches only its private event and does
         /// not access native owners while the application tears down.
         pub unsafe fn start() -> Result<Self, WorkerError> {
             S::shared()
@@ -288,8 +285,6 @@ mod arm {
             Ok(Self {
                 current: None,
                 cancellable: false,
-                closing: false,
-                closed: false,
                 thread: PhantomData,
                 service: PhantomData,
             })
@@ -300,9 +295,6 @@ mod arm {
         /// owning native task against teardown. Staged bytes are exclusively
         /// transferred to the worker until completion is collected.
         pub unsafe fn submit(&mut self, job: S::Job) -> Result<JobId, WorkerError> {
-            if self.closing || self.closed {
-                return Err(WorkerError::control(WorkerErrorKind::Stopped));
-            }
             if self.current.is_some() {
                 return Err(WorkerError::control(WorkerErrorKind::Busy));
             }
@@ -312,7 +304,6 @@ mod arm {
             let id = S::shared().mailbox.submit(job)?;
             self.current = Some(id);
             self.cancellable = S::cancellable(&job);
-            self.closing = S::closes(&job);
             signal::<S>();
             Ok(id)
         }
@@ -325,24 +316,18 @@ mod arm {
                 if !stack_guard_valid::<S>() {
                     return Err(WorkerError::control(WorkerErrorKind::Resource));
                 }
-                if self.closing {
-                    // poll_closed separately waits for the SDK epilogue to exit.
-                    self.closed = true;
-                }
                 return result.map(Some);
             }
             if thread_exited::<S>()? {
-                // Completion can race the first mailbox check. Collect it if
-                // the worker published immediately before SDK thread exit.
+                // The thread is gone, which no job asks for. Collect a result
+                // it published immediately before that.
                 if let Some(result) = S::shared().mailbox.poll(id)? {
                     self.current = None;
-                    self.closed = true;
                     return result.map(Some);
                 }
                 // Only confirmed kernel termination releases borrowed native
                 // owners. Leave a nonterminal mailbox poisoned/inaccessible.
                 self.current = None;
-                self.closed = true;
                 return Err(WorkerError::control(WorkerErrorKind::Stopped));
             }
             Ok(None)
@@ -383,22 +368,6 @@ mod arm {
         pub fn ensure_thread_capacity(&self, additional: i64) -> Result<(), WorkerError> {
             thread_capacity(additional)
         }
-        /// Nonblocking cleanup after Close. Returns false until SDK exit; the
-        /// static stack is never recycled while a thread could still use it.
-        pub fn poll_closed(&mut self) -> Result<bool, WorkerError> {
-            if !self.closed {
-                return Ok(false);
-            }
-            if !thread_exited::<S>()? {
-                return Ok(false);
-            }
-            let thread = unsafe { &mut *S::shared().thread.get() };
-            if thread.handle != 0 {
-                close_handle(thread.handle)?;
-                thread.handle = 0;
-            }
-            Ok(true)
-        }
     }
     unsafe extern "aapcs" fn worker_entry<S: Service>(_: *mut u8) {
         let shared = S::shared();
@@ -415,11 +384,7 @@ mod arm {
                 if cancellable && shared.mailbox.cancelled(id) {
                     result = Err(WorkerError::control(WorkerErrorKind::Cancelled));
                 }
-                let closing = S::closes(&job);
                 if shared.mailbox.finish(id, result).is_err() {
-                    return;
-                }
-                if closing {
                     return;
                 }
             } else {
@@ -508,14 +473,6 @@ mod arm {
             Ok(false)
         } else {
             Err(WorkerError::resource(result as u32))
-        }
-    }
-    fn close_handle(handle: u32) -> Result<(), WorkerError> {
-        let result = unsafe { crate::kernel::close_handle(handle) };
-        if result < 0 {
-            Err(WorkerError::resource(result as u32))
-        } else {
-            Ok(())
         }
     }
     fn thread_capacity(additional: i64) -> Result<(), WorkerError> {
