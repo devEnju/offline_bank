@@ -10,7 +10,9 @@ mod linked {
         transporter_select,
     };
     use transporter_payload::gen5::transporter_slot_holds;
-    use transporter_payload::hooks::{transporter_check, transporter_deliver};
+    use transporter_payload::hooks::{
+        transporter_check, transporter_deliver, transporter_session_begin,
+    };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
         transporter_layout_built, transporter_title_language, transporter_vc_listed,
@@ -153,14 +155,13 @@ mod linked {
     core::arch::global_asm!(
         ".section .text.transporter_stubs,\"ax\",%progbits",
         ".arm",
-        // get_next_state, leaving the game list (was: connect). Sets bit 1 of
-        // the original activity mask through 0022AEEC, as the original connect
-        // step did; the original disconnect step clears it. Then answers
-        // GET_POKEMON and returns as the original case does.
+        // get_next_state, leaving the game list (was: connect). Refuses HOME
+        // and sleep as the original connect step did, and takes back a HOME
+        // press accepted just before (hooks.rs); the original disconnect
+        // step lets them through again. Then answers GET_POKEMON and returns
+        // as the original case does. lr is free, the function saved its own.
         "transporter_session:",
-        "mov r0, #1",
-        "ldr r12, =0x0022aeec",
-        "blx r12",
+        "bl {session_begin}",
         "mov r0, #9",
         "pop {{r4, pc}}",
         // get_next_state, after GET_POKEMON (00242D28, was: cmp r2, #2).
@@ -235,6 +236,7 @@ mod linked {
         "bx lr",
         ".ltorg",
         check = sym transporter_check,
+        session_begin = sym transporter_session_begin,
         deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,
     );

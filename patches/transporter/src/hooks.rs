@@ -27,6 +27,17 @@ pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
 /// The original's "show this message and wait for it to be acknowledged":
 /// `(ui, message, 1)`, as every one of its tasks calls it.
 const SHOW_MESSAGE: usize = 0x0019_b50c;
+/// The original's HOME and sleep block: `0022AEEC(bit)` sets a bit of its
+/// activity mask and `0011A5FC(bit)` clears it. While the mask is not zero
+/// the original refuses both, as it did from its connect step to its
+/// disconnect step.
+const BLOCK_SET: usize = 0x0022_aeec;
+const BLOCK_CLEAR: usize = 0x0011_a5fc;
+/// Set by the original (0010AD84) when HOME is pressed while the mask is
+/// zero, and nothing else is done for the press then. Its main loop
+/// (001044D0) carries the press out some frames later, whatever the mask
+/// says by then.
+const HOME_ACCEPTED: *mut u8 = 0x002f_49e9 as *mut u8;
 /// Flush and update the file's time, as Bank's writer does.
 pub(crate) const FLUSH_FLAGS: u32 = 0x0001_0001;
 /// The original's `svcCreateThread(out, entry, arg, stack_top, priority,
@@ -327,6 +338,33 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
     }
 }
 
+/// Sets or clears bit 1 of the original's activity mask through the
+/// original functions.
+///
+/// The mask only refuses new HOME presses. One accepted just before it was
+/// set would still be carried out, so setting the mask also takes that press
+/// back: accepting it did nothing but set the one byte cleared here. From
+/// then on the original refuses every press itself, and the HOME Menu, and
+/// closing Transporter from it, never meet a file being read or written.
+unsafe fn refuse_home(refuse: bool) {
+    let address = if refuse { BLOCK_SET } else { BLOCK_CLEAR };
+    let mark: unsafe extern "aapcs" fn(u32) = unsafe { transmute(address) };
+    unsafe { mark(1) };
+    if refuse {
+        unsafe { HOME_ACCEPTED.write_volatile(0) };
+    }
+}
+
+/// A game was chosen: HOME and sleep are refused until the original's
+/// disconnect step, which every way back to the title screen passes, lets
+/// them through again.
+/// # Safety
+/// Called only from the session stub (link.rs), on the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_session_begin() {
+    unsafe { refuse_home(true) };
+}
+
 /// Asks, when START was pressed and before the original searches for games,
 /// whether Bank can take a delivery: the question the original put to the
 /// server after a game was chosen. If not, the original's message for it is
@@ -337,7 +375,12 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    match unsafe { step(task, JOB_CHECK) } {
+    let answer = unsafe { step(task, JOB_CHECK) };
+    // HOME and sleep are refused while Bank's files are being read, and no
+    // longer: they work on the message and during the game search, as in
+    // the original.
+    unsafe { refuse_home(answer.is_none()) };
+    match answer {
         None => SEARCH_PENDING,
         Some(0) => SEARCH_GO,
         Some(message) => {

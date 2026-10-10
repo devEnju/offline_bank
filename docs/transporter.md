@@ -17,7 +17,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Source of a Gen 5 game | Cartridge | Cartridge and saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)) |
 | Language screen | Switches the language of the screens | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
 | Notice that nicknames and OT names with prohibited words will be erased | Shown; the server erased them | Skipped. No name is ever changed offline. The other notices are unchanged. |
-| HOME and sleep | Refused from connecting until disconnecting | Refused from choosing a game until the session ends |
+| HOME and sleep | Refused from connecting until disconnecting | Refused from choosing a game until the session ends, and for the moment after START in which Bank's files are read |
 | Screens and messages | | The originals; no new text |
 
 Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produce Gen 7 Pokémon, as with the original service.
@@ -109,7 +109,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | A Pokémon the original's own checks refuse (for example an Egg). | Three original dialogs in a row: one that a Pokémon cannot be sent, one with the reason, one that it was removed from the Transport Box. The others are offered. |
 | An egg in Box 1 beside other Pokémon. | The original dialog about Pokémon that cannot be transported appears for the egg; the others are offered. |
 | Any transfer. | The notice about nicknames and OT names does not appear; the notices about not being able to return Pokémon and about held items do. |
-| Press HOME and close the lid after choosing a game, at every screen until the title screen is back. | Nothing happens. Both work on the title screen. |
+| Press HOME and close the lid after choosing a game, at every screen until the title screen is back. Also press HOME together with A when confirming the game. | Nothing happens. Both work on the title screen, on the game list, and on a message that follows START. |
 
 ### Refusals
 

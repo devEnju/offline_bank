@@ -410,7 +410,11 @@ The question step shows one fixed sequence when the reader flagged anything (`00
 
 ### HOME button and sleep
 
-Same mechanism as [Bank](#home-button-and-sleep): mask at `002F49E8 + 2`, set `0022AEEC`, clear `0011A5FC`. The original sets bit 1 in the connect step (`00248B58`) and clears it in the disconnect step (`002470F4`). The session entry sets bit 1 in place of the connect step; the original disconnect step still clears it.
+Same mechanism as [Bank](#home-button-and-sleep), in the same engine code: mask at `002F49E8 + 2`, set `0022AEEC`, clear `0011A5FC`. A HOME press is accepted only while the mask is zero (`0010AD78` then sets the flag at `+1`), and the main loop carries an accepted press out some frames later without looking at the mask again (`001044D0`). The original sets bit 1 in the connect step (`00248B58`) and clears it in the disconnect step (`002470F4`).
+
+- **From a chosen game to the end.** The session entry sets bit 1 in place of the connect step (`hooks::transporter_session_begin`); the original disconnect step, which every way back to the title screen passes, still clears it. Everything that writes lies in between: the record save of the Bank step, the delivery, and the saves of the source game.
+- **While Bank is asked at START.** The check entry sets bit 1 for as long as its file job runs and clears it with the answer, so HOME and sleep work on its message and during the game search and the game list, as in the original.
+- **Accepted presses.** As in Bank, setting the bit also clears the flag at `+1` (`hooks::refuse_home`), so a press accepted in the frame before is not carried out while files are read or written.
 
 ### Worker thread
 
