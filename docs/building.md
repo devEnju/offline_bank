@@ -87,7 +87,9 @@ Version 0.2.1 stored the Bank in four files; since v0.3.0 it has ten ([internals
 
 This builds it into `build/bank-migrate/<package>/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
-It belongs to that one step and ships only with release v0.3.0 ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1`, and its section in [testing.md](testing.md) can be deleted.
+It belongs to that one step and ships only with release v0.3.0 ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+
+This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always the screen with two numbers, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
 
 ## Release
 

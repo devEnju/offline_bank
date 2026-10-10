@@ -16,7 +16,7 @@ It is a list of procedures only. Nothing here records which of them were run, on
 | Bank | `Build-BankPatch.ps1` | `build/bank/<package>/` |
 | Transporter | `Build-TransporterPatch.ps1` | `build/transporter/<package>/` |
 | `stop-before-game`, `stop-after-game`, `tear-record`, `tear-boxes` | `Build-BankTestPatches.ps1` | `build/bank-test/<name>/` |
-| Migration from v0.2.1 | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/<package>/` |
+| Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/<package>/` |
 
 What the four test packages do is in [building.md](building.md#test-builds-for-an-interrupted-save).
 
@@ -28,7 +28,8 @@ What the four test packages do is in [building.md](building.md#test-builds-for-a
 | How or where files are stored, or the file access | [Normal use](#normal-use), [A power cut during a save](#a-power-cut-during-a-save) |
 | The rules for an interrupted save | [An interrupted Save and Quit](#an-interrupted-save-and-quit) |
 | The Transporter patch, or the transport box files | Run 3 of [Normal use](#normal-use) |
-| The migration patch | [Updating a Bank from v0.2.1](#updating-a-bank-from-v021) |
+| How or where files are stored, with a migration for it | [Updating from the version before](#updating-from-the-version-before) as well |
+| A migration patch | [Updating from the version before](#updating-from-the-version-before) |
 
 ## Normal use
 
@@ -106,18 +107,34 @@ Step 3 shows that a cut damaged nothing that was still needed. Step 4 shows that
 
 Pulling a card that is being written is at your own risk. Only Bank's own files are being written at that moment; the backup is what protects everything else.
 
-## Updating a Bank from v0.2.1
+## Updating from the version before
 
-The migration patch, for a console whose Bank was last used with v0.2.1. Start from a backup of that Bank; after run 16 no version before v0.3.0 can open it. This section goes when the migration patch goes.
+A release that changes how the Bank is stored ships one migration patch, for the Bank of the one version before it ([building.md](building.md#release)). The normal patches never read the earlier files; they have to refuse them, and the migration has to convert them. These runs check both. *Old* is the version before, *new* the release.
 
-| Run | Package | Do | Must show |
+Start from a console whose Bank was last used with the old version, and from a backup of it: after run 17 the old version cannot open the Bank any more.
+
+| Run | Installed | Do | Must show |
 | --- | --- | --- | --- |
-| 15 | normal Bank | start Bank, before converting | error `00000003 00164C54`; nothing changed |
-| 16 | migration | start Bank, press START | a loading screen, then `0000600D 00000001` |
-| 17 | migration | the same again | `0000600D 00000002` |
-| 18 | normal Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under v0.2.1 |
+| 15 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number; nothing changed |
+| 16 | new Transporter | choose a game and start a transfer, before converting | refused with the "did not complete correctly… open Pokémon Bank" message; nothing removed from the source game |
+| 17 | migration | start Bank, press START | a loading screen, then `0000600D 00000001` |
+| 18 | migration | the same again | `0000600D 00000002` |
+| 19 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
+| 20 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
-Then go on with [Normal use](#normal-use) on the converted Bank. That the migration refuses a Bank with a Save and Quit in progress (`00000BAD 00000007`) is covered by its PC tests; v0.2.1 has no package that stops a save on purpose.
+Runs 15 and 16 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must leave the source game alone.
+
+A migration patch never opens the Bank. Its result is always two numbers:
+
+| Numbers | Meaning |
+| --- | --- |
+| `0000600D 00000001` | converted |
+| `0000600D 00000002` | already converted; nothing changed |
+| `0000600D 00000000` | no Bank found |
+| `00000BAD 00000007` | the old Bank has a Save and Quit in progress; the old version has to finish it |
+| `00000BA1` to `00000BA4` | a step failed; the second number says why. Starting it again must be safe. |
+
+That a migration refuses a Bank with a Save and Quit in progress, and that a cut at any of its steps is picked up by the next start, is covered by its PC tests; released versions have no package that stops a save on purpose.
 
 ## If something else shows
 
