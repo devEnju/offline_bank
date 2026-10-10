@@ -12,20 +12,28 @@
 //!
 //! The steps, each safe to interrupt:
 //!
-//! 1. *Stage.* The old Bank is opened and checked; it must be whole and have
-//!    no save in progress. Every old file is copied into temporary files in
-//!    the new cut, and compared. Then a marker file is created. Until the
-//!    marker exists the old files are untouched, and a start begins again.
+//! 1. *Stage.* The old Bank is loaded the way the offline patch loads a
+//!    Bank; it must load and have no save in progress. Every unit of the old
+//!    files that can be read is copied into a temporary file of its own and
+//!    read back. A unit that cannot be read is left out: if the Bank loaded,
+//!    it is a spare one, which an interrupted save of v0.2.1 can leave
+//!    damaged, and the offline patch writes it anew at the next save. The
+//!    Bank is then loaded from the temporary files and must be the same.
+//!    Only then a marker file is created. Until the marker exists the old
+//!    files are untouched, and a start begins again.
 //! 2. *Finish.* With the marker, the temporary files are the Bank. The old
 //!    files are removed, the final files are written from the temporary ones
 //!    (the journal records last) and compared, the marker is removed, and
 //!    then the temporary files.
 
 use bank_common::{
-    bank_files::{FileName, UnitFile, RECORD, SNAPSHOT},
-    session::{self, BankSession},
+    bank_files::{self, BankFiles, FileName, Files, Loaded, UnitFile, RECORD, SNAPSHOT},
+    session,
 };
-use offline_core::{rewards, sections::DEX_FILE, transport, Phase, Storage, StoreError};
+use offline_core::{
+    crc32, native_blob::BLOB_SIZE, rewards, sections::DEX_FILE, transport, Phase, Storage,
+    StoreError,
+};
 
 /// First number of the result screen when nothing went wrong; the second
 /// number is the `Done`.
@@ -72,9 +80,10 @@ pub enum Step {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cause<E> {
     Io(E),
-    /// The Bank container could not be opened or read as one.
-    Bank(session::Error<E>),
-    /// A copy does not read back as what was copied.
+    /// The files do not load as a Bank.
+    Damaged,
+    /// A copy does not read back as what was copied, or the copies do not
+    /// load as the Bank the old files held.
     Mismatch,
     /// A file that has to be there is not.
     Missing,
@@ -96,10 +105,8 @@ pub fn numbers<E>(result: Result<Done, Stopped<E>>, diagnostic: impl Fn(E) -> u3
         Err(Stopped::Failed(step, cause)) => [
             FAILED + step as u32,
             match cause {
-                Cause::Io(error) | Cause::Bank(session::Error::Storage(StoreError::Io(error))) => {
-                    diagnostic(error)
-                }
-                Cause::Bank(_) => 5,
+                Cause::Io(error) => diagnostic(error),
+                Cause::Damaged => 5,
                 Cause::Mismatch => 1,
                 Cause::Missing => 2,
             },
@@ -189,45 +196,128 @@ pub fn run<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<Done, C> {
     Ok(Done::Converted)
 }
 
+/// A card whose files are only read: every write is refused.
+struct ReadOnly<S>(S);
+enum Guarded<E> {
+    Io(E),
+    ReadOnly,
+}
+impl<S: Storage> Storage for ReadOnly<S> {
+    type Error = Guarded<S::Error>;
+    fn read(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.read(offset, out).map_err(Guarded::Io)
+    }
+    fn write(&mut self, _: u64, _: &[u8]) -> Result<(), Self::Error> {
+        Err(Guarded::ReadOnly)
+    }
+    fn sync(&mut self) -> Result<(), Self::Error> {
+        Err(Guarded::ReadOnly)
+    }
+    fn recreate(&mut self, _: u64, _: u64) -> Result<(), Self::Error> {
+        Err(Guarded::ReadOnly)
+    }
+}
+/// The four containers under the names `names` gives them, for reading.
+struct View<'a, C: Card> {
+    card: &'a mut C,
+    names: fn(FileName) -> &'static [UnitFile],
+}
+impl<C: Card> Files for View<'_, C> {
+    type Storage = ReadOnly<C::Storage>;
+    fn open(&mut self, file: FileName) -> Result<Option<Self::Storage>, Guarded<C::Error>> {
+        let found = self.card.open((self.names)(file)).map_err(Guarded::Io)?;
+        Ok(found.map(ReadOnly))
+    }
+    fn create(&mut self, _: FileName) -> Result<Self::Storage, Guarded<C::Error>> {
+        Err(Guarded::ReadOnly)
+    }
+}
+
+/// What a Bank is when it is loaded: where its journal stands, what was
+/// found beside the boxes, and every byte of the assembled body.
+#[derive(Debug, PartialEq, Eq)]
+struct Seen {
+    phase: Phase,
+    loaded: Loaded,
+    body: u32,
+}
+
+/// Loads the Bank under `names` as the offline patch loads one. It must be
+/// at rest: a save in progress is the old version's to finish.
+fn inspect<C: Card>(
+    card: &mut C,
+    names: fn(FileName) -> &'static [UnitFile],
+    buffer: &mut [u8],
+    step: Step,
+) -> Outcome<Seen, C> {
+    let failed = |error| {
+        Stopped::Failed(
+            step,
+            match error {
+                bank_files::Error::Io(Guarded::Io(error))
+                | bank_files::Error::Bank(session::Error::Storage(StoreError::Io(Guarded::Io(
+                    error,
+                )))) => Cause::Io(error),
+                _ => Cause::Damaged,
+            },
+        )
+    };
+    let damaged = Stopped::Failed(step, Cause::Damaged);
+    let Some(body) = buffer.get_mut(..BLOB_SIZE) else {
+        return Err(damaged);
+    };
+    let mut files = BankFiles::new(View { card, names });
+    let phase = match files.open().map_err(failed)? {
+        Some(phase @ Phase::Clean(_)) => phase,
+        Some(Phase::Prepared(_)) => return Err(Stopped::InProgress),
+        None => return Err(damaged),
+    };
+    let loaded = files.read(body).map_err(failed)?;
+    Ok(Seen {
+        phase,
+        loaded,
+        body: crc32(body),
+    })
+}
+
 /// Copies the old files into temporary ones in the new cut, then marks them
 /// complete. The old files are only read.
 fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
     let read = Step::ReadOld;
     let write = Step::WriteTemporary;
-    // The Bank must be whole and at rest: its journal valid, no save in
-    // progress, the current boxes passing their checksum.
-    let storage = card
-        .open(&OLD_BANK)
-        .map_err(io(read))?
-        .ok_or(Stopped::Failed(read, Cause::Missing))?;
-    let bank = |error| Stopped::Failed(read, Cause::Bank(error));
-    let mut session = BankSession::open_existing(storage).map_err(bank)?;
-    if !matches!(session.phase().map_err(bank)?, Phase::Clean(_)) {
-        return Err(Stopped::InProgress);
-    }
-    session.read_bank(buffer).map_err(bank)?;
-    let mut source = Some(session.into_storage());
+    // The Bank the old files hold. Whatever this needed could be read.
+    let before = inspect(card, old, buffer, read)?;
     for file in ORDER {
         card.remove(temporary(file)).map_err(io(write))?;
-        let found = match file {
-            FileName::Bank => source.take(),
-            _ => card.open(old(file)).map_err(io(read))?,
-        };
         // A side file that was never there stays absent.
-        let Some(mut from) = found else { continue };
-        let mut to = card.create(temporary(file)).map_err(io(write))?;
-        let units = temporary(file);
-        copy(
-            &mut from,
-            &mut to,
-            units,
-            0..units.len(),
-            buffer,
-            read,
-            write,
-        )?;
-        to.sync().map_err(io(write))?;
-        same(&mut from, &mut to, file.size(), buffer, read, write)?;
+        let Some(mut from) = card.open(old(file)).map_err(io(read))? else {
+            continue;
+        };
+        let mut start = 0;
+        for unit in temporary(file) {
+            let piece = buffer
+                .get_mut(..unit.len as usize)
+                .ok_or(Stopped::Failed(read, Cause::Damaged))?;
+            // A unit that does not read is left out. The load after the
+            // loop decides whether the Bank can do without it.
+            if from.read(start, piece).is_ok() {
+                let copied = crc32(piece);
+                let mut to = card
+                    .create(core::slice::from_ref(unit))
+                    .map_err(io(write))?;
+                to.write(0, piece).map_err(io(write))?;
+                to.sync().map_err(io(write))?;
+                to.read(0, piece).map_err(io(write))?;
+                if crc32(piece) != copied {
+                    return Err(Stopped::Failed(write, Cause::Mismatch));
+                }
+            }
+            start += unit.len;
+        }
+    }
+    // The converted files must be the Bank the old files were.
+    if inspect(card, temporary, buffer, write)? != before {
+        return Err(Stopped::Failed(write, Cause::Mismatch));
     }
     card.remove(&MARKER).map_err(io(write))?;
     card.create(&MARKER).map_err(io(write))?;
@@ -336,7 +426,7 @@ mod tests {
     use bank_common::testing::{
         body, deliver, fresh, load, observed, opened, stored, Shared, AFTER, BEFORE, GAME,
     };
-    use offline_core::native_blob::BLOB_SIZE;
+    use offline_core::GameObservation;
     use std::{
         cell::RefCell,
         collections::{BTreeMap, BTreeSet},
@@ -351,15 +441,37 @@ mod tests {
     struct State {
         files: BTreeMap<&'static str, Vec<u8>>,
         unreadable: BTreeSet<&'static str>,
+        /// Parts of a file that an interrupted write of the earlier version
+        /// left unreadable: a read that touches one fails.
+        torn: Vec<(&'static str, core::ops::Range<usize>)>,
         unsynced: BTreeSet<&'static str>,
         /// The console's behaviour on a cut; otherwise half a write lands.
         console: bool,
         budget: Option<usize>,
         operations: usize,
+        /// Containers open right now.
+        open: usize,
     }
     #[derive(Clone, Default)]
     struct Sd(Rc<RefCell<State>>);
     struct Open(Sd, &'static [UnitFile]);
+    impl Open {
+        /// The console gives out only so many handles; a container takes
+        /// one archive handle and one open file. Two at once is what the
+        /// Bank of one file per container used.
+        fn held(card: &Sd, files: &'static [UnitFile]) -> Self {
+            let mut state = card.0.borrow_mut();
+            state.open += 1;
+            assert!(state.open <= 2, "{} containers open at once", state.open);
+            drop(state);
+            Self(card.clone(), files)
+        }
+    }
+    impl Drop for Open {
+        fn drop(&mut self) {
+            (self.0).0.borrow_mut().open -= 1;
+        }
+    }
     impl Sd {
         fn tick(&self) -> Result<(), ()> {
             let mut state = self.0.borrow_mut();
@@ -382,10 +494,12 @@ mod tests {
             Self(Rc::new(RefCell::new(State {
                 files: state.files.clone(),
                 unreadable: state.unreadable.clone(),
+                torn: state.torn.clone(),
                 unsynced: BTreeSet::new(),
                 console: state.console,
                 budget,
                 operations: 0,
+                open: 0,
             })))
         }
         fn files(&self) -> BTreeMap<&'static str, Vec<u8>> {
@@ -415,7 +529,8 @@ mod tests {
                     found = true;
                 }
             }
-            Ok(found.then(|| Open(self.clone(), files)))
+            drop(state);
+            Ok(found.then(|| Open::held(self, files)))
         }
         fn create(&mut self, files: &'static [UnitFile]) -> Result<Open, ()> {
             for file in files {
@@ -431,7 +546,7 @@ mod tests {
                 self.tick()?;
                 self.0.borrow_mut().unsynced.remove(file.path);
             }
-            Ok(Open(self.clone(), files))
+            Ok(Open::held(self, files))
         }
         fn remove(&mut self, files: &'static [UnitFile]) -> Result<(), ()> {
             for file in files {
@@ -440,6 +555,8 @@ mod tests {
                     let mut state = self.0.borrow_mut();
                     state.files.remove(file.path);
                     state.unreadable.remove(file.path);
+                    // A file created later under this name is another file.
+                    state.torn.retain(|(path, _)| *path != file.path);
                 }
             }
             Ok(())
@@ -469,6 +586,12 @@ mod tests {
                 }
                 let from = at.max(start);
                 let to = (at + out.len() as u64).min(start + file.len);
+                let (low, high) = ((from - start) as usize, (to - start) as usize);
+                if state.torn.iter().any(|(path, range)| {
+                    *path == file.path && range.start < high && low < range.end
+                }) {
+                    return Err(());
+                }
                 let part = &mut out[(from - at) as usize..(to - at) as usize];
                 match state.files.get(file.path) {
                     Some(bytes) => {
@@ -517,9 +640,54 @@ mod tests {
             }
             Ok(())
         }
-        fn recreate(&mut self, _: u64, _: u64) -> Result<(), ()> {
-            panic!("the conversion replaces files by name");
+        /// Not used by the conversion, which replaces files by name; a
+        /// save of the converted Bank may.
+        fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+            let touched = self.touched(at, length);
+            let [(file, start)] = touched[..] else {
+                panic!("only a whole file is replaced");
+            };
+            assert_eq!((start, file.len), (at, length));
+            self.0.tick()?;
+            let mut state = (self.0).0.borrow_mut();
+            state.files.remove(file.path);
+            state.unreadable.remove(file.path);
+            state.unsynced.remove(file.path);
+            Ok(())
         }
+    }
+    /// The converted card as the offline patch uses it.
+    struct Final(Sd);
+    impl Files for Final {
+        type Storage = Open;
+        fn open(&mut self, file: FileName) -> Result<Option<Open>, ()> {
+            self.0.open(file.units())
+        }
+        fn create(&mut self, file: FileName) -> Result<Open, ()> {
+            self.0.create(file.units())
+        }
+    }
+    /// The Bank the card holds under `names`, as the conversion sees it.
+    fn seen(card: &Sd, names: fn(FileName) -> &'static [UnitFile]) -> Result<Seen, Stopped<()>> {
+        inspect(
+            &mut card.clone(),
+            names,
+            &mut vec![0; BLOB_SIZE],
+            Step::ReadOld,
+        )
+    }
+    /// Every unit of the old files: its file, and where in it the unit lies.
+    fn old_units() -> Vec<(FileName, usize, &'static str, core::ops::Range<usize>)> {
+        let mut out = Vec::new();
+        for file in CONTAINERS {
+            let mut start = 0;
+            for (index, unit) in file.units().iter().enumerate() {
+                let end = start + unit.len as usize;
+                out.push((file, index, old(file)[0].path, start..end));
+                start = end;
+            }
+        }
+        out
     }
 
     const CONTAINERS: [FileName; 4] = [
@@ -688,11 +856,154 @@ mod tests {
         card.0.borrow_mut().files.get_mut("/bank.bin").unwrap()[at] ^= 1;
         card.0.borrow_mut().files.get_mut("/bank.bin").unwrap()[500] ^= 1;
         let before = card.files();
-        assert!(matches!(
+        assert_eq!(
             convert(&card),
-            Err(Stopped::Failed(Step::ReadOld, Cause::Bank(_)))
-        ));
+            Err(Stopped::Failed(Step::ReadOld, Cause::Damaged))
+        );
         assert!(card.files() == before);
+    }
+
+    #[test]
+    fn a_bank_that_loads_is_converted_whatever_else_is_unreadable_and_loads_the_same() {
+        let (disk, _) = used_bank();
+        let want = seen(&old_card(&disk, true), old).unwrap();
+        let mut converted_despite_damage = 0;
+        for (file, index, path, range) in old_units() {
+            let card = old_card(&disk, true);
+            card.0.borrow_mut().torn.push((path, range));
+            let before = card.files();
+            match seen(&card, old) {
+                // What the Bank needs cannot be read: nothing is changed.
+                Err(error) => {
+                    assert_eq!(convert(&card), Err(error), "{file:?} {index}");
+                    assert!(card.files() == before, "{file:?} {index}");
+                }
+                // It loads without that unit: it is converted, and the new
+                // files load as exactly the same Bank.
+                Ok(loads) => {
+                    assert_eq!(convert(&card), Ok(Done::Converted), "{file:?} {index}");
+                    assert_eq!(seen(&card, FileName::units), Ok(loads), "{file:?} {index}");
+                    assert!(!card.files().contains_key("/transport.bin"));
+                    converted_despite_damage += 1;
+                }
+            }
+        }
+        // Most units are spare at any time; the Bank did without them.
+        assert!(converted_despite_damage >= 5, "{converted_despite_damage}");
+
+        // The cases by name. One of the two sets of boxes is in use and one
+        // is spare: the spare one unreadable changes nothing of the Bank.
+        let boxes: Vec<_> = old_units()
+            .into_iter()
+            .filter(|(file, index, ..)| *file == FileName::Bank && *index >= 2)
+            .collect();
+        let outcomes: Vec<_> = boxes
+            .iter()
+            .map(|(_, _, path, range)| {
+                let card = old_card(&disk, true);
+                card.0.borrow_mut().torn.push((path, range.clone()));
+                let done = convert(&card);
+                if done.is_ok() {
+                    assert_eq!(seen(&card, FileName::units).as_ref(), Ok(&want));
+                }
+                done
+            })
+            .collect();
+        assert!(outcomes.contains(&Ok(Done::Converted)));
+        assert!(outcomes.contains(&Err(Stopped::Failed(Step::ReadOld, Cause::Io(())))));
+        // One record copy unreadable: the other one is the Bank's record.
+        for (_, _, path, range) in old_units()
+            .into_iter()
+            .filter(|(file, index, ..)| *file == FileName::Bank && *index < 2)
+        {
+            let card = old_card(&disk, true);
+            card.0.borrow_mut().torn.push((path, range));
+            assert_eq!(convert(&card), Ok(Done::Converted));
+            assert_eq!(seen(&card, FileName::units).as_ref(), Ok(&want));
+        }
+        // Both record copies unreadable: no Bank can be told from that.
+        let card = old_card(&disk, true);
+        for (_, _, path, range) in old_units()
+            .into_iter()
+            .filter(|(file, index, ..)| *file == FileName::Bank && *index < 2)
+        {
+            card.0.borrow_mut().torn.push((path, range));
+        }
+        let before = card.files();
+        assert!(convert(&card).is_err());
+        assert!(card.files() == before);
+    }
+
+    #[test]
+    fn a_bank_converted_without_its_spare_boxes_saves_and_loads_again() {
+        let (disk, _) = used_bank();
+        for (file, index, path, range) in old_units() {
+            if file != FileName::Bank || index < 2 {
+                continue;
+            }
+            let card = old_card(&disk, true);
+            card.0.borrow_mut().torn.push((path, range));
+            if convert(&card).is_err() {
+                continue; // the boxes in use
+            }
+            let mut files = BankFiles::new(Final(card.clone()));
+            assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
+            let mut staging = vec![0; BLOB_SIZE];
+            assert_eq!(files.read(&mut staging).unwrap().delivered, 4);
+            // The next Save and Quit writes into the spare files.
+            let saved = body(0x77, 0x66, 4);
+            files
+                .prepare(
+                    &mut saved.clone(),
+                    stored(9, 2, 2900),
+                    GAME,
+                    [5; 32],
+                    [6; 32],
+                )
+                .unwrap();
+            files
+                .reconcile(GameObservation::Present {
+                    game: GAME,
+                    fingerprint: [6; 32],
+                })
+                .unwrap();
+            files.tidy_transport().unwrap();
+            drop(files);
+            let mut files = BankFiles::new(Final(card.restarted(None)));
+            assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
+            let loaded = files.read(&mut staging).unwrap();
+            assert_eq!(loaded.rewards, stored(9, 2, 2900));
+            return;
+        }
+        panic!("one set of boxes is always spare");
+    }
+
+    #[test]
+    fn a_conversion_that_failed_while_writing_the_new_files_is_continued() {
+        // As on a console with the first build of this patch: the marker is
+        // set, the old files are gone, the smaller containers are in their
+        // new files, and writing the Bank's own files failed.
+        let (disk, _) = used_bank();
+        let whole = old_card(&disk, true).restarted(Some(usize::MAX));
+        assert_eq!(convert(&whole), Ok(Done::Converted));
+        let total = whole.0.borrow().operations;
+        let stuck = (0..total)
+            .map(|cut| {
+                let card = old_card(&disk, true).restarted(Some(cut));
+                assert!(convert(&card).is_err());
+                card.restarted(None)
+            })
+            .find(|card| {
+                let files = card.files();
+                files.contains_key(MARKER[0].path)
+                    && !files.contains_key("/transport.bin")
+                    && files.contains_key("/mover.alt.bin")
+                    && files.contains_key("/journal.bin")
+            })
+            .expect("a cut while the Bank's own files are written");
+        assert_eq!(convert(&stuck), Ok(Done::Converted));
+        assert!(stuck.files() == converted(&disk));
+        assert_eq!(convert(&stuck), Ok(Done::AlreadyNew));
     }
 
     #[test]
@@ -712,9 +1023,7 @@ mod tests {
             assert_eq!(failed(Cause::Io(())), [first, 0xd900_458b]);
             assert_eq!(failed(Cause::Mismatch), [first, 1]);
             assert_eq!(failed(Cause::Missing), [first, 2]);
-            assert_eq!(failed(Cause::Bank(session::Error::Poisoned)), [first, 5]);
-            let unreadable = session::Error::Storage(StoreError::Io(()));
-            assert_eq!(failed(Cause::Bank(unreadable)), [first, 0xd900_458b]);
+            assert_eq!(failed(Cause::Damaged), [first, 5]);
         }
     }
 
