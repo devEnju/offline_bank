@@ -12,6 +12,9 @@ pub struct GameEvidence {
     pub title: u64,
     pub fingerprint: Fingerprint,
     pub secure: SecureValues,
+    /// Whether this copy of the game is a cartridge; otherwise it is the
+    /// installed copy. Bank holds one copy per title, the cartridge first.
+    pub cartridge: bool,
 }
 
 // Fixed descriptors live directly in the one static mailbox; no allocator or
@@ -141,7 +144,7 @@ mod arm {
         fs::{self, ExtdataStorage, GameMainReader, ReportedAbsence},
         native_game::{PlatformSecureValue, MAX_PREPARED_BLOCKS},
         session,
-        transaction::{self, Match},
+        transaction::{self, Found, Match, Medium},
     };
     use core::{cell::UnsafeCell, convert::Infallible, mem::transmute};
     use offline_core::{
@@ -376,12 +379,17 @@ mod arm {
                             finish_secure(game, evidence.secure)?;
                             self.reconcile(&pending, &evidence)?
                         }
-                        // A save of the title that is neither image: the
-                        // game was played on, a new game was started on it,
-                        // or it is another copy. It no longer shows whether
+                        // A save that is neither image, on the kind of
+                        // copy the save in progress was made with: the game
+                        // was played on, a new game was started on it, or it
+                        // is another cartridge. It no longer shows whether
                         // Bank's write went through. Its secure value is not
                         // this save's to judge; a load of that game does.
-                        Match::Other => self.settle_by_moves(staging, true)?,
+                        Match::Other(Found::SameKind) => self.settle_by_moves(staging, true)?,
+                        // The other kind of copy stands in for one that is
+                        // gone and says nothing about this save: as for a
+                        // game that is not there.
+                        Match::Other(Found::StandIn) => self.settle_by_moves(staging, false)?,
                     };
                     self.settled(staging, Some(evidence), decision)
                 }
@@ -480,9 +488,15 @@ mod arm {
                     if images.before != baseline.fingerprint {
                         return Err(WorkerError::operation(11, 0));
                     }
-                    let identity =
-                        transaction::identity(baseline.title, images.before, images.after)
-                            .map_err(|_| WorkerError::operation(12, 0))?;
+                    // Bound to the kind of copy, so that a recovery can
+                    // tell this copy from one that stands in for it.
+                    let identity = transaction::identity(
+                        baseline.title,
+                        images.before,
+                        images.after,
+                        Medium::of(baseline.cartridge),
+                    )
+                    .map_err(|_| WorkerError::operation(12, 0))?;
                     // Side files first, then the Bank journal.
                     self.files
                         .prepare(staging, rewards, identity, images.before, images.after)
@@ -504,8 +518,13 @@ mod arm {
     }
     /// Which image of the save in progress the game's save is, if either.
     fn matched(pending: &PendingTransfer, evidence: &GameEvidence) -> Result<Match, WorkerError> {
-        transaction::match_pending_image(pending, evidence.title, evidence.fingerprint)
-            .map_err(|_| WorkerError::operation(11, 0))
+        transaction::match_pending_image(
+            pending,
+            evidence.title,
+            evidence.fingerprint,
+            Medium::of(evidence.cartridge),
+        )
+        .map_err(|_| WorkerError::operation(11, 0))
     }
     fn fs_error(error: fs::Error, fault: u32) -> WorkerError {
         WorkerError::operation(fault, error.diagnostic())
@@ -575,6 +594,7 @@ mod arm {
             title: game.kind.title_id(),
             fingerprint: images.before,
             secure,
+            cartridge: platform(game)?.gamecard,
         })
     }
     fn platform(game: GameIoDescriptor) -> Result<PlatformSecureValue, WorkerError> {
@@ -600,7 +620,7 @@ mod arm {
         }
         Ok(PlatformSecureValue {
             value_present: first != 0,
-            mismatch_check_bypassed: second != 0,
+            gamecard: second != 0,
             value,
         })
     }
@@ -630,7 +650,7 @@ mod arm {
         }
         let after = platform(game)?;
         if after.value_present != observed.value_present
-            || after.mismatch_check_bypassed != observed.mismatch_check_bypassed
+            || after.gamecard != observed.gamecard
             || !after.matches_native_rule(verified.current)
         {
             return Err(WorkerError::operation(14, 0));

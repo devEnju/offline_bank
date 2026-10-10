@@ -217,16 +217,19 @@ The payload follows at +64. An all-zero or damaged header is a void slot. Writin
 
 ### An interrupted save
 
-A save in progress (`Phase::Prepared`) is settled by the next start, in `Job::Recover` ([storage_worker.rs](../patches/bank/src/storage_worker.rs)). The journal holds the fingerprint of the game's complete save before and after, and a 32-byte binding, a SHA-256 over the title and both fingerprints ([transaction.rs](../patches/bank/src/transaction.rs)). The worker compares the game's file with the two images:
+A save in progress (`Phase::Prepared`) is settled by the next start, in `Job::Recover` ([storage_worker.rs](../patches/bank/src/storage_worker.rs)). The journal holds the fingerprint of the game's complete save before and after, and a 32-byte binding, a SHA-256 over the title, both fingerprints and the kind of copy the save was made with, cartridge or installed ([transaction.rs](../patches/bank/src/transaction.rs)). The worker compares the game's file with the two images:
 
 | The game of the journal's title | Decision | Code |
 | --- | --- | --- |
 | Its file is the before-image | Keep the old snapshot | `reconcile`; the platform secure value must be the file's (`require_secure`) |
 | Its file is the after-image | Commit the new snapshot | `reconcile`; the platform secure value is advanced if the cut came before that (`finish_secure`) |
-| Its file is neither (`Match::Other`) | By what the save moved | `settle_by_moves(.., true)`, `moved::choose` |
+| Its file is neither, on the kind of copy the save was made with (`Found::SameKind`) | By what the save moved | `settle_by_moves(.., true)`, `moved::choose` |
+| Its file is neither, on the other kind of copy (`Found::StandIn`) | As for a game that is not there, next row | `settle_by_moves(.., false)`, `moved::choose_unseen` |
 | Not among the games the scan loaded (`NativeGameError::NotLoaded`, `Job::Recover { game: None }`) | By what the save moved if that was one way; otherwise fault `7` and nothing is written | `settle_by_moves(.., false)`, `moved::choose_unseen` |
 
-A file that is neither image was written since the cut: by the game played on, by a new game started on it, or it is another copy of the title. Nothing in it tells for certain which image it was made from, and the three are not told apart.
+A file that is neither image, on the same kind of copy, was written since the cut: by the game played on, by a new game started on it, or it is another cartridge. Nothing in it tells for certain which image it was made from, and the three are not told apart.
+
+**The kind of copy.** The original holds one copy per title: its mount (`00163F24`) opens archive `567890B4` for the title on medium 2, the game card, and only if that fails on medium 1, the SD card. When the copy of a save in progress is gone, the other kind stands in under the same title with an unrelated save, and the game must count as absent. The console says which kind a loaded copy is: the reply to the secure-value query (`0876`) carries a flag for a title on a game card, the one the original's check at `0016443C` uses to accept any value for cartridges (`PlatformSecureValue::gamecard`). At recovery the binding is computed for the kind found and for the other one; the one that fits tells which kind the save was made with. An exact image is accepted from either kind. A binding that fits neither is fault `B`: that is a damaged record, or a save in progress begun by a build with another form of binding, which only that build finishes. No other form is read.
 
 **What a save moved** (`BankFiles::pending_moves`). Both snapshots are still in the Bank file. Each is read into the staging buffer in turn, and the identity of every occupied record is collected (`sections::stored_identity`: encryption constant, personality value, trainer ID and secret ID, all in the record's first block):
 
@@ -247,7 +250,7 @@ The two lists are compared as multisets ([moved.rs](../crates/offline-core/src/m
 The first two rows cannot lose a Pokémon whichever way the game's save went, and the third cannot lose the Miles of a claim. The last row has no such answer: after a commit, if the game's save had not been written, the withdrawn Pokémon are in neither place.
 
 - The chosen snapshot is published through `reconcile` with that image's fingerprint (`BankFiles::reconcile_as`); `decide_recovery` itself is unchanged.
-- No secure value is checked or changed in the last two rows of the first table. If a game that was not there holds the after-image and the cut came before the original writer advanced the platform value, that value is one step behind; the next load of that game advances it (`finish_secure` in `Job::InspectAndLoad`).
+- No secure value is checked or changed in the last three rows of the first table. If a game that was not there holds the after-image and the cut came before the original writer advanced the platform value, that value is one step behind; the next load of that game advances it (`finish_secure` in `Job::InspectAndLoad`).
 - Right after Bank's own write (`Job::Finalize`), a game file that does not carry the prepared secure pair is fault `11`; the journal stays in progress and the next start settles it by the table.
 
 ### Hand-over from Transporter

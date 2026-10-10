@@ -166,8 +166,8 @@ Until step 3 Bank still holds both sets of boxes. If the power fails, the next s
 | --- | --- | --- |
 | Unchanged | The power failed before step 2 was finished. | Goes back to its old boxes. Nothing was moved. |
 | The one Bank wrote | The power failed after step 2. | Keeps its new boxes. Everything was moved. |
-| Something else: the game was played and saved, a new game was started on it, or it is another copy of the game | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. |
-| The game is not inserted | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game (error `7`). |
+| Something else: the game was played and saved, a new game was started on it, or it is another cartridge of the game | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. |
+| The game is not inserted, or only its other copy is there (see below) | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game (error `7`). |
 
 In the first two cases nothing is lost and nothing exists twice. **So after an interrupted Save and Quit, start Bank again with the same game inserted before you play it.**
 
@@ -181,6 +181,10 @@ When the game's save cannot say, Bank takes the boxes that cannot lose a Pokémo
 | Did both | Keeps its new boxes | If the power failed before step 2, the withdrawn Pokémon are lost and the deposited ones exist twice. |
 
 Only the last row can lose Pokémon. Pokémon moved between Bank's own boxes, and a delivery from Poké Transporter taken in that session, count as neither deposited nor withdrawn.
+
+**The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
+
+**After updating the patch.** A Save and Quit that was interrupted under another version of the patch is finished by that version only; any other shows error `B` and changes nothing. Put that version back, start Bank once, then switch.
 
 ## Troubleshooting
 

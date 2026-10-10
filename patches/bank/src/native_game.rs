@@ -98,13 +98,16 @@ pub enum GameOperation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlatformSecureValue {
     pub value_present: bool,
-    /// The native predicate accepts a mismatch when its second response flag is set.
-    pub mismatch_check_bypassed: bool,
+    /// The console's answer to whether the title is on a game card. The
+    /// native predicate accepts a mismatch then: a cartridge keeps its value
+    /// in its own save image. It is also what tells a cartridge copy of a
+    /// game from an installed one.
+    pub gamecard: bool,
     pub value: u64,
 }
 impl PlatformSecureValue {
     pub const fn matches_native_rule(self, expected: u64) -> bool {
-        self.mismatch_check_bypassed || !self.value_present || self.value == expected
+        self.gamecard || !self.value_present || self.value == expected
     }
 }
 
@@ -604,7 +607,7 @@ mod arm {
             }
             Ok(PlatformSecureValue {
                 value_present: first != 0,
-                mismatch_check_bypassed: second != 0,
+                gamecard: second != 0,
                 value,
             })
         }
@@ -724,7 +727,7 @@ mod arm {
             }
             let after = self.read_platform_secure_value()?;
             if after.value_present != observed.value_present
-                || after.mismatch_check_bypassed != observed.mismatch_check_bypassed
+                || after.gamecard != observed.gamecard
                 || !after.matches_native_rule(verified.current)
             {
                 return Err(NativeGameError::SecureValueMismatch);
