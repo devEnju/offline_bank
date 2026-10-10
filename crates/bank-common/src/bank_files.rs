@@ -1259,6 +1259,8 @@ mod tests {
         assert!(load(&mut files).0 == emptied);
         assert!(transport_ok(&disk));
         deliver(&disk, 30);
+        // The next session: the one before has closed its files.
+        drop(files);
         let (bytes, loaded) = load(&mut opened(&disk));
         assert_eq!(loaded.delivered, 30);
         assert!(bytes == body(0x52, 0x44, 30));

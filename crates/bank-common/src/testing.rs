@@ -40,10 +40,45 @@ pub struct Disk {
     /// Storage operations allowed before a simulated power cut.
     pub budget: Option<usize>,
     pub operations: usize,
+    /// Containers Bank's side holds open right now.
+    pub open: usize,
 }
 #[derive(Clone, Default)]
 pub struct Shared(pub Rc<RefCell<Disk>>);
-pub struct Handle(pub Shared, pub FileName);
+/// An open container. The third field says that it counts as one of
+/// Bank's; the Transporter patch is another program with handles of its own.
+pub struct Handle(pub Shared, pub FileName, bool);
+/// The console gives out only so many handles, and a container takes one
+/// archive handle and one open file. Bank holds its Bank container and one
+/// other at a time, as it did when every container was one file.
+pub const MOST_CONTAINERS: usize = 2;
+impl Handle {
+    fn held(disk: &Shared, file: FileName) -> Self {
+        let mut state = disk.0.borrow_mut();
+        state.open += 1;
+        assert!(
+            state.open <= MOST_CONTAINERS,
+            "{} containers open at once",
+            state.open
+        );
+        drop(state);
+        Self(disk.clone(), file, true)
+    }
+    /// The same container in the hands of the Transporter patch.
+    fn visiting(mut self) -> Self {
+        if core::mem::take(&mut self.2) {
+            (self.0).0.borrow_mut().open -= 1;
+        }
+        self
+    }
+}
+impl Drop for Handle {
+    fn drop(&mut self) {
+        if self.2 {
+            (self.0).0.borrow_mut().open -= 1;
+        }
+    }
+}
 impl Shared {
     pub(crate) fn tick(&self) -> Result<(), ()> {
         let mut disk = self.0.borrow_mut();
@@ -70,6 +105,7 @@ impl Shared {
             console: disk.console,
             budget: None,
             operations: 0,
+            open: 0,
         })))
     }
     /// A copy that behaves like the console, or like the simple card.
@@ -185,7 +221,8 @@ impl Files for Shared {
         };
         assert_eq!(bytes.len() as u64, file.size());
         let exists = (0..file.units().len()).any(|unit| !disk.absent.contains(&(file as u8, unit)));
-        Ok(exists.then(|| Handle(self.clone(), file)))
+        drop(disk);
+        Ok(exists.then(|| Handle::held(self, file)))
     }
     /// Creates the unit files one after the other.
     fn create(&mut self, file: FileName) -> Result<Handle, ()> {
@@ -207,7 +244,7 @@ impl Files for Shared {
             disk.absent.remove(&(file as u8, unit));
             disk.unsynced.remove(&(file as u8, unit));
         }
-        Ok(Handle(self.clone(), file))
+        Ok(Handle::held(self, file))
     }
 }
 
@@ -320,7 +357,7 @@ pub fn opened(disk: &Shared) -> BankFiles<Shared> {
 /// The transport container as the Transporter patch finds it.
 pub fn visit(disk: &Shared) -> Option<Sidecar<Visitor>> {
     let storage = disk.clone().open(FileName::Transport).unwrap()?;
-    Some(Sidecar::new(Visitor(storage), transport::KIND))
+    Some(Sidecar::new(Visitor(storage.visiting()), transport::KIND))
 }
 /// Delivers with the very function the Transporter patch runs. `None`
 /// when it refuses or cannot write.

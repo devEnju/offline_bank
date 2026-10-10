@@ -130,21 +130,20 @@ trait Api {
 #[cfg(any(test, target_arch = "arm"))]
 struct File<A: Api> {
     api: A,
-    archive: Option<u64>,
     handle: Option<u32>,
     length: u64,
 }
 
 #[cfg(any(test, target_arch = "arm"))]
 impl<A: Api> File<A> {
-    fn open(mut api: A, length: u64, create: bool) -> Result<Self, Error> {
+    /// Opens the file `api` names in the open `archive`, which stays the
+    /// caller's to close.
+    fn open(api: A, archive: u64, length: u64, create: bool) -> Result<Self, Error> {
         if length == 0 {
             return Err(Error::InvalidLength);
         }
-        let archive = api.open_archive()?;
         let mut this = Self {
             api,
-            archive: Some(archive),
             handle: None,
             length,
         };
@@ -191,15 +190,10 @@ impl<A: Api> File<A> {
     }
 
     fn close(&mut self) -> Result<(), Error> {
-        let file_result = match self.handle.take() {
+        match self.handle.take() {
             Some(handle) => self.api.close_file(handle),
             None => Ok(()),
-        };
-        let archive_result = match self.archive.take() {
-            Some(archive) => self.api.close_archive(archive),
-            None => Ok(()),
-        };
-        file_result.and(archive_result)
+        }
     }
 }
 
@@ -277,14 +271,21 @@ impl<A: Api> Storage for File<A> {
     }
 }
 
-/// Deletes the file `api` names. One that is not there is deleted already.
+/// Deletes the file `api` names in the open `archive`. One that is not
+/// there is deleted already.
 #[cfg(any(test, target_arch = "arm"))]
-fn remove<A: Api>(mut api: A) -> Result<(), Error> {
-    let archive = api.open_archive()?;
-    let deleted = match api.delete_file(archive) {
+fn remove_in<A: Api>(api: &mut A, archive: u64) -> Result<(), Error> {
+    match api.delete_file(archive) {
         Err(error) if error.reported_absence() == Some(ReportedAbsence::File) => Ok(()),
         result => result,
-    };
+    }
+}
+
+/// Deletes the file `api` names, through an archive handle of its own.
+#[cfg(target_arch = "arm")]
+fn remove<A: Api>(mut api: A) -> Result<(), Error> {
+    let archive = api.open_archive()?;
+    let deleted = remove_in(&mut api, archive);
     deleted.and(api.close_archive(archive))
 }
 
@@ -299,8 +300,10 @@ trait Reach {
 const MAX_UNITS: usize = 4;
 
 #[cfg(any(test, target_arch = "arm"))]
-enum Unit<A: Api> {
-    Open(File<A>),
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unit {
+    /// There, with its size, and it opened when the container was opened.
+    Present,
     /// Reads as zeros; the first write creates it.
     Absent,
     /// There, but not to be opened.
@@ -309,12 +312,26 @@ enum Unit<A: Api> {
 
 /// A container whose units are separate files, addressed as one range in
 /// the order of `files`.
+///
+/// It holds one archive handle and at most one open unit file, however many
+/// units it has: the console gives out only so many of each. With every unit
+/// file of two containers open at once, eight files and eight archive
+/// handles, creating a file failed with an out-of-resource result
+/// (`D860466C`); five and five had worked. One container of this kind and
+/// another, two and two, is what a Bank of one file per container used.
 #[cfg(any(test, target_arch = "arm"))]
 struct Split<R: Reach> {
     reach: R,
     files: &'static [UnitFile],
-    units: [Unit<R::Api>; MAX_UNITS],
-    unsynced: [bool; MAX_UNITS],
+    /// The container's archive handle, with the means to close it.
+    archive: Option<(R::Api, u64)>,
+    units: [Unit; MAX_UNITS],
+    /// The unit file that is open, and whether it holds writes that are not
+    /// flushed yet.
+    open: Option<(usize, File<R::Api>, bool)>,
+    /// A flush that failed when its unit was closed for another one. The
+    /// next `sync` reports it, so that it is not taken for durable.
+    unflushed: Option<Error>,
 }
 
 #[cfg(any(test, target_arch = "arm"))]
@@ -323,12 +340,23 @@ impl<R: Reach> Split<R> {
         if files.is_empty() || files.len() > MAX_UNITS {
             return Err(Error::InvalidLength);
         }
+        let mut api = reach.api(&files[0])?;
+        let archive = api.open_archive()?;
         Ok(Self {
             reach,
             files,
-            units: core::array::from_fn(|_| Unit::Absent),
-            unsynced: [false; MAX_UNITS],
+            archive: Some((api, archive)),
+            units: [Unit::Absent; MAX_UNITS],
+            open: None,
+            unflushed: None,
         })
+    }
+
+    fn archive(&self) -> Result<u64, Error> {
+        self.archive
+            .as_ref()
+            .map(|(_, archive)| *archive)
+            .ok_or(Error::Closed)
     }
 
     /// `None` when not one of the files exists. A file of another size, or an
@@ -336,19 +364,14 @@ impl<R: Reach> Split<R> {
     /// write leaves behind.
     fn open(reach: R, files: &'static [UnitFile]) -> Result<Option<Self>, Error> {
         let mut this = Self::new(reach, files)?;
+        let archive = this.archive()?;
         let mut found = false;
         for (index, file) in files.iter().enumerate() {
-            match File::open(this.reach.api(file)?, file.len, false) {
-                Ok(opened) => this.units[index] = Unit::Open(opened),
+            // Looked at and closed again; it is opened when it is used.
+            match File::open(this.reach.api(file)?, archive, file.len, false) {
+                Ok(_) => this.units[index] = Unit::Present,
                 Err(error) if error.reported_absence() == Some(ReportedAbsence::File) => continue,
-                Err(
-                    error @ (Error::WrongSize { .. }
-                    | Error::Native {
-                        operation: Operation::OpenArchive,
-                        ..
-                    }
-                    | Error::InvalidHandle(Operation::OpenArchive)),
-                ) => return Err(error),
+                Err(error @ Error::WrongSize { .. }) => return Err(error),
                 Err(_) => this.units[index] = Unit::Unreadable,
             }
             found = true;
@@ -359,8 +382,10 @@ impl<R: Reach> Split<R> {
     /// Creates every file anew, zero-filled. Fails if one exists.
     fn create(reach: R, files: &'static [UnitFile]) -> Result<Self, Error> {
         let mut this = Self::new(reach, files)?;
+        let archive = this.archive()?;
         for (index, file) in files.iter().enumerate() {
-            this.units[index] = Unit::Open(File::open(this.reach.api(file)?, file.len, true)?);
+            File::open(this.reach.api(file)?, archive, file.len, true)?;
+            this.units[index] = Unit::Present;
         }
         Ok(this)
     }
@@ -377,15 +402,50 @@ impl<R: Reach> Split<R> {
         Err(Error::Bounds)
     }
 
-    fn close(&mut self) -> Result<(), Error> {
-        let mut result = Ok(());
-        for unit in &mut self.units {
-            if let Unit::Open(file) = unit {
-                result = result.and(file.close());
-            }
-            *unit = Unit::Absent;
+    /// Closes the open unit file, flushing it first if it holds writes:
+    /// what was written to a unit is durable before another one is touched.
+    fn release(&mut self) -> Result<(), Error> {
+        let Some((_, mut file, written)) = self.open.take() else {
+            return Ok(());
+        };
+        let flushed = if written { file.sync() } else { Ok(()) };
+        if let Err(error) = flushed {
+            self.unflushed = Some(error);
         }
-        result
+        flushed.and(file.close())
+    }
+
+    /// The open file of unit `index`, which must be there. `create` makes it
+    /// anew first, zero-filled.
+    fn select(&mut self, index: usize, create: bool) -> Result<&mut File<R::Api>, Error> {
+        if create || !matches!(&self.open, Some((at, ..)) if *at == index) {
+            self.release()?;
+            let unit = self.files[index];
+            let archive = self.archive()?;
+            let file = File::open(self.reach.api(&unit)?, archive, unit.len, create)?;
+            self.open = Some((index, file, false));
+        }
+        match &mut self.open {
+            Some((_, file, _)) => Ok(file),
+            None => Err(Error::Closed),
+        }
+    }
+
+    fn close(&mut self) -> Result<(), Error> {
+        let released = self.release();
+        self.units = [Unit::Absent; MAX_UNITS];
+        let closed = match self.archive.take() {
+            Some((mut api, archive)) => api.close_archive(archive),
+            None => Ok(()),
+        };
+        released.and(closed)
+    }
+}
+
+#[cfg(any(test, target_arch = "arm"))]
+impl<R: Reach> Drop for Split<R> {
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }
 
@@ -400,8 +460,8 @@ impl<R: Reach> Storage for Split<R> {
             let within = offset - start;
             let count = (bytes.len() - done).min((self.files[index].len - within) as usize);
             let part = &mut bytes[done..done + count];
-            match &mut self.units[index] {
-                Unit::Open(file) => file.read(within, part)?,
+            match self.units[index] {
+                Unit::Present => self.select(index, false)?.read(within, part)?,
                 Unit::Absent => part.fill(0),
                 Unit::Unreadable => return Err(Error::Unreadable),
             }
@@ -415,28 +475,35 @@ impl<R: Reach> Storage for Split<R> {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
         let (index, start) = self.locate(offset)?;
         let within = offset - start;
-        let unit = self.files[index];
-        if within + bytes.len() as u64 > unit.len {
+        if within + bytes.len() as u64 > self.files[index].len {
             return Err(Error::Bounds);
         }
-        if let Unit::Absent = self.units[index] {
-            self.units[index] = Unit::Open(File::open(self.reach.api(&unit)?, unit.len, true)?);
-        }
-        match &mut self.units[index] {
-            Unit::Open(file) => {
-                self.unsynced[index] = true;
-                file.write(within, bytes)
+        let file = match self.units[index] {
+            Unit::Present => self.select(index, false)?,
+            Unit::Absent => {
+                let created = self.select(index, true).map(|_| ());
+                created?;
+                self.units[index] = Unit::Present;
+                self.select(index, false)?
             }
-            _ => Err(Error::Unreadable),
+            Unit::Unreadable => return Err(Error::Unreadable),
+        };
+        let written = file.write(within, bytes);
+        if let Some((_, _, unflushed)) = &mut self.open {
+            *unflushed = true;
         }
+        written
     }
 
     fn sync(&mut self) -> Result<(), Error> {
-        for (unit, unsynced) in self.units.iter_mut().zip(&mut self.unsynced) {
-            if let (Unit::Open(file), true) = (unit, *unsynced) {
+        if let Some(error) = self.unflushed.take() {
+            return Err(error);
+        }
+        if let Some((_, file, written)) = &mut self.open {
+            if *written {
                 file.sync()?;
+                *written = false;
             }
-            *unsynced = false;
         }
         Ok(())
     }
@@ -447,10 +514,14 @@ impl<R: Reach> Storage for Split<R> {
         if start != offset || unit.len != length {
             return Err(Error::Bounds);
         }
-        // Closed before it is deleted. If deleting fails it is not usable.
+        // Closed before it is deleted, without a flush: what it holds is
+        // given up. If deleting fails it is not usable.
+        if matches!(&self.open, Some((at, ..)) if *at == index) {
+            self.open = None;
+        }
         self.units[index] = Unit::Unreadable;
-        self.unsynced[index] = false;
-        remove(self.reach.api(&unit)?)?;
+        let archive = self.archive()?;
+        remove_in(&mut self.reach.api(&unit)?, archive)?;
         self.units[index] = Unit::Absent;
         Ok(())
     }
@@ -512,7 +583,7 @@ impl ExtdataStorage {
             Ok(Some(mut split)) => {
                 let whole = split.units[..files.len()]
                     .iter()
-                    .all(|unit| matches!(unit, Unit::Open(_)));
+                    .all(|unit| *unit == Unit::Present);
                 split.close()?;
                 Ok(whole)
             }
@@ -986,7 +1057,7 @@ mod tests {
             ..State::default()
         }));
         (
-            File::open(Mock(state.clone()), length as u64, false).unwrap(),
+            File::open(Mock(state.clone()), 1, length as u64, false).unwrap(),
             state,
         )
     }
@@ -1055,14 +1126,15 @@ mod tests {
     #[test]
     fn create_zeros_allocated_file_then_flushes() {
         let state = Rc::new(RefCell::new(State::default()));
-        let file = File::open(Mock(state.clone()), 513, true).unwrap();
+        let file = File::open(Mock(state.clone()), 1, 513, true).unwrap();
         assert!(state.borrow().bytes.iter().all(|b| *b == 0));
         assert_eq!(
             state.borrow().writes,
             [(0, 512, 0), (512, 1, 0), (0, 0, FLUSH_FLAGS)]
         );
         drop(file);
-        assert_eq!(state.borrow().closes, ["file", "archive"]);
+        // The archive is the container's to close.
+        assert_eq!(state.borrow().closes, ["file"]);
     }
     #[test]
     fn create_failure_never_opens_or_overwrites_existing_file() {
@@ -1072,7 +1144,7 @@ mod tests {
             ..State::default()
         }));
         assert!(matches!(
-            File::open(Mock(state.clone()), 16, true),
+            File::open(Mock(state.clone()), 1, 16, true),
             Err(Error::Native {
                 operation: Operation::CreateFile,
                 ..
@@ -1080,42 +1152,42 @@ mod tests {
         ));
         assert_eq!(state.borrow().bytes, [0xab; 16]);
         assert!(state.borrow().writes.is_empty());
-        assert_eq!(state.borrow().closes, ["archive"]);
+        assert!(state.borrow().closes.is_empty());
     }
     #[test]
-    fn wrong_size_closes_both_resources_without_writes() {
+    fn wrong_size_closes_the_file_without_writes() {
         let state = Rc::new(RefCell::new(State {
             bytes: vec![0; 8],
             ..State::default()
         }));
         assert!(matches!(
-            File::open(Mock(state.clone()), 16, false),
+            File::open(Mock(state.clone()), 1, 16, false),
             Err(Error::WrongSize {
                 expected: 16,
                 actual: 8
             })
         ));
-        assert_eq!(state.borrow().closes, ["file", "archive"]);
+        assert_eq!(state.borrow().closes, ["file"]);
         assert!(state.borrow().writes.is_empty());
     }
     #[test]
-    fn open_failure_preserves_operation_and_closes_archive() {
+    fn open_failure_preserves_operation_and_leaves_nothing_open() {
         let state = Rc::new(RefCell::new(State {
             failure: Some(Operation::OpenFile),
             ..State::default()
         }));
         assert!(matches!(
-            File::open(Mock(state.clone()), 16, false),
+            File::open(Mock(state.clone()), 1, 16, false),
             Err(Error::Native {
                 operation: Operation::OpenFile,
                 ..
             })
         ));
-        assert_eq!(state.borrow().closes, ["archive"]);
+        assert!(state.borrow().closes.is_empty());
         assert_eq!(state.borrow().creates, 0);
     }
     #[test]
-    fn close_failure_still_closes_archive_and_cannot_repeat_io() {
+    fn close_failure_cannot_repeat_io() {
         let (mut file, state) = existing(16);
         state.borrow_mut().failure = Some(Operation::CloseFile);
         assert_eq!(file.close(), Err(failure(Operation::CloseFile)));
@@ -1123,7 +1195,7 @@ mod tests {
         assert_eq!(file.sync(), Err(Error::Closed));
         file.close().unwrap();
         drop(file);
-        assert_eq!(state.borrow().closes, ["file", "archive"]);
+        assert_eq!(state.borrow().closes, ["file"]);
     }
     #[test]
     fn absence_classification_never_conflates_open_stages_or_other_failures() {
@@ -1160,7 +1232,13 @@ mod tests {
 mod split_tests {
     extern crate std;
     use super::*;
-    use std::{cell::RefCell, collections::BTreeMap, rc::Rc, vec, vec::Vec};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::BTreeMap,
+        rc::Rc,
+        vec,
+        vec::Vec,
+    };
 
     const NOT_FOUND: u32 = 0xc880_4478;
     const CORRUPTED: u32 = 0xd900_458b;
@@ -1168,13 +1246,38 @@ mod split_tests {
     #[derive(Default)]
     struct Entry {
         bytes: Vec<u8>,
+        /// What the last flush made durable.
+        flushed: Vec<u8>,
         /// Left behind by an interrupted write.
         torn: bool,
+    }
+    /// Handles open right now, and the most there ever were.
+    #[derive(Clone, Default)]
+    struct Count(Rc<Cell<(usize, usize)>>);
+    impl Count {
+        fn opened(&self) {
+            let (now, most) = self.0.get();
+            self.0.set((now + 1, most.max(now + 1)));
+        }
+        fn closed(&self) {
+            let (now, most) = self.0.get();
+            self.0
+                .set((now.checked_sub(1).expect("closed more than opened"), most));
+        }
+        fn now(&self) -> usize {
+            self.0.get().0
+        }
+        fn most(&self) -> usize {
+            self.0.get().1
+        }
     }
     #[derive(Clone, Default)]
     struct Card {
         files: Rc<RefCell<BTreeMap<&'static str, Entry>>>,
         archive_fails: Rc<RefCell<bool>>,
+        flush_fails: Rc<RefCell<bool>>,
+        archives: Count,
+        handles: Count,
     }
     struct OneFile(Card, &'static str);
     impl Reach for Card {
@@ -1191,9 +1294,11 @@ mod split_tests {
             if *self.0.archive_fails.borrow() {
                 return Err(native(Operation::OpenArchive, CORRUPTED));
             }
+            self.0.archives.opened();
             Ok(1)
         }
         fn close_archive(&mut self, _: u64) -> Result<(), Error> {
+            self.0.archives.closed();
             Ok(())
         }
         fn create_file(&mut self, _: u64, length: u64) -> Result<(), Error> {
@@ -1205,6 +1310,7 @@ mod split_tests {
                 self.1,
                 Entry {
                     bytes: vec![0xa5; length as usize],
+                    flushed: vec![0xa5; length as usize],
                     torn: false,
                 },
             );
@@ -1218,7 +1324,10 @@ mod split_tests {
         }
         fn open_file(&mut self, _: u64) -> Result<u32, Error> {
             match self.0.files.borrow().get(self.1) {
-                Some(_) => Ok(7),
+                Some(_) => {
+                    self.0.handles.opened();
+                    Ok(7)
+                }
                 None => Err(native(Operation::OpenFile, NOT_FOUND)),
             }
         }
@@ -1234,16 +1343,23 @@ mod split_tests {
             bytes.copy_from_slice(&entry.bytes[offset as usize..offset as usize + bytes.len()]);
             Ok(bytes.len() as u32)
         }
-        fn write(&mut self, _: u32, offset: u64, bytes: &[u8], _: u32) -> Result<u32, Error> {
+        fn write(&mut self, _: u32, offset: u64, bytes: &[u8], flags: u32) -> Result<u32, Error> {
             let mut files = self.0.files.borrow_mut();
             let entry = files.get_mut(self.1).unwrap();
             if entry.torn {
                 return Err(native(Operation::Write, CORRUPTED));
             }
             entry.bytes[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
+            if flags == FLUSH_FLAGS {
+                if *self.0.flush_fails.borrow() {
+                    return Err(native(Operation::Write, CORRUPTED));
+                }
+                entry.flushed = entry.bytes.clone();
+            }
             Ok(bytes.len() as u32)
         }
         fn close_file(&mut self, _: u32) -> Result<(), Error> {
+            self.0.handles.closed();
             Ok(())
         }
     }
@@ -1289,7 +1405,8 @@ mod split_tests {
     #[test]
     fn nothing_is_found_only_when_no_unit_file_exists() {
         let empty = Card::default();
-        assert!(Split::open(empty, &FILES).unwrap().is_none());
+        assert!(Split::open(empty.clone(), &FILES).unwrap().is_none());
+        assert_eq!((empty.archives.now(), empty.handles.now()), (0, 0));
         // Creating again is refused while one of them exists.
         let card = card();
         assert!(Split::create(card.clone(), &FILES).is_err());
@@ -1297,7 +1414,8 @@ mod split_tests {
         card.files.borrow_mut().remove("/three.bin");
         assert!(Split::open(card.clone(), &FILES).unwrap().is_some());
         card.files.borrow_mut().remove("/two.bin");
-        assert!(Split::open(card, &FILES).unwrap().is_none());
+        assert!(Split::open(card.clone(), &FILES).unwrap().is_none());
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
     }
 
     #[test]
@@ -1348,6 +1466,8 @@ mod split_tests {
         // Replacing one that is not there is the same as having done it.
         split.recreate(0, 4).unwrap();
         split.recreate(0, 4).unwrap();
+        drop(split);
+        assert_eq!((card.archives.most(), card.handles.most()), (1, 1));
     }
 
     #[test]
@@ -1368,6 +1488,7 @@ mod split_tests {
         );
         // It is not replaced either: whoever asks never gets that far.
         assert_eq!(card.files.borrow()["/two.bin"].bytes.len(), 7);
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
 
         let card = self::card();
         *card.archive_fails.borrow_mut() = true;
@@ -1378,9 +1499,90 @@ mod split_tests {
         *card.archive_fails.borrow_mut() = false;
         let mut split = open(&card);
         split.close().unwrap();
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
         // Closed: nothing is opened again behind the caller's back.
         let mut all = [0xff; 15];
         split.read(0, &mut all).unwrap();
         assert_eq!(all, [0; 15]);
+        assert_eq!(split.write(0, b"x"), Err(Error::Closed));
+    }
+
+    #[test]
+    fn a_container_holds_one_archive_handle_and_never_more_than_one_open_file() {
+        // The console gives out only so many handles: with every unit file
+        // of two containers open, creating a file failed there.
+        let card = Card::default();
+        let mut split = Split::create(card.clone(), &FILES).unwrap();
+        assert_eq!((card.archives.now(), card.handles.now()), (1, 0));
+        split.write(0, b"abcd").unwrap();
+        split.write(4, b"efghij").unwrap();
+        split.write(10, b"klmno").unwrap();
+        split.sync().unwrap();
+        let mut all = [0; 15];
+        split.read(0, &mut all).unwrap();
+        assert_eq!(&all, b"abcdefghijklmno");
+        split.recreate(4, 6).unwrap();
+        split.write(4, b"EFGHIJ").unwrap();
+        split.read(0, &mut all).unwrap();
+        assert_eq!(&all, b"abcdEFGHIJklmno");
+        assert_eq!((card.archives.now(), card.handles.now()), (1, 1));
+        // A second container beside it: two and two, as a Bank of one file
+        // per container had.
+        let mut other = open(&card);
+        other.read(0, &mut all).unwrap();
+        assert_eq!((card.archives.now(), card.handles.now()), (2, 2));
+        drop(other);
+        drop(split);
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
+        assert_eq!((card.archives.most(), card.handles.most()), (2, 2));
+        // Opening looks at every unit file, one at a time.
+        let card = self::card();
+        let before = card.handles.most();
+        drop(open(&card));
+        assert_eq!(
+            (card.archives.most(), card.handles.most().max(before)),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn what_was_written_to_a_unit_is_flushed_before_another_unit_is_opened() {
+        let card = card();
+        let mut split = open(&card);
+        split.write(0, b"WXYZ").unwrap();
+        assert_eq!(card.files.borrow()["/one.bin"].flushed, b"abcd");
+        // Moving on to another unit closes the first one, flushed.
+        split.write(4, b"123456").unwrap();
+        assert_eq!(card.files.borrow()["/one.bin"].flushed, b"WXYZ");
+        assert_eq!(card.files.borrow()["/two.bin"].flushed, b"efghij");
+        // A read moves on as well.
+        let mut part = [0; 2];
+        split.read(10, &mut part).unwrap();
+        assert_eq!(card.files.borrow()["/two.bin"].flushed, b"123456");
+        // And closing does.
+        split.write(10, b"K").unwrap();
+        split.close().unwrap();
+        assert_eq!(card.files.borrow()["/three.bin"].flushed, b"Klmno");
+    }
+
+    #[test]
+    fn a_flush_that_fails_when_a_unit_is_left_is_not_taken_for_durable() {
+        let card = card();
+        let mut split = open(&card);
+        split.write(0, b"WXYZ").unwrap();
+        *card.flush_fails.borrow_mut() = true;
+        // The operation that had to leave the unit fails...
+        assert_eq!(
+            split.write(4, b"123456"),
+            Err(native(Operation::Sync, CORRUPTED))
+        );
+        *card.flush_fails.borrow_mut() = false;
+        // ...and so does the next sync, once.
+        assert_eq!(split.sync(), Err(native(Operation::Sync, CORRUPTED)));
+        split.sync().unwrap();
+        split.write(4, b"123456").unwrap();
+        split.sync().unwrap();
+        assert_eq!(card.files.borrow()["/two.bin"].flushed, b"123456");
+        assert_eq!((card.archives.most(), card.handles.most()), (1, 1));
     }
 }
