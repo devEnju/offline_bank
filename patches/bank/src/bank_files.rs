@@ -80,8 +80,6 @@ pub trait Files {
 pub enum Problem {
     /// The slot for the current Bank snapshot is unreadable.
     Damaged = 1,
-    /// The file exists but holds nothing for the current Bank snapshot.
-    NoMatch = 2,
     /// A waiting delivery would be overwritten.
     Conflict = 3,
     /// The staged body or prepared snapshot is not what was computed.
@@ -111,8 +109,9 @@ const TEAR_BOXES_PASSES: u32 = 30;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loaded {
     pub rewards: Stored,
-    /// No Pokédex file: the staging region is zero and must be filled with
-    /// the native defaults by the main thread.
+    /// No Pokédex for this save (no file, a damaged one, or one of another
+    /// save): the staging region is zero and must be filled with the native
+    /// defaults by the main thread.
     pub dex_missing: bool,
     /// No transport box: every slot must be filled with the blank record.
     pub transport_missing: bool,
@@ -307,15 +306,22 @@ impl<F: Files> BankFiles<F> {
         };
         self.adopted = None;
 
+        // A Pokédex that is damaged or belongs to another save never blocks
+        // the Bank: it starts empty, as without the file, and each game
+        // writes its part again at its next Save and Quit.
         if let Some(mut file) = self.open_side(FileName::Dex, DEX_FILE)? {
             let slots = file.slots().map_err(side(FileName::Dex))?;
-            let index =
-                matching(&slots, tag).ok_or(Error::Side(FileName::Dex, Problem::NoMatch))?;
-            let slot = slots[index].filter(|slot| slot.len as usize == DEX_SIZE);
-            let slot = slot.ok_or(Error::Side(FileName::Dex, Problem::Damaged))?;
-            file.read(index, &slot, &mut staging[DEX])
-                .map_err(side(FileName::Dex))?;
-            loaded.dex_missing = false;
+            let found = matching(&slots, tag).and_then(|index| {
+                let slot = slots[index].filter(|slot| slot.len as usize == DEX_SIZE);
+                slot.map(|slot| (index, slot))
+            });
+            if let Some((index, slot)) = found {
+                match file.read(index, &slot, &mut staging[DEX]) {
+                    Ok(()) => loaded.dex_missing = false,
+                    Err(SidecarError::Io(error)) => return Err(Error::Io(error)),
+                    Err(_) => staging[DEX].fill(0),
+                }
+            }
         }
 
         // A missing or unreadable Miles record never blocks the Bank.
@@ -890,8 +896,9 @@ mod tests {
     }
 
     #[test]
-    fn damaged_pokedex_is_an_error_but_damaged_rewards_are_not() {
+    fn a_damaged_pokedex_or_miles_record_never_blocks_the_bank() {
         let disk = fresh(&body(0x31, 0x44, 0));
+        let whole = load(&mut opened(&disk)).0;
         let damaged = disk.copy();
         damaged
             .0
@@ -899,10 +906,6 @@ mod tests {
             .files
             .get_mut(&(FileName::Dex as u8))
             .unwrap()[100] ^= 1;
-        assert_eq!(
-            opened(&damaged).read(&mut vec![0; BLOB_SIZE]),
-            Err(Error::Side(FileName::Dex, Problem::Damaged))
-        );
         // A Pokédex file from some other Bank matches no snapshot.
         let foreign = disk.copy();
         let other = fresh(&body(0x77, 0x44, 0));
@@ -912,10 +915,24 @@ mod tests {
             .borrow_mut()
             .files
             .insert(FileName::Dex as u8, bytes);
-        assert_eq!(
-            opened(&foreign).read(&mut vec![0; BLOB_SIZE]),
-            Err(Error::Side(FileName::Dex, Problem::NoMatch))
-        );
+        for (name, disk) in [("damaged", damaged), ("foreign", foreign)] {
+            // The Bank loads with everything else as saved and no Pokédex.
+            let mut files = opened(&disk);
+            let (bytes, loaded) = load(&mut files);
+            assert!(loaded.dex_missing && !loaded.transport_missing, "{name}");
+            let mut expected = whole.clone();
+            expected[DEX].fill(0);
+            assert!(bytes == expected, "{name}: body differs");
+            // The next save writes a Pokédex again.
+            let next = body(0x52, 0x66, 0);
+            files
+                .prepare(&mut next.clone(), Stored::NONE, GAME, BEFORE, AFTER)
+                .unwrap();
+            files.reconcile(observed(AFTER)).unwrap();
+            let (bytes, loaded) = load(&mut opened(&disk.reboot()));
+            assert!(!loaded.dex_missing, "{name}");
+            assert!(bytes == next, "{name}: body differs after a save");
+        }
         let rewards = disk.copy();
         rewards
             .0

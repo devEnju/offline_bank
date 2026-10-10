@@ -84,6 +84,7 @@ Four files inside SD extdata archive `0x00000C9B`, the archive Bank already owns
 
 - **They always belong to the same save.** After a power cut, Bank uses the versions of the smaller files that match whichever Bank save survived.
 - **A missing file is not an error.** No Pokédex file means an empty Pokédex, no transport file an empty transport box, no rewards file zero Miles. The next save creates them.
+- **A damaged Pokédex or Miles file does not stop Bank either.** The Pokédex then starts empty and the Miles at zero. Each game writes its part of the Pokédex and its records again at its next Save and Quit. A damaged transport box does stop Bank (error `9`), because it can hold Pokémon.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
 - These files live inside console-managed, encrypted extdata. They are not loose files on the SD card, and Bank's own 128 KiB save is not where the boxes are.
@@ -204,7 +205,7 @@ An error ends the session; restart Bank afterwards. Stored data is kept. Bank ha
 | `710000oo` | A call succeeded but returned no handle (`oo`: 0 open archive, 3 open file). |
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
 | `77000000` | Bank's filesystem session changed between two opens. |
-| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 Pokédex, 2 transport, 3 rewards. `pp`: 1 damaged, 2 belongs to another Bank, 3 a waiting delivery would be overwritten. |
+| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 Pokédex, 2 transport, 3 rewards. `pp`: 1 damaged, 3 a waiting delivery would be overwritten. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
 
 **Starting over with an empty Bank.** This deletes every Pokémon stored in the offline Bank.
