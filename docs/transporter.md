@@ -14,6 +14,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | "Is Bank's transport box empty?" | Server, after a game was chosen | Reads `/mover.bin` and `/mover.alt.bin` in Bank's extdata, as soon as START is pressed on the title screen and before any game is looked for |
 | Store the Pokémon in Bank | Server | Writes one delivery into the one of those two files that Bank is not using |
 | Remove the Pokémon from the source game | Transporter itself | Unchanged |
+| A transfer interrupted by a power failure | Sorted out with the server at the next session, with the same copy of the game: neither lost nor doubled | Nothing is left pending. The Pokémon are never lost; after a power cut between the two writes they can be in Bank and still in the game. |
 | Source of a Gen 5 game | Cartridge | Cartridge and saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)) |
 | Language screen | Switches the language of the screens | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
 | Notice that nicknames and OT names with prohibited words will be erased | Shown; the server erased them | Skipped. No name is ever changed offline. The other notices are unchanged. |
@@ -27,6 +28,8 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 **Nothing is converted by the patch.** The original Transporter builds a complete Bank transport box in memory and used to upload it. The patch writes that box, unchanged, into Bank's file. The next time you open Bank, the Pokémon are in the transport box, in the positions they had in Box 1 of the source game.
 
 **Order of the two writes.** The delivery is written, flushed, and read back first. Only then does the original remove the Pokémon from the source game. A power cut in between leaves the Pokémon in both places, never in neither. If the delivery cannot be written, the original failure message is shown and the game is not touched.
+
+**One save before the question.** Right after the chosen game is read, and before any notice or question, the original saves that game once. It stores a small note of its own there, which the server used to sort out an interrupted transfer; offline the note is empty and nothing reads it. No Pokémon data changes in that save, and it happens also if you then answer "No".
 
 **When Transporter refuses.** It asks about Bank every time START is pressed on the title screen, before it looks for games. If Bank cannot take a delivery, it shows one of two messages of the original and returns to the title screen. No game has been read at that point.
 
@@ -75,7 +78,7 @@ SD:/roms/nds/saves/POKEMON_W2_IRD?01_??.sav    White 2
 What happens to the file:
 
 - It is read and checked by the original code exactly as a cartridge's save would be; a damaged save is refused by the original.
-- Before the first change in a session, the untouched save is copied to `<name>.sav.bak` beside it (one copy, replaced the next time). If that copy cannot be written, nothing is changed.
+- Before the first change in a session, the untouched save is copied to `<name>.sav.bak` beside it (one copy, replaced the next time). If that copy cannot be written, nothing is changed. The first change is the original's save right after the game is read, so the copy exists before any Pokémon leaves Box 1. It is a way back if a write to the file is cut off, independent of the two copies a Gen 5 save keeps of itself. The name ends in `.bak` so that no program takes it for a save.
 - The Pokémon are removed from the file only after the delivery to Bank has been written and verified, as with a cartridge.
 - The file is never created, resized or renamed.
 
@@ -169,6 +172,7 @@ The saves are in the chosen language.
 
 ## Limits
 
+- **A duplicate after a power cut.** The delivery is written before the Pokémon are removed from the game. If the power fails exactly between the two, they are in Bank and still in the game. The original prevented this with the server's help; the patch does not.
 - **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them.
 - **Access to Bank's data and to the SD card.** Transporter's own header grants neither. Luma3DS gives every application full filesystem access, which is what makes both work; this needs Luma3DS v10.0 or later.
 - **Saves on the SD card.** Only revisions `00` and `01` are looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
