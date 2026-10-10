@@ -54,7 +54,7 @@ $directory = Join-Path $projectRoot ('build/transporter/' + $Package)
 $allowed = @{
     0x00103D9C = 'bl:0028D1AC'
     0x00242D10 = 'beq:00364008'; 0x00242D28 = 'b:00364040'
-    0x00248CDC = 'b:00364000'; 0x00248D58 = 'b:00248E44'
+    0x00246F48 = 'b:00364000'; 0x00248CDC = 'b:00248E44'
     0x00245728 = 'b:00245800'; 0x002460B8 = 'b:002461D0'
     0x002488A0 = 0xE3A00001; 0x002483CC = 0xE3A00001
     0x002458DC = 'bl:0036400C'

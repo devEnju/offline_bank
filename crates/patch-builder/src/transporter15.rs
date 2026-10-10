@@ -93,12 +93,16 @@ const EDITS: &[(u32, u32, Word)] = &[
     // the step's outcome): next is CHECK_IF_USER_CAN_TRANSFER, whatever the
     // outcome. The stub answers it and returns as the original cases do.
     (0x0024_2d28, 0xe352_0002, Branch(ENTRY_NEXT_CHECK)),
-    // Bank check, sub-state 0 (was: the start of creating the request). The
-    // stub asks the check entry with the task (r4) and stores its answer as
-    // the next sub-state through the original's own store at 00248EC8.
-    (0x0024_8cdc, 0xe59f_0304, Branch(ENTRY_CHECK)),
-    // Bank check, sub-state 3: no server reply to parse.
-    (0x0024_8d58, 0xe1a0_0004, Branch(0x0024_8e44)),
+    // Game search, first step (was: ldr r0, [r0], the start of the cartridge
+    // scan). The stub asks the check entry with the task (r4) whether Bank
+    // can take a delivery, and either goes on with the search or ends it
+    // through the search's own steps.
+    (0x0024_6f48, 0xe590_0000, Branch(ENTRY_CHECK)),
+    // Bank step, sub-state 0 (was: the start of creating the server
+    // request): on to where the original continues after a "yes", which
+    // stores its record in the chosen game and saves it. Sub-states 1 to 3,
+    // the request and its reply, are never entered.
+    (0x0024_8cdc, 0xe59f_0304, Branch(0x0024_8e44)),
     // Reading Gen 5 and Gen 1/2: skip the remote validation.
     (0x0024_5728, 0xe59f_0c74, Branch(0x0024_5800)),
     (0x0024_60b8, 0xe59f_02e4, Branch(0x0024_61d0)),
@@ -741,7 +745,7 @@ mod tests {
         // Sites that leave the original for good: plain branches to stubs
         // that go on inside the original themselves.
         for (address, entry) in [
-            (0x0024_8cdc, ENTRY_CHECK),
+            (0x0024_6f48, ENTRY_CHECK),
             (0x0024_a150, ENTRY_DELIVER),
             (0x0024_2d28, ENTRY_NEXT_CHECK),
         ] {
@@ -765,8 +769,10 @@ mod tests {
             word(0x0024_a15c, &BranchIf(0x0024_a274, EQUAL)),
             0x0a00_0044
         );
-        // The reference patch's own branch, for comparison with its source.
-        assert_eq!(word(0x0024_8d58, &Branch(0x0024_8e44)), 0xea00_0039);
+        // The Bank step goes from its first instruction to where the
+        // original continues after a "yes"; its reply parsing is not edited.
+        assert_eq!(word(0x0024_8cdc, &Branch(0x0024_8e44)), 0xea00_0058);
+        assert!(EDITS.iter().all(|(address, _, _)| *address != 0x0024_8d58));
     }
 
     #[test]

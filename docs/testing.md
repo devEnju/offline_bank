@@ -39,7 +39,7 @@ With the normal Bank and Transporter packages.
 | --- | --- | --- |
 | 1 | Start Bank on a console whose Bank extdata is empty | The welcome, then an empty Bank |
 | 2 | Pick a game, move Pokémon both ways, Save and Quit. Open the same game again in the same session, move again, Save and Quit a second time. Close Bank and start it again. Once with an installed game and once with a cartridge, if you have both. | Everything where it was put, in Bank and in the game; nothing twice; Pokédex and Poké Miles as expected |
-| 3 | Transfer from a Generation 5 game with Transporter. Open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again. | The Pokémon arrive once; afterwards Transporter accepts a new transfer |
+| 3 | Transfer from a Generation 5 game with Transporter. Back on its title screen, press START again. Then open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again and press START. | The transfer completes. The second START answers with the "Pokémon remains in the Transport Box" message and returns to the title screen, without a game list. In Bank the Pokémon are there once. Afterwards START leads to the game list again. |
 
 ## An interrupted Save and Quit
 
@@ -116,13 +116,13 @@ Start from a console whose Bank was last used with the old version, and from a b
 | Run | Installed | Do | Must show |
 | --- | --- | --- | --- |
 | 15 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number; nothing changed |
-| 16 | new Transporter | choose a game and start a transfer, before converting | refused with the "did not complete correctly… open Pokémon Bank" message; nothing removed from the source game |
+| 16 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
 | 17 | migration | start Bank, press START | a loading screen, then `0000600D 00000001` |
 | 18 | migration | the same again | `0000600D 00000002` |
 | 19 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
 | 20 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
-Runs 15 and 16 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must leave the source game alone.
+Runs 15 and 16 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
 
 A migration patch never opens the Bank. Its result is always two numbers:
 

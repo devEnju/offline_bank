@@ -169,14 +169,28 @@ mod linked {
         "transporter_next_check:",
         "mov r0, #0xb",
         "pop {{r4, pc}}",
-        // Bank check, sub-state 0 (00248CDC, was: the start of creating the
-        // request). r4 = task; lr is free, the original function saved its
-        // own. The answer becomes the next sub-state through the original's
-        // store at 00248EC8 (str r0, [r4, #0x10], then its return).
+        // Game search, first step (00246F48, was: ldr r0, [r0], the start
+        // of the cartridge scan). r4 = task; lr is free, the original
+        // function saved its own. 1: still checking, the search's "nothing
+        // this frame" return. 2: a message is on screen; 00247000 selects
+        // the search's own step that waits for it and ends the search.
+        // 3: its ending without a message. Else: the replaced instruction,
+        // with r0 as the search had loaded it, and on with the search.
         "transporter_check_stub:",
         "mov r0, r4",
         "bl {check}",
-        "ldr r12, =0x00248ec8",
+        "cmp r0, #1",
+        "ldreq r12, =0x00247024",
+        "bxeq r12",
+        "cmp r0, #2",
+        "ldreq r12, =0x00247000",
+        "bxeq r12",
+        "cmp r0, #3",
+        "ldreq r12, =0x0024702c",
+        "bxeq r12",
+        "ldr r0, =0x00329380",
+        "ldr r0, [r0]",
+        "ldr r12, =0x00246f4c",
         "bx r12",
         // Transfer, sub-state 0 (0024A150, was: the start of creating the
         // upload request). r4 = task; lr is free as above. 1: delivered, on

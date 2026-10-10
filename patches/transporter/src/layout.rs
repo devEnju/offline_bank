@@ -9,12 +9,10 @@
 use offline_core::{
     sections::{RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
     sidecar::{Slot, SLOTS},
-    transport::{self, Refusal},
+    transport,
 };
 
 pub const TASK_MANAGER: usize = 0x8;
-/// Index into the original message table used by sub-state 7 of the check.
-pub const TASK_MESSAGE_INDEX: usize = 0x40;
 pub const MANAGER_BANK_OBJECT: usize = 0xCC;
 pub const BANK_OBJECT_ACCESSOR: usize = 0xBB524;
 pub const ACCESSOR_BODY: usize = 0x4;
@@ -24,41 +22,46 @@ pub const RECORDS_OFFSET: usize = TRANSPORT_RECORDS.start + BODY_BIAS;
 pub const TAGS_OFFSET: usize = TRANSPORT_TAGS.start + BODY_BIAS;
 pub const RECORDS_LEN: usize = TRANSPORT_SLOTS * RECORD_SIZE;
 
-/// The task's dialog owner, the first argument of the original's
-/// "show message and wait" (`0019B50C(ui, message, 1)`).
-pub const TASK_UI: usize = 0x38;
+/// The dialog owner of the game-search task (`00246F04`), set by its init
+/// (`0024704C`): the first argument of the original's "show message and
+/// wait", `0019B50C(ui, message, 1)`, as the search calls it for message 0.
+pub const TASK_UI: usize = 0x34;
 
-/// Sub-states of the original "can Bank take them?" task (`00248C68`).
-/// 0 re-enters the patched site on the next frame; 3 continues to the
-/// question; 7 shows the original "transport box is not empty" message and
-/// ends without a transfer; 8 is where 7 goes on: it waits for the message
-/// on screen to be acknowledged and ends the same way.
-pub const CHECK_PENDING: u32 = 0;
-pub const CHECK_ALLOWED: u32 = 3;
-pub const CHECK_REFUSED: u32 = 7;
-pub const CHECK_SHOWN: u32 = 8;
-/// What the check found when Bank's files are not ready for a delivery.
-/// Not a sub-state; the check entry turns it into a message and `CHECK_SHOWN`.
-pub const CHECK_NOT_READY: u32 = 0x100;
-// The task has sixteen sub-states (jump table at `00248C9C`).
-const _: () = assert!(CHECK_NOT_READY >= 0x10);
+/// Answers of the check entry, as the stub of the patched site at `00246F48`
+/// tests them (link.rs): go on with the game search; come back next frame;
+/// a message is on screen, so wait for it and end the search, which leads
+/// back to the title screen; end the search at once.
+pub const SEARCH_GO: u32 = 0;
+pub const SEARCH_PENDING: u32 = 1;
+pub const SEARCH_SHOWN: u32 = 2;
+pub const SEARCH_END: u32 = 3;
 
 /// The original's message 3: "Your communication with Pokémon Bank did not
 /// complete correctly during your last session. Please open Pokémon Bank
 /// and perform the cleanup process before using Poké Transporter." The
 /// original shows it where the server asked for that (`0025C964`).
 pub const MESSAGE_OPEN_BANK: u32 = 3;
+/// The original's message 5: "At least one Pokémon remains in the Transport
+/// Box from your previous session. Please empty the Transport Box by using
+/// Pokémon Bank before using Poké Transporter."
+pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 
-/// What the check answers for the two slots of Bank's transport box. `None`
-/// stands for slots that could not be read at all: a file is missing, of
-/// another size, or unreadable, or Bank's extdata is not there.
-pub fn check_answer(slots: Option<&[Option<Slot>; SLOTS]>) -> u32 {
-    match slots.map(transport::refusal) {
-        Some(None) => CHECK_ALLOWED,
-        // Pokémon are in the way: the original's own message says so.
-        Some(Some(Refusal::Occupied)) => CHECK_REFUSED,
-        // Bank has to be opened first, whatever the reason.
-        Some(Some(Refusal::Unresolved)) | None => CHECK_NOT_READY,
+/// The message that stops a session before it begins, for the two slots of
+/// Bank's transport box; `None` when a transfer may go ahead. Slots that are
+/// `None` could not be read at all: a file is missing, of another size or
+/// unreadable, or Bank's extdata is not there.
+pub fn refusal_message(slots: Option<&[Option<Slot>; SLOTS]>) -> Option<u32> {
+    let Some(slots) = slots else {
+        return Some(MESSAGE_OPEN_BANK);
+    };
+    if transport::may_deliver(slots) {
+        None
+    } else if slots.iter().flatten().any(|slot| slot.count != 0) {
+        // Pokémon are in the way: in Bank's box, or in a waiting delivery.
+        Some(MESSAGE_BOX_NOT_EMPTY)
+    } else {
+        // Two valid empty slots: a Bank save was not finished.
+        Some(MESSAGE_OPEN_BANK)
     }
 }
 
@@ -101,20 +104,39 @@ mod tests {
                 crc: 0,
             })
         };
-        assert_eq!(check_answer(Some(&[None, None])), CHECK_ALLOWED);
-        assert_eq!(check_answer(Some(&[slot(0), None])), CHECK_ALLOWED);
-        // The "not empty" message only when that is what it is.
-        assert_eq!(check_answer(Some(&[slot(2), None])), CHECK_REFUSED);
-        assert_eq!(check_answer(Some(&[slot(0), slot(5)])), CHECK_REFUSED);
+        assert_eq!(refusal_message(Some(&[None, None])), None);
+        assert_eq!(refusal_message(Some(&[slot(0), None])), None);
+        assert_eq!(refusal_message(Some(&[None, slot(0)])), None);
+        // The "remains in the Transport Box" message only when one does.
+        for slots in [
+            [slot(2), None],
+            [slot(0), slot(5)],
+            [slot(3), slot(0)],
+            [slot(1), slot(1)],
+        ] {
+            assert_eq!(refusal_message(Some(&slots)), Some(MESSAGE_BOX_NOT_EMPTY));
+        }
         // An unfinished Bank save, and files that are not there or do not
         // read: Bank before its first start, or one not yet converted.
-        assert_eq!(check_answer(Some(&[slot(0), slot(0)])), CHECK_NOT_READY);
-        assert_eq!(check_answer(None), CHECK_NOT_READY);
-        // The answers that are sub-states are the original's.
         assert_eq!(
-            (CHECK_PENDING, CHECK_ALLOWED, CHECK_REFUSED, CHECK_SHOWN),
-            (0, 3, 7, 8)
+            refusal_message(Some(&[slot(0), slot(0)])),
+            Some(MESSAGE_OPEN_BANK)
         );
+        assert_eq!(refusal_message(None), Some(MESSAGE_OPEN_BANK));
+        // A refusal is exactly where the delivery itself would refuse.
+        for slots in [
+            [None, None],
+            [slot(0), None],
+            [slot(2), None],
+            [slot(0), slot(0)],
+        ] {
+            assert_eq!(
+                refusal_message(Some(&slots)).is_none(),
+                transport::may_deliver(&slots)
+            );
+        }
+        // The worker reports "go on" as 0, which no message may be.
+        assert_eq!((MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY), (3, 5));
     }
 
     #[test]

@@ -267,14 +267,15 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
 unsafe fn work(job: u32, task: *const u8) -> u32 {
     let Some(file) = (unsafe { File::open() }) else {
         return if job == JOB_CHECK {
-            check_answer(None)
+            refusal_message(None).unwrap_or(0)
         } else {
             0
         };
     };
     let mut file = Sidecar::new(file, KIND);
     if job == JOB_CHECK {
-        return check_answer(file.slots().ok().as_ref());
+        // The message to show, or 0 for none.
+        return refusal_message(file.slots().ok().as_ref()).unwrap_or(0);
     }
     let Some((records, tags)) = (unsafe { native_box(task) }) else {
         return 0;
@@ -326,36 +327,31 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
     }
 }
 
-/// Replaces the server question "is Bank's transport box empty?". Returns the
-/// next sub-state of the original task. A box that is not empty gets the
-/// original's message for that; a Bank whose files are not ready gets the
-/// original's "open Pokémon Bank first" message.
+/// Asks, when START was pressed and before the original searches for games,
+/// whether Bank can take a delivery: the question the original put to the
+/// server after a game was chosen. If not, the original's message for it is
+/// shown here and the search ends as it does for "no game found": back to
+/// the title screen.
 /// # Safety
-/// Called only from the stub of the patched site at 00248CDC (link.rs) with
-/// the live task in `r0`.
+/// Called only from the stub of the patched site at 00246F48 (link.rs) with
+/// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    // Bank is asked whatever Box 1 held, as the original asked the server.
-    // An empty box is reported afterwards by the original's next step.
     match unsafe { step(task, JOB_CHECK) } {
-        None => CHECK_PENDING,
-        Some(CHECK_ALLOWED) => CHECK_ALLOWED,
-        Some(answer) => {
-            // First entry of the original message table: sub-state 7 shows
-            // it, and sub-state 8 ends the task after the first.
-            unsafe { task.add(TASK_MESSAGE_INDEX).write(0) };
-            if answer == CHECK_NOT_READY && unsafe { show(task, MESSAGE_OPEN_BANK) } {
-                CHECK_SHOWN
+        None => SEARCH_PENDING,
+        Some(0) => SEARCH_GO,
+        Some(message) => {
+            if unsafe { show(task, message) } {
+                SEARCH_SHOWN
             } else {
-                CHECK_REFUSED
+                SEARCH_END
             }
         }
     }
 }
 
-/// Shows an original message the way sub-state 7 of the check shows its
-/// own, one frame earlier. `false` when the task's dialog owner is not a
-/// pointer; the caller then leaves the message to the original.
+/// Shows an original message the way the game search shows its own.
+/// `false` when the task's dialog owner is not a pointer.
 unsafe fn show(task: *const u8, message: u32) -> bool {
     let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
         return false;
