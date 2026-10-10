@@ -28,13 +28,14 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 **Order of the two writes.** The delivery is written, flushed, and read back first. Only then does the original remove the Pokémon from the source game. A power cut in between leaves the Pokémon in both places, never in neither. If the delivery cannot be written, the original failure message is shown and the game is not touched.
 
-**When Transporter refuses.** It shows its original "Bank's transport box is not empty" message and removes nothing when:
+**When Transporter refuses.** It removes nothing from the source game and shows one of two messages of the original:
 
-- the transport box in Bank still holds Pokémon,
-- an earlier delivery has not been picked up,
-- Bank has an unfinished save (open Bank and Save and Quit once),
-- the offline Bank has never been started on this console, or
-- Transporter cannot open Bank's data.
+| Message | When | What to do |
+| --- | --- | --- |
+| "At least one Pokémon remains in the Transport Box from your previous session. Please empty the Transport Box by using Pokémon Bank…" | The transport box in Bank still holds Pokémon, or an earlier delivery has not been picked up. | Open Bank, empty the transport box, Save and Quit. |
+| "Your communication with Pokémon Bank did not complete correctly during your last session. Please open Pokémon Bank and perform the cleanup process…" | Bank's files are not ready for a delivery: Bank has an unfinished save, the offline Bank has never been started on this console, its Bank is from a version this Transporter does not continue, or Transporter cannot open or read Bank's data. | Open Bank. It finishes what is unfinished or says what is wrong. Then Save and Quit once. |
+
+The second message is the original's for a session the server asked to clean up; there is no cleanup to perform by hand.
 
 Transporter never creates or deletes files and touches no Bank file other than `/mover.bin` and `/mover.alt.bin`; it only ever writes to the one of the two that Bank is not using. If that file is missing or unreadable, for example after a power cut, Transporter refuses; open Bank and Save and Quit once, which writes it anew.
 
@@ -114,10 +115,11 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 
 | Do this | Expected |
 | --- | --- |
-| Transport again without opening Bank in between. | Refused with the "not empty" message. Nothing is removed from the source game. |
+| Transport again without opening Bank in between. | Refused with the "Pokémon remains in the Transport Box" message. Nothing is removed from the source game. |
 | Leave some Pokémon in the transport box, Save and Quit, transport again. | Refused until the transport box is empty and saved. |
 | Empty Box 1, Bank's transport box empty. | The original message that there is nothing to transport, then the title screen. |
-| Empty Box 1, Bank's transport box not empty. | The "not empty" message. |
+| Empty Box 1, Bank's transport box not empty. | The "Pokémon remains in the Transport Box" message. |
+| A console on which the offline Bank was never started. | Refused with the "did not complete correctly… open Pokémon Bank" message. After Bank was started once, the transfer works. |
 
 ### Language of the games
 
@@ -152,7 +154,8 @@ The saves are in the chosen language.
 | What you see | Likely cause |
 | --- | --- |
 | Transporter does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Transporter is not version 1.5. |
-| Every transfer is refused with "not empty". | Open Bank, empty the transport box, and Save and Quit. If Bank's transport box is empty and saved and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later, and otherwise please report it. |
+| Every transfer is refused with "Pokémon remains in the Transport Box". | Open Bank, empty the transport box, and Save and Quit. |
+| Every transfer is refused with "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later and that Bank and Transporter are from the same release, and otherwise please report it. |
 | The original failure message after confirming a transfer. | The delivery could not be written. The source game was not changed. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |
 | A save on the SD card is not listed. | Its language is not the chosen one; a cartridge of the same game in that language is inserted; the name or folder differs from the pattern above; or the file is not 524,288 bytes. |
@@ -164,7 +167,7 @@ The saves are in the chosen language.
 
 ## Limits
 
-- **Wording of refusals.** The original app has no text for "open Bank first" or "Bank not set up", so every refusal uses the "not empty" message.
+- **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them.
 - **Access to Bank's data and to the SD card.** Transporter's own header grants neither. Luma3DS gives every application full filesystem access, which is what makes both work; this needs Luma3DS v10.0 or later.
 - **Saves on the SD card.** Only revisions `00` and `01` are looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
 - **Language of the screens.** It can no longer be changed inside Transporter; it is the console's.

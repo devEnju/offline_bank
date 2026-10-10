@@ -115,8 +115,27 @@ pub fn on_save(
 /// Transporter's rule: nothing is waiting, the box is empty, and no Bank save
 /// is unresolved. With two valid slots the user must open Bank first.
 pub fn may_deliver(slots: &[Option<Slot>; SLOTS]) -> bool {
-    let valid = slots.iter().flatten().count();
-    valid <= 1 && slots.iter().flatten().all(|slot| slot.count == 0)
+    refusal(slots).is_none()
+}
+
+/// Why Transporter may not deliver, for the message it shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Pokémon are in the way: the box holds some, or a delivery waits.
+    /// Bank has to take them out.
+    Occupied,
+    /// Nothing is in the way, but two slots are valid: a Bank save was not
+    /// finished. Bank has to be opened and saved.
+    Unresolved,
+}
+pub fn refusal(slots: &[Option<Slot>; SLOTS]) -> Option<Refusal> {
+    if slots.iter().flatten().any(|slot| slot.count != 0) {
+        Some(Refusal::Occupied)
+    } else if slots.iter().flatten().count() > 1 {
+        Some(Refusal::Unresolved)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -403,6 +422,27 @@ mod tests {
         assert!(!may_deliver(&[bank(T1, 0, 0), delivered(4, 1)]));
         // Two valid slots: Transporter cannot tell which one the journal chose.
         assert!(!may_deliver(&[bank(T1, 0, 0), bank(T2, 0, 0)]));
+    }
+
+    #[test]
+    fn a_refusal_says_whether_pokemon_are_in_the_way_or_a_save_is_unfinished() {
+        assert_eq!(refusal(&[None, None]), None);
+        assert_eq!(refusal(&[bank(T1, 0, 0), None]), None);
+        // The box holds Pokémon, or a delivery waits, with or without Bank's
+        // own slot beside it.
+        for slots in [
+            [bank(T1, 3, 0), None],
+            [delivered(4, 1), None],
+            [bank(T1, 0, 0), delivered(4, 1)],
+            [bank(T1, 3, 0), bank(T2, 0, 0)],
+        ] {
+            assert_eq!(refusal(&slots), Some(Refusal::Occupied));
+        }
+        // Two empty boxes: the save that wrote the second was not finished.
+        assert_eq!(
+            refusal(&[bank(T1, 0, 0), bank(T2, 0, 0)]),
+            Some(Refusal::Unresolved)
+        );
     }
 
     #[test]

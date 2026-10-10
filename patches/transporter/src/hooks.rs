@@ -24,6 +24,9 @@ pub(crate) const FILE_READ: usize = 0x0015_930c;
 pub(crate) const FILE_WRITE: usize = 0x0015_9390;
 pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
 pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
+/// The original's "show this message and wait for it to be acknowledged":
+/// `(ui, message, 1)`, as every one of its tasks calls it.
+const SHOW_MESSAGE: usize = 0x0019_b50c;
 /// Flush and update the file's time, as Bank's writer does.
 pub(crate) const FLUSH_FLAGS: u32 = 0x0001_0001;
 /// The original's `svcCreateThread(out, entry, arg, stack_top, priority,
@@ -263,18 +266,15 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
 /// The file work of one job. Runs on the worker thread.
 unsafe fn work(job: u32, task: *const u8) -> u32 {
     let Some(file) = (unsafe { File::open() }) else {
-        return if job == JOB_CHECK { CHECK_REFUSED } else { 0 };
+        return if job == JOB_CHECK {
+            check_answer(None)
+        } else {
+            0
+        };
     };
     let mut file = Sidecar::new(file, KIND);
     if job == JOB_CHECK {
-        let allowed = file
-            .slots()
-            .is_ok_and(|slots| transport::may_deliver(&slots));
-        return if allowed {
-            CHECK_ALLOWED
-        } else {
-            CHECK_REFUSED
-        };
+        return check_answer(file.slots().ok().as_ref());
     }
     let Some((records, tags)) = (unsafe { native_box(task) }) else {
         return 0;
@@ -327,7 +327,9 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
 }
 
 /// Replaces the server question "is Bank's transport box empty?". Returns the
-/// next sub-state of the original task.
+/// next sub-state of the original task. A box that is not empty gets the
+/// original's message for that; a Bank whose files are not ready gets the
+/// original's "open Pokémon Bank first" message.
 /// # Safety
 /// Called only from the stub of the patched site at 00248CDC (link.rs) with
 /// the live task in `r0`.
@@ -338,12 +340,29 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
     match unsafe { step(task, JOB_CHECK) } {
         None => CHECK_PENDING,
         Some(CHECK_ALLOWED) => CHECK_ALLOWED,
-        Some(_) => {
-            // First entry of the original message table.
+        Some(answer) => {
+            // First entry of the original message table: sub-state 7 shows
+            // it, and sub-state 8 ends the task after the first.
             unsafe { task.add(TASK_MESSAGE_INDEX).write(0) };
-            CHECK_REFUSED
+            if answer == CHECK_NOT_READY && unsafe { show(task, MESSAGE_OPEN_BANK) } {
+                CHECK_SHOWN
+            } else {
+                CHECK_REFUSED
+            }
         }
     }
+}
+
+/// Shows an original message the way sub-state 7 of the check shows its
+/// own, one frame earlier. `false` when the task's dialog owner is not a
+/// pointer; the caller then leaves the message to the original.
+unsafe fn show(task: *const u8, message: u32) -> bool {
+    let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
+        return false;
+    };
+    let show: unsafe extern "aapcs" fn(*const u8, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
+    unsafe { show(ui, message, 1) };
+    true
 }
 
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
