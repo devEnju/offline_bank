@@ -60,6 +60,19 @@ pub enum Fault {
     /// Test builds: a Save and Quit stopped on purpose.
     #[cfg(feature = "test-build")]
     TestStop = crate::storage_worker::TEST_STOP,
+    /// The migration package: its result, and the step that failed.
+    #[cfg(feature = "migrate")]
+    Migrated = crate::migrate::DONE,
+    #[cfg(feature = "migrate")]
+    MigrationRefused = crate::migrate::REFUSED,
+    #[cfg(feature = "migrate")]
+    MigrationReadOld = crate::migrate::FAILED + 1,
+    #[cfg(feature = "migrate")]
+    MigrationWriteTemporary = crate::migrate::FAILED + 2,
+    #[cfg(feature = "migrate")]
+    MigrationRemoveOld = crate::migrate::FAILED + 3,
+    #[cfg(feature = "migrate")]
+    MigrationWriteNew = crate::migrate::FAILED + 4,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -390,6 +403,18 @@ impl Runtime {
             17 => Fault::TransferRolledBack,
             #[cfg(feature = "test-build")]
             crate::storage_worker::TEST_STOP => Fault::TestStop,
+            #[cfg(feature = "migrate")]
+            crate::migrate::DONE => Fault::Migrated,
+            #[cfg(feature = "migrate")]
+            crate::migrate::REFUSED => Fault::MigrationRefused,
+            #[cfg(feature = "migrate")]
+            0xba1 => Fault::MigrationReadOld,
+            #[cfg(feature = "migrate")]
+            0xba2 => Fault::MigrationWriteTemporary,
+            #[cfg(feature = "migrate")]
+            0xba3 => Fault::MigrationRemoveOld,
+            #[cfg(feature = "migrate")]
+            0xba4 => Fault::MigrationWriteNew,
             _ => Fault::StorageInvalid,
         }
     }

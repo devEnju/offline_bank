@@ -35,8 +35,8 @@ impl Layout {
     pub const fn capacity(self) -> u32 {
         self.capacity
     }
-    pub fn file_len(self) -> u64 {
-        (METADATA_SIZE as u64 * 2) + 2 * (SNAPSHOT_HEADER_SIZE as u64 + u64::from(self.capacity))
+    pub const fn file_len(self) -> u64 {
+        (METADATA_SIZE as u64 * 2) + 2 * self.snapshot_len()
     }
     pub fn metadata_offset(self, slot: Slot) -> u64 {
         slot.index() * METADATA_SIZE as u64

@@ -8,6 +8,8 @@
 pub mod bank_files;
 pub mod fs;
 pub mod local_clock;
+#[cfg(feature = "migrate")]
+pub mod migrate;
 pub mod native_bank;
 pub mod navigation;
 pub mod session;

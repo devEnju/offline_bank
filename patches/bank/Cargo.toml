@@ -20,6 +20,9 @@ test-stop-before-game = ["test-build"]
 test-stop-after-game = ["test-build"]
 test-tear-record = ["test-build", "offline-core/tear-test"]
 test-tear-boxes = ["test-build", "offline-core/tear-test"]
+# The migration package: converts a Bank stored by versions up to 0.2.1 and
+# does nothing else (docs/building.md). Not part of the normal package.
+migrate = []
 
 [[bin]]
 name = "bank-payload-link"

@@ -77,6 +77,22 @@ cargo +stable test -p bank-payload --features test-tear-record --release --locke
 cargo +stable test -p bank-payload --features test-tear-boxes --release --locked --offline
 ```
 
+### The migration package
+
+Versions up to 0.2.1 stored the Bank in four files; the current layout has ten ([internals.md](internals.md#files)). A separate Bank package converts an existing Bank and does nothing else. It is built behind the cargo feature `migrate`, which is off by default; the normal package has no code for the earlier files.
+
+```powershell
+./scripts/Build-BankMigrationPatch.ps1
+```
+
+This builds and verifies it into `build/bank-migrate/`. What it does and the numbers it shows are in [bank.md](bank.md#updating-from-021-or-earlier). Its PC tests:
+
+```powershell
+cargo +stable test -p bank-payload --features migrate --release --locked --offline
+```
+
+When no Bank of an earlier version is left to convert, the feature, [migrate.rs](../patches/bank/src/migrate.rs) and the script can be deleted; nothing else depends on them.
+
 ## Release
 
 A release is one zip file that holds both patches in the folder layout of the SD card, so that it can be extracted onto the card as it is:

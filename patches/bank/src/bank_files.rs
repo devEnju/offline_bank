@@ -56,8 +56,8 @@ impl UnitFile {
     }
 }
 
-const RECORD: u64 = offline_core::METADATA_SIZE as u64;
-const SNAPSHOT: u64 = session::BANK_LAYOUT.snapshot_len();
+pub(crate) const RECORD: u64 = offline_core::METADATA_SIZE as u64;
+pub(crate) const SNAPSHOT: u64 = session::BANK_LAYOUT.snapshot_len();
 /// In the order of the container's layout: the journal records, then the
 /// snapshot slots.
 static BANK_UNITS: [UnitFile; 4] = [
@@ -554,7 +554,7 @@ impl<F: Files> BankFiles<F> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     extern crate std;
     use super::*;
     use offline_core::{
@@ -577,8 +577,8 @@ mod tests {
     /// The card. `files` holds each container's bytes as one range; the sets
     /// say what state each of its unit files is in.
     #[derive(Default)]
-    struct Disk {
-        files: BTreeMap<u8, Vec<u8>>,
+    pub(crate) struct Disk {
+        pub(crate) files: BTreeMap<u8, Vec<u8>>,
         /// Unit files that do not exist. They read as zeros.
         absent: BTreeSet<UnitId>,
         /// Unit files an interrupted write left behind: nothing in them can
@@ -595,8 +595,8 @@ mod tests {
         operations: usize,
     }
     #[derive(Clone, Default)]
-    struct Shared(Rc<RefCell<Disk>>);
-    struct Handle(Shared, FileName);
+    pub(crate) struct Shared(pub(crate) Rc<RefCell<Disk>>);
+    pub(crate) struct Handle(Shared, FileName);
     impl Shared {
         fn tick(&self) -> Result<(), ()> {
             let mut disk = self.0.borrow_mut();
@@ -636,7 +636,7 @@ mod tests {
             copy.0.borrow_mut().budget = Some(budget);
             copy
         }
-        fn reboot(&self) -> Self {
+        pub(crate) fn reboot(&self) -> Self {
             self.copy()
         }
     }
@@ -793,13 +793,13 @@ mod tests {
         }
     }
 
-    const GAME: GameIdentity = GameIdentity {
+    pub(crate) const GAME: GameIdentity = GameIdentity {
         title_id: 0x0004_0000_0005_5e00,
         save_identity: [7; 32],
     };
-    const BEFORE: Fingerprint = [1; 32];
-    const AFTER: Fingerprint = [2; 32];
-    fn observed(fingerprint: Fingerprint) -> GameObservation {
+    pub(crate) const BEFORE: Fingerprint = [1; 32];
+    pub(crate) const AFTER: Fingerprint = [2; 32];
+    pub(crate) fn observed(fingerprint: Fingerprint) -> GameObservation {
         GameObservation::Present {
             game: GAME,
             fingerprint,
@@ -823,7 +823,7 @@ mod tests {
     }
     /// A full native body. `boxes` and `dex` mark their regions; the transport
     /// box holds `pokemon` occupied slots followed by blank records.
-    fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
+    pub(crate) fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
         let mut bytes = vec![boxes; BLOB_SIZE];
         bytes[0x15C..0x15E].copy_from_slice(&2u16.to_le_bytes());
         bytes[0x15E..0x160].copy_from_slice(&100u16.to_le_bytes());
@@ -840,14 +840,14 @@ mod tests {
     fn date(day: u8) -> Date {
         Date::new(2026, 10, day).unwrap()
     }
-    fn stored(balance: u32, day: u8, count: u32) -> Stored {
+    pub(crate) fn stored(balance: u32, day: u8, count: u32) -> Stored {
         Stored {
             balance,
             accounting: Some(Accounting::new(date(day), count, 0).unwrap()),
         }
     }
     /// Fills what the main thread fills: defaults for missing regions.
-    fn load(files: &mut BankFiles<Shared>) -> (Vec<u8>, Loaded) {
+    pub(crate) fn load(files: &mut BankFiles<Shared>) -> (Vec<u8>, Loaded) {
         let mut staging = vec![0xEE; BLOB_SIZE];
         let loaded = files.read(&mut staging).unwrap();
         let blank = body(0, 0, 0);
@@ -859,7 +859,7 @@ mod tests {
         }
         (staging, loaded)
     }
-    fn fresh(body: &[u8]) -> Shared {
+    pub(crate) fn fresh(body: &[u8]) -> Shared {
         let disk = Shared::default();
         let mut files = BankFiles::new(disk.clone());
         assert_eq!(files.open(), Ok(None));
@@ -867,7 +867,7 @@ mod tests {
         files.initialize(&mut staging).unwrap();
         disk
     }
-    fn opened(disk: &Shared) -> BankFiles<Shared> {
+    pub(crate) fn opened(disk: &Shared) -> BankFiles<Shared> {
         let mut files = BankFiles::new(disk.clone());
         files.open().unwrap().unwrap();
         files
@@ -933,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn new_bank_writes_four_files_and_loads_back_every_byte() {
+    fn new_bank_writes_four_containers_and_loads_back_every_byte() {
         let original = body(0x31, 0x44, 0);
         let disk = fresh(&original);
         assert_eq!(disk.0.borrow().files.len(), 4);
@@ -1191,7 +1191,7 @@ mod tests {
         assert_eq!(done.count, pokemon as u32);
         Some(done.id)
     }
-    fn deliver(disk: &Shared, pokemon: usize) -> u32 {
+    pub(crate) fn deliver(disk: &Shared, pokemon: usize) -> u32 {
         try_deliver(disk, pokemon).expect("Transporter must be allowed to deliver")
     }
     /// Whether Transporter's check lets a transfer begin.

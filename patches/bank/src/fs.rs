@@ -502,6 +502,39 @@ impl ExtdataStorage {
     pub fn close(&mut self) -> Result<(), Error> {
         self.split.close()
     }
+
+    /// Whether every one of `files` is there with exactly its size.
+    ///
+    /// # Safety
+    /// The same requirements as `open_existing` apply.
+    #[cfg(feature = "migrate")]
+    pub unsafe fn exists(session: u32, files: &'static [UnitFile]) -> Result<bool, Error> {
+        match Split::open(native::Session::new(session)?, files) {
+            Ok(Some(mut split)) => {
+                let whole = split.units[..files.len()]
+                    .iter()
+                    .all(|unit| matches!(unit, Unit::Open(_)));
+                split.close()?;
+                Ok(whole)
+            }
+            Ok(None) | Err(Error::WrongSize { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Deletes those of `files` that are there.
+    ///
+    /// # Safety
+    /// The same requirements as `open_existing` apply, and none of the files
+    /// may be open.
+    #[cfg(feature = "migrate")]
+    pub unsafe fn remove(session: u32, files: &'static [UnitFile]) -> Result<(), Error> {
+        let reach = native::Session::new(session)?;
+        for file in files {
+            remove(reach.api(file)?)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(target_arch = "arm")]
