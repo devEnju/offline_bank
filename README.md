@@ -61,6 +61,7 @@ Pokémon HOME, purchases, importing a Bank from Nintendo's servers, legality che
 - [docs/bank.md](docs/bank.md) and [docs/transporter.md](docs/transporter.md): using each patch. What changes, install, checklist, troubleshooting, limits.
 - [docs/internals.md](docs/internals.md): how they work, in three parts: Bank, storage, Transporter.
 - [docs/building.md](docs/building.md): building from source, verifying, and packing a release.
+- [docs/testing.md](docs/testing.md): the checks that need a console, as steps and what must be seen.
 
 ## Problems and feature requests
 

@@ -38,7 +38,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 Transporter never creates or deletes files and touches no Bank file other than `/mover.bin` and `/mover.alt.bin`; it only ever writes to the one of the two that Bank is not using. If that file is missing or unreadable, for example after a power cut, Transporter refuses; open Bank and Save and Quit once, which writes it anew.
 
-**Bank and Transporter belong together.** A Bank stored by version 0.2.1 or earlier keeps its transport box in a file of another name. This Transporter does not find it and refuses, and a Transporter of 0.2.1 or earlier refuses with a converted Bank. Update both, after converting the Bank ([bank.md](bank.md#updating-from-021-or-earlier)).
+**Bank and Transporter belong together.** A Bank that was last used with v0.2.1 keeps its transport box in a file of another name. This Transporter does not find it and refuses, and the Transporter of v0.2.1 refuses with a converted Bank. Update both, after converting the Bank with the migration that ships with release v0.3.0.
 
 ## Choosing the language of the games
 

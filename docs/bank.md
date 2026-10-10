@@ -88,7 +88,7 @@ Ten files inside SD extdata archive `0x00000C9B`, the archive Bank already owns.
 - **They always belong to the same save.** After a power cut, Bank uses the versions of the smaller files that match whichever Bank save survived.
 - **A missing file is not an error.** No Pokédex files mean an empty Pokédex, no transport files an empty transport box, no rewards files zero Miles. The next save creates them.
 - **A file that a power cut left unreadable is replaced.** It is always the one that was being written, never the one in use. Bank goes on with the other file of the pair, and the next save deletes the unreadable one and writes it anew.
-- **A file of the wrong size is never touched.** Bank stops with error `3` and the size as second number. This is also what happens with a Bank stored by version 0.2.1 or earlier, whose `/bank.bin` is twice as large: it has to be converted first ([Updating from 0.2.1 or earlier](#updating-from-021-or-earlier)).
+- **A file of the wrong size is never touched.** Bank stops with error `3` and the size as second number. This is also what happens with a Bank that was last used with v0.2.1, whose `/bank.bin` is twice as large. Such a Bank is converted once, with the migration that ships with release v0.3.0; that release says how.
 - **A damaged Pokédex or Miles file in use does not stop Bank either.** The Pokédex then starts empty and the Miles at zero. Each game writes its part of the Pokédex and its records again at its next Save and Quit. A damaged transport box in use does stop Bank (error `9`), because it can hold Pokémon.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
@@ -100,26 +100,6 @@ Ten files inside SD extdata archive `0x00000C9B`, the archive Bank already owns.
 Because the boxes are in Bank's extdata, a backup of Bank's *save* does not contain them. In [Checkpoint](https://github.com/BernardoGiordano/Checkpoint), select Pokémon Bank, switch from save to **extdata** mode (X button), and back up from there; restore the same way. Back up the games you moved Pokémon to or from at the same time, so that the set fits together.
 
 The formats are described in [internals.md](internals.md#storage).
-
-## Updating from 0.2.1 or earlier
-
-Versions up to 0.2.1 kept the Bank in four files. A power cut during Save and Quit could leave such a Bank unreadable, which is why the layout changed. An existing Bank is converted once, with a separate **migration package** that does nothing else:
-
-1. Start Bank once with the version you have and make sure it opens. An interrupted Save and Quit has to be finished by that version.
-2. Back up Bank's extdata and your game saves ([how](#backing-up-the-bank)).
-3. Install the migration package (the same two files, same folder), start Pokémon Bank and press START. It does not open the Bank. After a loading screen it shows two numbers:
-
-   | Numbers | Meaning |
-   | --- | --- |
-   | `0000600D 00000001` | Converted. |
-   | `0000600D 00000002` | Already converted; nothing was changed. |
-   | `0000600D 00000000` | No Bank was found. |
-   | `00000BAD 00000007` | A Save and Quit is unfinished. Go back to step 1. |
-   | `00000BA1` to `00000BA4` | A step failed; the second number says why. Starting the migration package again is safe. |
-
-4. Install the current Bank and Transporter patches. Both have to be updated together: an older Transporter does not find the transport box of a converted Bank and refuses to transfer.
-
-Until the conversion is complete the old files are untouched, and a power cut at any point is picked up by starting the migration package again. It needs about 1.5 MB of free space on the SD card while it runs. After the conversion, versions up to 0.2.1 cannot open the Bank any more; the backup from step 2 is the way back.
 
 ## Install
 

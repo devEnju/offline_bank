@@ -21,13 +21,41 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 
 | Where | Role |
 | --- | --- |
-| [patches/bank/](../patches/bank/src/) | ARMv6K code injected into Bank. Hooks in [runtime.rs](../patches/bank/src/runtime.rs) and [dex.rs](../patches/bank/src/dex.rs), routing in [navigation.rs](../patches/bank/src/navigation.rs), file coordination in [bank_files.rs](../patches/bank/src/bank_files.rs), worker thread, filesystem and game adapters. |
+| [patches/bank/](../patches/bank/src/) | The offline patch: ARMv6K code injected into Bank. Hooks in [runtime.rs](../patches/bank/src/runtime.rs) and [dex.rs](../patches/bank/src/dex.rs), routing in [navigation.rs](../patches/bank/src/navigation.rs), the storage jobs in [storage_worker.rs](../patches/bank/src/storage_worker.rs), game adapters. |
+| [crates/bank-common/](../crates/bank-common/src/) | What every patch for Bank shares: the start-up hook, file access ([fs.rs](../crates/bank-common/src/fs.rs)), file coordination ([bank_files.rs](../crates/bank-common/src/bank_files.rs)), the worker thread, the original's task objects and dialogs. See [Patches for Bank](#patches-for-bank). |
+| [patches/bank-migrate/](../patches/bank-migrate/src/) | The migration patch from v0.2.1: the conversion in [migrate.rs](../patches/bank-migrate/src/migrate.rs) and two hooks. |
 | [crates/offline-core/](../crates/offline-core/src/) | `no_std`, no `unsafe`. Bank file and journal, side files, transport rules, Miles rules, game-image hashing. |
-| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. Verifies the inputs, parses the linked ELF, emits the paired `code.ips` and `exheader.bin`. The profile is [bank15.rs](../crates/patch-builder/src/bank15.rs). |
+| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. Verifies the inputs, parses the linked ELF, emits the paired `code.ips` and `exheader.bin`. [bank15.rs](../crates/patch-builder/src/bank15.rs) holds what belongs to the program and the edits more than one patch makes; each patch has a profile: [bank15/offline.rs](../crates/patch-builder/src/bank15/offline.rs), [bank15/migrate.rs](../crates/patch-builder/src/bank15/migrate.rs). |
+
+### Patches for Bank
+
+A patch for Bank is a crate of its own with its own payload, its own profile in the builder, and its own package. It takes from `bank-common` what does not change what Bank does, and adds its hooks.
+
+| | From `bank-common` | The patch's own |
+| --- | --- | --- |
+| Loaded and executable | `bootstrap`, and the builder's start-up edits | |
+| Bank's files | `fs` (access), `bank_files` and `session` (names, sizes, order of writes) | which of them it reads or writes, and when |
+| Off the main thread | `worker`: thread, mailbox, staging buffer | its jobs and what runs them (`worker::Service`) |
+| On screen | `task` (task object, HOME and sleep mask, the screen with two numbers), `ui` | its hooks, and which tasks they replace |
+| In the builder | `bank15.rs`: identity, placement, the shared edits | a profile: its entry functions and its list of edits |
+
+**Rule: a patch writes Bank's files only through `bank-common`.** The byte formats exist once, in `offline-core`; the file names, their sizes and the order in which they are written exist once, in `bank-common`. A patch that writes a Bank has a PC test that loads the result with `BankFiles` and compares every byte. So what one patch writes, every other reads.
+
+The **offline patch** is the rest of this part. The **migration patch** converts the Bank of v0.2.1 for v0.3.0 ([Files](#files)) and has none of the offline behaviour. Its router hook leads from the game scan to task 9 and from there to cleanup; its task 9 hook shows the loading panel, runs the conversion on the worker, and shows the result as the screen with two numbers. It makes these edits, each one the offline patch makes at the same place:
+
+| Edit of the original | Offline patch | Migration patch |
+| --- | --- | --- |
+| Start-up hook and its call (`001040a4`, `00313910`) | yes | yes |
+| A corrupt extdata archive is kept (`0029f338`) | yes | yes |
+| First start without prompts (8 words) | yes | yes |
+| Task router (`002a5a2c`) | `bank_offline_next` | `bank_migrate_next` |
+| Task 9, update and busy poll (`00361cfc`, `00361d0c`) | `bank_offline_load` | `bank_migrate_open` |
+| Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the Pokédex callbacks, the timestamp helper (11 regions) | yes | no |
+| Regions / entry functions | 25 / 8 | 14 / 2 |
 
 ### Edits to the original
 
-25 regions (24 words and the start-up hook) and eight entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
+The offline patch: 25 regions (24 words and the start-up hook) and eight entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -125,7 +153,7 @@ The busy flag from `0025c420` is unrelated: it protects a task from Bank's own c
 
 ### Worker thread
 
-One native SDK thread (`002320d4`, trampoline `001211e4`, event `00235c6c`/`00234a00`/`00231e70`) owns all storage handles. The main thread owns every native UI, task, and game object. A single mailbox with atomic states passes fixed-size jobs and the staging buffer; neither thread ever waits on the other. Task hooks submit a job and poll once per frame, with native busy protection (`0025c420`/`0025c3e8`) keeping the task alive. Stack 32 KiB with a guard pattern.
+One native SDK thread (`002320d4`, trampoline `001211e4`, event `00235c6c`/`00234a00`/`00231e70`) owns all storage handles. The thread and its mailbox are `bank-common`'s; what it runs is the patch's own (`worker::Service`, in the offline patch the jobs of [storage_worker.rs](../patches/bank/src/storage_worker.rs)). The main thread owns every native UI, task, and game object. A single mailbox with atomic states passes fixed-size jobs and the staging buffer; neither thread ever waits on the other. Task hooks submit a job and poll once per frame, with native busy protection (`0025c420`/`0025c3e8`) keeping the task alive. Stack 32 KiB with a guard pattern.
 
 ### Game saves
 
@@ -180,7 +208,7 @@ All files are in SD extdata archive `0x00000C9B` (created by the original with r
 | Transport box | 14,112 | `AAF14..ACA44` then `AD5FC..AD61A` (6,990 bytes) |
 | Rewards | 160 | none; a 16-byte record |
 
-**Every unit of a container is a file of its own** ([bank_files.rs](../patches/bank/src/bank_files.rs), `FileName::units`), in the order of the container's layout:
+**Every unit of a container is a file of its own** ([bank_files.rs](../crates/bank-common/src/bank_files.rs), `FileName::units`), in the order of the container's layout:
 
 | Container | Files | Unit |
 | --- | --- | --- |
@@ -192,7 +220,7 @@ All files are in SD extdata archive `0x00000C9B` (created by the original with r
 
 The reason is how the console writes extdata. Each file is its own container with check values over blocks of its contents; new data is written in place before the check values are updated. A write that the power interrupts leaves the blocks it touched failing their check: reads return a result of the corrupted-data class (`D900458B` was seen), not bad bytes. Units that share a file share blocks at their edges, so in one file a write to the spare slot could take the slot in use with it, and did. With one file per unit, only the unit being written can be lost, and by the order of a save that unit never holds anything still needed.
 
-`Split` in [fs.rs](../patches/bank/src/fs.rs) presents the unit files of a container as one range to the unchanged store and side-file code:
+`Split` in [fs.rs](../crates/bank-common/src/fs.rs) presents the unit files of a container as one range to the unchanged store and side-file code:
 
 | A unit file that is | Reads | Writes |
 | --- | --- | --- |
@@ -209,7 +237,7 @@ File names in 3DS extdata are limited to 16 characters without the leading slash
 
 **Rule for new features:** add a new container with tagged slots, each slot a file of its own. Never change the size or layout of an existing file. A build that does not know a file ignores it; its saves advance the Bank snapshot, so the unknown file's slots stop matching and a later build treats them as "no data yet".
 
-**Banks of versions up to 0.2.1** kept each container in one file (`/bank.bin`, `/dex.bin`, `/transport.bin`, `/rewards.bin`) with exactly the container layout above. The current code does not read them: their `/bank.bin`, `/dex.bin` and `/rewards.bin` have another size than the files of those names now, which is a hard error. They are converted by the migration package ([migrate.rs](../patches/bank/src/migrate.rs), feature `migrate`, [building.md](building.md#the-migration-package)), which cuts the four files at the unit boundaries: it copies them into temporary files (`/m0.tmp` to `/m9.tmp`) and compares, creates the marker `/migrate.ok`, removes the old files, writes the final files from the temporary ones (journal records last) and compares, removes the marker, then the temporary files. Without the marker a start begins again from the untouched old files; with it, from the temporary ones.
+**The Bank of v0.2.1** kept each container in one file (`/bank.bin`, `/dex.bin`, `/transport.bin`, `/rewards.bin`) with exactly the container layout above. The offline patch does not read them: their `/bank.bin`, `/dex.bin` and `/rewards.bin` have another size than the files of those names now, which is a hard error. They are converted by the migration patch ([migrate.rs](../patches/bank-migrate/src/migrate.rs), [building.md](building.md#the-migration-from-v021)), which cuts the four files at the unit boundaries: it copies them into temporary files (`/m0.tmp` to `/m9.tmp`) and compares, creates the marker `/migrate.ok`, removes the old files, writes the final files from the temporary ones (journal records last) and compares, removes the marker, then the temporary files. Without the marker a start begins again from the untouched old files; with it, from the temporary ones. It refuses a Bank that is damaged or has a save in progress and changes nothing. Its result is two numbers: `0000600D` with 1 (converted), 2 (already in the new files) or 0 (no Bank); `00000BAD 00000007` for a save in progress; `00000BA1` to `00000BA4` for a failed step (reading the old files, writing the temporary ones, removing the old ones, writing the new ones) with the console's code, or 1 for a copy that does not compare, 2 for a missing file, 5 for a Bank that does not open.
 
 ### Bank file
 
@@ -239,7 +267,7 @@ File names in 3DS extdata are limited to 16 characters without the leading slash
 
 The payload follows at +64. An all-zero or damaged header is a void slot. Writing voids the header first, then writes payload and header, each synced.
 
-**Keeping the files in step** ([bank_files.rs](../patches/bank/src/bank_files.rs)). A save writes every side file's spare slot, tagged with the snapshot about to be written (generation + 1, CRC of the new Bank payload), and only then prepares the Bank journal. A load uses the slot whose tag equals the current snapshot. A rolled-back save leaves the old slots matching; a committed one makes the new slots match. Missing side files load as defaults, and so do a Pokédex file and a rewards file without a readable matching slot; only the transport box is an error then.
+**Keeping the files in step** ([bank_files.rs](../crates/bank-common/src/bank_files.rs)). A save writes every side file's spare slot, tagged with the snapshot about to be written (generation + 1, CRC of the new Bank payload), and only then prepares the Bank journal. A load uses the slot whose tag equals the current snapshot. A rolled-back save leaves the old slots matching; a committed one makes the new slots match. Missing side files load as defaults, and so do a Pokédex file and a rewards file without a readable matching slot; only the transport box is an error then.
 
 **Rewards record** (16 bytes, [rewards.rs](../crates/offline-core/src/rewards.rs)): u32 balance; u8 state (0 none, 1 record); u8 fraction 0..29; u16 saved count; accounted-through date (u16 year, month, day); 4 zero bytes.
 
