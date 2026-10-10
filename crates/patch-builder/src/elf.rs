@@ -42,13 +42,8 @@ const KERNEL_WRAPPERS: [(&str, &[u32]); 5] = [
 pub struct PayloadElf {
     pub elf_sha256: [u8; 32],
     pub entry: u32,
-    pub load_entry: u32,
-    pub save_entry: u32,
-    pub rewards_entry: u32,
-    pub timestamp_entry: u32,
-    pub dex_save_request_entry: u32,
-    pub dex_records_update_entry: u32,
-    pub dex_records_finish_entry: u32,
+    /// The profile's entry functions with their addresses, in its order.
+    pub entries: Vec<(String, u32)>,
     pub bootstrap_entry: u32,
     pub executable_size: u32,
     pub memory_size: u32,
@@ -56,6 +51,14 @@ pub struct PayloadElf {
     image: Vec<u8>,
 }
 impl PayloadElf {
+    /// The address of one of the profile's entry functions.
+    pub fn export(&self, name: &str) -> Result<u32> {
+        self.entries
+            .iter()
+            .find(|(known, _)| known == name)
+            .map(|(_, address)| *address)
+            .ok_or_else(|| Error(format!("missing ELF export {name}")))
+    }
     pub fn linked_payload(&self) -> LinkedPayload<'_> {
         LinkedPayload {
             image: &self.image,
@@ -128,7 +131,12 @@ fn string(table: &[u8], offset: u32) -> Result<&str> {
 /// Verifies geometry, symbol definitions, section/segment agreement, target ABI,
 /// and absence of runtime relocations/dynamic linking/TLS/initializers.
 /// This is not instruction-level proof of the runtime hooks.
-pub fn inspect_payload_elf(elf: &[u8]) -> Result<PayloadElf> {
+/// `entries` are the entry functions of the patch's profile; the first must
+/// be the entry of the ELF.
+pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
+    if entries.is_empty() {
+        return fail("a profile names at least one entry function");
+    }
     bytes(elf, 0, 52)?;
     if bytes(elf, 0, 9)? != b"\x7fELF\x01\x01\x01\0\0"
         || le16(elf, 16)? != 2
@@ -362,19 +370,8 @@ pub fn inspect_payload_elf(elf: &[u8]) -> Result<PayloadElf> {
         if index != 0 && index != 0xfff1 && usize::from(index) >= sections.len() {
             return fail("unsupported ELF symbol section index");
         }
-        if [
-            "bank_offline_next",
-            "bank_offline_load",
-            "bank_offline_save",
-            "bank_offline_rewards",
-            "bank_offline_timestamp",
-            "bank_offline_dex_save_request",
-            "bank_offline_dex_records_update",
-            "bank_offline_dex_records_finish",
-            "bank_bootstrap_startup",
-            "bank_bootstrap_enable_rx",
-        ]
-        .contains(&name)
+        if entries.contains(&name)
+            || ["bank_bootstrap_startup", "bank_bootstrap_enable_rx"].contains(&name)
             || KERNEL_WRAPPERS
                 .iter()
                 .any(|(required, _)| *required == name)
@@ -446,17 +443,13 @@ pub fn inspect_payload_elf(elf: &[u8]) -> Result<PayloadElf> {
     for (name, _) in KERNEL_WRAPPERS {
         get_export(name)?;
     }
-    let next = get_export("bank_offline_next")?;
-    let load = get_export("bank_offline_load")?;
-    let save = get_export("bank_offline_save")?;
-    let rewards = get_export("bank_offline_rewards")?;
-    let timestamp = get_export("bank_offline_timestamp")?;
-    let dex_save_request = get_export("bank_offline_dex_save_request")?;
-    let dex_records_update = get_export("bank_offline_dex_records_update")?;
-    let dex_records_finish = get_export("bank_offline_dex_records_finish")?;
+    let entries = entries
+        .iter()
+        .map(|name| Ok((name.to_string(), get_export(name)?)))
+        .collect::<Result<Vec<_>>>()?;
     let bootstrap_entry = get_export("bank_bootstrap_startup")?;
     get_export("bank_bootstrap_enable_rx")?;
-    if entry != next || bootstrap_entry != BOOTSTRAP {
+    if entry != entries[0].1 || bootstrap_entry != BOOTSTRAP {
         return fail("ELF entry/startup symbol differs from the reviewed entry contract");
     }
     for (name, expected) in [
@@ -484,13 +477,7 @@ pub fn inspect_payload_elf(elf: &[u8]) -> Result<PayloadElf> {
     Ok(PayloadElf {
         elf_sha256: sha256(elf),
         entry,
-        load_entry: load,
-        save_entry: save,
-        rewards_entry: rewards,
-        timestamp_entry: timestamp,
-        dex_save_request_entry: dex_save_request,
-        dex_records_update_entry: dex_records_update,
-        dex_records_finish_entry: dex_records_finish,
+        entries,
         bootstrap_entry,
         executable_size: rx.memory_size,
         memory_size,
@@ -598,6 +585,11 @@ fn check_attributes(data: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The checks with the entry functions of the offline patch.
+    fn inspect(elf: &[u8]) -> Result<PayloadElf> {
+        inspect_payload_elf(elf, bank15::offline::PROFILE.entries)
+    }
     const SHOFF: usize = 0x2d00;
     const SYMOFF: usize = 0x2200;
     fn u16_at(data: &mut [u8], at: usize, value: u16) {
@@ -729,9 +721,11 @@ mod tests {
     #[test]
     fn extracts_only_initialized_payload_and_checked_bootstrap_edit() {
         let elf = fixture();
-        let parsed = inspect_payload_elf(&elf).unwrap();
+        let parsed = inspect(&elf).unwrap();
         assert_eq!(parsed.entry, 0x3fb000);
-        assert_eq!(parsed.timestamp_entry, 0x3fb018);
+        assert_eq!(parsed.export("bank_offline_timestamp"), Ok(0x3fb018));
+        assert_eq!(parsed.entries.len(), 8);
+        assert!(parsed.export("bank_offline_menu").is_err());
         assert_eq!(parsed.executable_size, 0x1000);
         assert_eq!(parsed.memory_size, 0x2000);
         assert_eq!(parsed.image_bytes().len(), 0x1004);
@@ -748,7 +742,7 @@ mod tests {
             let symbol = SYMOFF + (16 + index) * 16;
             let mut missing = fixture();
             u32_at(&mut missing, symbol, 0);
-            assert!(inspect_payload_elf(&missing)
+            assert!(inspect(&missing)
                 .unwrap_err()
                 .to_string()
                 .contains(&format!("missing ELF export {name}")));
@@ -763,10 +757,7 @@ mod tests {
                 u32_at(&mut invalid, symbol + 4, value);
                 invalid[symbol + 12] = info;
                 u16_at(&mut invalid, symbol + 14, section_index);
-                assert!(
-                    inspect_payload_elf(&invalid).is_err(),
-                    "accepted invalid {name}"
-                );
+                assert!(inspect(&invalid).is_err(), "accepted invalid {name}");
             }
         }
     }
@@ -783,7 +774,7 @@ mod tests {
                 let mut invalid = fixture();
                 u32_at(&mut invalid, body + instruction * 4, replacement);
                 assert!(
-                    inspect_payload_elf(&invalid)
+                    inspect(&invalid)
                         .unwrap_err()
                         .to_string()
                         .contains("unaudited instructions"),
@@ -795,7 +786,7 @@ mod tests {
         // not from a scratch register surviving the SVC.
         let mut invalid = fixture();
         u32_at(&mut invalid, 0x1140 + 2 * 4, 0xe1a0200c); // MOV r2,r12
-        assert!(inspect_payload_elf(&invalid).is_err());
+        assert!(inspect(&invalid).is_err());
     }
 
     #[test]
@@ -804,7 +795,7 @@ mod tests {
             for size in [4, words.len() as u32 * 4 - 4, words.len() as u32 * 4 + 4] {
                 let mut invalid = fixture();
                 u32_at(&mut invalid, SYMOFF + (16 + index) * 16 + 8, size);
-                assert!(inspect_payload_elf(&invalid)
+                assert!(inspect(&invalid)
                     .unwrap_err()
                     .to_string()
                     .contains("unexpected size"));
@@ -812,33 +803,33 @@ mod tests {
         }
         let mut equivalent = fixture();
         u32_at(&mut equivalent, 0x1140 + 5 * 4, 0xe8bd8000);
-        assert!(inspect_payload_elf(&equivalent).is_ok());
+        assert!(inspect(&equivalent).is_ok());
     }
 
     #[test]
     fn timestamp_export_must_be_present_and_arm_aligned() {
         let mut missing = fixture();
         u32_at(&mut missing, SYMOFF + 5 * 16, 0); // remove timestamp's name
-        assert!(inspect_payload_elf(&missing)
+        assert!(inspect(&missing)
             .unwrap_err()
             .to_string()
             .contains("missing ELF export bank_offline_timestamp"));
         let mut thumb = fixture();
         u32_at(&mut thumb, SYMOFF + 5 * 16 + 4, 0x3fb019);
-        assert!(inspect_payload_elf(&thumb).is_err());
+        assert!(inspect(&thumb).is_err());
     }
     #[test]
     fn dex_hooks_require_independent_arm_exports() {
         for symbol_index in 6..=8 {
             let mut missing = fixture();
             u32_at(&mut missing, SYMOFF + symbol_index * 16, 0);
-            assert!(inspect_payload_elf(&missing)
+            assert!(inspect(&missing)
                 .unwrap_err()
                 .to_string()
                 .contains("missing ELF export bank_offline_"));
             let mut writable = fixture();
             u32_at(&mut writable, SYMOFF + symbol_index * 16 + 4, 0x3fc000);
-            assert!(inspect_payload_elf(&writable).is_err());
+            assert!(inspect(&writable).is_err());
         }
     }
     #[test]
@@ -858,17 +849,14 @@ mod tests {
         ] {
             let mut wrong = elf.clone();
             u32_at(&mut wrong, at, value);
-            assert!(
-                inspect_payload_elf(&wrong).is_err(),
-                "unexpected acceptance at {at:x}"
-            );
+            assert!(inspect(&wrong).is_err(), "unexpected acceptance at {at:x}");
         }
         let mut wrong = elf.clone();
         u16_at(&mut wrong, SYMOFF + 16 + 14, 0);
-        assert!(inspect_payload_elf(&wrong).is_err());
+        assert!(inspect(&wrong).is_err());
         wrong = elf;
         wrong[0x2111] = 10; // CPU v7
-        assert!(inspect_payload_elf(&wrong).is_err());
+        assert!(inspect(&wrong).is_err());
     }
     #[test]
     fn rejects_segment_section_overlaps_and_truncated_file_ranges() {
@@ -886,10 +874,7 @@ mod tests {
         ] {
             let mut wrong = elf.clone();
             u32_at(&mut wrong, at, value);
-            assert!(
-                inspect_payload_elf(&wrong).is_err(),
-                "unexpected acceptance at {at:x}"
-            );
+            assert!(inspect(&wrong).is_err(), "unexpected acceptance at {at:x}");
         }
     }
     #[test]
@@ -897,7 +882,7 @@ mod tests {
         let elf = fixture();
         for length in 0..elf.len() {
             // A prefix may contain all referenced bytes before trailing padding.
-            let _ = inspect_payload_elf(&elf[..length]);
+            let _ = inspect(&elf[..length]);
         }
         for length in [0, 1, 5, 10, 11, 12, 15, 17, 23] {
             assert!(check_attributes(&elf[0x2100..0x2100 + length]).is_err());
@@ -917,9 +902,9 @@ mod tests {
         {
             u32_at(&mut elf, 52 + 3 * 32 + word * 4, value);
         }
-        assert!(inspect_payload_elf(&elf).is_err());
+        assert!(inspect(&elf).is_err());
         let mut elf = fixture();
         u16_at(&mut elf, SYMOFF + 16 + 14, 1); // payload function falsely assigned to bootstrap section
-        assert!(inspect_payload_elf(&elf).is_err());
+        assert!(inspect(&elf).is_err());
     }
 }

@@ -24,7 +24,7 @@ try {
     $linkedPath = Join-Path $projectRoot 'target/armv6k-3ds/release/bank-payload-link'
     if (-not (Test-Path -LiteralPath $linkedPath -PathType Leaf)) { throw "Missing linked ELF: $linkedPath" }
     Copy-Item -LiteralPath $linkedPath -Destination $elfPath -Force
-    & cargo +stable run --locked --offline -p patch-builder -- inspect-payload $elfPath
+    & cargo +stable run --locked --offline -p patch-builder -- inspect-payload offline $elfPath
     if ($LASTEXITCODE -ne 0) { throw "Linked ELF validation failed: $LASTEXITCODE" }
     Get-FileHash -Algorithm SHA256 -LiteralPath $elfPath
     Write-Host 'Linked native-adapter ELF validated. Runtime hook profile and console validation remain required.'

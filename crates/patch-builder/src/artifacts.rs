@@ -4,7 +4,9 @@
 //! for inspection; the builder never replaces or deletes existing output.
 
 use crate::{
-    bank15, elf::inspect_payload_elf, hex, prepare_development_patch, sha256, Error, Result,
+    bank15::{self, Profile},
+    elf::inspect_payload_elf,
+    hex, prepare_development_patch, sha256, Error, Result,
 };
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -24,13 +26,20 @@ pub struct DevelopmentArtifacts {
 /// output must exist; output itself must not exist, including as a symlink.
 /// No console, save file, or SD-card deployment is accessed.
 pub fn build_development_patch(
+    profile: &Profile,
     code: &[u8],
     exheader: &[u8],
     elf: &[u8],
     output: &Path,
 ) -> Result<DevelopmentArtifacts> {
-    let prepared = prepare_development_patch(code, exheader, elf)?;
-    let parsed = inspect_payload_elf(elf)?;
+    let prepared = prepare_development_patch(profile, code, exheader, elf)?;
+    let parsed = inspect_payload_elf(elf, profile.entries)?;
+    let exports = parsed
+        .entries
+        .iter()
+        .map(|(name, address)| format!("    \"{name}\": {address}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
     let layout = prepared.layout();
     let ips_hash = sha256(prepared.ips());
     let exheader_hash = sha256(prepared.exheader());
@@ -40,6 +49,7 @@ pub fn build_development_patch(
             "{{\n",
             "  \"schema_version\": 1,\n",
             "  \"profile\": \"bank15-title6272-remaster6\",\n",
+            "  \"patch\": \"{}\",\n",
             "  \"status\": \"development-console-validation-required\",\n",
             "  \"title_id\": \"00040000000c9b00\",\n",
             "  \"tmd_version\": 6272,\n",
@@ -65,22 +75,16 @@ pub fn build_development_patch(
             "    \"bootstrap_bytes\": {}\n",
             "  }},\n",
             "  \"exports\": {{\n",
-            "    \"bank_offline_next\": {},\n",
-            "    \"bank_offline_load\": {},\n",
-            "    \"bank_offline_save\": {},\n",
-            "    \"bank_offline_rewards\": {},\n",
-            "    \"bank_offline_timestamp\": {},\n",
-            "    \"bank_offline_dex_save_request\": {},\n",
-            "    \"bank_offline_dex_records_update\": {},\n",
-            "    \"bank_offline_dex_records_finish\": {}\n",
+            "{}\n",
             "  }},\n",
-            "  \"runtime_exports\": 8,\n",
+            "  \"runtime_exports\": {},\n",
             "  \"native_edits\": {},\n",
             "  \"main_menu_edits\": 0,\n",
             "  \"paired_files_required\": true,\n",
             "  \"hardware_tested_by_builder\": false\n",
             "}}\n"
         ),
+        profile.name,
         hex(&bank15::CODE_SHA256),
         hex(&bank15::EXHEADER_SHA256),
         hex(&parsed.elf_sha256),
@@ -99,19 +103,13 @@ pub fn build_development_patch(
         layout.writable_size,
         parsed.bootstrap_entry,
         parsed.bootstrap_bytes().len(),
-        parsed.entry,
-        parsed.load_entry,
-        parsed.save_entry,
-        parsed.rewards_entry,
-        parsed.timestamp_entry,
-        parsed.dex_save_request_entry,
-        parsed.dex_records_update_entry,
-        parsed.dex_records_finish_entry,
-        bank15::NATIVE_EDIT_REGIONS,
+        exports,
+        parsed.entries.len(),
+        profile.regions,
     );
     let report = format!(
         concat!(
-            "# Pokemon Bank development patch\n\n",
+            "# Pokemon Bank development patch: {}\n\n",
             "This build passed the exact input fingerprints, original hook bytes, ",
             "ARM ELF structure, and paired allocation checks. Runtime behavior and ",
             "power-loss recovery still require testing on a 3DS.\n\n",
@@ -121,7 +119,7 @@ pub fn build_development_patch(
             "- Exheader SHA-256: {}.\n",
             "- Expanded code SHA-256: {}; {} bytes.\n",
             "- Payload address: 0x{:08x}; RX 0x{:x} bytes; total 0x{:x} bytes.\n",
-            "- Eight runtime exports; {} native edit regions; the five earlier ",
+            "- {} runtime exports; {} native edit regions; the five earlier ",
             "main-menu locations keep their original bytes.\n\n",
             "code.ips and exheader.bin must be kept together. The manifest was ",
             "written after both files and records their hashes. The build command ",
@@ -130,6 +128,7 @@ pub fn build_development_patch(
             "docs/bank.md for the original/replacement comparison, the ",
             "checklist, and the limits.\n"
         ),
+        profile.name,
         hex(&parsed.elf_sha256),
         hex(&ips_hash),
         hex(&exheader_hash),
@@ -138,7 +137,8 @@ pub fn build_development_patch(
         layout.payload_address,
         layout.executable_size,
         layout.memory_size,
-        bank15::NATIVE_EDIT_REGIONS,
+        parsed.entries.len(),
+        profile.regions,
     );
     write_artifacts(
         output,
@@ -272,7 +272,8 @@ mod tests {
     fn rejected_inputs_create_no_output() {
         let temp = Temp::new();
         let directory = temp.0.join("output");
-        assert!(build_development_patch(&[], &[], &[], &directory).is_err());
+        let profile = &bank15::offline::PROFILE;
+        assert!(build_development_patch(profile, &[], &[], &[], &directory).is_err());
         assert!(!directory.exists());
     }
 }

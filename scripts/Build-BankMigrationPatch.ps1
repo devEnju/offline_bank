@@ -31,7 +31,7 @@ try {
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     New-Item -ItemType Directory -Path (Split-Path -Parent $output) -Force | Out-Null
-    & cargo +stable run --locked --offline -p patch-builder -- build-development $inputRecord.code $inputRecord.exheader $elf $output
+    & cargo +stable run --locked --offline -p patch-builder -- build-development offline $inputRecord.code $inputRecord.exheader $elf $output
     if ($LASTEXITCODE -ne 0) { throw "Migration patch build failed: $LASTEXITCODE" }
     & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -TestPackagePath $relative -ElfPath "$intermediate/bank-payload.elf" | Out-Null
     $report = Get-Content -LiteralPath (Join-Path $output 'verification.json') -Raw | ConvertFrom-Json
