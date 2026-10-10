@@ -507,7 +507,6 @@ impl ExtdataStorage {
     ///
     /// # Safety
     /// The same requirements as `open_existing` apply.
-    #[cfg(feature = "migrate")]
     pub unsafe fn exists(session: u32, files: &'static [UnitFile]) -> Result<bool, Error> {
         match Split::open(native::Session::new(session)?, files) {
             Ok(Some(mut split)) => {
@@ -527,7 +526,6 @@ impl ExtdataStorage {
     /// # Safety
     /// The same requirements as `open_existing` apply, and none of the files
     /// may be open.
-    #[cfg(feature = "migrate")]
     pub unsafe fn remove(session: u32, files: &'static [UnitFile]) -> Result<(), Error> {
         let reach = native::Session::new(session)?;
         for file in files {

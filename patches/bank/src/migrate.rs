@@ -22,7 +22,7 @@
 //!    (the journal records last) and compared, the marker is removed, and
 //!    then the temporary files.
 
-use crate::{
+use bank_common::{
     bank_files::{FileName, UnitFile, RECORD, SNAPSHOT},
     session::{self, BankSession},
 };
@@ -314,7 +314,7 @@ fn same<S: Storage>(
 mod tests {
     extern crate std;
     use super::*;
-    use crate::bank_files::tests::{
+    use bank_common::testing::{
         body, deliver, fresh, load, observed, opened, stored, Shared, AFTER, BEFORE, GAME,
     };
     use offline_core::native_blob::BLOB_SIZE;

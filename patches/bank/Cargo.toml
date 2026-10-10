@@ -6,7 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+bank-common = { path = "../../crates/bank-common" }
 offline-core = { path = "../../crates/offline-core" }
+
+[dev-dependencies]
+bank-common = { path = "../../crates/bank-common", features = ["test-support"] }
 
 [lib]
 crate-type = ["rlib"]
@@ -18,8 +22,8 @@ linked-image = []
 test-build = []
 test-stop-before-game = ["test-build"]
 test-stop-after-game = ["test-build"]
-test-tear-record = ["test-build", "offline-core/tear-test"]
-test-tear-boxes = ["test-build", "offline-core/tear-test"]
+test-tear-record = ["test-build", "bank-common/test-tear-record"]
+test-tear-boxes = ["test-build", "bank-common/test-tear-boxes"]
 # The migration package: converts a Bank stored by versions up to 0.2.1 and
 # does nothing else (docs/building.md). Not part of the normal package.
 migrate = []

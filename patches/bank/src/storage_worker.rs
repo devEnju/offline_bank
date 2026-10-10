@@ -1,10 +1,8 @@
 //! Storage operations executed only by the dedicated native SDK worker.
 //! No job calls UI functions or accesses a live NativeBank object.
 
-use crate::{
-    bank_files::Loaded,
-    native_game::{GameIoDescriptor, PreparedImage, SecureValues},
-};
+use crate::native_game::{GameIoDescriptor, PreparedImage, SecureValues};
+use bank_common::bank_files::Loaded;
 use offline_core::{rewards::Stored, Fingerprint, Phase, RecoveryDecision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,63 +86,18 @@ pub enum Reply {
 #[cfg(feature = "test-build")]
 pub const TEST_STOP: u32 = 0x7e57;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorkerErrorKind {
-    Operation,
-    Busy,
-    StaleJob,
-    Cancelled,
-    Resource,
-    Stopped,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorkerError {
-    pub kind: WorkerErrorKind,
-    fault: u32,
-    native: u32,
-}
-impl WorkerError {
-    pub const fn fault_code(self) -> u32 {
-        self.fault
-    }
-    pub const fn native_result(self) -> u32 {
-        self.native
-    }
-    #[cfg(target_arch = "arm")]
-    pub(crate) const fn operation(fault: u32, native: u32) -> Self {
-        Self {
-            kind: WorkerErrorKind::Operation,
-            fault,
-            native,
-        }
-    }
-    #[cfg(any(test, target_arch = "arm"))]
-    pub(crate) const fn control(kind: WorkerErrorKind) -> Self {
-        Self {
-            kind,
-            fault: 2,
-            native: 0,
-        }
-    }
-    #[cfg(target_arch = "arm")]
-    pub(crate) const fn resource(native: u32) -> Self {
-        Self {
-            kind: WorkerErrorKind::Resource,
-            fault: 2,
-            native,
-        }
-    }
-}
-
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::*;
     use crate::{
+        native_game::{PlatformSecureValue, MAX_PREPARED_BLOCKS},
+        transaction::{self, Found, Match, Medium},
+    };
+    use bank_common::{
         bank_files::{self, BankFiles, FileName, Files},
         fs::{self, ExtdataStorage, GameMainReader},
-        native_game::{PlatformSecureValue, MAX_PREPARED_BLOCKS},
         session,
-        transaction::{self, Found, Match, Medium},
+        worker::{Service, Shared, Worker, WorkerError, WorkerErrorKind},
     };
     use core::{cell::UnsafeCell, convert::Infallible, mem::transmute};
     use offline_core::{
@@ -223,6 +176,10 @@ mod arm {
         }
     }
 
+    static SHARED: Shared<StorageWorker> = Shared::new();
+    /// The worker of the offline patch.
+    pub(crate) type BankWorker = Worker<StorageWorker>;
+
     pub(crate) struct StorageWorker {
         files: BankFiles<ExtFiles>,
         fs_session: u32,
@@ -232,8 +189,15 @@ mod arm {
         /// be written, until `Finalize` has looked for it.
         written: Option<SecureValues>,
     }
-    impl StorageWorker {
-        pub const fn new() -> Self {
+    impl Service for StorageWorker {
+        type Job = Job;
+        type Reply = Reply;
+        // This worker plus the retained native game writer.
+        const THREADS: i64 = 2;
+        fn shared() -> &'static Shared<Self> {
+            &SHARED
+        }
+        fn start() -> Self {
             Self {
                 files: BankFiles::new(ExtFiles { session: 0 }),
                 fs_session: 0,
@@ -242,7 +206,13 @@ mod arm {
                 written: None,
             }
         }
-        pub fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
+        fn cancellable(job: &Job) -> bool {
+            job.cancellable()
+        }
+        fn closes(job: &Job) -> bool {
+            matches!(job, Job::Close)
+        }
+        fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             if matches!(job, Job::Close) {
                 if let Some(mut storage) = self.files.close() {
                     storage.close().map_err(|e| fs_error(e, 3))?;
@@ -261,6 +231,8 @@ mod arm {
             }
             result
         }
+    }
+    impl StorageWorker {
         fn phase(&mut self) -> Result<Phase, WorkerError> {
             self.files.phase().map_err(|e| files_error(e, 5))
         }
@@ -717,4 +689,16 @@ mod arm {
     }
 }
 #[cfg(target_arch = "arm")]
-pub(crate) use arm::StorageWorker;
+pub(crate) use arm::BankWorker;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutation_commands_do_not_accept_cooperative_discard() {
+        assert!(!Job::Initialize.cancellable());
+        assert!(!Job::Close.cancellable());
+        assert!(Job::Open { session: 1 }.cancellable());
+    }
+}

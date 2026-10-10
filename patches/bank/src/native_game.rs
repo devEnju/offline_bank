@@ -78,7 +78,7 @@ pub enum NativeGameError {
     NativeResult { operation: GameOperation, code: u32 },
     NativeStatus(u32),
     Validation { status: u32, detail: u32 },
-    Storage(crate::fs::Error),
+    Storage(bank_common::fs::Error),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,7 +251,7 @@ mod arm {
         FrozenBlock, GameIoDescriptor, GameKind, GameOperation, NativeGameError, NativePoll,
         PlatformSecureValue, PreparedImage, SecureValues, MAX_PREPARED_BLOCKS,
     };
-    use crate::fs::GameMainReader;
+    use bank_common::fs::GameMainReader;
     use core::{marker::PhantomData, mem::transmute, ptr::NonNull};
     use offline_core::game_image::Overlay;
     use offline_core::Storage;
