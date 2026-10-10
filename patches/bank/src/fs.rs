@@ -1,11 +1,20 @@
 //! Fixed-size storage in Bank's existing SD extdata archive.
 //!
+//! The console keeps check values for every extdata file and writes new data
+//! before it updates them. A write that is interrupted leaves what it touched
+//! unreadable: reads fail with a result of the "corrupted data" class instead
+//! of returning bad bytes. Each unit of a container (`offline_core::Storage`)
+//! is therefore a file of its own here, so that only the unit being written
+//! can be lost. A unit that is absent reads as zeros and is created by the
+//! first write to it; one that cannot be opened or read is reported as such
+//! and is replaced through `recreate`.
+//!
 //! Native calls are specific to Bank 1.5 code SHA256
 //! 2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf.
 //! See docs/internals.md for the verified call ABIs.
 
-#[cfg(target_arch = "arm")]
-use crate::bank_files::FileName;
+#[cfg(any(test, target_arch = "arm"))]
+use crate::bank_files::UnitFile;
 #[cfg(any(test, target_arch = "arm"))]
 use offline_core::Storage;
 
@@ -26,6 +35,7 @@ pub enum Operation {
     Sync,
     CloseFile,
     CloseHandle,
+    DeleteFile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +58,8 @@ pub enum Error {
     },
     Closed,
     ReadOnly,
+    /// The unit exists but could not be opened: an interrupted write left it.
+    Unreadable,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,9 +75,10 @@ impl Error {
     /// (`8xxxxxxx`..`Fxxxxxxx`) and pass through. Local conditions use:
     /// `71oooooo` a call succeeded but returned a null handle, `72oooooo` a
     /// short read/write, `73`..`76` bounds, closed, zero length, read-only,
-    /// where `oo` is the `Operation` index (0 OpenArchive, 1 CloseArchive,
-    /// 2 CreateFile, 3 OpenFile, 4 Size, 5 Read, 6 Write, 7 Sync, 8 CloseFile,
-    /// 9 CloseHandle). A wrong file size is shown as that size itself.
+    /// `79` a unit that could not be opened, where `oo` is the `Operation`
+    /// index (0 OpenArchive, 1 CloseArchive, 2 CreateFile, 3 OpenFile,
+    /// 4 Size, 5 Read, 6 Write, 7 Sync, 8 CloseFile, 9 CloseHandle,
+    /// A DeleteFile). A wrong file size is shown as that size itself.
     pub fn diagnostic(self) -> u32 {
         match self {
             Self::Native { code, .. } => code,
@@ -76,6 +89,7 @@ impl Error {
             Self::Closed => 0x7400_0000,
             Self::InvalidLength => 0x7500_0000,
             Self::ReadOnly => 0x7600_0000,
+            Self::Unreadable => 0x7900_0000,
         }
     }
 
@@ -89,7 +103,7 @@ impl Error {
             {
                 match operation {
                     Operation::OpenArchive => Some(ReportedAbsence::Archive),
-                    Operation::OpenFile => Some(ReportedAbsence::File),
+                    Operation::OpenFile | Operation::DeleteFile => Some(ReportedAbsence::File),
                     _ => None,
                 }
             }
@@ -104,6 +118,7 @@ trait Api {
     fn open_archive(&mut self) -> Result<u64, Error>;
     fn close_archive(&mut self, archive: u64) -> Result<(), Error>;
     fn create_file(&mut self, archive: u64, length: u64) -> Result<(), Error>;
+    fn delete_file(&mut self, archive: u64) -> Result<(), Error>;
     fn open_file(&mut self, archive: u64) -> Result<u32, Error>;
     fn size(&mut self, file: u32) -> Result<u64, Error>;
     fn read(&mut self, file: u32, offset: u64, bytes: &mut [u8]) -> Result<u32, Error>;
@@ -255,52 +270,237 @@ impl<A: Api> Storage for File<A> {
         }
         Ok(())
     }
+
+    /// A single file is not a unit that can be replaced.
+    fn recreate(&mut self, _: u64, _: u64) -> Result<(), Error> {
+        Err(Error::Bounds)
+    }
 }
 
-/// One exclusively accessed file of `bank_files::FileName` in SD extdata
-/// 0x00000c9b, with that file's exact allocation size.
+/// Deletes the file `api` names. One that is not there is deleted already.
+#[cfg(any(test, target_arch = "arm"))]
+fn remove<A: Api>(mut api: A) -> Result<(), Error> {
+    let archive = api.open_archive()?;
+    let deleted = match api.delete_file(archive) {
+        Err(error) if error.reported_absence() == Some(ReportedAbsence::File) => Ok(()),
+        result => result,
+    };
+    deleted.and(api.close_archive(archive))
+}
+
+/// How the unit files of a container are reached.
+#[cfg(any(test, target_arch = "arm"))]
+trait Reach {
+    type Api: Api;
+    fn api(&self, unit: &UnitFile) -> Result<Self::Api, Error>;
+}
+
+#[cfg(any(test, target_arch = "arm"))]
+const MAX_UNITS: usize = 4;
+
+#[cfg(any(test, target_arch = "arm"))]
+enum Unit<A: Api> {
+    Open(File<A>),
+    /// Reads as zeros; the first write creates it.
+    Absent,
+    /// There, but not to be opened.
+    Unreadable,
+}
+
+/// A container whose units are separate files, addressed as one range in
+/// the order of `files`.
+#[cfg(any(test, target_arch = "arm"))]
+struct Split<R: Reach> {
+    reach: R,
+    files: &'static [UnitFile],
+    units: [Unit<R::Api>; MAX_UNITS],
+    unsynced: [bool; MAX_UNITS],
+}
+
+#[cfg(any(test, target_arch = "arm"))]
+impl<R: Reach> Split<R> {
+    fn new(reach: R, files: &'static [UnitFile]) -> Result<Self, Error> {
+        if files.is_empty() || files.len() > MAX_UNITS {
+            return Err(Error::InvalidLength);
+        }
+        Ok(Self {
+            reach,
+            files,
+            units: core::array::from_fn(|_| Unit::Absent),
+            unsynced: [false; MAX_UNITS],
+        })
+    }
+
+    /// `None` when not one of the files exists. A file of another size, or an
+    /// archive that cannot be opened, is an error and nothing an interrupted
+    /// write leaves behind.
+    fn open(reach: R, files: &'static [UnitFile]) -> Result<Option<Self>, Error> {
+        let mut this = Self::new(reach, files)?;
+        let mut found = false;
+        for (index, file) in files.iter().enumerate() {
+            match File::open(this.reach.api(file)?, file.len, false) {
+                Ok(opened) => this.units[index] = Unit::Open(opened),
+                Err(error) if error.reported_absence() == Some(ReportedAbsence::File) => continue,
+                Err(
+                    error @ (Error::WrongSize { .. }
+                    | Error::Native {
+                        operation: Operation::OpenArchive,
+                        ..
+                    }
+                    | Error::InvalidHandle(Operation::OpenArchive)),
+                ) => return Err(error),
+                Err(_) => this.units[index] = Unit::Unreadable,
+            }
+            found = true;
+        }
+        Ok(found.then_some(this))
+    }
+
+    /// Creates every file anew, zero-filled. Fails if one exists.
+    fn create(reach: R, files: &'static [UnitFile]) -> Result<Self, Error> {
+        let mut this = Self::new(reach, files)?;
+        for (index, file) in files.iter().enumerate() {
+            this.units[index] = Unit::Open(File::open(this.reach.api(file)?, file.len, true)?);
+        }
+        Ok(this)
+    }
+
+    /// The unit that holds `offset`, and where that unit starts.
+    fn locate(&self, offset: u64) -> Result<(usize, u64), Error> {
+        let mut start = 0;
+        for (index, file) in self.files.iter().enumerate() {
+            if offset < start + file.len {
+                return Ok((index, start));
+            }
+            start += file.len;
+        }
+        Err(Error::Bounds)
+    }
+
+    fn close(&mut self) -> Result<(), Error> {
+        let mut result = Ok(());
+        for unit in &mut self.units {
+            if let Unit::Open(file) = unit {
+                result = result.and(file.close());
+            }
+            *unit = Unit::Absent;
+        }
+        result
+    }
+}
+
+#[cfg(any(test, target_arch = "arm"))]
+impl<R: Reach> Storage for Split<R> {
+    type Error = Error;
+
+    fn read(&mut self, mut offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
+        let mut done = 0;
+        while done < bytes.len() {
+            let (index, start) = self.locate(offset)?;
+            let within = offset - start;
+            let count = (bytes.len() - done).min((self.files[index].len - within) as usize);
+            let part = &mut bytes[done..done + count];
+            match &mut self.units[index] {
+                Unit::Open(file) => file.read(within, part)?,
+                Unit::Absent => part.fill(0),
+                Unit::Unreadable => return Err(Error::Unreadable),
+            }
+            done += count;
+            offset += count as u64;
+        }
+        Ok(())
+    }
+
+    /// A write lies within one unit.
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
+        let (index, start) = self.locate(offset)?;
+        let within = offset - start;
+        let unit = self.files[index];
+        if within + bytes.len() as u64 > unit.len {
+            return Err(Error::Bounds);
+        }
+        if let Unit::Absent = self.units[index] {
+            self.units[index] = Unit::Open(File::open(self.reach.api(&unit)?, unit.len, true)?);
+        }
+        match &mut self.units[index] {
+            Unit::Open(file) => {
+                self.unsynced[index] = true;
+                file.write(within, bytes)
+            }
+            _ => Err(Error::Unreadable),
+        }
+    }
+
+    fn sync(&mut self) -> Result<(), Error> {
+        for (unit, unsynced) in self.units.iter_mut().zip(&mut self.unsynced) {
+            if let (Unit::Open(file), true) = (unit, *unsynced) {
+                file.sync()?;
+            }
+            *unsynced = false;
+        }
+        Ok(())
+    }
+
+    fn recreate(&mut self, offset: u64, length: u64) -> Result<(), Error> {
+        let (index, start) = self.locate(offset)?;
+        let unit = self.files[index];
+        if start != offset || unit.len != length {
+            return Err(Error::Bounds);
+        }
+        // Closed before it is deleted. If deleting fails it is not usable.
+        self.units[index] = Unit::Unreadable;
+        self.unsynced[index] = false;
+        remove(self.reach.api(&unit)?)?;
+        self.units[index] = Unit::Absent;
+        Ok(())
+    }
+}
+
+/// One exclusively accessed container of `bank_files::FileName` in SD extdata
+/// 0x00000c9b: its unit files, each with its exact allocation size.
 /// This borrows Bank's initialized FS session; it never closes that session.
 #[cfg(target_arch = "arm")]
 pub struct ExtdataStorage {
-    file: File<native::Native>,
+    split: Split<native::Session>,
 }
 
 #[cfg(target_arch = "arm")]
 impl ExtdataStorage {
-    /// Opens an existing file and requires its exact allocation size.
+    /// Opens the unit files that exist and requires the exact allocation
+    /// size of each. `None` when none of them exists.
     ///
     /// # Safety
     /// The executable must match the SHA256 documented above. `session` must be
     /// an initialized fs:USER handle owned by this Bank process and remain live
     /// until close. Call on an initialized native thread with valid IPC TLS.
-    /// The caller must guarantee exclusive access to this file and prevent
+    /// The caller must guarantee exclusive access to these files and prevent
     /// native extdata deletion/reformatting throughout its lifetime.
-    pub unsafe fn open_existing(session: u32, file: FileName) -> Result<Self, Error> {
-        let api = native::Native::new(session, file)?;
-        Ok(Self {
-            file: File::open(api, file.size(), false)?,
-        })
+    pub unsafe fn open_existing(
+        session: u32,
+        files: &'static [UnitFile],
+    ) -> Result<Option<Self>, Error> {
+        Ok(Split::open(native::Session::new(session)?, files)?.map(|split| Self { split }))
     }
 
-    /// Exclusively creates the private container in an already existing Bank
-    /// archive, zeros it, and flushes it. Failure never resets existing data.
-    /// Missing archives are returned as errors; no archive is created here.
+    /// Exclusively creates the unit files in an already existing Bank
+    /// archive, zeros them, and flushes them. Failure never resets existing
+    /// data. Missing archives are returned as errors; no archive is created
+    /// here.
     ///
     /// # Safety
     /// The same requirements as `open_existing` apply. The caller must have
     /// selected fresh initialization explicitly, not inferred it from a corrupt
     /// snapshot, a failed read, or an inaccessible archive.
-    pub unsafe fn create_new(session: u32, file: FileName) -> Result<Self, Error> {
-        let api = native::Native::new(session, file)?;
+    pub unsafe fn create_new(session: u32, files: &'static [UnitFile]) -> Result<Self, Error> {
         Ok(Self {
-            file: File::open(api, file.size(), true)?,
+            split: Split::create(native::Session::new(session)?, files)?,
         })
     }
 
     /// Returns close failures; Drop also attempts cleanup but cannot report them.
     /// Explicit sync is required before relying on durability.
     pub fn close(&mut self) -> Result<(), Error> {
-        self.file.close()
+        self.split.close()
     }
 }
 
@@ -308,13 +508,16 @@ impl ExtdataStorage {
 impl Storage for ExtdataStorage {
     type Error = Error;
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
-        self.file.read(offset, bytes)
+        self.split.read(offset, bytes)
     }
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Error> {
-        self.file.write(offset, bytes)
+        self.split.write(offset, bytes)
     }
     fn sync(&mut self) -> Result<(), Error> {
-        self.file.sync()
+        self.split.sync()
+    }
+    fn recreate(&mut self, offset: u64, length: u64) -> Result<(), Error> {
+        self.split.recreate(offset, length)
     }
 }
 
@@ -339,7 +542,7 @@ impl<'a> GameMainReader<'a> {
         if archive == 0 {
             return Err(Error::InvalidHandle(Operation::OpenArchive));
         }
-        let mut api = native::Native::new(session, FileName::Bank)?;
+        let mut api = native::Native::new(session, "/main")?;
         let handle = api.open_main(archive)?;
         let mut this = Self {
             api,
@@ -405,11 +608,14 @@ impl Storage for GameMainReader<'_> {
     fn sync(&mut self) -> Result<(), Error> {
         Err(Error::ReadOnly)
     }
+    fn recreate(&mut self, _: u64, _: u64) -> Result<(), Error> {
+        Err(Error::ReadOnly)
+    }
 }
 #[cfg(target_arch = "arm")]
 mod native {
-    use super::{Api, Error, Operation};
-    use crate::bank_files::FileName;
+    use super::{Api, Error, Operation, Reach};
+    use crate::bank_files::UnitFile;
     use core::{arch::asm, marker::PhantomData, mem::transmute};
 
     #[repr(C)]
@@ -419,26 +625,32 @@ mod native {
         byte_len: u32,
     }
 
-    /// UTF-16 with terminator, as the native path type expects.
-    const fn utf16<const N: usize>(text: &str) -> [u16; N] {
-        let bytes = text.as_bytes();
-        assert!(bytes.len() + 1 == N);
-        let mut out = [0; N];
-        let mut index = 0;
-        while index < bytes.len() {
-            out[index] = bytes[index] as u16;
-            index += 1;
+    /// A path of the longest name the archive stores, as UTF-16 with its
+    /// terminator: the form the native path type expects.
+    const NAME: usize = 1 + UnitFile::MAX_NAME + 1;
+
+    /// Bank's file system session, through which each unit file is reached.
+    pub(super) struct Session(u32);
+    impl Session {
+        pub(super) fn new(session: u32) -> Result<Self, Error> {
+            if session == 0 {
+                return Err(Error::InvalidHandle(Operation::OpenArchive));
+            }
+            Ok(Self(session))
         }
-        out
     }
-    static BANK: [u16; 10] = utf16(FileName::Bank.path());
-    static DEX: [u16; 9] = utf16(FileName::Dex.path());
-    static TRANSPORT: [u16; 15] = utf16(FileName::Transport.path());
-    static REWARDS: [u16; 13] = utf16(FileName::Rewards.path());
+    impl Reach for Session {
+        type Api = Native;
+        fn api(&self, unit: &UnitFile) -> Result<Native, Error> {
+            Native::new(self.0, unit.path)
+        }
+    }
 
     pub(super) struct Native {
         session: u32,
-        name: &'static [u16],
+        name: [u16; NAME],
+        /// Bytes of `name` with its terminator.
+        byte_len: u32,
         _thread: PhantomData<*mut ()>,
     }
     impl Native {
@@ -465,21 +677,25 @@ mod native {
             Path {
                 kind: 4,
                 data: self.name.as_ptr().cast(),
-                byte_len: (self.name.len() * 2) as u32,
+                byte_len: self.byte_len,
             }
         }
-        pub(super) fn new(session: u32, file: FileName) -> Result<Self, Error> {
+        pub(super) fn new(session: u32, path: &str) -> Result<Self, Error> {
             if session == 0 {
                 return Err(Error::InvalidHandle(Operation::OpenArchive));
             }
+            let bytes = path.as_bytes();
+            if bytes.len() >= NAME {
+                return Err(Error::InvalidLength);
+            }
+            let mut name = [0; NAME];
+            for (unit, byte) in name.iter_mut().zip(bytes) {
+                *unit = u16::from(*byte);
+            }
             Ok(Self {
                 session,
-                name: match file {
-                    FileName::Bank => &BANK,
-                    FileName::Dex => &DEX,
-                    FileName::Transport => &TRANSPORT,
-                    FileName::Rewards => &REWARDS,
-                },
+                name,
+                byte_len: (bytes.len() as u32 + 1) * 2,
                 _thread: PhantomData,
             })
         }
@@ -528,6 +744,13 @@ mod native {
             let call: Call = unsafe { transmute(0x0016_54f8usize) };
             result(Operation::CreateFile, unsafe {
                 call(&self.session, 0, archive, self.name(), 0, length)
+            })
+        }
+        fn delete_file(&mut self, archive: u64) -> Result<(), Error> {
+            type Call = unsafe extern "aapcs" fn(*const u32, u32, u64, Path) -> i32;
+            let call: Call = unsafe { transmute(0x0016_5554usize) };
+            result(Operation::DeleteFile, unsafe {
+                call(&self.session, 0, archive, self.name())
             })
         }
         fn open_file(&mut self, archive: u64) -> Result<u32, Error> {
@@ -682,6 +905,10 @@ mod tests {
                 return Err(failure(Operation::CreateFile));
             }
             s.bytes = vec![0xa5; length as usize];
+            Ok(())
+        }
+        fn delete_file(&mut self, _: u64) -> Result<(), Error> {
+            self.0.borrow_mut().bytes.clear();
             Ok(())
         }
         fn open_file(&mut self, _: u64) -> Result<u32, Error> {
@@ -895,5 +1122,234 @@ mod tests {
             None
         );
         assert_eq!(failure(Operation::OpenArchive).reported_absence(), None);
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    extern crate std;
+    use super::*;
+    use std::{cell::RefCell, collections::BTreeMap, rc::Rc, vec, vec::Vec};
+
+    const NOT_FOUND: u32 = 0xc880_4478;
+    const CORRUPTED: u32 = 0xd900_458b;
+
+    #[derive(Default)]
+    struct Entry {
+        bytes: Vec<u8>,
+        /// Left behind by an interrupted write.
+        torn: bool,
+    }
+    #[derive(Clone, Default)]
+    struct Card {
+        files: Rc<RefCell<BTreeMap<&'static str, Entry>>>,
+        archive_fails: Rc<RefCell<bool>>,
+    }
+    struct OneFile(Card, &'static str);
+    impl Reach for Card {
+        type Api = OneFile;
+        fn api(&self, unit: &UnitFile) -> Result<OneFile, Error> {
+            Ok(OneFile(self.clone(), unit.path))
+        }
+    }
+    fn native(operation: Operation, code: u32) -> Error {
+        Error::Native { operation, code }
+    }
+    impl Api for OneFile {
+        fn open_archive(&mut self) -> Result<u64, Error> {
+            if *self.0.archive_fails.borrow() {
+                return Err(native(Operation::OpenArchive, CORRUPTED));
+            }
+            Ok(1)
+        }
+        fn close_archive(&mut self, _: u64) -> Result<(), Error> {
+            Ok(())
+        }
+        fn create_file(&mut self, _: u64, length: u64) -> Result<(), Error> {
+            let mut files = self.0.files.borrow_mut();
+            if files.contains_key(self.1) {
+                return Err(native(Operation::CreateFile, 0xc820_44be));
+            }
+            files.insert(
+                self.1,
+                Entry {
+                    bytes: vec![0xa5; length as usize],
+                    torn: false,
+                },
+            );
+            Ok(())
+        }
+        fn delete_file(&mut self, _: u64) -> Result<(), Error> {
+            match self.0.files.borrow_mut().remove(self.1) {
+                Some(_) => Ok(()),
+                None => Err(native(Operation::DeleteFile, NOT_FOUND)),
+            }
+        }
+        fn open_file(&mut self, _: u64) -> Result<u32, Error> {
+            match self.0.files.borrow().get(self.1) {
+                Some(_) => Ok(7),
+                None => Err(native(Operation::OpenFile, NOT_FOUND)),
+            }
+        }
+        fn size(&mut self, _: u32) -> Result<u64, Error> {
+            Ok(self.0.files.borrow()[self.1].bytes.len() as u64)
+        }
+        fn read(&mut self, _: u32, offset: u64, bytes: &mut [u8]) -> Result<u32, Error> {
+            let files = self.0.files.borrow();
+            let entry = &files[self.1];
+            if entry.torn {
+                return Err(native(Operation::Read, CORRUPTED));
+            }
+            bytes.copy_from_slice(&entry.bytes[offset as usize..offset as usize + bytes.len()]);
+            Ok(bytes.len() as u32)
+        }
+        fn write(&mut self, _: u32, offset: u64, bytes: &[u8], _: u32) -> Result<u32, Error> {
+            let mut files = self.0.files.borrow_mut();
+            let entry = files.get_mut(self.1).unwrap();
+            if entry.torn {
+                return Err(native(Operation::Write, CORRUPTED));
+            }
+            entry.bytes[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
+            Ok(bytes.len() as u32)
+        }
+        fn close_file(&mut self, _: u32) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    static FILES: [UnitFile; 3] = [
+        UnitFile::new("/one.bin", 4),
+        UnitFile::new("/two.bin", 6),
+        UnitFile::new("/three.bin", 5),
+    ];
+    fn card() -> Card {
+        let card = Card::default();
+        let mut created = Split::create(card.clone(), &FILES).unwrap();
+        created.write(0, b"abcd").unwrap();
+        created.write(4, b"efghij").unwrap();
+        created.write(10, b"klmno").unwrap();
+        created.sync().unwrap();
+        card
+    }
+    fn open(card: &Card) -> Split<Card> {
+        Split::open(card.clone(), &FILES).unwrap().unwrap()
+    }
+
+    #[test]
+    fn the_unit_files_read_and_write_as_one_range() {
+        let card = card();
+        assert_eq!(card.files.borrow().len(), 3);
+        let mut split = open(&card);
+        let mut all = [0; 15];
+        split.read(0, &mut all).unwrap();
+        assert_eq!(&all, b"abcdefghijklmno");
+        let mut across = [0; 7];
+        split.read(2, &mut across).unwrap();
+        assert_eq!(&across, b"cdefghi");
+        split.write(6, b"XY").unwrap();
+        assert_eq!(card.files.borrow()["/two.bin"].bytes, b"efXYij");
+        // A write never crosses into the next unit file, and nothing lies
+        // past the last one.
+        assert_eq!(split.write(3, b"zz"), Err(Error::Bounds));
+        assert_eq!(split.read(14, &mut [0; 2]), Err(Error::Bounds));
+        assert_eq!(card.files.borrow()["/one.bin"].bytes, b"abcd");
+    }
+
+    #[test]
+    fn nothing_is_found_only_when_no_unit_file_exists() {
+        let empty = Card::default();
+        assert!(Split::open(empty, &FILES).unwrap().is_none());
+        // Creating again is refused while one of them exists.
+        let card = card();
+        assert!(Split::create(card.clone(), &FILES).is_err());
+        card.files.borrow_mut().remove("/one.bin");
+        card.files.borrow_mut().remove("/three.bin");
+        assert!(Split::open(card.clone(), &FILES).unwrap().is_some());
+        card.files.borrow_mut().remove("/two.bin");
+        assert!(Split::open(card, &FILES).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_absent_unit_file_reads_as_zeros_and_the_first_write_creates_it() {
+        let card = card();
+        card.files.borrow_mut().remove("/two.bin");
+        let mut split = open(&card);
+        let mut all = [0xff; 15];
+        split.read(0, &mut all).unwrap();
+        assert_eq!(&all, b"abcd\0\0\0\0\0\0klmno");
+        assert!(!card.files.borrow().contains_key("/two.bin"));
+        split.write(5, b"Q").unwrap();
+        split.sync().unwrap();
+        // Created whole and zero-filled, then written.
+        assert_eq!(card.files.borrow()["/two.bin"].bytes, b"\0Q\0\0\0\0");
+    }
+
+    #[test]
+    fn a_unit_file_left_by_an_interrupted_write_fails_alone_and_is_replaced() {
+        let card = card();
+        card.files.borrow_mut().get_mut("/two.bin").unwrap().torn = true;
+        let mut split = open(&card);
+        let mut part = [0; 4];
+        split.read(0, &mut part).unwrap();
+        assert_eq!(&part, b"abcd");
+        split.read(10, &mut part).unwrap();
+        assert_eq!(&part, b"klmn");
+        assert_eq!(
+            split.read(4, &mut part),
+            Err(native(Operation::Read, CORRUPTED))
+        );
+        assert_eq!(
+            split.write(4, b"new"),
+            Err(native(Operation::Write, CORRUPTED))
+        );
+        // Only the exact unit is replaced, and the others are untouched.
+        assert_eq!(split.recreate(4, 5), Err(Error::Bounds));
+        assert_eq!(split.recreate(5, 5), Err(Error::Bounds));
+        split.recreate(4, 6).unwrap();
+        assert!(!card.files.borrow().contains_key("/two.bin"));
+        split.read(4, &mut part).unwrap();
+        assert_eq!(part, [0; 4]);
+        split.write(4, b"new").unwrap();
+        split.sync().unwrap();
+        assert_eq!(card.files.borrow()["/two.bin"].bytes, b"new\0\0\0");
+        assert_eq!(card.files.borrow()["/one.bin"].bytes, b"abcd");
+        assert_eq!(card.files.borrow()["/three.bin"].bytes, b"klmno");
+        // Replacing one that is not there is the same as having done it.
+        split.recreate(0, 4).unwrap();
+        split.recreate(0, 4).unwrap();
+    }
+
+    #[test]
+    fn a_file_of_another_size_or_an_unreachable_archive_is_an_error_and_nothing_else() {
+        let card = card();
+        card.files
+            .borrow_mut()
+            .get_mut("/two.bin")
+            .unwrap()
+            .bytes
+            .push(0);
+        assert_eq!(
+            Split::open(card.clone(), &FILES).err(),
+            Some(Error::WrongSize {
+                expected: 6,
+                actual: 7
+            })
+        );
+        // It is not replaced either: whoever asks never gets that far.
+        assert_eq!(card.files.borrow()["/two.bin"].bytes.len(), 7);
+
+        let card = self::card();
+        *card.archive_fails.borrow_mut() = true;
+        assert_eq!(
+            Split::open(card.clone(), &FILES).err(),
+            Some(native(Operation::OpenArchive, CORRUPTED))
+        );
+        *card.archive_fails.borrow_mut() = false;
+        let mut split = open(&card);
+        split.close().unwrap();
+        // Closed: nothing is opened again behind the caller's back.
+        let mut all = [0xff; 15];
+        split.read(0, &mut all).unwrap();
+        assert_eq!(all, [0; 15]);
     }
 }

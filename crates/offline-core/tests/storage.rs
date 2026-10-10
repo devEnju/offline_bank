@@ -16,12 +16,20 @@ struct Memory {
     durable: Option<Vec<u8>>,
     budget: Option<usize>,
     operations: usize,
+    /// The console's behaviour: every unit is a file of its own, and a cut
+    /// leaves each file with writes that were not yet synced unreadable and
+    /// unwritable until it is recreated.
+    console: bool,
+    units: [(u64, u64); 4],
+    unsynced: [bool; 4],
+    unreadable: [bool; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Failure {
     PowerCut,
     OutOfBounds,
+    Unreadable,
 }
 
 impl Memory {
@@ -31,11 +39,31 @@ impl Memory {
             durable: None,
             budget: None,
             operations: 0,
+            console: false,
+            units: layout.units(),
+            unsynced: [false; 4],
+            unreadable: [false; 4],
         }
+    }
+    fn console(mut self) -> Self {
+        self.console = true;
+        self
+    }
+    /// The units a byte range lies in.
+    fn touched(&self, start: u64, length: u64) -> impl Iterator<Item = usize> + '_ {
+        (0..4).filter(move |&unit| {
+            let (at, size) = self.units[unit];
+            start < at + size && at < start + length
+        })
     }
     fn tick(&mut self) -> Result<(), Failure> {
         if let Some(budget) = &mut self.budget {
             if *budget == 0 {
+                if self.console {
+                    for unit in 0..4 {
+                        self.unreadable[unit] |= self.unsynced[unit];
+                    }
+                }
                 return Err(Failure::PowerCut);
             }
             *budget -= 1;
@@ -58,6 +86,7 @@ impl Memory {
         }
         self.budget = None;
         self.operations = 0;
+        self.unsynced = [false; 4];
         self
     }
 }
@@ -68,6 +97,12 @@ impl Storage for Memory {
         let start = usize::try_from(offset).map_err(|_| Failure::OutOfBounds)?;
         let end = start.checked_add(bytes.len()).ok_or(Failure::OutOfBounds)?;
         let source = self.bytes.get(start..end).ok_or(Failure::OutOfBounds)?;
+        if self
+            .touched(offset, bytes.len() as u64)
+            .any(|unit| self.unreadable[unit])
+        {
+            return Err(Failure::Unreadable);
+        }
         bytes.copy_from_slice(source);
         Ok(())
     }
@@ -76,6 +111,13 @@ impl Storage for Memory {
         let end = start.checked_add(bytes.len()).ok_or(Failure::OutOfBounds)?;
         if end > self.bytes.len() {
             return Err(Failure::OutOfBounds);
+        }
+        let touched: Vec<usize> = self.touched(offset, bytes.len() as u64).collect();
+        if touched.iter().any(|&unit| self.unreadable[unit]) {
+            return Err(Failure::Unreadable);
+        }
+        for unit in touched {
+            self.unsynced[unit] = true;
         }
         // Every byte may reach durable media before a flush: a conservative
         // model of interrupted writes, including partially written headers.
@@ -87,9 +129,22 @@ impl Storage for Memory {
     }
     fn sync(&mut self) -> Result<(), Failure> {
         self.tick()?;
+        self.unsynced = [false; 4];
         if let Some(durable) = &mut self.durable {
             durable.clone_from(&self.bytes);
         }
+        Ok(())
+    }
+    fn recreate(&mut self, offset: u64, length: u64) -> Result<(), Failure> {
+        let unit = self
+            .units
+            .iter()
+            .position(|&unit| unit == (offset, length))
+            .ok_or(Failure::OutOfBounds)?;
+        self.tick()?;
+        self.bytes[offset as usize..(offset + length) as usize].fill(0);
+        self.unsynced[unit] = false;
+        self.unreadable[unit] = false;
         Ok(())
     }
 }
@@ -187,10 +242,11 @@ fn nonzero_or_truncated_uninitialized_storage_is_not_empty() {
         Err(StoreError::AlreadyContainsData)
     );
 
+    // A part that cannot be read is not zero either.
     let mut memory = Memory::new(layout);
     memory.bytes.pop();
     let mut store = BankStore::new(memory, layout);
-    assert_eq!(store.inspect(), Err(StoreError::Io(Failure::OutOfBounds)));
+    assert_eq!(store.inspect(), Err(StoreError::NeverPublished));
 }
 
 #[test]
@@ -661,4 +717,167 @@ fn buffered_storage_loses_unflushed_writes_without_losing_saved_game_transfer() 
         };
         assert_eq!(payload(&mut recovered, &head), NEW, "buffered finish {cut}");
     }
+}
+
+/// A complete save on top of whatever `memory` holds, as the next session
+/// does it: it must go through and be there after a restart.
+fn save_again(memory: Memory, expected: &[u8], context: &str) {
+    let layout = Layout::new(CAPACITY);
+    let mut store = BankStore::new(memory, layout);
+    let head = store
+        .inspect()
+        .unwrap_or_else(|err| panic!("{context}: {err:?}"));
+    let head = match head.phase() {
+        Phase::Prepared(pending) => {
+            let seen = if expected == OLD { BEFORE } else { AFTER };
+            assert!(pending.before_fingerprint == BEFORE);
+            store.reconcile(&head, observation(seen)).unwrap().head
+        }
+        Phase::Clean(_) => head,
+    };
+    assert_eq!(payload(&mut store, &head), expected, "{context}");
+    let third: &[u8] = b"the save after the cut";
+    let head = store
+        .prepare_transfer(&head, third, GAME, [3; 32], [4; 32])
+        .unwrap_or_else(|err| panic!("{context}: next save: {err:?}"));
+    let head = store
+        .reconcile(&head, observation([4; 32]))
+        .unwrap_or_else(|err| panic!("{context}: next finish: {err:?}"))
+        .head;
+    assert_eq!(payload(&mut store, &head), third, "{context}");
+    let mut reopened = BankStore::new(store.into_inner().reboot(), layout);
+    let head = reopened.inspect().unwrap();
+    assert_eq!(payload(&mut reopened, &head), third, "{context}");
+}
+
+#[test]
+fn on_the_console_a_cut_save_leaves_the_old_bank_and_the_next_save_works() {
+    let layout = Layout::new(CAPACITY);
+    let base = baseline().console();
+    let (complete, _) = prepare(base.clone());
+    let total = complete.into_inner().operations;
+    for cut in 0..=total {
+        let mut store = BankStore::new(base.clone().cut_after(cut), layout);
+        let head = store.inspect().unwrap();
+        let result = store.prepare_transfer(&head, NEW, GAME, BEFORE, AFTER);
+        assert_eq!(result.is_ok(), cut == total, "cut {cut}");
+        // The game was not written: the old Bank, whatever the cut left.
+        save_again(
+            store.into_inner().reboot(),
+            OLD,
+            &format!("prepare cut {cut}"),
+        );
+    }
+}
+
+#[test]
+fn on_the_console_a_cut_finish_leaves_the_new_bank_and_the_next_save_works() {
+    let layout = Layout::new(CAPACITY);
+    let (prepared, _) = prepare(baseline().console());
+    let base = prepared.into_inner().reboot();
+    let mut full = BankStore::new(base.clone(), layout);
+    let head = full.inspect().unwrap();
+    full.reconcile(&head, observation(AFTER)).unwrap();
+    let total = full.into_inner().operations;
+    for cut in 0..=total {
+        let mut store = BankStore::new(base.clone().cut_after(cut), layout);
+        let head = store.inspect().unwrap();
+        let _ = store.reconcile(&head, observation(AFTER));
+        save_again(
+            store.into_inner().reboot(),
+            NEW,
+            &format!("finish cut {cut}"),
+        );
+    }
+}
+
+#[test]
+fn on_the_console_a_cut_initialization_is_finished_by_the_next_one() {
+    let layout = Layout::new(CAPACITY);
+    let mut full = BankStore::new(Memory::new(layout).console(), layout);
+    full.initialize_new(OLD).unwrap();
+    let total = full.into_inner().operations;
+    for cut in 0..=total {
+        let mut store = BankStore::new(Memory::new(layout).console().cut_after(cut), layout);
+        let _ = store.initialize_new(OLD);
+        let mut recovered = BankStore::new(store.into_inner().reboot(), layout);
+        let head = match recovered.inspect() {
+            Ok(head) => head,
+            Err(StoreError::Uninitialized | StoreError::NeverPublished) => {
+                // Finishing it can be cut as well, at every step.
+                let unfinished = recovered.into_inner();
+                let mut whole = BankStore::new(unfinished.clone(), layout);
+                whole.reinitialize(OLD).unwrap();
+                let steps = whole.into_inner().operations;
+                for second in 0..steps {
+                    let mut store = BankStore::new(unfinished.clone().cut_after(second), layout);
+                    let _ = store.reinitialize(OLD);
+                    let mut again = BankStore::new(store.into_inner().reboot(), layout);
+                    let head = match again.inspect() {
+                        Ok(head) => head,
+                        Err(StoreError::Uninitialized | StoreError::NeverPublished) => again
+                            .reinitialize(OLD)
+                            .unwrap_or_else(|err| panic!("cuts {cut}, {second}: {err:?}")),
+                        other => panic!("cuts {cut}, {second}: {other:?}"),
+                    };
+                    assert_eq!(payload(&mut again, &head), OLD, "cuts {cut}, {second}");
+                }
+                recovered = BankStore::new(unfinished, layout);
+                recovered
+                    .reinitialize(OLD)
+                    .unwrap_or_else(|err| panic!("finish after cut {cut}: {err:?}"))
+            }
+            other => panic!("initialization cut {cut}: {other:?}"),
+        };
+        assert_eq!(payload(&mut recovered, &head), OLD, "cut {cut}");
+        save_again(recovered.into_inner().reboot(), OLD, &format!("cut {cut}"));
+    }
+}
+
+#[test]
+fn an_unreadable_record_counts_as_damaged_and_two_of_them_are_never_an_empty_bank() {
+    let layout = Layout::new(CAPACITY);
+    for unit in 0..2 {
+        // One record lost to a cut: the other one decides.
+        let mut memory = baseline().console();
+        memory.unreadable[unit] = true;
+        save_again(memory, OLD, &format!("record {unit}"));
+    }
+    // Both lost: nothing says that this was never a Bank, even when it holds
+    // only a first snapshot, and nothing is written.
+    let mut memory = baseline().console();
+    memory.unreadable[0] = true;
+    memory.unreadable[1] = true;
+    let before = memory.bytes.clone();
+    let mut store = BankStore::new(memory, layout);
+    assert_eq!(store.inspect(), Err(StoreError::NoValidMetadata));
+    assert_eq!(store.reinitialize(NEW), Err(StoreError::NoValidMetadata));
+    assert_eq!(store.into_inner().bytes, before);
+    // Everything unreadable is no evidence of anything.
+    let mut memory = baseline().console();
+    memory.unreadable = [true; 4];
+    let mut store = BankStore::new(memory, layout);
+    assert_eq!(store.inspect(), Err(StoreError::NoValidMetadata));
+    assert_eq!(store.reinitialize(NEW), Err(StoreError::NoValidMetadata));
+}
+
+#[test]
+fn an_unreadable_spare_snapshot_is_replaced_and_an_unreadable_current_one_is_an_error() {
+    let layout = Layout::new(CAPACITY);
+    let mut store = BankStore::new(baseline().console(), layout);
+    let head = store.inspect().unwrap();
+    let Phase::Clean(current) = head.phase() else {
+        unreachable!()
+    };
+    let (used, spare) = match current.slot {
+        Slot::A => (2, 3),
+        Slot::B => (3, 2),
+    };
+    let mut memory = store.into_inner();
+    memory.unreadable[spare] = true;
+    save_again(memory.clone(), OLD, "spare slot");
+    memory.unreadable[spare] = false;
+    memory.unreadable[used] = true;
+    let mut store = BankStore::new(memory, layout);
+    assert_eq!(store.inspect(), Err(StoreError::Io(Failure::Unreadable)));
 }

@@ -206,6 +206,10 @@ mod tests {
         fn sync(&mut self) -> Result<(), ()> {
             Ok(())
         }
+        fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+            self.bytes[at as usize..(at + length) as usize].fill(0);
+            Ok(())
+        }
     }
     fn file(bytes: Vec<u8>, budget: Option<usize>) -> Sidecar<Memory> {
         Sidecar::new(Memory { bytes, budget }, KIND)

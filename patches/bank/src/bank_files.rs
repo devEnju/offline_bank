@@ -1,11 +1,18 @@
-//! The four stored files and the order in which they are read and written.
+//! The stored files and the order in which they are read and written.
 //!
-//! `/bank.bin` carries the journal and decides which save is current.
-//! The Pokédex, transport box, and rewards files each hold two slots tagged
-//! with a Bank snapshot (`offline_core::sidecar`). A save writes every side file's
-//! spare slot first, then prepares the Bank journal; a load uses the slots
-//! whose tag matches the Bank's current snapshot. So all four always describe
-//! the same save, without a second journal.
+//! The Bank container carries the journal and decides which save is current.
+//! The Pokédex, transport box, and rewards containers each hold two slots
+//! tagged with a Bank snapshot (`offline_core::sidecar`). A save writes every
+//! side container's spare slot first, then prepares the Bank journal; a load
+//! uses the slots whose tag matches the Bank's current snapshot. So all four
+//! always describe the same save, without a second journal.
+//!
+//! Every unit of a container is a file of its own (`UnitFile`): the two
+//! journal records, the two snapshot slots, and the two slots of each side
+//! container. An interrupted write can make the file it went to unreadable,
+//! and that file is then never one that holds anything still needed. The
+//! two files of a pair take turns; `.alt` names the alternate of the two, not
+//! an older copy.
 //!
 //! This module is generic over storage so the whole sequence is host-tested.
 //! In memory the main thread only ever sees the one native body.
@@ -31,38 +38,66 @@ pub enum FileName {
     Transport = 2,
     Rewards = 3,
 }
-impl FileName {
-    /// Exact allocation of each file. A file of another size is an error.
-    pub fn size(self) -> u64 {
-        match self {
-            Self::Bank => session::BANK_LAYOUT.file_len(),
-            Self::Dex => DEX_FILE.file_len(),
-            Self::Transport => transport::KIND.file_len(),
-            Self::Rewards => rewards::FILE.file_len(),
-        }
-    }
+/// One file in SD extdata archive `0x00000C9B`: its path and its exact
+/// allocation. A file of another size is an error and is never replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnitFile {
+    pub path: &'static str,
+    pub len: u64,
+}
+impl UnitFile {
     /// Longest file name the 3DS stores in save data and extdata, without the
     /// leading `/`. A longer name makes creating the file fail on the console
     /// (`E0E046C7`), which no PC test can show.
     pub const MAX_NAME: usize = 16;
-    /// Logical path inside SD extdata archive `0x00000C9B`.
-    pub const fn path(self) -> &'static str {
-        let path = self.raw_path();
+    pub const fn new(path: &'static str, len: u64) -> Self {
         assert!(path.len() - 1 <= Self::MAX_NAME);
-        path
-    }
-    const fn raw_path(self) -> &'static str {
-        match self {
-            Self::Bank => "/bank.bin",
-            Self::Dex => "/dex.bin",
-            Self::Transport => "/transport.bin",
-            Self::Rewards => "/rewards.bin",
-        }
+        Self { path, len }
     }
 }
 
-/// Access to the files by name. `open` returns `None` only when the file is
-/// reported absent; `create` makes an exclusively new, zero-filled file.
+const RECORD: u64 = offline_core::METADATA_SIZE as u64;
+const SNAPSHOT: u64 = session::BANK_LAYOUT.snapshot_len();
+/// In the order of the container's layout: the journal records, then the
+/// snapshot slots.
+static BANK_UNITS: [UnitFile; 4] = [
+    UnitFile::new("/journal.bin", RECORD),
+    UnitFile::new("/journal.alt.bin", RECORD),
+    UnitFile::new("/bank.bin", SNAPSHOT),
+    UnitFile::new("/bank.alt.bin", SNAPSHOT),
+];
+static DEX_UNITS: [UnitFile; 2] = [
+    UnitFile::new("/dex.bin", DEX_FILE.slot_len()),
+    UnitFile::new("/dex.alt.bin", DEX_FILE.slot_len()),
+];
+static TRANSPORT_UNITS: [UnitFile; 2] = [
+    UnitFile::new("/mover.bin", transport::KIND.slot_len()),
+    UnitFile::new("/mover.alt.bin", transport::KIND.slot_len()),
+];
+static REWARDS_UNITS: [UnitFile; 2] = [
+    UnitFile::new("/rewards.bin", rewards::FILE.slot_len()),
+    UnitFile::new("/rewards.alt.bin", rewards::FILE.slot_len()),
+];
+
+impl FileName {
+    /// The files of the container, in the order of its layout.
+    pub fn units(self) -> &'static [UnitFile] {
+        match self {
+            Self::Bank => &BANK_UNITS,
+            Self::Dex => &DEX_UNITS,
+            Self::Transport => &TRANSPORT_UNITS,
+            Self::Rewards => &REWARDS_UNITS,
+        }
+    }
+    /// Length of the container: all its units.
+    pub fn size(self) -> u64 {
+        self.units().iter().map(|unit| unit.len).sum()
+    }
+}
+
+/// Access to the containers by name. `open` returns `None` only when none of
+/// a container's files exists; `create` makes all of them exclusively new and
+/// zero-filled.
 pub trait Files {
     type Storage: Storage;
     fn open(
@@ -219,14 +254,16 @@ impl<F: Files> BankFiles<F> {
             crc: sections::bank_crc(staging).map_err(layout)?,
         };
 
+        // The Pokédex and the Miles record never block the Bank, so a slot
+        // of theirs that cannot be read is void whichever one it is.
         let mut dex = self.ensure_side(FileName::Dex, DEX_FILE)?;
-        let slots = dex.slots().map_err(side(FileName::Dex))?;
+        let slots = dex.slots_or_void();
         dex.write(spare(&slots, current), Some(next), 0, 0, &[&staging[DEX]])
             .map_err(side(FileName::Dex))?;
         drop(dex);
 
         let mut file = self.ensure_side(FileName::Rewards, rewards::FILE)?;
-        let slots = file.slots().map_err(side(FileName::Rewards))?;
+        let slots = file.slots_or_void();
         file.write(
             spare(&slots, current),
             Some(next),
@@ -237,8 +274,16 @@ impl<F: Files> BankFiles<F> {
         .map_err(side(FileName::Rewards))?;
         drop(file);
 
+        // The transport box can hold Pokémon: a slot that cannot be read
+        // is void only beside the one seen to be current, or while no Bank
+        // exists yet.
         let mut file = self.ensure_side(FileName::Transport, transport::KIND)?;
-        let slots = file.slots().map_err(side(FileName::Transport))?;
+        let slots = match current {
+            Some(current) => file
+                .slots_beside(current)
+                .map_err(side(FileName::Transport))?,
+            None => file.slots_or_void(),
+        };
         let conflict = Error::Side(FileName::Transport, Problem::Conflict);
         let (index, aux) = match current {
             Some(current) => {
@@ -310,7 +355,7 @@ impl<F: Files> BankFiles<F> {
         // the Bank: it starts empty, as without the file, and each game
         // writes its part again at its next Save and Quit.
         if let Some(mut file) = self.open_side(FileName::Dex, DEX_FILE)? {
-            let slots = file.slots().map_err(side(FileName::Dex))?;
+            let slots = file.slots_or_void();
             let found = matching(&slots, tag).and_then(|index| {
                 let slot = slots[index].filter(|slot| slot.len as usize == DEX_SIZE);
                 slot.map(|slot| (index, slot))
@@ -326,7 +371,7 @@ impl<F: Files> BankFiles<F> {
 
         // A missing or unreadable Miles record never blocks the Bank.
         if let Some(mut file) = self.open_side(FileName::Rewards, rewards::FILE)? {
-            let slots = file.slots().map_err(side(FileName::Rewards))?;
+            let slots = file.slots_or_void();
             if let Some(index) = matching(&slots, tag) {
                 let slot = slots[index].filter(|slot| slot.len as usize == rewards::RECORD_SIZE);
                 let mut bytes = [0; rewards::RECORD_SIZE];
@@ -341,7 +386,7 @@ impl<F: Files> BankFiles<F> {
         }
 
         if let Some(mut file) = self.open_side(FileName::Transport, transport::KIND)? {
-            let slots = file.slots().map_err(side(FileName::Transport))?;
+            let slots = file.slots_beside(tag).map_err(side(FileName::Transport))?;
             let plan = transport::on_load(&slots, tag);
             if let Some(index) = plan.source {
                 let slot = slots[index].filter(|slot| slot.len as usize == TRANSPORT_SIZE);
@@ -382,7 +427,7 @@ impl<F: Files> BankFiles<F> {
     pub fn tidy_transport(&mut self) -> Outcome<(), F> {
         let tag = self.bank()?.tag().map_err(Error::Bank)?;
         if let Some(mut file) = self.open_side(FileName::Transport, transport::KIND)? {
-            let slots = file.slots().map_err(side(FileName::Transport))?;
+            let slots = file.slots_beside(tag).map_err(side(FileName::Transport))?;
             let plan = transport::on_load(&slots, tag);
             for (index, void) in plan.void.into_iter().enumerate() {
                 if void {
@@ -516,23 +561,51 @@ mod tests {
         rewards::{enter, settle, Accounting, Date},
         sections::RECORD_SIZE,
     };
-    use std::{boxed::Box, cell::RefCell, collections::BTreeMap, format, rc::Rc, vec, vec::Vec};
+    use std::{
+        boxed::Box,
+        cell::RefCell,
+        collections::{BTreeMap, BTreeSet},
+        format,
+        rc::Rc,
+        vec,
+        vec::Vec,
+    };
 
+    /// A unit file: (container, index of the unit in it).
+    type UnitId = (u8, usize);
+
+    /// The card. `files` holds each container's bytes as one range; the sets
+    /// say what state each of its unit files is in.
     #[derive(Default)]
     struct Disk {
         files: BTreeMap<u8, Vec<u8>>,
+        /// Unit files that do not exist. They read as zeros.
+        absent: BTreeSet<UnitId>,
+        /// Unit files an interrupted write left behind: nothing in them can
+        /// be read or written until they are recreated.
+        unreadable: BTreeSet<UnitId>,
+        /// Unit files with writes that no sync has made durable yet.
+        unsynced: BTreeSet<UnitId>,
+        /// The console's behaviour: a cut leaves every unit file with
+        /// unsynced writes unreadable. Otherwise half of the cut write
+        /// arrives and everything stays readable.
+        console: bool,
         /// Storage operations allowed before a simulated power cut.
         budget: Option<usize>,
         operations: usize,
     }
     #[derive(Clone, Default)]
     struct Shared(Rc<RefCell<Disk>>);
-    struct Handle(Shared, u8);
+    struct Handle(Shared, FileName);
     impl Shared {
         fn tick(&self) -> Result<(), ()> {
             let mut disk = self.0.borrow_mut();
             if let Some(budget) = &mut disk.budget {
                 if *budget == 0 {
+                    if disk.console {
+                        let lost: Vec<UnitId> = disk.unsynced.iter().copied().collect();
+                        disk.unreadable.extend(lost);
+                    }
                     return Err(());
                 }
                 *budget -= 1;
@@ -544,9 +617,19 @@ mod tests {
             let disk = self.0.borrow();
             Self(Rc::new(RefCell::new(Disk {
                 files: disk.files.clone(),
+                absent: disk.absent.clone(),
+                unreadable: disk.unreadable.clone(),
+                unsynced: BTreeSet::new(),
+                console: disk.console,
                 budget: None,
                 operations: 0,
             })))
+        }
+        /// A copy that behaves like the console, or like the simple card.
+        fn like(&self, console: bool) -> Self {
+            let copy = self.copy();
+            copy.0.borrow_mut().console = console;
+            copy
         }
         fn cut_after(&self, budget: usize) -> Self {
             let copy = self.copy();
@@ -557,20 +640,63 @@ mod tests {
             self.copy()
         }
     }
+    impl Handle {
+        /// The unit files that `at..at + length` lies in.
+        fn units(&self, at: u64, length: u64) -> Vec<UnitId> {
+            let mut start = 0;
+            let mut out = Vec::new();
+            for (index, unit) in self.1.units().iter().enumerate() {
+                if at < start + unit.len && start < at + length {
+                    out.push((self.1 as u8, index));
+                }
+                start += unit.len;
+            }
+            out
+        }
+        /// The one unit file that is exactly `at..at + length`.
+        fn unit(&self, at: u64, length: u64) -> Option<UnitId> {
+            let mut start = 0;
+            for (index, unit) in self.1.units().iter().enumerate() {
+                if (start, unit.len) == (at, length) {
+                    return Some((self.1 as u8, index));
+                }
+                start += unit.len;
+            }
+            None
+        }
+    }
     impl Storage for Handle {
         type Error = ();
         fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+            let units = self.units(at, out.len() as u64);
             let disk = (self.0).0.borrow();
-            let file = &disk.files[&self.1];
+            if units.iter().any(|unit| disk.unreadable.contains(unit)) {
+                return Err(());
+            }
+            let file = &disk.files[&(self.1 as u8)];
             out.copy_from_slice(&file[at as usize..at as usize + out.len()]);
             Ok(())
         }
         fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
-            // A cut write still lands its first half.
+            let units = self.units(at, bytes.len() as u64);
+            let [unit] = units[..] else {
+                panic!("a write must lie in one unit file");
+            };
+            if (self.0).0.borrow().unreadable.contains(&unit) {
+                return Err(());
+            }
+            if (self.0).0.borrow().absent.contains(&unit) {
+                // The first write creates the file; that is a step of its own.
+                (self.0).0.borrow_mut().unsynced.insert(unit);
+                self.0.tick()?;
+                (self.0).0.borrow_mut().absent.remove(&unit);
+            }
+            (self.0).0.borrow_mut().unsynced.insert(unit);
+            // On the simple card a cut write still lands its first half.
             let cut = self.0.tick().is_err();
             let length = if cut { bytes.len() / 2 } else { bytes.len() };
             let mut disk = (self.0).0.borrow_mut();
-            let file = disk.files.get_mut(&self.1).unwrap();
+            let file = disk.files.get_mut(&(self.1 as u8)).unwrap();
             file[at as usize..at as usize + length].copy_from_slice(&bytes[..length]);
             if cut {
                 Err(())
@@ -579,24 +705,91 @@ mod tests {
             }
         }
         fn sync(&mut self) -> Result<(), ()> {
-            self.0.tick()
+            self.0.tick()?;
+            let file = self.1 as u8;
+            (self.0)
+                .0
+                .borrow_mut()
+                .unsynced
+                .retain(|unit| unit.0 != file);
+            Ok(())
+        }
+        fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+            let unit = self
+                .unit(at, length)
+                .expect("only a whole unit is recreated");
+            self.0.tick()?;
+            let mut disk = (self.0).0.borrow_mut();
+            let file = disk.files.get_mut(&(self.1 as u8)).unwrap();
+            file[at as usize..(at + length) as usize].fill(0);
+            disk.unreadable.remove(&unit);
+            disk.unsynced.remove(&unit);
+            disk.absent.insert(unit);
+            Ok(())
         }
     }
     impl Files for Shared {
         type Storage = Handle;
+        /// `None` when not one unit file of the container exists.
         fn open(&mut self, file: FileName) -> Result<Option<Handle>, ()> {
             let disk = self.0.borrow();
-            Ok(disk.files.get(&(file as u8)).map(|bytes| {
-                assert_eq!(bytes.len() as u64, file.size());
-                Handle(self.clone(), file as u8)
-            }))
+            let Some(bytes) = disk.files.get(&(file as u8)) else {
+                return Ok(None);
+            };
+            assert_eq!(bytes.len() as u64, file.size());
+            let exists =
+                (0..file.units().len()).any(|unit| !disk.absent.contains(&(file as u8, unit)));
+            Ok(exists.then(|| Handle(self.clone(), file)))
         }
+        /// Creates the unit files one after the other.
         fn create(&mut self, file: FileName) -> Result<Handle, ()> {
-            self.tick()?;
-            let mut disk = self.0.borrow_mut();
-            assert!(!disk.files.contains_key(&(file as u8)));
-            disk.files.insert(file as u8, vec![0; file.size() as usize]);
-            Ok(Handle(self.clone(), file as u8))
+            let count = file.units().len();
+            {
+                let mut disk = self.0.borrow_mut();
+                let old = disk.files.insert(file as u8, vec![0; file.size() as usize]);
+                assert!(old.is_none_or(
+                    |_| (0..count).all(|unit| disk.absent.contains(&(file as u8, unit)))
+                ));
+                for unit in 0..count {
+                    disk.unreadable.remove(&(file as u8, unit));
+                    disk.absent.insert((file as u8, unit));
+                }
+            }
+            for unit in 0..count {
+                self.0.borrow_mut().unsynced.insert((file as u8, unit));
+                self.tick()?;
+                let mut disk = self.0.borrow_mut();
+                disk.absent.remove(&(file as u8, unit));
+                disk.unsynced.remove(&(file as u8, unit));
+            }
+            Ok(Handle(self.clone(), file))
+        }
+    }
+
+    /// What the Transporter patch has of the transport container: it reads
+    /// and writes the files that are there and can neither create nor
+    /// replace one.
+    struct Visitor(Handle);
+    impl Storage for Visitor {
+        type Error = ();
+        fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+            self.0.read(at, out)
+        }
+        fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
+            let units = self.0.units(at, bytes.len() as u64);
+            if units
+                .iter()
+                .any(|unit| ((self.0).0).0.borrow().absent.contains(unit))
+            {
+                return Err(());
+            }
+            self.0.write(at, bytes)
+        }
+        fn sync(&mut self) -> Result<(), ()> {
+            self.0.sync()
+        }
+        fn recreate(&mut self, _: u64, _: u64) -> Result<(), ()> {
+            Err(())
         }
     }
 
@@ -688,41 +881,55 @@ mod tests {
         load(&mut files)
     }
 
+    const CONTAINERS: [FileName; 4] = [
+        FileName::Bank,
+        FileName::Dex,
+        FileName::Transport,
+        FileName::Rewards,
+    ];
+
     #[test]
     fn file_names_and_sizes_are_fixed() {
-        let sizes: Vec<_> = [
-            FileName::Bank,
-            FileName::Dex,
-            FileName::Transport,
-            FileName::Rewards,
-        ]
-        .map(|file| (file.path(), file.size()))
-        .to_vec();
+        let files: Vec<_> = CONTAINERS
+            .iter()
+            .flat_map(|file| file.units())
+            .map(|unit| (unit.path, unit.len))
+            .collect();
         assert_eq!(
-            sizes,
+            files,
             [
-                ("/bank.bin", 1_461_332),
-                ("/dex.bin", 59_776),
-                ("/transport.bin", 14_112),
-                ("/rewards.bin", 160),
+                ("/journal.bin", 192),
+                ("/journal.alt.bin", 192),
+                ("/bank.bin", 730_474),
+                ("/bank.alt.bin", 730_474),
+                ("/dex.bin", 29_888),
+                ("/dex.alt.bin", 29_888),
+                ("/mover.bin", 7_056),
+                ("/mover.alt.bin", 7_056),
+                ("/rewards.bin", 80),
+                ("/rewards.alt.bin", 80),
             ]
         );
+        // The containers are the ranges the earlier single files were, so
+        // that those can be cut into these files as they are.
+        assert_eq!(
+            CONTAINERS.map(FileName::size),
+            [1_461_332, 59_776, 14_112, 160]
+        );
+        let lengths: Vec<u64> = FileName::Bank.units().iter().map(|unit| unit.len).collect();
+        assert_eq!(lengths, session::BANK_LAYOUT.units().map(|unit| unit.1));
     }
 
     #[test]
     fn every_file_name_fits_the_console_limit() {
-        for file in [
-            FileName::Bank,
-            FileName::Dex,
-            FileName::Transport,
-            FileName::Rewards,
-        ] {
-            let path = file.path();
-            let name = path.strip_prefix('/').unwrap();
-            assert!(path.is_ascii() && !name.contains('/'));
-            assert!(name.len() <= FileName::MAX_NAME, "{path}");
+        let mut seen = BTreeSet::new();
+        for unit in CONTAINERS.iter().flat_map(|file| file.units()) {
+            let name = unit.path.strip_prefix('/').unwrap();
+            assert!(unit.path.is_ascii() && !name.contains('/'));
+            assert!(name.len() <= UnitFile::MAX_NAME, "{}", unit.path);
+            assert!(seen.insert(unit.path), "{} twice", unit.path);
         }
-        assert_eq!(FileName::MAX_NAME, 16);
+        assert_eq!(UnitFile::MAX_NAME, 16);
     }
 
     #[test]
@@ -766,6 +973,13 @@ mod tests {
 
     #[test]
     fn a_cut_at_every_write_of_a_save_leaves_one_consistent_save() {
+        every_cut_of_a_save(false);
+    }
+    #[test]
+    fn on_the_console_a_cut_at_every_write_of_a_save_leaves_one_consistent_save() {
+        every_cut_of_a_save(true);
+    }
+    fn every_cut_of_a_save(console: bool) {
         let old = body(0x31, 0x44, 2);
         let new = body(0x52, 0x66, 1);
         let committed = stored(7, 1, 3000);
@@ -778,7 +992,7 @@ mod tests {
             .unwrap();
         files.reconcile(observed([9; 32])).unwrap();
         load(&mut files);
-        let base = disk.reboot();
+        let base = disk.reboot().like(console);
 
         // The next session earns Miles, changes boxes, Pokédex and box.
         let entry = enter(committed.accounting, committed.balance, date(3)).unwrap();
@@ -799,6 +1013,7 @@ mod tests {
 
         let old_state = (old.clone(), committed);
         let new_state = (new.clone(), next);
+        let third = body(0x73, 0x21, 1);
         let check = |disk: &Shared, game, expected: &(Vec<u8>, Stored), context: &str| {
             let (bytes, loaded) = recovered(disk, game);
             assert!(bytes == expected.0, "{context}: body differs");
@@ -807,6 +1022,21 @@ mod tests {
                 !loaded.dex_missing && !loaded.transport_missing,
                 "{context}"
             );
+            // Whatever the cut left behind, the next save goes through.
+            let mut files = BankFiles::new(disk.reboot());
+            if let Phase::Prepared(_) = files.open().unwrap().unwrap() {
+                files.reconcile(observed(game)).unwrap();
+            }
+            let _ = files.tidy_transport();
+            load(&mut files);
+            files
+                .prepare(&mut third.clone(), stored(9, 9, 9), GAME, [5; 32], [6; 32])
+                .unwrap_or_else(|error| panic!("{context}: the next save: {error:?}"));
+            files.reconcile(observed([6; 32])).unwrap();
+            files.tidy_transport().unwrap();
+            let (bytes, loaded) = load(&mut opened(&files.files_mut().reboot()));
+            assert!(bytes == third, "{context}: the next save differs");
+            assert_eq!(loaded.rewards, stored(9, 9, 9), "{context}");
         };
         for cut in 0..=total {
             let disk = base.cut_after(cut);
@@ -943,23 +1173,33 @@ mod tests {
         assert_eq!(load(&mut opened(&rewards)).1.rewards, Stored::NONE);
     }
 
-    /// Delivers with the very function the Transporter patch runs.
-    fn deliver(disk: &Shared, pokemon: usize) -> u32 {
-        let storage = disk.clone().open(FileName::Transport).unwrap().unwrap();
-        let mut file = Sidecar::new(storage, transport::KIND);
+    /// The transport container as the Transporter patch finds it.
+    fn visit(disk: &Shared) -> Option<Sidecar<Visitor>> {
+        let storage = disk.clone().open(FileName::Transport).unwrap()?;
+        Some(Sidecar::new(Visitor(storage), transport::KIND))
+    }
+    /// Delivers with the very function the Transporter patch runs. `None`
+    /// when it refuses or cannot write.
+    fn try_deliver(disk: &Shared, pokemon: usize) -> Option<u32> {
         let source = body(0, 0, pokemon);
         let done = transport::deliver(
-            &mut file,
+            &mut visit(disk)?,
             &source[TRANSPORT_RECORDS],
             &source[TRANSPORT_TAGS],
         )
-        .expect("Transporter must be allowed to deliver");
+        .ok()?;
         assert_eq!(done.count, pokemon as u32);
-        done.id
+        Some(done.id)
     }
+    fn deliver(disk: &Shared, pokemon: usize) -> u32 {
+        try_deliver(disk, pokemon).expect("Transporter must be allowed to deliver")
+    }
+    /// Whether Transporter's check lets a transfer begin.
     fn transport_ok(disk: &Shared) -> bool {
-        let storage = disk.clone().open(FileName::Transport).unwrap().unwrap();
-        transport::may_deliver(&Sidecar::new(storage, transport::KIND).slots().unwrap())
+        visit(disk).is_some_and(|mut file| {
+            file.slots()
+                .is_ok_and(|slots| transport::may_deliver(&slots))
+        })
     }
 
     #[test]
@@ -988,8 +1228,11 @@ mod tests {
         assert!(bytes == body(0x31, 0x44, 12));
         // Published: four remain, the delivery is gone, even after a cut
         // between publication and cleanup.
-        for cut in [0, 1, 2, usize::MAX] {
-            let published = disk.cut_after(cut);
+        for (cut, console) in [0, 1, 2, 3, 4, usize::MAX]
+            .into_iter()
+            .flat_map(|cut| [(cut, false), (cut, true)])
+        {
+            let published = disk.like(console).cut_after(cut);
             let mut files = opened(&published);
             let _ = files
                 .reconcile(observed(AFTER))
@@ -1004,6 +1247,13 @@ mod tests {
 
     #[test]
     fn a_first_start_cut_at_every_write_is_finished_by_the_next_one() {
+        every_cut_of_a_first_start(false);
+    }
+    #[test]
+    fn on_the_console_a_first_start_cut_at_every_write_is_finished_by_the_next_one() {
+        every_cut_of_a_first_start(true);
+    }
+    fn every_cut_of_a_first_start(console: bool) {
         let original = body(0x31, 0x44, 0);
         let create = |disk: &Shared, body: &[u8]| {
             let mut files = BankFiles::new(disk.clone());
@@ -1012,7 +1262,8 @@ mod tests {
                 None => files.initialize(&mut body.to_vec()).map(|_| true),
             }
         };
-        let counting = Shared::default().cut_after(usize::MAX);
+        let empty = Shared::default().like(console);
+        let counting = empty.cut_after(usize::MAX);
         assert_eq!(create(&counting, &original), Ok(true));
         let total = counting.0.borrow().operations;
         assert!(total > 20);
@@ -1020,21 +1271,13 @@ mod tests {
         let mut finished_later = 0;
         let mut deliveries = 0;
         for cut in 0..=total {
-            let disk = Shared::default().cut_after(cut);
+            let disk = empty.cut_after(cut);
             assert_eq!(create(&disk, &original).is_ok(), cut == total, "cut {cut}");
             let disk = disk.reboot();
-            // Transporter may already find the transport file and deliver
-            // into it; those Pokémon have left their game.
-            let delivered = disk
-                .0
-                .borrow()
-                .files
-                .contains_key(&(FileName::Transport as u8))
-                && transport_ok(&disk);
-            if delivered {
-                deliver(&disk, 5);
-                deliveries += 1;
-            }
+            // Transporter may already find the transport files and deliver
+            // into them; those Pokémon have left their game.
+            let delivered = transport_ok(&disk) && try_deliver(&disk, 5).is_some();
+            deliveries += usize::from(delivered);
             // The next start: no Bank yet means it is created now, with the
             // body of that start.
             let second = body(0x32, 0x45, 0);

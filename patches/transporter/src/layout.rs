@@ -38,9 +38,10 @@ pub const DELIVER_PENDING: u32 = 2;
 /// Its deepest call chain needs well under 1 KiB.
 pub const WORKER_STACK_SIZE: usize = 0x4000;
 
-/// Bank's extdata and the hand-over file inside it.
+/// Bank's extdata and the two files of the transport box inside it, one per
+/// slot of the box, in slot order.
 pub const BANK_EXTDATA: u32 = 0x0000_0C9B;
-pub const TRANSPORT_PATH: &[u8; 15] = b"/transport.bin\0";
+pub const MOVER_PATHS: [&[u8]; 2] = [b"/mover.bin\0", b"/mover.alt.bin\0"];
 
 #[cfg(test)]
 mod tests {
@@ -56,9 +57,11 @@ mod tests {
     }
 
     #[test]
-    fn the_path_is_the_one_bank_uses_and_fits_the_name_limit() {
-        assert_eq!(&TRANSPORT_PATH[..14], b"/transport.bin");
-        assert_eq!(TRANSPORT_PATH[14], 0);
-        assert!(TRANSPORT_PATH.len() - 2 <= 16);
+    fn the_paths_are_the_ones_bank_uses_and_fit_the_name_limit() {
+        assert_eq!(MOVER_PATHS, [&b"/mover.bin\0"[..], b"/mover.alt.bin\0"]);
+        for path in MOVER_PATHS {
+            assert_eq!(path.last(), Some(&0));
+            assert!(path.len() - 2 <= 16);
+        }
     }
 }

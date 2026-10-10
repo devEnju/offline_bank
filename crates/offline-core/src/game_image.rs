@@ -138,6 +138,9 @@ mod tests {
         fn sync(&mut self) -> Result<(), Self::Error> {
             panic!("fingerprinting must not sync")
         }
+        fn recreate(&mut self, _: u64, _: u64) -> Result<(), Self::Error> {
+            panic!("fingerprinting must not recreate")
+        }
     }
     fn digest(bytes: &[u8]) -> [u8; 32] {
         let mut hash = Sha256::new();

@@ -12,7 +12,7 @@ use core::{
 };
 use offline_core::{
     sections::TRANSPORT_SLOTS,
-    sidecar::Sidecar,
+    sidecar::{Sidecar, SLOTS},
     transport::{self, KIND},
     Storage,
 };
@@ -71,12 +71,36 @@ struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
 unsafe impl Sync for Stack {}
 static STACK: Stack = Stack(UnsafeCell::new([0; WORKER_STACK_SIZE]));
 
-/// `/transport.bin` in Bank's extdata, open for reading and writing.
-struct File(u32);
+/// The transport box in Bank's extdata, open for reading and writing: its
+/// two slots (`offline_core::sidecar`) are the files `/mover.bin` and
+/// `/mover.alt.bin`, addressed as one range. Bank keeps every slot in a file
+/// of its own, because the console leaves a file that was being written
+/// unreadable when the power fails.
+///
+/// A file that is missing or cannot be opened makes every read of its slot
+/// fail, and so the check and the delivery refuse: Transporter neither
+/// creates nor replaces a file. Bank's next Save and Quit does.
+struct File {
+    handles: [Option<u32>; SLOTS],
+    written: [bool; SLOTS],
+}
 impl File {
-    /// `None` when Bank's extdata or the file does not exist, access is
-    /// refused, or the file is not exactly the size Bank creates.
+    /// `None` when Bank's extdata or both files do not exist, access is
+    /// refused, or a file is not exactly the size Bank creates.
     unsafe fn open() -> Option<Self> {
+        let mut handles = [None; SLOTS];
+        for (handle, path) in handles.iter_mut().zip(MOVER_PATHS) {
+            *handle = unsafe { Self::open_one(path) }.ok()?;
+        }
+        let file = Self {
+            handles,
+            written: [false; SLOTS],
+        };
+        file.handles.iter().any(Option::is_some).then_some(file)
+    }
+    /// `Ok(None)` for a file that is not there or cannot be opened, `Err`
+    /// for one of another size: that is not a file of this layout.
+    unsafe fn open_one(path: &[u8]) -> Result<Option<u32>, ()> {
         type Open = unsafe extern "aapcs" fn(
             *const u32,
             *mut u32,
@@ -106,31 +130,40 @@ impl File {
                 archive.as_ptr().cast(),
                 12,
                 3,
-                TRANSPORT_PATH.as_ptr(),
-                TRANSPORT_PATH.len() as u32,
+                path.as_ptr(),
+                path.len() as u32,
                 3,
                 0,
             )
         };
         if code < 0 || handle == 0 {
-            return None;
+            return Ok(None);
         }
-        let file = Self(handle);
         let size: Size = unsafe { transmute(FILE_SIZE) };
         let mut length = 0;
-        if unsafe { size(&file.0, &mut length) } < 0 || length != KIND.file_len() {
-            return None;
+        if unsafe { size(&handle, &mut length) } < 0 || length != KIND.slot_len() {
+            unsafe { close(handle) };
+            return Err(());
         }
-        Some(file)
+        Ok(Some(handle))
     }
-    fn put(&mut self, offset: u64, bytes: &[u8], flags: u32) -> Result<(), ()> {
+    /// The slot file that holds `offset..offset + length`, and where in it.
+    fn locate(&self, offset: u64, length: usize) -> Result<(usize, u32, u64), ()> {
+        let index = (offset / KIND.slot_len()) as usize;
+        let within = offset % KIND.slot_len();
+        if index >= SLOTS || within + length as u64 > KIND.slot_len() {
+            return Err(());
+        }
+        Ok((index, self.handles[index].ok_or(())?, within))
+    }
+    fn put(&mut self, handle: u32, offset: u64, bytes: &[u8], flags: u32) -> Result<(), ()> {
         type Write =
             unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
         let write: Write = unsafe { transmute(FILE_WRITE) };
         let mut count = 0;
         let code = unsafe {
             write(
-                &self.0,
+                &handle,
                 &mut count,
                 offset,
                 bytes.as_ptr(),
@@ -144,13 +177,18 @@ impl File {
         Ok(())
     }
 }
+unsafe fn close(handle: u32) {
+    type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
+    let close: Close = unsafe { transmute(FILE_CLOSE) };
+    unsafe {
+        close(&handle);
+        transporter_close_handle(handle);
+    }
+}
 impl Drop for File {
     fn drop(&mut self) {
-        type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
-        let close: Close = unsafe { transmute(FILE_CLOSE) };
-        unsafe {
-            close(&self.0);
-            transporter_close_handle(self.0);
+        for handle in self.handles.into_iter().flatten() {
+            unsafe { close(handle) };
         }
     }
 }
@@ -158,13 +196,14 @@ impl Storage for File {
     type Error = ();
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), ()> {
         type Read = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
+        let (_, handle, within) = self.locate(offset, bytes.len())?;
         let read: Read = unsafe { transmute(FILE_READ) };
         let mut count = 0;
         let code = unsafe {
             read(
-                &self.0,
+                &handle,
                 &mut count,
-                offset,
+                within,
                 bytes.as_mut_ptr(),
                 bytes.len() as u32,
             )
@@ -175,11 +214,25 @@ impl Storage for File {
         Ok(())
     }
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), ()> {
-        self.put(offset, bytes, 0)
+        let (index, handle, within) = self.locate(offset, bytes.len())?;
+        self.written[index] = true;
+        self.put(handle, within, bytes, 0)
     }
+    /// Only a file that was written is flushed: the one that holds Bank's
+    /// own box is never sent a write of any kind.
     fn sync(&mut self) -> Result<(), ()> {
         let dummy = [0u8; 1];
-        self.put(0, &dummy[..0], FLUSH_FLAGS)
+        for index in 0..SLOTS {
+            if let (Some(handle), true) = (self.handles[index], self.written[index]) {
+                self.put(handle, 0, &dummy[..0], FLUSH_FLAGS)?;
+                self.written[index] = false;
+            }
+        }
+        Ok(())
+    }
+    /// Transporter replaces no file of Bank's.
+    fn recreate(&mut self, _: u64, _: u64) -> Result<(), ()> {
+        Err(())
     }
 }
 

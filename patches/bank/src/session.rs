@@ -260,6 +260,10 @@ mod tests {
             self.bytes[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
             Ok(())
         }
+        fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+            self.bytes[at as usize..(at + length) as usize].fill(0);
+            Ok(())
+        }
         fn sync(&mut self) -> Result<(), ()> {
             Ok(())
         }

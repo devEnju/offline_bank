@@ -9,7 +9,7 @@
 //! The original Transporter converts every Pokémon itself and stores it in a
 //! Bank data object of the same class and layout Bank uses, records and
 //! format tags included; it used to upload that object. The hooks copy the
-//! transport box of that object into `/transport.bin` of Bank's extdata
+//! transport box of that object into the transport-box files of Bank's extdata
 //! through `offline_core::transport::deliver`. Nothing is converted here.
 //!
 //! `cart` presents Black/White saves from the SD card to the original's

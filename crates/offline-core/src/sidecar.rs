@@ -123,6 +123,7 @@ impl<S: Storage> Sidecar<S> {
     }
 
     /// Reads both headers. Damaged or empty headers are `None`, never errors.
+    /// A slot that cannot be read is an error: it may be the one in use.
     pub fn slots(&mut self) -> Result<[Option<Slot>; SLOTS], SidecarError<S::Error>> {
         let mut out = [None; SLOTS];
         for (index, slot) in out.iter_mut().enumerate() {
@@ -133,6 +134,43 @@ impl<S: Storage> Sidecar<S> {
             *slot = self.decode(&bytes);
         }
         Ok(out)
+    }
+
+    /// Like `slots`, for the owner of the file, who knows which snapshot is
+    /// current. An interrupted write leaves the slot it went to unreadable,
+    /// and that is never the slot in use: a slot that cannot be read is
+    /// `None` when the other one is seen to belong to `current`. Otherwise it
+    /// may be the one in use, and the error stands.
+    pub fn slots_beside(
+        &mut self,
+        current: Tag,
+    ) -> Result<[Option<Slot>; SLOTS], SidecarError<S::Error>> {
+        let mut out = [None; SLOTS];
+        let mut failed = None;
+        for (index, slot) in out.iter_mut().enumerate() {
+            let mut bytes = [0; HEADER_SIZE];
+            match self.storage.read(self.offset(index), &mut bytes) {
+                Ok(()) => *slot = self.decode(&bytes),
+                Err(error) => failed = Some(error),
+            }
+        }
+        match failed {
+            Some(error) if matching(&out, current).is_none() => Err(SidecarError::Io(error)),
+            _ => Ok(out),
+        }
+    }
+
+    /// Like `slots` where nothing in the file is needed as it is: every
+    /// slot that cannot be read is `None`.
+    pub fn slots_or_void(&mut self) -> [Option<Slot>; SLOTS] {
+        let mut out = [None; SLOTS];
+        for (index, slot) in out.iter_mut().enumerate() {
+            let mut bytes = [0; HEADER_SIZE];
+            if self.storage.read(self.offset(index), &mut bytes).is_ok() {
+                *slot = self.decode(&bytes);
+            }
+        }
+        out
     }
 
     /// One read of the payload into its final place, checked on the same pass.
@@ -181,7 +219,32 @@ impl<S: Storage> Sidecar<S> {
 
     /// Voids the header, writes the payload parts, then the header, each made
     /// durable in turn, and reads the header back. A cut leaves a void slot.
+    /// A slot that an earlier cut left unusable is discarded and written once
+    /// more; it is never the slot in use.
     pub fn write(
+        &mut self,
+        index: usize,
+        tag: Option<Tag>,
+        aux: u32,
+        count: u32,
+        parts: &[&[u8]],
+    ) -> Result<Slot, SidecarError<S::Error>> {
+        match self.put(index, tag, aux, count, parts) {
+            Err(SidecarError::Io(_) | SidecarError::Readback) => {
+                self.discard(index)?;
+                self.put(index, tag, aux, count, parts)
+            }
+            result => result,
+        }
+    }
+
+    fn discard(&mut self, index: usize) -> Result<(), SidecarError<S::Error>> {
+        self.storage
+            .recreate(self.offset(index), self.kind.slot_len())
+            .map_err(SidecarError::Io)
+    }
+
+    fn put(
         &mut self,
         index: usize,
         tag: Option<Tag>,
@@ -204,7 +267,7 @@ impl<S: Storage> Sidecar<S> {
             len: len as u32,
             crc: payload_crc.finish(),
         };
-        self.clear(index)?;
+        self.void(index)?;
         let mut at = self.offset(index) + HEADER_SIZE as u64;
         for part in parts {
             self.storage.write(at, part).map_err(SidecarError::Io)?;
@@ -238,8 +301,16 @@ impl<S: Storage> Sidecar<S> {
         Ok(slot)
     }
 
-    /// Makes a slot void. Repeating it is harmless.
+    /// Makes a slot void. Repeating it is harmless. A slot that cannot be
+    /// written is discarded, which leaves it void as well.
     pub fn clear(&mut self, index: usize) -> Result<(), SidecarError<S::Error>> {
+        match self.void(index) {
+            Err(_) => self.discard(index),
+            result => result,
+        }
+    }
+
+    fn void(&mut self, index: usize) -> Result<(), SidecarError<S::Error>> {
         self.storage
             .write(self.offset(index), &[0; HEADER_SIZE])
             .map_err(SidecarError::Io)?;
@@ -281,6 +352,10 @@ mod tests {
             Ok(())
         }
         fn sync(&mut self) -> Result<(), ()> {
+            Ok(())
+        }
+        fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+            self.bytes[at as usize..(at + length) as usize].fill(0);
             Ok(())
         }
     }

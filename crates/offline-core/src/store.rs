@@ -6,11 +6,21 @@ use crate::{
 
 /// Exact I/O on one preallocated container. A successful sync must make all
 /// preceding writes durable. Writes must never resize the file or silently short-write.
+///
+/// A container is made of units that are written independently: a journal
+/// record, a snapshot slot, a side-file slot. On the console an interrupted
+/// write leaves the whole file it went to unreadable, not just the bytes it
+/// was writing, so every unit is a file of its own there, and a unit that
+/// cannot be read is one that an interrupted write left behind.
 pub trait Storage {
     type Error;
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), Self::Error>;
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), Self::Error>;
     fn sync(&mut self) -> Result<(), Self::Error>;
+    /// Discards the unit that is exactly `offset..offset + length`, whatever
+    /// state it is in, so that it reads as zeros and can be written again.
+    /// Only ever asked for a unit that holds nothing that is still needed.
+    fn recreate(&mut self, offset: u64, length: u64) -> Result<(), Self::Error>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,8 +42,21 @@ impl Layout {
         slot.index() * METADATA_SIZE as u64
     }
     pub fn snapshot_offset(self, slot: Slot) -> u64 {
-        METADATA_SIZE as u64 * 2
-            + slot.index() * (SNAPSHOT_HEADER_SIZE as u64 + u64::from(self.capacity))
+        METADATA_SIZE as u64 * 2 + slot.index() * self.snapshot_len()
+    }
+    /// Length of one snapshot slot: its header and the payload capacity.
+    pub const fn snapshot_len(self) -> u64 {
+        SNAPSHOT_HEADER_SIZE as u64 + self.capacity as u64
+    }
+    /// The four units of the container as (offset, length), in file order:
+    /// the two journal records, then the two snapshot slots.
+    pub fn units(self) -> [(u64, u64); 4] {
+        [
+            (self.metadata_offset(Slot::A), METADATA_SIZE as u64),
+            (self.metadata_offset(Slot::B), METADATA_SIZE as u64),
+            (self.snapshot_offset(Slot::A), self.snapshot_len()),
+            (self.snapshot_offset(Slot::B), self.snapshot_len()),
+        ]
     }
 }
 
@@ -129,18 +152,14 @@ impl<S: Storage> BankStore<S> {
             }
             (Record::Valid(a), _) => (a, Slot::A),
             (_, Record::Valid(b)) => (b, Slot::B),
-            (Record::Empty, Record::Empty) => {
-                return Err(if self.zero_filled()? {
-                    StoreError::Uninitialized
-                } else if self.only_a_first_snapshot()? {
-                    StoreError::NeverPublished
-                } else {
-                    StoreError::NoValidMetadata
-                });
+            (Record::Empty, Record::Empty) if self.zero_filled() => {
+                return Err(StoreError::Uninitialized);
             }
-            // Initialization writes replica A first: its torn record beside
-            // an untouched B is the same unfinished initialization.
-            (Record::Damaged, Record::Empty) if self.only_a_first_snapshot()? => {
+            // An initialization writes one record after the other into
+            // empty units: until the first one is durable at least one of
+            // them is still empty. Two unreadable records say nothing of the
+            // kind and are never taken for it.
+            (Record::Empty, _) | (_, Record::Empty) if self.only_a_first_snapshot() => {
                 return Err(StoreError::NeverPublished);
             }
             _ => return Err(StoreError::NoValidMetadata),
@@ -170,7 +189,7 @@ impl<S: Storage> BankStore<S> {
     /// An interrupted initialization is reported as `NeverPublished` and is
     /// finished by `reinitialize`, never here.
     pub fn initialize_new(&mut self, payload: &[u8]) -> Result<Head, StoreError<S::Error>> {
-        if !self.zero_filled()? {
+        if !self.zero_filled() {
             return Err(StoreError::AlreadyContainsData);
         }
         let current = self.write_snapshot(Slot::A, 1, payload)?;
@@ -196,19 +215,13 @@ impl<S: Storage> BankStore<S> {
             Ok(_) => return Err(StoreError::AlreadyContainsData),
             Err(error) => return Err(error),
         }
-        // From the start, so the journal records are the first to be zero
-        // again: a cut here leaves the same state, to be finished next time.
-        let zeros = [0; 512];
-        let length = self.layout.file_len();
-        let mut at = 0;
-        while at < length {
-            let count = (length - at).min(zeros.len() as u64) as usize;
+        // The journal records first: a cut here leaves the same state, to
+        // be finished next time.
+        for (offset, length) in self.layout.units() {
             self.storage
-                .write(at, &zeros[..count])
+                .recreate(offset, length)
                 .map_err(StoreError::Io)?;
-            at += count as u64;
         }
-        self.storage.sync().map_err(StoreError::Io)?;
         self.initialize_new(payload)
     }
 
@@ -449,9 +462,15 @@ impl<S: Storage> BankStore<S> {
 
     fn read_record(&mut self, slot: Slot) -> Result<Record, StoreError<S::Error>> {
         let mut bytes = [0; METADATA_SIZE];
-        self.storage
+        // A record that cannot be read is one an interrupted publication
+        // left behind, as a torn one is; the other replica decides.
+        if self
+            .storage
             .read(self.layout.metadata_offset(slot), &mut bytes)
-            .map_err(StoreError::Io)?;
+            .is_err()
+        {
+            return Ok(Record::Damaged);
+        }
         if zero(&bytes) {
             return Ok(Record::Empty);
         }
@@ -531,16 +550,36 @@ impl<S: Storage> BankStore<S> {
             payload_crc32: crate::crc32(payload),
         };
         let bytes = header.encode().map_err(StoreError::Format)?;
-        let offset = self.layout.snapshot_offset(slot);
+        let reference = SnapshotRef { slot, header };
+        // The slot is the spare one. An interrupted write may have left it
+        // unreadable, and then it may also refuse to be written: it is
+        // discarded and written once more.
+        if self.put_snapshot(reference, &bytes, payload).is_err() {
+            self.storage
+                .recreate(
+                    self.layout.snapshot_offset(slot),
+                    self.layout.snapshot_len(),
+                )
+                .map_err(StoreError::Io)?;
+            self.put_snapshot(reference, &bytes, payload)?;
+        }
+        Ok(reference)
+    }
+
+    fn put_snapshot(
+        &mut self,
+        reference: SnapshotRef,
+        header: &[u8],
+        payload: &[u8],
+    ) -> Result<(), StoreError<S::Error>> {
+        let offset = self.layout.snapshot_offset(reference.slot);
         self.storage
             .write(offset + SNAPSHOT_HEADER_SIZE as u64, payload)
             .map_err(StoreError::Io)?;
-        self.storage.write(offset, &bytes).map_err(StoreError::Io)?;
+        self.storage.write(offset, header).map_err(StoreError::Io)?;
         self.storage.sync().map_err(StoreError::Io)?;
         // Read back before any journal can make this snapshot relevant.
-        let reference = SnapshotRef { slot, header };
-        self.validate_snapshot(reference)?;
-        Ok(reference)
+        self.validate_snapshot(reference)
     }
 
     fn publish(
@@ -551,14 +590,14 @@ impl<S: Storage> BankStore<S> {
         let bytes = metadata.encode().map_err(StoreError::Format)?;
         for slot in [previously_selected.other(), previously_selected] {
             let offset = self.layout.metadata_offset(slot);
-            self.storage.write(offset, &bytes).map_err(StoreError::Io)?;
-            self.storage.sync().map_err(StoreError::Io)?;
-            let mut check = [0; METADATA_SIZE];
-            self.storage
-                .read(offset, &mut check)
-                .map_err(StoreError::Io)?;
-            if check != bytes {
-                return Err(StoreError::Format(FormatError::BadChecksum));
+            // The other replica is complete while this one is written, so
+            // one that an interrupted write left unusable is discarded and
+            // written once more.
+            if self.put_record(offset, &bytes).is_err() {
+                self.storage
+                    .recreate(offset, METADATA_SIZE as u64)
+                    .map_err(StoreError::Io)?;
+                self.put_record(offset, &bytes)?;
             }
         }
         Ok(Head {
@@ -567,37 +606,57 @@ impl<S: Storage> BankStore<S> {
         })
     }
 
+    fn put_record(
+        &mut self,
+        offset: u64,
+        bytes: &[u8; METADATA_SIZE],
+    ) -> Result<(), StoreError<S::Error>> {
+        self.storage.write(offset, bytes).map_err(StoreError::Io)?;
+        self.storage.sync().map_err(StoreError::Io)?;
+        let mut check = [0; METADATA_SIZE];
+        self.storage
+            .read(offset, &mut check)
+            .map_err(StoreError::Io)?;
+        if check != *bytes {
+            return Err(StoreError::Format(FormatError::BadChecksum));
+        }
+        Ok(())
+    }
+
     /// True when the snapshot slots hold nothing but what an initialization
     /// writes: at most a first snapshot (generation 1) in slot A, and no
-    /// valid snapshot in slot B, which only a later save writes.
-    fn only_a_first_snapshot(&mut self) -> Result<bool, StoreError<S::Error>> {
+    /// valid snapshot in slot B, which only a later save writes. A slot that
+    /// cannot be read holds no valid snapshot.
+    fn only_a_first_snapshot(&mut self) -> bool {
         let mut first = true;
         for slot in [Slot::A, Slot::B] {
             let mut header = [0; SNAPSHOT_HEADER_SIZE];
-            self.storage
+            if self
+                .storage
                 .read(self.layout.snapshot_offset(slot), &mut header)
-                .map_err(StoreError::Io)?;
+                .is_err()
+            {
+                continue;
+            }
             if let Ok(header) = SnapshotHeader::decode(&header, self.layout.capacity) {
                 first &= slot == Slot::A && header.generation == 1;
             }
         }
-        Ok(first)
+        first
     }
 
-    fn zero_filled(&mut self) -> Result<bool, StoreError<S::Error>> {
+    /// Whether every byte reads as zero. A part that cannot be read is not.
+    fn zero_filled(&mut self) -> bool {
         let mut at = 0;
         let length = self.layout.file_len();
         let mut buffer = [0; 512];
         while at < length {
             let count = (length - at).min(buffer.len() as u64) as usize;
-            self.storage
-                .read(at, &mut buffer[..count])
-                .map_err(StoreError::Io)?;
-            if !zero(&buffer[..count]) {
-                return Ok(false);
+            if self.storage.read(at, &mut buffer[..count]).is_err() || !zero(&buffer[..count]) {
+                return false;
             }
             at += count as u64;
         }
-        Ok(true)
+        true
     }
 }

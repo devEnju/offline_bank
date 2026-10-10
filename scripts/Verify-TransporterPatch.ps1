@@ -173,7 +173,7 @@ for ($index = 0; $index -lt $entryCount; $index++) {
     $targets += $target
 }
 $text = [Text.Encoding]::ASCII.GetString($patched, $payloadAddress - $base, $payloadCode)
-Assert-That ($text.Contains('/transport.bin')) 'payload names /transport.bin'
+Assert-That ($text.Contains('/mover.bin') -and $text.Contains('/mover.alt.bin')) 'payload names /mover.bin and /mover.alt.bin'
 Assert-That ($text.Contains('/roms/nds/saves/POKEMON_')) 'payload names the SD save folder'
 
 # Exheader: only the data page count, data size and BSS size may differ.
