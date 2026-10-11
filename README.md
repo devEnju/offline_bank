@@ -66,6 +66,10 @@ The two files of a title only work as a pair; never mix files from different rel
 Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's title screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
 
 The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games).
+### Can I get my Pokémon from the official Pokémon Bank?
+
+While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and shows two numbers. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, it does not fetch Poké Miles, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip.
+
 ### Why do I need a migration between two versions?
 
 The normal patches read only the files of their own version, so that they stay free of code for earlier formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
