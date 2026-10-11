@@ -2,7 +2,7 @@
 
 A Luma3DS patch for **Poké Transporter 1.5** (title `00040000000C9C00`, TMD version 5200) that works without Nintendo's servers and delivers into the transport box of the [offline Bank](bank.md).
 
-How it is built is in [building.md](building.md); how it works inside is in [internals.md](internals.md#transporter).
+How it is built is in [building.md](building.md); how it works inside is in [internals.md](internals.md#transporter); how it is checked on a console is in [testing.md](testing.md#transporter-feature-by-feature).
 
 ## What changes
 
@@ -16,7 +16,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Remove the Pokémon from the source game | Transporter itself | Unchanged |
 | A transfer interrupted by a power failure | Sorted out with the server at the next session, with the same copy of the game: neither lost nor doubled | Nothing is left pending. The Pokémon are never lost; after a power cut between the two writes they can be in Bank and still in the game. |
 | Source of a Gen 5 game | Cartridge | Cartridge and saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)) |
-| Language screen | Switches the language of the screens | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
+| Language screen | Switches the language of the screens as long as the app is open | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
 | Notice that nicknames and OT names with prohibited words will be erased | Shown; the server erased them | Skipped. No name is ever changed offline. The other notices are unchanged. |
 | HOME and sleep | Refused from connecting until disconnecting | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the title screen, the game list, the notices and the question. |
 | Screens and messages | | The originals; no new text |
@@ -59,7 +59,7 @@ The game list shows the games of **one language** only: the cartridge, the saves
 
 ## Black/White saves on the SD card
 
-Transporter looks for saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps on the SD card and offers each one as its own entry in the game list, beside the cartridge and the Virtual Console titles. Only saves in the [chosen language](#choosing-the-language-of-the-games) are looked for. **The cartridge is preferred for its own game:** with, say, German chosen and a German White cartridge inserted, the White entry is the cartridge and a German White save on the SD card is not offered; saves of the other three games still are. A cartridge in another language than the chosen one is not listed.
+Transporter looks for saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps on the SD card and offers each one as its own entry in the game list, beside the cartridge and the Virtual Console titles. Only saves in the [chosen language](#choosing-the-language-of-the-games) are looked for. **The cartridge is preferred for its own game:** with, say, German chosen and a German White cartridge inserted, the White entry is the cartridge and a German White save on the SD card is not offered; saves of the other three games still are. Bank does the same with a game that is both inserted and installed: it uses the cartridge. A cartridge in another language than the chosen one is not listed.
 
 Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's default folder:
 
@@ -82,7 +82,13 @@ What happens to the file:
 - The Pokémon are removed from the file only after the delivery to Bank has been written and verified, as with a cartridge.
 - The file is never created, resized or renamed.
 
-Do not insert or remove a cartridge while a session is running; what is offered is decided when you leave the title screen, with the language chosen at that moment.
+Do not insert or remove a cartridge while a session is running; what is offered is decided when you leave the title screen, with the language chosen at that moment. If you do it anyway:
+
+| After START you | What happens |
+| --- | --- |
+| Insert a cartridge | Nothing. It is not offered, and the list stays as it was until the next START. |
+| Take the cartridge out | The session ends with the original's message that no Game Card is inserted. The original looks for a removed Game Card before each of its saves and stops instead of saving; the patch neither adds nor removes that check. |
+| Take it out after the Pokémon were written to Bank and before the game is saved | The same message. The Pokémon are then in Bank and still in the game, as after a power cut at that moment ([Limits](#limits)). |
 
 ## Install
 
@@ -98,61 +104,6 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 
    They only work as a pair.
 5. *Enable game patching* must be on in Luma's configuration.
-
-## Checking that it works
-
-### Transfers
-
-| Do this | Expected |
-| --- | --- |
-| Gen 5 cartridge, Box 1 with gaps, Bank's transport box empty: transport. | After START the game list appears without a message. The spinner keeps animating while the box is read and while the Pokémon are written. The original "transported" message appears. The Pokémon are gone from the source game. Bank shows them in the transport box, in the same positions. |
-| In Bank, move them into a box, Save and Quit, restart Bank. | They are in the box. A Gen 6 or Gen 7 game can withdraw them. |
-| Gen 1 or Gen 2 game. | The Pokémon arrive as Gen 7 Pokémon and cannot be withdrawn into X, Y, Omega Ruby, or Alpha Sapphire. |
-| A Box 1 that was never used, or Pokémon with never-used slots between them. | No message about Pokémon that cannot be transported. An empty box gives only the "nothing to transport" message. |
-| A Pokémon the original's own checks refuse (for example an Egg). | Three original dialogs in a row: one that a Pokémon cannot be sent, one with the reason, one that it was removed from the Transport Box. The others are offered. |
-| An egg in Box 1 beside other Pokémon. | The original dialog about Pokémon that cannot be transported appears for the egg; the others are offered. |
-| Any transfer. | The notice about nicknames and OT names does not appear; the notices about not being able to return Pokémon and about held items do. |
-| Press HOME and close the lid right after START, while the game list is being built, while the chosen game is read, and during the transfer. | Nothing happens. |
-| Press HOME and close the lid on the title screen, on the game list, on a message that follows START, and on the notices and the "move this Box?" question. | The HOME Menu opens; the lid puts the console to sleep. |
-| Press HOME together with A when confirming a game, and when confirming the question. | Nothing happens. |
-| After Back on the game list, after a message, and after a transfer: press HOME on the title screen. | The HOME Menu opens. |
-
-### Refusals
-
-| Do this | Expected |
-| --- | --- |
-| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START, then the title screen. No game list appears. |
-| Leave some Pokémon in the transport box, Save and Quit, start Transporter and press START. | The same message, until the transport box is empty and saved. |
-| Empty Box 1, Bank's transport box empty. | The original message that there is nothing to transport, then the title screen. |
-| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, then the title screen. After Bank was started once, START leads to the game list. |
-
-### Language of the games
-
-| Do this | Expected |
-| --- | --- |
-| Start Transporter and open the game list without visiting the language screen. | Only games in the console's language are listed: cartridge, saves on the SD card, Virtual Console titles. |
-| Open the language screen. | Six languages: not the one whose games are listed, no Chinese ones. Below them a Back button that looks like the six entries above it, with the game-selection screen's "Back" text in the middle and a teal return icon at the right. The seven entries are centred on the screen with a small gap between them. Up and down wrap around the seven; touching an entry works. |
-| Choose another language and confirm. | The confirm screen appears, for Japanese too (no kana/kanji choice). Back on the title screen the screens are in the same language as before. The game list now shows the games of the chosen language only. |
-| Choose another language and look at the title screen. | The logo and the start prompt are in the chosen language; the texts of the other screens are not. Without a choice, and after a restart, both are in the console's language. Back on the language screen leaves them as they were. |
-| Open the language screen again. | The language chosen before is now missing from the list, and the one listed before is back. |
-| Back on the language list: touch it, press A on it, or press B. | The cancel sound, then the title screen. The game list shows the same language as before. |
-| Back or B on the confirm screen. | The language list again; nothing changes. |
-| Choose a language no game is present in. | The original behaviour for an empty game list. |
-| Close and restart Transporter. | The games in the console's language are listed again. |
-| A console set to Chinese. | The screens are Chinese. English games are listed at first; the language list offers the six other languages and Back, with Back's text in Chinese. |
-
-### Saves on the SD card
-
-The saves are in the chosen language.
-
-| Do this | Expected |
-| --- | --- |
-| No cartridge, one accepted save. | The game appears in the list with its trainer name. A transfer works as from a cartridge; afterwards `<name>.sav.bak` holds the save as it was, and the game started in TWiLight Menu shows the Pokémon gone from Box 1. |
-| No cartridge, saves of several games. | One entry per save; the one you pick is the one read and changed. |
-| No cartridge, saves of the same game in two languages. | Only the one in the chosen language is listed; after choosing the other language, only the other. |
-| A Gen 5 cartridge in the chosen language, saves on the SD card. | The games are listed in the order Black, White, Black 2, White 2; the cartridge stands at its game's place, the saves at theirs. A save of the cartridge's own game is not offered. Picking the cartridge reads and changes the cartridge; picking a save reads and changes that file. |
-| A Gen 5 cartridge in another language than the chosen one. | The cartridge is not listed; the saves in the chosen language are. After choosing the cartridge's language, the cartridge is listed. |
-| A save with another name, or a file of another size, in the folder. | It is not offered. |
 
 ## Troubleshooting
 

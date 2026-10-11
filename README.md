@@ -52,16 +52,26 @@ You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS) v10.0 or late
 
 The two files of a title only work as a pair; never mix files from different releases. The guides for [Bank](docs/bank.md#install) and [Transporter](docs/transporter.md#install) have the details, a checklist, and troubleshooting.
 
-## Not included
-
-Pokémon HOME, purchases, importing a Bank from Nintendo's servers, legality checks (they existed only on the server), event gifts, and import or export tools for save editors.
-
 ## Documentation
 
 - [docs/bank.md](docs/bank.md) and [docs/transporter.md](docs/transporter.md): using each patch. What changes, install, checklist, troubleshooting, limits.
 - [docs/internals.md](docs/internals.md): how they work, in three parts: Bank, storage, Transporter.
 - [docs/building.md](docs/building.md): building from source, verifying, and packing a release.
-- [docs/testing.md](docs/testing.md): the checks that need a console, as steps and what must be seen.
+- [docs/testing.md](docs/testing.md): the checks that need a console, as steps and what is expected to be seen.
+
+## FAQ
+
+### Why can't I see my Virtual Console title of Pokémon Green?
+
+Transporter lists the games of one language at a time, and starts with the console's language. Pokémon Green exists in Japanese only. Press L on Transporter's title screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
+
+The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games).
+
+### Why do I need a migration between two versions?
+
+The normal patches read only the files of their own version, so that they stay free of code for earlier formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
+
+When a release changes how the Bank is stored, as v0.3.0 did, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how ([background](docs/building.md#the-migration-from-v021)).
 
 ## Problems and feature requests
 
@@ -75,6 +85,10 @@ Pokémon HOME, purchases, importing a Bank from Nintendo's servers, legality che
 With enough information I will probably look into it, but this is a hobby project and I cannot promise a fix or a date.
 
 **Feature requests** will most likely not be taken up. The project is open source under the GPL: if you want it to do more, you are welcome to fork it.
+
+### Not included
+
+Pokémon HOME, purchases, importing a Bank from Nintendo's servers, legality checks (they existed only on the server), event gifts, and import or export tools for save editors.
 
 ## Credits
 
