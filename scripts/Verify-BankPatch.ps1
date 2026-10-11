@@ -1,19 +1,20 @@
 <#
 Independent check of the built package of one patch for Bank, in build/bank,
-build/bank-migrate or build/bank-test. This script shares no code
+build/bank-migrate, build/bank-download or build/bank-test. This script shares no code
 with patch-builder: it parses the ELF and IPS itself, rebuilds the expected image
 from hardcoded reviewed addresses, and compares every byte. It reads only local
 build inputs and writes verification.json into the package folder.
 
 -Patch says which patch for Bank the package is: the offline patch, the
-migration patch, or the console test build of the offline patch. Each has
+migration patch, the download patch, or the console test build of the
+offline patch. Each has
 its own entry functions and its own list of regions it may edit, written out
 below. The test build is the offline patch with two more entry functions and
 two more regions, in the main menu, which only it shows.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('offline', 'migrate', 'test')][string]$Patch = 'offline',
+    [ValidateSet('offline', 'migrate', 'test', 'download')][string]$Patch = 'offline',
     [string]$ElfPath = ''
 )
 Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
@@ -35,8 +36,8 @@ function CString([byte[]]$bytes,[int]$offset) {
     Assert-Check ($end -ge $offset) 'Unterminated ELF string'
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
-$kind=@{offline='bank';migrate='bank-migrate';test='bank-test'}[$Patch]
-$crate=@{offline='bank';migrate='bank-migrate';test='bank'}[$Patch]
+$kind=@{offline='bank';migrate='bank-migrate';test='bank-test';download='bank-download'}[$Patch]
+$crate=@{offline='bank';migrate='bank-migrate';test='bank';download='bank-download'}[$Patch]
 if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$crate-payload.elf" }
 $packagePath="build/$kind"
 $reportPath=Join-Path $packagePath 'verification.json'
@@ -116,12 +117,15 @@ try {
         offline=$offlineNames
         migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
+        download=@('bank_download_next','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
     }[$Patch]
-    $exportCount=@{offline=10;migrate=4;test=12}[$Patch]
+    $exportCount=@{offline=10;migrate=4;test=12;download=5}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
-    $foreign=@{offline='bank_migrate_*';migrate='bank_offline_*';test='bank_migrate_*'}[$Patch]
-    Assert-Check (@($symbols.Keys | Where-Object { $_ -like $foreign }).Count -eq 0) 'Entry function of another patch is linked'
+    $foreign=@{offline=@('bank_migrate_*','bank_download_*');migrate=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Patch]
+    foreach($pattern in $foreign) {
+        Assert-Check (@($symbols.Keys | Where-Object { $_ -like $pattern }).Count -eq 0) ('Entry function of another patch is linked: '+$pattern)
+    }
     Assert-Check (@($symbols.Keys | Where-Object { $_ -like 'bank_offline_menu*' }).Count -eq 0) 'Removed menu wrappers still linked'
     # The test build's menu entry is in no package that is released.
     foreach($name in @('bank_test_menu_chosen','bank_test_menu_update')) {
@@ -145,23 +149,31 @@ try {
     }
 
     # Hardcoded reviewed native edits, separate from the builder implementation.
-    # What both patches edit: the archive is kept, the start-up hook is
-    # called, the router is the patch's own, the first start has no
-    # prompts (the notice is skipped to where accepting it continues), and
-    # the "show a message" function (001d6650, push {r4-r8, lr}) goes to
-    # the entry that lets HOME and sleep through for a message that waits,
-    # and the start screen's call that writes its version line (002b49c4,
-    # bl 001e21c8) goes to the entry that adds the patch's name to it.
+    # What every patch edits: the archive is kept, the start-up hook is
+    # called, the router is the patch's own, and the start screen's call
+    # that writes its version line (002b49c4, bl 001e21c8) goes to the
+    # entry that adds the patch's name to it. What every patch but the
+    # download edits: the first start has no prompts (the notice is skipped
+    # to where accepting it continues), and the "show a message" function
+    # (001d6650, push {r4-r8, lr}) goes to the entry that lets HOME and
+    # sleep through for a message that waits.
     $router=$exportNames[0]
     $branches=@(
         @(0x29f338,0xe594002cL,0x29f4fc,$false),
         @(0x1040a4,0xeb000228L,'bank_bootstrap_startup',$true),
         @(0x2a5a2c,0xebfffed3L,$router,$true),
-        @(0x2ac5b0,0xe5945040L,0x2ac8a8,$false),
-        @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false),
         @(0x2b49c4,0xebfcb5ffL,'bank_version_shown',$true)
     )
-    if ($Patch -ne 'migrate') {
+    # Not the download patch, which runs the original online: there the
+    # first start keeps its prompts, and the original refuses HOME and
+    # sleep for its whole session itself.
+    if ($Patch -ne 'download') {
+        $branches+=@(
+            @(0x2ac5b0,0xe5945040L,0x2ac8a8,$false),
+            @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
+        )
+    }
+    if ($Patch -in 'offline','test') {
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
     }
     # Main-menu locations edited by earlier packages. They must stay original,
@@ -173,26 +185,35 @@ try {
         @(0x3617bc,0x002a6750L),
         @(0x3617dc,0x002a6c84L)
     )
-    # Task 9, "open Bank": its update and busy poll.
-    $open=@{offline='bank_offline_load';migrate='bank_migrate_open';test='bank_offline_load'}[$Patch]
+    # Task 9, "open Bank": its update and busy poll. The download patch has
+    # an entry for each, as each calls the function its slot held.
+    $open=@{offline='bank_offline_load';migrate='bank_migrate_open';test='bank_offline_load';download='bank_download_open'}[$Patch]
+    $openBusy=if ($Patch -eq 'download') { 'bank_download_open_busy' } else { $open }
     $pointers=@(
         @(0x361cfc,0x2ae568,$open),
-        @(0x361d0c,0x2b4a20,$open),
-        # First start, whole instruction words: a saved language is not
-        # applied (nop) and the language is always "known" (mov r5, #1).
-        @(0x2a4898,0xebfeddfbL,0xe320f000L),
-        @(0x2a4940,0xe1a05007L,0xe3a05001L),
-        # A saved language is cleared through the original's store and
-        # write: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30]; cmp r5, #0;
-        # mov r2, #0; mov r1, #0.
-        @(0x2ac61c,0xe59060f0L,0xe5906074L),
-        @(0x2ac628,0xe1b05000L,0xe1d053b0L),
-        @(0x2ac62c,0xe320f000L,0xe3550000L),
-        @(0x2ac640,0xe1a02000L,0xe3a02000L),
-        @(0x2ac648,0xe6ff1075L,0xe3a01000L)
+        @(0x361d0c,0x2b4a20,$openBusy)
     )
+    if ($Patch -eq 'download') {
+        # The reward step's update writes the files and ends as cancelled.
+        $pointers+=,@(0x361be4,0x2ad1bc,'bank_download_save')
+    } else {
+        $pointers+=@(
+            # First start, whole instruction words: a saved language is not
+            # applied (nop) and the language is always "known" (mov r5, #1).
+            @(0x2a4898,0xebfeddfbL,0xe320f000L),
+            @(0x2a4940,0xe1a05007L,0xe3a05001L),
+            # A saved language is cleared through the original's store and
+            # write: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30]; cmp r5, #0;
+            # mov r2, #0; mov r1, #0.
+            @(0x2ac61c,0xe59060f0L,0xe5906074L),
+            @(0x2ac628,0xe1b05000L,0xe1d053b0L),
+            @(0x2ac62c,0xe320f000L,0xe3550000L),
+            @(0x2ac640,0xe1a02000L,0xe3a02000L),
+            @(0x2ac648,0xe6ff1075L,0xe3a01000L)
+        )
+    }
     # Only the offline patch: loading, saving, rewards and the Pokédex.
-    if ($Patch -ne 'migrate') {
+    if ($Patch -in 'offline','test') {
         $pointers+=@(
             @(0x33d30c,0x2a7578,'bank_offline_dex_save_request'),
             @(0x33d34c,0x2a71a8,'bank_offline_dex_records_finish'),
@@ -218,7 +239,7 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=27;migrate=16;test=29}[$Patch]
+    $regions=@{offline=27;migrate=16;test=29;download=8}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     [byte[]]$expected=[byte[]]::new($expandedSize)
     [Array]::Copy($original,0,$expected,0,$original.Length)

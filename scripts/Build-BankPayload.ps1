@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
-    # Which patch for Bank: the offline patch, the migration patch, or the
-    # console test build of the offline patch (docs/building.md).
-    [ValidateSet('offline', 'migrate', 'test')][string]$Patch = 'offline'
+    # Which patch for Bank: the offline patch, the migration patch, the
+    # console test build of the offline patch, or the download patch
+    # (docs/building.md).
+    [ValidateSet('offline', 'migrate', 'test', 'download')][string]$Patch = 'offline'
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -12,6 +13,7 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $source = @{
     'offline' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'bank'; Features = @() }
     'migrate' = @{ Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Kind = 'bank-migrate'; Features = @() }
+    'download' = @{ Crate = 'bank-download-payload'; Linker = 'patches/bank-download/link/bank15-download.ld'; Kind = 'bank-download'; Features = @() }
     'test' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'bank-test'; Features = @('test-build') }
 }[$Patch]
 $linkerScript = Join-Path $projectRoot $source.Linker
