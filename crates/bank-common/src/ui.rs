@@ -61,7 +61,8 @@ unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize
 
 /// Shows the screen a patch ends on, as one dialog that does not end, the
 /// way the original shows its message 0x1C (002a926c): a reason, and after
-/// A the line about the HOME Menu, which stays.
+/// A the line about the HOME Menu, which stays. Without a reason the line
+/// is the whole screen.
 ///
 /// The reason is the original's message `reason` up to the end of its first
 /// part, with the two code numbers on the third line: for the failure
@@ -79,18 +80,32 @@ unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize
 /// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
 /// (task10). Its context and allocated string object must remain live while
 /// the dialog is shown. No other writer may modify that dialog meanwhile.
-pub unsafe fn stop(ui: *mut u8, reason: u32, first: u32, second: u32) -> Result<(), Error> {
+pub unsafe fn stop(ui: *mut u8, reason: Option<u32>, first: u32, second: u32) -> Result<(), Error> {
     let context = pointer(unsafe { word(ui, 0x5c) })?;
-    let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = unsafe { transmute(0x001d_643cusize) };
+    // Ends the text at `len` and hands it to the dialog.
+    let begin = |text: *mut u8, room: &mut [u16], len: usize| unsafe {
+        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
+        room[len] = 0;
+        text.add(0xa).cast::<u16>().write(len as u16);
+        begin(context, text);
+    };
     let mut home = [0u16; HOME_ROOM];
     let mut home_len = 0;
     unsafe { display(ui, HOME_NOTICE, false)? };
-    if let Some((_, room, len)) = unsafe { text(ui)? } {
+    if let Some((text, room, len)) = unsafe { text(ui)? } {
+        let Some(_) = reason else {
+            let len = numbers::put(room, len, first, second).unwrap_or(len);
+            begin(text, room, len);
+            return Ok(());
+        };
         if len < HOME_ROOM {
             home[..len].copy_from_slice(&room[..len]);
             home_len = numbers::put(&mut home, len, first, second).unwrap_or(len);
         }
     }
+    let Some(reason) = reason else {
+        return Ok(());
+    };
     unsafe { display(ui, reason, false)? };
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Ok(());
@@ -99,11 +114,7 @@ pub unsafe fn stop(ui: *mut u8, reason: u32, first: u32, second: u32) -> Result<
     if home_len != 0 {
         len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
     }
-    room[len] = 0;
-    unsafe {
-        text.add(0xa).cast::<u16>().write(len as u16);
-        begin(context, text);
-    }
+    begin(text, room, len);
     Ok(())
 }
 

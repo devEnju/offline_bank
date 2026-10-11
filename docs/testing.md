@@ -226,14 +226,14 @@ Start from a console whose Bank was last used with the old version, and from a b
 | --- | --- | --- | --- |
 | 16 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number, then the line about the HOME Menu with the same numbers; nothing changed |
 | 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the line about the HOME Menu; no game list appears |
-| 18 | migration | start Bank, press START | a loading screen, then `0000600D 00000001`; after A the line about the HOME Menu with the same numbers. Close Bank from the HOME Menu |
-| 19 | migration | start Bank again, press START | `0000600D 00000002`, and the same line after A |
+| 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with `0000600D 00000001` on its third line, and nothing before it. Close Bank from the HOME Menu |
+| 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |
 | 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
 | 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
 Runs 16 and 17 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
 
-A migration patch never opens the Bank. Its result is always two numbers:
+A migration patch never opens the Bank. Its result is always two numbers, under the line about the HOME Menu:
 
 | Numbers | Meaning |
 | --- | --- |

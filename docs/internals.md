@@ -41,7 +41,7 @@ A patch for Bank is a crate of its own with its own payload, its own profile in 
 
 **Rule: a patch writes Bank's files only through `bank-common`.** The byte formats exist once, in `offline-core`; the file names, their sizes and the order in which they are written exist once, in `bank-common`. A patch that writes a Bank has a PC test that loads the result with `BankFiles` and compares every byte. So what one patch writes, every other reads.
 
-The **offline patch** is the rest of this part. The **migration patch** converts the Bank of v0.2.1 for v0.3.0 ([Files](#files)) and has none of the offline behaviour. Its router hook leads from the game scan to task 9 and from there to cleanup; its task 9 hook shows the loading panel, runs the conversion on the worker, and shows the result as the screen with two numbers, which ends in the line about the HOME Menu like every such screen ([UI helpers](#tasks-and-routing)). It makes these edits, each one the offline patch makes at the same place:
+The **offline patch** is the rest of this part. The **migration patch** converts the Bank of v0.2.1 for v0.3.0 ([Files](#files)) and has none of the offline behaviour. Its router hook leads from the game scan to task 9 and from there to cleanup; its task 9 hook shows the loading panel, runs the conversion on the worker, and shows the result as two numbers under the line about the HOME Menu, the last page of the offline patch's error screen without the page before it ([UI helpers](#tasks-and-routing), `Notice::done`). It makes these edits, each one the offline patch makes at the same place:
 
 | Edit of the original | Offline patch | Migration patch |
 | --- | --- | --- |

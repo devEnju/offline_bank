@@ -2,9 +2,9 @@
 //!
 //! The router hook leads from the game scan to task 9, "open Bank", and from
 //! there back to the start screen. The task 9 hook shows the loading
-//! screen, has the worker run the conversion, and shows its result as the
-//! screen with two numbers, which ends in the original's line about the
-//! HOME Menu. Starting Bank again runs it again, which is safe.
+//! screen, has the worker run the conversion, and shows its result as two
+//! numbers under the original's line about the HOME Menu, which stays.
+//! Starting Bank again runs it again, which is safe.
 
 use crate::{
     migrate::{self, Card},
@@ -244,9 +244,11 @@ pub unsafe extern "aapcs" fn bank_migrate_open(raw: *mut u8) -> u32 {
             Ok(Some(numbers)) | Err(numbers) => state.numbers = Some(numbers),
         }
     }
-    // The screen does not end: nothing can go on in this patch, whatever
-    // the result. Bank is closed from the HOME Menu, and the next start
-    // converts again, which finds the work done and says so.
+    // The numbers are the result, so they come at once, under the
+    // original's line about the HOME Menu. That screen does not end:
+    // nothing can go on in this patch, whatever the result. Bank is closed
+    // from the HOME Menu, and the next start converts again, which finds
+    // the work done and says so.
     let [first, second] = state.numbers.unwrap_or([NATIVE_OBJECT, 0]);
-    state.notice.stop(task, first, second)
+    state.notice.done(task, first, second)
 }

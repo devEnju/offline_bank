@@ -164,7 +164,8 @@ unsafe extern "aapcs" {
 
 /// The screen a patch ends on when nothing can go on (`ui::stop`): one
 /// dialog with the two numbers, and after A the original's line "Press HOME
-/// to return to the HOME Menu" with the numbers under it. It stays, as the
+/// to return to the HOME Menu" with the numbers under it; or that line
+/// alone, for numbers that are a result and no error. It stays, as the
 /// original's own message with that line does (task 0, 002a9204, message
 /// 0x1C): its task shows it without a wait and never ends.
 pub struct Notice {
@@ -175,10 +176,18 @@ impl Notice {
     pub const fn new() -> Self {
         Self { shown: false }
     }
-    /// One frame of the task's update. The result is the update's own: 0,
-    /// as nothing ends this screen but closing Bank. Only a screen that
-    /// could not be shown finishes the task as failed.
+    /// One frame of the task's update after an error. The result is the
+    /// update's own: 0, as nothing ends this screen but closing Bank. Only a
+    /// screen that could not be shown finishes the task as failed.
     pub fn stop(&mut self, task: Task, first: u32, second: u32) -> u32 {
+        self.end(task, Some(crate::ui::FAILURE_NOTICE), first, second)
+    }
+    /// The same for a patch whose work is done and whose numbers are its
+    /// result: the line about the HOME Menu with them, and nothing before.
+    pub fn done(&mut self, task: Task, first: u32, second: u32) -> u32 {
+        self.end(task, None, first, second)
+    }
+    fn end(&mut self, task: Task, reason: Option<u32>, first: u32, second: u32) -> u32 {
         let Ok(ui) = task.ui() else {
             task.end_busy();
             return task.finish(false);
@@ -195,7 +204,7 @@ impl Notice {
             task.end_busy();
             // Loading may still be animating; end its sound before the dialog.
             let _ = unsafe { crate::ui::stop_loading(ui) };
-            unsafe { crate::ui::stop(ui, crate::ui::FAILURE_NOTICE, first, second) }
+            unsafe { crate::ui::stop(ui, reason, first, second) }
         };
         self.shown = shown.is_ok();
         match shown {
