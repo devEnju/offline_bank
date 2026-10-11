@@ -2,7 +2,7 @@
 
 A Luma3DS patch for **Pokémon Bank 1.5** (title `00040000000C9B00`, TMD version 6272) that keeps your Pokémon on the SD card instead of on Nintendo's servers.
 
-How it is built is in [building.md](building.md); how it works inside is in [internals.md](internals.md#bank).
+How it is built is in [building.md](building.md); how it works inside is in [internals.md](internals.md#bank); how it is checked on a console is in [testing.md](testing.md#bank-feature-by-feature).
 
 ## What changes
 
@@ -58,7 +58,15 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - Battle Points: `Miles ÷ 10` go to the game and the remainder stays. Gen 6 and Gen 7.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, blocks a new claim.
 
-**When nothing is said.** The original talks about Miles whenever the balance is above zero. The patch goes straight to the boxes when it is still the day of the last Save and Quit and the balance is below 10. That is the usual state after redeeming Battle Points, which leaves a remainder. In that case the game's notice about a present still waiting in it is skipped as well, since nothing new could be sent. With 10 or more Miles, or on any later day, everything appears as in the original; on a later day that means once, until the next Save and Quit.
+**When nothing is said.** The original talks about Miles whenever the balance is above zero. The patch stays silent in one case: you already saved today and fewer than 10 Miles are left. Then the boxes open directly.
+
+| Opened | Balance | What appears |
+| --- | --- | --- |
+| Same day as the last Save and Quit | below 10 (for example 3 left after redeeming Battle Points) | Nothing. Also no notice about a present still waiting in a Gen 6 game, since nothing new could be sent. |
+| Same day as the last Save and Quit | 10 or more | The redemption choices, as in the original. |
+| A later day | below 10, grown or not (3 to 9, or still 3) | The original message, without choices. Again at each opening until you Save and Quit on that day; after that, nothing. |
+| A later day | 10 or more | The original message and the choices. |
+| Console date earlier than the last Save and Quit | below 10 | Nothing, as on the same day. |
 
 The patch adds one safety check: after a claim, the balance and the gift in the game must match what was shown. If not, the balance is restored and the session ends with error `00000013` without saving.
 
@@ -116,44 +124,6 @@ The formats are described in [internals.md](internals.md#storage).
 4. Hold SELECT while powering on, switch on *Enable game patching*, and save. Wireless can stay off.
 
 The first start creates an empty Bank.
-
-## Checking that it works
-
-### Start and navigation
-
-| Do this | Expected |
-| --- | --- |
-| First start. | Original opening message, moving spinner, loading sound, then game selection. The main menu never appears. Short pauses are possible (see [Limits](#limits)). |
-| Back on game selection. | Start screen. |
-| Select a game, Back on its confirmation. | Game selection again. |
-| Select a game, cancel at the reward prompt; again, leave the boxes without saving. | Start screen. Nothing saved. |
-| Move Pokémon both ways, rename a box, Save and Quit, restart. | Everything persisted in Bank and in the game. No missing or duplicate Pokémon. |
-| Press HOME and close the lid right after leaving the start screen, while the Bank loads after selecting a game, and during Save and Quit. | Nothing happens while a loading screen is shown. On the start screen, game selection, in the boxes, and on an error screen both work as usual. |
-| No usable game present. | The original "no game" notice once, then the start screen. |
-
-### Poké Miles
-
-The first Save and Quit only records the date and your Pokémon count N.
-
-| Do this | Expected |
-| --- | --- |
-| Next day (or console date +1), open and select a game. | `N ÷ 30` Miles more than before, rounded down. |
-| Decline, withdraw some Pokémon, Save and Quit, reopen the same day. | Balance unchanged. |
-| Same day, a different game. | Same balance. No second credit. |
-| Fewer than 10 Miles, first opening on a later day than the last Save and Quit (whether or not Miles were added). | Original messages, no redemption choices. Again at each opening until a Save and Quit on that day. |
-| Fewer than 10 Miles, reopened the same day after Save and Quit (for example the remainder after redeeming Battle Points). | No reward dialog; the boxes open directly. Also no "present waiting" notice from a Gen 6 game. |
-| 10 or more Miles saved without redeeming, reopened the same day. | The redemption choices appear as before. |
-| 10 or more, Gen 6: Miles one day, Battle Points another. | Miles: balance 0. BP: `Miles ÷ 10` to the game, remainder kept. The gift waits in the game after Save and Quit. |
-| 10 or more, Gen 7. | Miles refused by the original message; BP arrives in the gift list. |
-| Redeem, then leave without saving. | Balance as before the claim; no gift in the game. |
-| Set the date back a day, open, Save and Quit. | Save works. No Miles. After returning to the real date, none earned twice. |
-
-### Pokédex
-
-| Do this | Expected |
-| --- | --- |
-| Save with Y, then with Ultra Sun. | A species known only to Y and one known only to Ultra Sun both show in the National Pokédex. |
-| Same version, different trainer (for example two Omega Ruby saves). | The original replacement prompt. Accept: that version's entries and records become the new save's. Decline: unchanged. |
 
 ## If Save and Quit is interrupted
 

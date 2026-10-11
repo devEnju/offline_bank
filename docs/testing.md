@@ -2,7 +2,9 @@
 
 The PC tests ([building.md](building.md#tests)) cover the storage format and every rule of a save, including a power cut at each write on a simulated card. What they cannot show is the console itself: its file system, the original programs, and a real power cut. This page lists the checks that need a console, as steps and what must be seen.
 
-It is a list of procedures only. Nothing here records which of them were run, on what, or with which result.
+**This page is the baseline.** The checks listed here are what was tested overall, on one Nintendo 2DS, and the "must show" and "expected" columns say how the patches are supposed to behave. A result that differs from them is a fault, on any console.
+
+No run is logged here one by one: the page does not say which check was made with which package or on which date, and no other model has been tested.
 
 ## Before you start
 
@@ -27,7 +29,8 @@ What the four test packages do is in [building.md](building.md#test-builds-for-a
 | Anything, before a release | [Normal use](#normal-use) |
 | How or where files are stored, or the file access | [Normal use](#normal-use), [A power cut during a save](#a-power-cut-during-a-save) |
 | The rules for an interrupted save | [An interrupted Save and Quit](#an-interrupted-save-and-quit) |
-| The Transporter patch, or the transport box files | Run 3 of [Normal use](#normal-use), and the HOME rows of the checklist in [transporter.md](transporter.md#transfers) |
+| Bank's screens and navigation, Poké Miles, or the Pokédex | The matching part of [Bank, feature by feature](#bank-feature-by-feature) |
+| The Transporter patch, or the transport box files | Run 3 of [Normal use](#normal-use), and the matching part of [Transporter, feature by feature](#transporter-feature-by-feature); the HOME rows of [Transfers](#transfers) in any case |
 | How or where files are stored, with a migration for it | [Updating from the version before](#updating-from-the-version-before) as well |
 | A migration patch | [Updating from the version before](#updating-from-the-version-before) |
 
@@ -41,6 +44,103 @@ With the normal Bank and Transporter packages.
 | 2 | Pick a game, move Pokémon both ways, Save and Quit. Open the same game again in the same session, move again, Save and Quit a second time. Close Bank and start it again. Once with an installed game and once with a cartridge, if you have both. | Everything where it was put, in Bank and in the game; nothing twice; Pokédex and Poké Miles as expected |
 | 3 | Transfer from a Generation 5 game with Transporter. Back on its title screen, press START again. Then open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again and press START. | The transfer completes. The second START answers with the "Pokémon remains in the Transport Box" message and returns to the title screen, without a game list. In Bank the Pokémon are there once. Afterwards START leads to the game list again. |
 | 4 | Start a game, press HOME, and start Bank from the HOME Menu without closing the game first. Press START, pick a game, look at the boxes, and leave; once with Save and Quit and once without saving. Back on the start screen, press HOME. | The HOME Menu appears, both times |
+
+## Bank, feature by feature
+
+With the normal Bank package. What each feature is meant to do is in [bank.md](bank.md).
+
+### Start and navigation
+
+| Do this | Expected |
+| --- | --- |
+| First start. | Original opening message, moving spinner, loading sound, then game selection. The main menu never appears. Short pauses are possible (see [Limits](bank.md#limits)). |
+| Back on game selection. | Start screen. |
+| Select a game, Back on its confirmation. | Game selection again. |
+| Select a game, cancel at the reward prompt; again, leave the boxes without saving. | Start screen. Nothing saved. |
+| Move Pokémon both ways, rename a box, Save and Quit, restart. | Everything persisted in Bank and in the game. No missing or duplicate Pokémon. |
+| Press HOME and close the lid right after leaving the start screen, while the Bank loads after selecting a game, and during Save and Quit. | Nothing happens while a loading screen is shown. On the start screen, game selection, in the boxes, and on an error screen both work as usual. |
+| No usable game present. | The original "no game" notice once, then the start screen. |
+
+### Poké Miles
+
+The first Save and Quit only records the date and your Pokémon count N.
+
+| Do this | Expected |
+| --- | --- |
+| Next day (or console date +1), open and select a game. | `N ÷ 30` Miles more than before, rounded down. |
+| Decline, withdraw some Pokémon, Save and Quit, reopen the same day. | Balance unchanged. |
+| Same day, a different game. | Same balance. No second credit. |
+| Fewer than 10 Miles, first opening on a later day than the last Save and Quit (whether or not Miles were added). | Original messages, no redemption choices. Again at each opening until a Save and Quit on that day. |
+| Fewer than 10 Miles, reopened the same day after Save and Quit (for example the remainder after redeeming Battle Points). | No reward dialog; the boxes open directly. Also no "present waiting" notice from a Gen 6 game. |
+| 10 or more Miles saved without redeeming, reopened the same day. | The redemption choices appear as before. |
+| 10 or more, Gen 6: Miles one day, Battle Points another. | Miles: balance 0. BP: `Miles ÷ 10` to the game, remainder kept. The gift waits in the game after Save and Quit. |
+| 10 or more, Gen 7. | Miles refused by the original message; BP arrives in the gift list. |
+| Redeem, then leave without saving. | Balance as before the claim; no gift in the game. |
+| Set the date back a day, open, Save and Quit. | Save works. No Miles. After returning to the real date, none earned twice. |
+
+### Pokédex
+
+| Do this | Expected |
+| --- | --- |
+| Save with Y, then with Ultra Sun. | A species known only to Y and one known only to Ultra Sun both show in the National Pokédex. |
+| Same version, different trainer (for example two Omega Ruby saves). | The original replacement prompt. Accept: that version's entries and records become the new save's. Decline: unchanged. |
+
+## Transporter, feature by feature
+
+With the normal Bank and Transporter packages. What each feature is meant to do is in [transporter.md](transporter.md).
+
+### Transfers
+
+| Do this | Expected |
+| --- | --- |
+| Gen 5 cartridge, Box 1 with gaps, Bank's transport box empty: transport. | After START the game list appears without a message. The spinner keeps animating while the box is read and while the Pokémon are written. The original "transported" message appears. The Pokémon are gone from the source game. Bank shows them in the transport box, in the same positions. |
+| In Bank, move them into a box, Save and Quit, restart Bank. | They are in the box. A Gen 6 or Gen 7 game can withdraw them. |
+| Gen 1 or Gen 2 game. | The Pokémon arrive as Gen 7 Pokémon and cannot be withdrawn into X, Y, Omega Ruby, or Alpha Sapphire. |
+| A Box 1 that was never used, or Pokémon with never-used slots between them. | No message about Pokémon that cannot be transported. An empty box gives only the "nothing to transport" message. |
+| A Pokémon the original's own checks refuse (for example an Egg). | Three original dialogs in a row: one that a Pokémon cannot be sent, one with the reason, one that it was removed from the Transport Box. The others are offered. |
+| An egg in Box 1 beside other Pokémon. | The original dialog about Pokémon that cannot be transported appears for the egg; the others are offered. |
+| Any transfer. | The notice about nicknames and OT names does not appear; the notices about not being able to return Pokémon and about held items do. |
+| Press HOME and close the lid right after START, while the game list is being built, while the chosen game is read, and during the transfer. | Nothing happens. |
+| Press HOME and close the lid on the title screen, on the game list, on a message that follows START, and on the notices and the "move this Box?" question. | The HOME Menu opens; the lid puts the console to sleep. |
+| Press HOME together with A when confirming a game, and when confirming the question. | Nothing happens. |
+| After Back on the game list, after a message, and after a transfer: press HOME on the title screen. | The HOME Menu opens. |
+
+### Refusals
+
+| Do this | Expected |
+| --- | --- |
+| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START, then the title screen. No game list appears. |
+| Leave some Pokémon in the transport box, Save and Quit, start Transporter and press START. | The same message, until the transport box is empty and saved. |
+| Empty Box 1, Bank's transport box empty. | The original message that there is nothing to transport, then the title screen. |
+| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, then the title screen. After Bank was started once, START leads to the game list. |
+
+### Language of the games
+
+| Do this | Expected |
+| --- | --- |
+| Start Transporter and open the game list without visiting the language screen. | Only games in the console's language are listed: cartridge, saves on the SD card, Virtual Console titles. |
+| Open the language screen. | Six languages: not the one whose games are listed, no Chinese ones. Below them a Back button that looks like the six entries above it, with the game-selection screen's "Back" text in the middle and a teal return icon at the right. The seven entries are centred on the screen with a small gap between them. Up and down wrap around the seven; touching an entry works. |
+| Choose another language and confirm. | The confirm screen appears, for Japanese too (no kana/kanji choice). Back on the title screen the screens are in the same language as before. The game list now shows the games of the chosen language only. |
+| Choose another language and look at the title screen. | The logo and the start prompt are in the chosen language; the texts of the other screens are not. Without a choice, and after a restart, both are in the console's language. Back on the language screen leaves them as they were. |
+| Open the language screen again. | The language chosen before is now missing from the list, and the one listed before is back. |
+| Back on the language list: touch it, press A on it, or press B. | The cancel sound, then the title screen. The game list shows the same language as before. |
+| Back or B on the confirm screen. | The language list again; nothing changes. |
+| Choose a language no game is present in. | The original behaviour for an empty game list. |
+| Close and restart Transporter. | The games in the console's language are listed again. |
+| A console set to Chinese. | The screens are Chinese. English games are listed at first; the language list offers the six other languages and Back, with Back's text in Chinese. |
+
+### Saves on the SD card
+
+The saves are in the chosen language.
+
+| Do this | Expected |
+| --- | --- |
+| No cartridge, one accepted save. | The game appears in the list with its trainer name. A transfer works as from a cartridge; afterwards `<name>.sav.bak` holds the save as it was, and the game started in TWiLight Menu shows the Pokémon gone from Box 1. |
+| No cartridge, saves of several games. | One entry per save; the one you pick is the one read and changed. |
+| No cartridge, saves of the same game in two languages. | Only the one in the chosen language is listed; after choosing the other language, only the other. |
+| A Gen 5 cartridge in the chosen language, saves on the SD card. | The games are listed in the order Black, White, Black 2, White 2; the cartridge stands at its game's place, the saves at theirs. A save of the cartridge's own game is not offered. Picking the cartridge reads and changes the cartridge; picking a save reads and changes that file. |
+| A Gen 5 cartridge in another language than the chosen one. | The cartridge is not listed; the saves in the chosen language are. After choosing the cartridge's language, the cartridge is listed. |
+| A save with another name, or a file of another size, in the folder. | It is not offered. |
 
 ## An interrupted Save and Quit
 
