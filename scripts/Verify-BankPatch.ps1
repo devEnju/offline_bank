@@ -1,5 +1,6 @@
 <#
-Independent check of one built development package. This script shares no code
+Independent check of the built package of one patch for Bank, in build/bank,
+build/bank-migrate or build/bank-test. This script shares no code
 with patch-builder: it parses the ELF and IPS itself, rebuilds the expected image
 from hardcoded reviewed addresses, and compares every byte. It reads only local
 build inputs and writes verification.json into the package folder.
@@ -7,17 +8,13 @@ build inputs and writes verification.json into the package folder.
 -Patch says which patch for Bank the package is: the offline patch, the
 migration patch, or the console test build of the offline patch. Each has
 its own entry functions and its own list of regions it may edit, written out
-below. The test build is the offline patch with one more entry function and
-one more region, in the main menu, which only it shows.
+below. The test build is the offline patch with two more entry functions and
+two more regions, in the main menu, which only it shows.
 #>
 [CmdletBinding()]
 param(
-    [ValidatePattern('^[0-9a-f]{16}$')][string]$Package,
     [ValidateSet('offline', 'migrate', 'test')][string]$Patch = 'offline',
-    [string]$ElfPath = '',
-    # The console test build (docs/building.md, -Patch test): its folder,
-    # relative to the repository, in place of a package name.
-    [string]$TestPackagePath = ''
+    [string]$ElfPath = ''
 )
 Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
 $ErrorActionPreference = 'Stop'
@@ -41,17 +38,11 @@ function CString([byte[]]$bytes,[int]$offset) {
 $kind=@{offline='bank';migrate='bank-migrate';test='bank-test'}[$Patch]
 $crate=@{offline='bank';migrate='bank-migrate';test='bank'}[$Patch]
 if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$crate-payload.elf" }
-if ($Patch -eq 'test' -and -not $TestPackagePath) { $TestPackagePath='build/bank-test' }
-if ($TestPackagePath) {
-    $packagePath=$TestPackagePath
-    $packageName=Split-Path -Leaf $TestPackagePath
-} else {
-    Assert-Check ([bool]$Package) 'Give -Package or -TestPackagePath'
-    $packagePath=Join-Path "build/$kind" $Package
-    $packageName=$Package
-}
+$packagePath="build/$kind"
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
+    $packageName='unknown'
+    $packageName=(Get-Content -LiteralPath (Join-Path $packagePath 'PACKAGE.txt') -Raw).Trim()
     $manifest=Get-Content -LiteralPath (Join-Path $packagePath 'manifest.json') -Raw | ConvertFrom-Json
     [byte[]]$original=[IO.File]::ReadAllBytes((Join-Path (Get-Location) 'build/extracted/559b2b6a6fd3b001/exefs/code.bin'))
     [byte[]]$originalHeader=[IO.File]::ReadAllBytes((Join-Path (Get-Location) 'build/extracted/559b2b6a6fd3b001/exheader.bin'))
@@ -66,7 +57,7 @@ try {
     Assert-Check ($original.Length -eq 0x2ac000 -and $originalHeader.Length -eq 0x800) 'Original input lengths'
     Assert-Check ($manifest.source_code_sha256 -eq $codeHash -and $manifest.source_exheader_sha256 -eq $headerHash) 'Manifest input hashes'
     Assert-Check ($manifest.source_elf_sha256 -eq $elfHash) 'Manifest ELF hash'
-    Assert-Check ($TestPackagePath -or $Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) 'Package is not the one of the current payload and profile'
+    Assert-Check ($packageName -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) 'Package is not the one of the current payload and profile'
     Assert-Check ($manifest.patch -eq $Patch) 'Manifest names another patch'
     Assert-Check ($manifest.title_id -eq '00040000000c9b00' -and $manifest.tmd_version -eq 6272 -and $manifest.remaster_version -eq 6) 'Manifest version'
     foreach($name in @('code.ips','exheader.bin')) {
@@ -124,16 +115,18 @@ try {
     $exportNames=@{
         offline=$offlineNames
         migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown','bank_version_shown')
-        test=$offlineNames+@('bank_test_menu_chosen')
+        test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
     }[$Patch]
-    $exportCount=@{offline=10;migrate=4;test=11}[$Patch]
+    $exportCount=@{offline=10;migrate=4;test=12}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
     $foreign=@{offline='bank_migrate_*';migrate='bank_offline_*';test='bank_migrate_*'}[$Patch]
     Assert-Check (@($symbols.Keys | Where-Object { $_ -like $foreign }).Count -eq 0) 'Entry function of another patch is linked'
     Assert-Check (@($symbols.Keys | Where-Object { $_ -like 'bank_offline_menu*' }).Count -eq 0) 'Removed menu wrappers still linked'
     # The test build's menu entry is in no package that is released.
-    Assert-Check (($Patch -eq 'test') -eq $symbols.ContainsKey('bank_test_menu_chosen')) 'Menu entry of the test build'
+    foreach($name in @('bank_test_menu_chosen','bank_test_menu_update')) {
+        Assert-Check (($Patch -eq 'test') -eq $symbols.ContainsKey($name)) ('Menu entry of the test build '+$name)
+    }
     $wrapperNames=@('bank_svc_close_handle','bank_svc_wait_thread','bank_svc_get_resource_limit','bank_svc_get_resource_limit_values','bank_svc_get_resource_current_values')
     foreach($name in $wrapperNames) {
         Assert-Check ($symbols.ContainsKey($name)) ('Missing system-call wrapper '+$name)
@@ -214,14 +207,18 @@ try {
             @(0x361e84,0x2af034,0x2af124)
         )
     }
-    # Only the test build: the main menu's listener "an entry was chosen"
-    # (its table slot, holding 002a6c84) is the build's own.
+    # Only the test build: the main menu's update (its table slot, holding
+    # 002a6750) and its listener "an entry was chosen" (holding 002a6c84)
+    # are the build's own.
     $menuEdits=@()
     if ($Patch -eq 'test') {
-        $menuEdits=@(0x3617dc)
-        $pointers+=,@(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
+        $menuEdits=@(0x3617bc,0x3617dc)
+        $pointers+=@(
+            @(0x3617bc,0x2a6750,'bank_test_menu_update'),
+            @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
+        )
     }
-    $regions=@{offline=27;migrate=16;test=28}[$Patch]
+    $regions=@{offline=27;migrate=16;test=29}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     [byte[]]$expected=[byte[]]::new($expandedSize)
     [Array]::Copy($original,0,$expected,0,$original.Length)

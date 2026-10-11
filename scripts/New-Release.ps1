@@ -118,12 +118,16 @@ try {
     Invoke-Checked 'formatting' { cargo +stable fmt --all -- --check }
 
     # 3. The patches, built from these sources and independently verified.
-    # A package is named after the hash of its compiled code and of the
-    # builder's profile with the edits of the original (Get-PackageId.ps1),
-    # so an existing one with that name was built from the same sources and
-    # is reused.
-    function Get-Verified([string]$kind, [string]$id) {
-        $directory = Join-Path $projectRoot "build/$kind/$id"
+    # Each build script replaces the package of its kind in build/<kind>,
+    # writes its name into PACKAGE.txt (Get-PackageId.ps1: the hash of its
+    # compiled code and of the builder's profile with the edits of the
+    # original), and verifies it.
+    function Get-Verified([string]$kind) {
+        $directory = Join-Path $projectRoot "build/$kind"
+        $id = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
+        if ($id -ne (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) {
+            throw "Package $kind is not the one of the current sources."
+        }
         $verification = Get-Content -LiteralPath (Join-Path $directory 'verification.json') -Raw | ConvertFrom-Json
         if ($verification.status -ne 'passed') { throw "Package $kind/$id did not pass verification." }
         $files = [ordered]@{
@@ -138,28 +142,14 @@ try {
         return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
     }
     function Get-Package([string]$kind, [string]$title) {
-        & (Join-Path $PSScriptRoot "Build-${title}Payload.ps1") | Out-Host
-        $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind
-        $directory = Join-Path $projectRoot "build/$kind/$id"
-        if (-not (Test-Path -LiteralPath $directory)) {
-            & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") | Out-Host
-        }
-        $verificationPath = Join-Path $directory 'verification.json'
-        $passed = (Test-Path -LiteralPath $verificationPath) -and
-            ((Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json).status -eq 'passed')
-        if (-not $passed) {
-            & (Join-Path $PSScriptRoot "Verify-${title}Patch.ps1") -Package $id | Out-Host
-        }
-        return Get-Verified $kind $id
+        & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") | Out-Host
+        return Get-Verified $kind
     }
     $titles = [ordered]@{
         $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Package 'bank' 'Bank') }
         '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Package 'transporter' 'Transporter') }
     }
-    # The migration patch builds and verifies itself and prints its name.
-    $migration = if ($MigrateFrom) {
-        Get-Verified 'bank-migrate' (& (Join-Path $PSScriptRoot 'Build-BankMigrationPatch.ps1'))
-    }
+    $migration = if ($MigrateFrom) { Get-Package 'bank-migrate' 'BankMigration' }
 
     # 4. The zips, each laid out for the root of the SD card.
     $stage = Join-Path $releaseRoot $name

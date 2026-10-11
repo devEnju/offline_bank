@@ -10,15 +10,15 @@ No run is logged here one by one: the page does not say which check was made wit
 
 1. **Back up** Bank's extdata and the saves of the games you will use, with [Checkpoint](https://github.com/BernardoGiordano/Checkpoint) ([how](bank.md#backing-up-the-bank)). Some runs leave the Bank and a game in a state that only the backup undoes.
 2. **Use Pokémon you can lose** or have twice. A few runs lose or duplicate one on purpose.
-3. **Switching packages.** Each package is a folder with `code.ips` and `exheader.bin`. Copy both to `SD:/luma/titles/00040000000C9B00/` for Bank, or `SD:/luma/titles/00040000000C9C00/` for Transporter, replacing the two files there.
-4. **Finish what a package began.** A Save and Quit that the test package left in progress must be settled with that package ("Use Pokémon Bank"), or the backup restored, before another package is tried.
+3. **Switching packages.** Each package is a folder with `code.ips` and `exheader.bin`; a folder always holds the latest build of its kind. Copy both to `SD:/luma/titles/00040000000C9B00/` for Bank, or `SD:/luma/titles/00040000000C9C00/` for Transporter, replacing the two files there.
+4. **Finish what a package began.** A Save and Quit that the test package left in progress must be settled with that package ("Normal save"), or the backup restored, before another package is tried.
 
 | Package | Built by | Folder |
 | --- | --- | --- |
-| Bank | `Build-BankPatch.ps1` | `build/bank/<package>/` |
-| Transporter | `Build-TransporterPatch.ps1` | `build/transporter/<package>/` |
+| Bank | `Build-BankPatch.ps1` | `build/bank/` |
+| Transporter | `Build-TransporterPatch.ps1` | `build/transporter/` |
 | Test package | `Build-BankTestPatches.ps1` | `build/bank-test/` |
-| Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/<package>/` |
+| Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/` |
 
 Every package says what it is on its start screen: "Ver. 1.5-offline" for Bank and for Transporter, "Ver. 1.5-migration", "Ver. 1.5-test". What the test package does is in [building.md](building.md#test-builds-for-an-interrupted-save).
 
@@ -153,20 +153,20 @@ All runs here use the test package. After START it shows the original's main men
 
 | Button on the main menu | What Save and Quit does | The card afterwards |
 | --- | --- | --- |
-| Use Pokémon Bank | Saves normally. | |
-| Learn about Pokémon Bank | **Stops before the game**: after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
-| View Your Support ID Number | **Stops after the game**: after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
-| Download Poké Transporter (or "Poké Transporter Downloaded") | **Writes the record**: first writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
-| Move Pokémon to Pokémon HOME | **Writes the boxes**: first writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Normal save | Saves normally. | |
+| Stop before the game | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
+| Stop after the game | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
+| Write the record | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
+| Write the boxes | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
 | Back | The original's: asks, then returns to the start screen. | |
 
-The two stops end Save and Quit at a fixed point with an error on purpose: "The server did not receive the data." Press A; the line about the HOME Menu follows with the numbers. Close Bank from the HOME Menu, do the "Then" step, and start Bank again. Where a run says "start Bank", choose **Use Pokémon Bank** on the menu. What Bank decides is explained in [bank.md](bank.md#if-save-and-quit-is-interrupted).
+The two stops end Save and Quit at a fixed point with an error on purpose: "The server did not receive the data." Press A; the line about the HOME Menu follows with the numbers. Close Bank from the HOME Menu, do the "Then" step, and start Bank again. Where a run says "start Bank", choose **Normal save** on the menu. Back on the game selection leads to the menu again, so another entry can be chosen without closing Bank. What Bank decides is explained in [bank.md](bank.md#if-save-and-quit-is-interrupted).
 
 The menu also shows what the original showed there about the pass; that is not part of any run. No reward dialog comes in this package.
 
 ### The game keeps its old save
 
-Menu entry **Learn about Pokémon Bank** (stops before the game). Save and Quit ends on `00007E57 00000001`.
+Menu entry **Stop before the game**. Save and Quit ends on `00007E57 00000001`.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
@@ -179,7 +179,7 @@ Run 8 is the one case in which a Pokémon is lost by design; use one you do not 
 
 ### The game is not inserted
 
-Still **Learn about Pokémon Bank**, with a cartridge game that is not also installed.
+Still **Stop before the game**, with a cartridge game that is not also installed.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
@@ -190,7 +190,7 @@ The trainer ID in that message has five digits for X, Y, Omega Ruby and Alpha Sa
 
 ### The same game as cartridge and installed
 
-Still **Learn about Pokémon Bank**. This needs one game both as a cartridge and installed, each with a save of its own. An installed copy that was never played has no save, and Bank does not find it.
+Still **Stop before the game**. This needs one game both as a cartridge and installed, each with a save of its own. An installed copy that was never played has no save, and Bank does not find it.
 
 | Run | Session on | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- | --- |
@@ -202,7 +202,7 @@ If run 12 or 13 opens Bank with the new boxes and no message, Bank did not tell 
 
 ### The game has its new save
 
-Menu entry **View Your Support ID Number** (stops after the game). Save and Quit ends on `00007E57 00000002`.
+Menu entry **Stop after the game**. Save and Quit ends on `00007E57 00000002`.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
@@ -211,7 +211,7 @@ Menu entry **View Your Support ID Number** (stops after the game). Save and Quit
 
 ## A power cut during a save
 
-Menu entries **Move Pokémon to Pokémon HOME** (writes the boxes) and **Download Poké Transporter** (writes the record) of the test package. They save normally, but first write for a while, so that a real cut lands inside a write. The saving screen stays clearly longer than usual.
+Menu entries **Write the boxes** and **Write the record** of the test package. They save normally, but first write for a while, so that a real cut lands inside a write. The saving screen stays clearly longer than usual.
 
 For each of the two entries, three to five times:
 
@@ -219,7 +219,7 @@ For each of the two entries, three to five times:
 | --- | --- | --- |
 | 1 | Start Bank, choose the entry, pick a game, move one Pokémon, Save and Quit | the saving screen |
 | 2 | About five seconds in, cut the power for real | |
-| 3 | Start Bank, Use Pokémon Bank | Bank opens, with the boxes as before step 1 |
+| 3 | Start Bank, Normal save | Bank opens, with the boxes as before step 1 |
 | 4 | Move one Pokémon, Save and Quit, and let it finish. Close Bank and start it again. | the save completes, and the change is there |
 
 How to cut the power, best first: pull the SD card, if the model lets you reach it while it runs; take out the battery; hold POWER. Holding POWER is the weakest, because the console may shut down in order and nothing is interrupted.

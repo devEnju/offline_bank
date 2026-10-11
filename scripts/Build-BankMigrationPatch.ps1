@@ -1,10 +1,11 @@
 <#
-Builds the migration patch for Bank into build/bank-migrate/<package> and
-checks it with Verify-BankPatch.ps1. The migration belongs to one step: it
-converts the Bank that v0.2.1 stored into the files of v0.3.0 and does
-nothing else; it never opens the Bank (docs/building.md). It is a crate of
-its own, patches/bank-migrate, with its own short list of edits.
-An existing package of the same sources is kept. Prints the package name.
+Builds the migration patch for Bank into build/bank-migrate and checks it
+with Verify-BankPatch.ps1. The migration belongs to one step: it converts the
+Bank that v0.2.1 stored into the files of v0.3.0 and does nothing else; it
+never opens the Bank (docs/building.md). It is a crate of its own,
+patches/bank-migrate, with its own short list of edits. The folder holds one
+package, the latest: an existing one is replaced. Its name
+(Get-PackageId.ps1) is in PACKAGE.txt.
 #>
 [CmdletBinding()]
 param(
@@ -27,15 +28,13 @@ try {
     $elf = Join-Path $projectRoot 'build/intermediate/bank-migrate/bank-migrate-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank-migrate
-    $output = Join-Path $projectRoot "build/bank-migrate/$id"
-    if (-not (Test-Path -LiteralPath $output)) {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $output) -Force | Out-Null
-        & cargo +stable run --locked --offline -p patch-builder -- build-development migrate $inputRecord.code $inputRecord.exheader $elf $output | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "Migration patch build failed: $LASTEXITCODE" }
-    }
-    & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -Patch migrate -Package $id | Out-Null
+    $output = Join-Path $projectRoot 'build/bank-migrate'
+    if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+    & cargo +stable run --locked --offline -p patch-builder -- build-development migrate $inputRecord.code $inputRecord.exheader $elf $output | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Migration patch build failed: $LASTEXITCODE" }
+    Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value $id
+    & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -Patch migrate | Out-Null
     $report = Get-Content -LiteralPath (Join-Path $output 'verification.json') -Raw | ConvertFrom-Json
     if ($report.status -ne 'passed') { throw 'Verification of the migration package failed' }
-    Write-Host "Migration package: $output (verified)"
-    $id
+    Write-Host "Migration package $id`: $output (verified)"
 } finally { Pop-Location }

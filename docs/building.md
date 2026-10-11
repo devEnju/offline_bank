@@ -23,23 +23,23 @@ The builder identifies the inputs by hash and refuses any other version. The exp
 ./scripts/Build-TransporterPatch.ps1
 ```
 
-Each script unpacks its CIA, compiles the injected code, and writes a package:
+Each script unpacks its CIA, compiles the injected code, writes a package, and verifies it:
 
 ```text
-build/bank/<package>/           code.ips, exheader.bin, manifest.json, report.md
-build/transporter/<package>/    code.ips, exheader.bin, manifest.json, report.md
+build/bank/           code.ips, exheader.bin, manifest.json, report.md, verification.json, PACKAGE.txt
+build/transporter/    the same
 ```
 
-`<package>` is the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. An existing package is never replaced.
+A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The migration and the test package ([below](#test-builds-for-an-interrupted-save)) are built the same way, into `build/bank-migrate/` and `build/bank-test/`.
 
 ## Verify
 
 ```powershell
-./scripts/Verify-BankPatch.ps1 -Package <package>
-./scripts/Verify-TransporterPatch.ps1 -Package <package>
+./scripts/Verify-BankPatch.ps1
+./scripts/Verify-TransporterPatch.ps1
 ```
 
-The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed and that `exheader.bin` differs from the original only in its three size fields. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
+The build scripts run these themselves. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed and that `exheader.bin` differs from the original only in its three size fields. They also check that the package is the one of the current sources, by its name. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
 
 ## Tests
 
@@ -61,20 +61,20 @@ Recovery after a power cut cannot be triggered on demand on a console, so one ex
 
 This builds and verifies it into `build/bank-test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
 
-- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. The buttons keep the original's labels; the patch writes no text.
+- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. The five buttons carry the names of what they do, in English in every language; these are the only texts of its own that any build has. Back on the game selection leads to the menu again.
 - The reward dialogs never come, and nothing is claimed, so that a run is short.
 - While the menu is on screen Bank's files are open, and HOME works there; closing Bank from the HOME Menu at that point writes nothing.
 
 | Button on the main menu | What Save and Quit does | The card afterwards |
 | --- | --- | --- |
-| Use Pokémon Bank | Saves normally. | |
-| Learn about Pokémon Bank | **Stops before the game**: after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
-| View Your Support ID Number | **Stops after the game**: after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
-| Download Poké Transporter (or "Poké Transporter Downloaded") | **Writes the record**: first writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
-| Move Pokémon to Pokémon HOME | **Writes the boxes**: first writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Normal save | Saves normally. | |
+| Stop before the game | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
+| Stop after the game | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
+| Write the record | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
+| Write the boxes | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
 | Back | The original's: asks, then returns to the start screen. | |
 
-The two stops test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); "Use Pokémon Bank" of the same package settles what they left. The two that write for a while give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
+The two stops test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); "Normal save" of the same package settles what they left. The two that write for a while give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
 
 The PC tests run the same loops under a simulated cut at every write:
 
@@ -90,7 +90,7 @@ Version 0.2.1 stored the Bank in four files; since v0.3.0 it has ten ([internals
 ./scripts/Build-BankMigrationPatch.ps1
 ```
 
-This builds it into `build/bank-migrate/<package>/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
+This builds it into `build/bank-migrate/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
 It belongs to that one step and ships only with release v0.3.0 ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
