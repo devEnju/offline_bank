@@ -261,3 +261,60 @@ pub unsafe fn other_copy(
         shown
     }
 }
+
+/// Writes the start screen's version line with `suffix` behind it, "Ver.
+/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
+/// the one call of 001e21c8(context, group, pane, message) that the start
+/// screen makes for its message 0x4E (002b49c4).
+///
+/// That function loads the message into the first of the context's two
+/// work strings (`[context + 4]`), fills in its values into the second, and
+/// hands the second to the pane (001e264c finds it, 0029a628 sets its
+/// text). Here the original runs first, the suffix is added to the second
+/// string in place, and the pane is given it again with the same two calls.
+/// Without room for the suffix the line stays the original's.
+/// # Safety
+/// The arguments are those of the replaced call, on the main thread.
+pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
+    unsafe {
+        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
+            transmute(0x001e_21c8usize);
+        original(context, group, pane, message);
+        let Ok(strings) = pointer(word(context, 4)) else {
+            return;
+        };
+        let Ok(text) = pointer(word(strings, 4)) else {
+            return;
+        };
+        let Ok(data) = pointer(word(text, 4)) else {
+            return;
+        };
+        let data = data.cast::<u16>();
+        let room = text.add(8).cast::<u16>().read() as usize;
+        if text.add(0xc).read() == 0 {
+            return;
+        }
+        let mut len = 0;
+        while len < room && data.add(len).read() != 0 {
+            len += 1;
+        }
+        if len == 0 || len + suffix.len() >= room {
+            return;
+        }
+        for (index, &unit) in suffix.iter().enumerate() {
+            data.add(len + index).write(u16::from(unit));
+        }
+        len += suffix.len();
+        data.add(len).write(0);
+        text.add(0xa).cast::<u16>().write(len as u16);
+        let Ok(layouts) = pointer(word(context, 0x1c)) else {
+            return;
+        };
+        let find: unsafe extern "aapcs" fn(u32, u32) -> *mut u8 = transmute(0x001e_264cusize);
+        let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, i32) = transmute(0x0029_a628usize);
+        let found = find(word(layouts, group as usize * 8), pane);
+        if !found.is_null() {
+            set(found, text, -1);
+        }
+    }
+}

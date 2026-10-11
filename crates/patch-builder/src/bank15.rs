@@ -113,6 +113,20 @@ pub(crate) fn message_hook(target: u32) -> crate::Result<CheckedEdit> {
     ))
 }
 
+/// The entry function every patch has for the start screen's version line.
+pub(crate) const VERSION_ENTRY: &str = "bank_version_shown";
+
+/// The start screen's call that writes its version line, "Ver. 1.5" (was:
+/// bl 001e21c8, "put message 0x4E into its pane"), to that entry. It makes
+/// the original call and adds the patch's name to the line.
+pub(crate) fn version_call(target: u32) -> crate::Result<CheckedEdit> {
+    Ok(word(
+        0x002b49c4,
+        0xebfcb5ff,
+        crate::encode_arm_branch(0x002b49c4, target, true)?,
+    ))
+}
+
 /// Task 9, "open Bank": the update and busy-poll slots of its vtable with
 /// the functions they hold.
 pub(crate) const OPEN_TASK: [(u32, u32); 2] = [(0x00361cfc, 0x002ae568), (0x00361d0c, 0x002b4a20)];

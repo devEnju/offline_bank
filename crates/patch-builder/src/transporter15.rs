@@ -69,7 +69,8 @@ pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 56;
 pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 60;
 pub const ENTRY_LIST_READY: u32 = PAYLOAD_ADDRESS + 64;
 pub const ENTRY_MESSAGE: u32 = PAYLOAD_ADDRESS + 68;
-pub const ENTRY_COUNT: u32 = 18;
+pub const ENTRY_VERSION: u32 = PAYLOAD_ADDRESS + 72;
+pub const ENTRY_COUNT: u32 = 19;
 
 enum Word {
     Raw(u32),
@@ -166,6 +167,10 @@ const EDITS: &[(u32, u32, Word)] = &[
     // language, and the reading language is set back.
     (0x0024_ba44, 0xe3a0_7003, BranchLink(ENTRY_TITLE_BEGIN)),
     (0x0024_ba74, 0xe3a0_3027, BranchLink(ENTRY_TITLE_END)),
+    // The same constructor's call that writes the version line, "Ver. 1.5"
+    // (was: bl 001D33CC, "put message 0x29 into its pane"): the entry makes
+    // the call and adds the patch's name to the line.
+    (0x0024_bae8, 0xebfe_1e37, BranchLink(ENTRY_VERSION)),
     // Building a layout (0013AE2C), the layout binary on its way to
     // Layout::Build (was: mov r1, r0): the check does the same and lets the
     // payload give the language screen's layout its Back button first.

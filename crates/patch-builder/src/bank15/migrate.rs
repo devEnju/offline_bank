@@ -4,15 +4,20 @@
 
 use super::{
     archive_preservation_candidate, first_start_edits, message_hook, router_call, startup_call,
-    word, Profile, MESSAGE_ENTRY, OPEN_TASK,
+    version_call, word, Profile, MESSAGE_ENTRY, OPEN_TASK, VERSION_ENTRY,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
 
 pub const PROFILE: Profile = Profile {
     name: "migrate",
-    entries: &["bank_migrate_next", "bank_migrate_open", MESSAGE_ENTRY],
-    // Fourteen edited words plus the linked bootstrap bytes.
-    regions: 15,
+    entries: &[
+        "bank_migrate_next",
+        "bank_migrate_open",
+        MESSAGE_ENTRY,
+        VERSION_ENTRY,
+    ],
+    // Fifteen edited words plus the linked bootstrap bytes.
+    regions: 16,
     edits,
 };
 
@@ -22,15 +27,23 @@ fn edits(_: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
         payload.export("bank_migrate_next")?,
         payload.export("bank_migrate_open")?,
         payload.export(MESSAGE_ENTRY)?,
+        payload.export(VERSION_ENTRY)?,
     )
 }
 
-fn hook_edits(startup: u32, next: u32, open: u32, message: u32) -> crate::Result<Vec<CheckedEdit>> {
+fn hook_edits(
+    startup: u32,
+    next: u32,
+    open: u32,
+    message: u32,
+    version: u32,
+) -> crate::Result<Vec<CheckedEdit>> {
     let mut edits = vec![
         archive_preservation_candidate(),
         startup_call(startup)?,
         router_call(next)?,
         message_hook(message)?,
+        version_call(version)?,
     ];
     // Task 9 keeps its native constructor, init and end; its update and
     // busy poll run the conversion.
@@ -48,7 +61,7 @@ mod tests {
 
     #[test]
     fn the_migration_edits_the_way_to_opening_and_nothing_behind_it() {
-        let edits = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400).unwrap();
+        let edits = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400, 0x3fb600).unwrap();
         assert_eq!(edits.len(), PROFILE.regions - 1);
         let at = |address: u32| {
             edits
@@ -92,12 +105,12 @@ mod tests {
         offsets.sort_unstable();
         offsets.dedup();
         assert_eq!(offsets.len(), edits.len());
-        assert!(hook_edits(0x313910, 0x80000000, 0x3fb200, 0x3fb400).is_err());
+        assert!(hook_edits(0x313910, 0x80000000, 0x3fb200, 0x3fb400, 0x3fb600).is_err());
     }
 
     #[test]
     fn every_edit_of_the_migration_is_one_the_offline_patch_makes_at_the_same_place() {
-        let migration = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400).unwrap();
+        let migration = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400, 0x3fb600).unwrap();
         let offline_edits = offline::sample_edits();
         assert!(migration.len() < offline_edits.len());
         for edit in &migration {
@@ -108,11 +121,14 @@ mod tests {
             assert_eq!(same.expected, edit.expected);
         }
         // Its own entry functions are its own; the one of `bank-common`
-        // is the same in both.
+        // and the one for the version line have the same name in both.
+        let shared = [MESSAGE_ENTRY, VERSION_ENTRY];
         assert!(PROFILE
             .entries
             .iter()
-            .all(|entry| *entry == MESSAGE_ENTRY || !offline::PROFILE.entries.contains(entry)));
-        assert!(offline::PROFILE.entries.contains(&MESSAGE_ENTRY));
+            .all(|entry| shared.contains(entry) || !offline::PROFILE.entries.contains(entry)));
+        assert!(shared
+            .iter()
+            .all(|entry| offline::PROFILE.entries.contains(entry)));
     }
 }

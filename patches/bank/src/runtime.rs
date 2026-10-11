@@ -1213,3 +1213,22 @@ pub unsafe extern "aapcs" fn bank_offline_timestamp(
         })
     }
 }
+
+/// Replaces the start screen's call that writes its version line
+/// (002b49c4): the line says which patch runs.
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_version_shown(
+    context: *mut u8,
+    group: u32,
+    pane: u32,
+    message: u32,
+) {
+    const SUFFIX: &[u8] = if cfg!(feature = "test-build") {
+        b"-test"
+    } else {
+        b"-offline"
+    };
+    unsafe { bank_common::ui::version(context, group, pane, message, SUFFIX) }
+}

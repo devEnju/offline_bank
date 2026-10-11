@@ -24,6 +24,10 @@ mod linked {
     #[used]
     #[link_section = ".bank.link_roots"]
     static MESSAGE: unsafe extern "aapcs" fn() = bank_common::task::bank_message_shown;
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static VERSION: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
+        bank_payload::runtime::bank_version_shown;
 
     #[used]
     #[link_section = ".bank.link_roots"]

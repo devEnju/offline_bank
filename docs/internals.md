@@ -50,15 +50,16 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 | First start without prompts (8 words) | yes | yes |
 | Task router (`002a5a2c`) | `bank_offline_next` | `bank_migrate_next` |
 | The "show a message" function (`001d6650`) | `bank_message_shown` | `bank_message_shown` |
+| The start screen's version line (`002b49c4`) | `bank_version_shown`, "-offline" | `bank_version_shown`, "-migration" |
 | Task 9, update and busy poll (`00361cfc`, `00361d0c`) | `bank_offline_load` | `bank_migrate_open` |
 | Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the Pokédex callbacks, the timestamp helper (11 regions) | yes | no |
-| Regions / entry functions | 26 / 9 | 15 / 3 |
+| Regions / entry functions | 27 / 10 | 16 / 4 |
 
-`bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own.
+`bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`ui::version`). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", or "Ver. 1.5-test" in a test build.
 
 ### Edits to the original
 
-The offline patch: 26 regions (25 words and the start-up hook) and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
+The offline patch: 27 regions (26 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -361,7 +362,7 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 
 ### Edits to the original
 
-31 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with eighteen entry branches, in this order: check, deliver, router, slot, cartridge id, cartridge read, cartridge write, list next, select, title scan, language chosen, language order, language buttons, language back, title begin, title end, list ready, message. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One edit, at `0013AEE4`, does not branch to an entry but to the layout check beside the start-up hook (see [Placement](#placement-1)).
+32 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with nineteen entry branches, in this order: check, deliver, router, slot, cartridge id, cartridge read, cartridge write, list next, select, title scan, language chosen, language order, language buttons, language back, title begin, title end, list ready, message, version. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One edit, at `0013AEE4`, does not branch to an entry but to the layout check beside the start-up hook (see [Placement](#placement-1)).
 
 | Address | Purpose | Replacement |
 | --- | --- | --- |
@@ -387,6 +388,7 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | `0022B6E0`, `0022B6E4` | Language screen: list index 5, Japanese, goes to the kana/kanji part | List index 7, Back, goes to part 3, the end; every language goes to the confirm part |
 | `0022B3B8` | Language screen: B on a part without a Back button does nothing | Language-back entry: on the list, presses the Back button |
 | `0024BA44`, `0024BA74` | Title screen: before and after it loads its archives | Title-begin and title-end entries: the archive with logo and start prompt is read in the chosen language |
+| `0024BAE8` | Title screen: the call that writes its version line (`001D33CC(context, 0, 0x26, 0x29)`) | Version entry: the call, then the line again with "-offline" behind it, through the original's pane functions `0019F834` and `002375D0` |
 | `0013AEE4` | Building a layout: the layout binary on its way to `Layout::Build` | Layout check: the same, and the payload adjusts the language screen's layout first |
 | `0024A150` | Transfer, sub-state 0: create the upload request | Deliver entry, which goes on by its result |
 | `0024A3C0` | Transfer: `mov r0, #0xa`, the one place that selects the commit request (sub-state `0xA`) | `mov r0, #0xe`: the final save comes next |

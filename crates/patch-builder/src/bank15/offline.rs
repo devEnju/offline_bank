@@ -2,7 +2,7 @@
 
 use super::{
     archive_preservation_candidate, first_start_edits, message_hook, router_call, startup_call,
-    word, Profile, CODE_BASE, MESSAGE_ENTRY, OPEN_TASK,
+    version_call, word, Profile, CODE_BASE, MESSAGE_ENTRY, OPEN_TASK, VERSION_ENTRY,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
 
@@ -18,9 +18,10 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_dex_records_update",
         "bank_offline_dex_records_finish",
         MESSAGE_ENTRY,
+        VERSION_ENTRY,
     ],
-    // Twenty-five edited words plus the linked bootstrap bytes.
-    regions: 26,
+    // Twenty-six edited words plus the linked bootstrap bytes.
+    regions: 27,
     edits,
 };
 
@@ -51,6 +52,7 @@ fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
         dex_records_update: payload.export("bank_offline_dex_records_update")?,
         dex_records_finish: payload.export("bank_offline_dex_records_finish")?,
         message: payload.export(MESSAGE_ENTRY)?,
+        version: payload.export(VERSION_ENTRY)?,
     })
 }
 
@@ -66,6 +68,7 @@ struct HookTargets {
     dex_records_update: u32,
     dex_records_finish: u32,
     message: u32,
+    version: u32,
 }
 fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     // All addresses and original words independently checked against the whole
@@ -81,6 +84,7 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
         startup_call(targets.startup)?,
         router_call(targets.next)?,
         message_hook(targets.message)?,
+        version_call(targets.version)?,
     ];
     // Original read-only vtables: taskC/D rewards, task9 open, task0x10 load, task7 normal /
     // forced-busy updates. Native constructors/init/end callbacks remain intact.
@@ -121,6 +125,7 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
         dex_records_update: 0x3fc600,
         dex_records_finish: 0x3fc800,
         message: 0x3fca00,
+        version: 0x3fcc00,
     })
     .unwrap()
 }
@@ -144,6 +149,7 @@ mod tests {
             dex_records_update: 0x3fc600,
             dex_records_finish: 0x3fc800,
             message: 0x3fca00,
+            version: 0x3fcc00,
         };
         let edits = native_hook_edits(targets).unwrap();
         assert_eq!(edits.len(), PROFILE.regions - 1);
@@ -212,6 +218,16 @@ mod tests {
         assert_eq!(
             message.replacement,
             encode_arm_branch(0x001d6650, targets.message, false).unwrap()
+        );
+        // The version line: a call, as the one it replaces.
+        let version = edits.iter().find(|e| e.offset == 0x001b49c4).unwrap();
+        assert_eq!(
+            version.expected,
+            encode_arm_branch(0x002b49c4, 0x001e21c8, true).unwrap()
+        );
+        assert_eq!(
+            version.replacement,
+            encode_arm_branch(0x002b49c4, targets.version, true).unwrap()
         );
         assert!(native_hook_edits(HookTargets {
             timestamp: 0x80000000,

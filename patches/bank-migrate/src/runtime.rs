@@ -252,3 +252,17 @@ pub unsafe extern "aapcs" fn bank_migrate_open(raw: *mut u8) -> u32 {
     let [first, second] = state.numbers.unwrap_or([NATIVE_OBJECT, 0]);
     state.notice.done(task, first, second)
 }
+
+/// Replaces the start screen's call that writes its version line
+/// (002b49c4): the line says which patch runs.
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_version_shown(
+    context: *mut u8,
+    group: u32,
+    pane: u32,
+    message: u32,
+) {
+    unsafe { ui::version(context, group, pane, message, b"-migration") }
+}

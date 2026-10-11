@@ -12,7 +12,7 @@ mod linked {
     use transporter_payload::gen5::transporter_slot_holds;
     use transporter_payload::hooks::{
         transporter_check, transporter_deliver, transporter_list_ready, transporter_message_waits,
-        transporter_next,
+        transporter_next, transporter_version,
     };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
@@ -50,7 +50,9 @@ mod linked {
         "b transporter_title_end_stub",
         "b transporter_list_ready_stub",
         "b transporter_message_stub",
+        "b {version}",
         next = sym transporter_next,
+        version = sym transporter_version,
         cart_read = sym transporter_cart_read,
         cart_write = sym transporter_cart_write,
         language_chosen = sym transporter_language_chosen,

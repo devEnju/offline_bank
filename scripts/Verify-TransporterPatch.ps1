@@ -19,7 +19,7 @@ $dataSize = 0x3D3FC
 $bssSize = 0x3A4A8
 $originalAppInit = 0x00104644
 $startupCall = 0x00103D9C
-$entryCount = 18
+$entryCount = 19
 
 function Get-Sha256([byte[]]$bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -50,11 +50,12 @@ $directory = Join-Path $projectRoot ('build/transporter/' + $Package)
 
 # Whole-word edits: address -> expected new word, or a branch form checked
 # separately. Plain hashtable: an ordered dictionary would treat these integer
-# keys as positions. Entry words are the first eighteen words of the payload.
+# keys as positions. Entry words are the first nineteen words of the payload.
 $allowed = @{
     0x00103D9C = 'bl:0028D1AC'
     0x00242EF8 = 'bl:00364008'; 0x002445EC = 'bl:00364040'
     0x0019B50C = 'b:00364044'
+    0x0024BAE8 = 'bl:00364048'
     0x00246F48 = 'b:00364000'; 0x00248CDC = 'b:00248E44'
     0x00245728 = 'b:00245800'; 0x002460B8 = 'b:002461D0'
     0x002488A0 = 0xE3A00001; 0x002483CC = 0xE3A00001
@@ -211,7 +212,7 @@ $report = [ordered]@{
         'start-up hook replaces only zero bytes and calls the original application init first',
         'original read-only data and data unchanged',
         'former zero-initialised data written as zero; every added byte written',
-        'payload starts with eighteen distinct branches into its own code pages',
+        'payload starts with nineteen distinct branches into its own code pages',
         'only exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image',
         'manifest hashes match'
     )

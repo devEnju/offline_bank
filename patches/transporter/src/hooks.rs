@@ -27,6 +27,19 @@ pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
 /// The original's "show this message and wait": `(ui, message, 1)`, as the
 /// game search calls it for its own message 0 (`00246FFC`).
 const SHOW_MESSAGE: usize = 0x0019_b50c;
+/// The title screen's "put this message into its pane": `(context, group,
+/// pane, message)`, as it calls it for its version line, message 0x29
+/// (`0024BAE8`). It loads the message into the first of the context's two
+/// work strings (`[context + 4]`), fills in its values into the second, and
+/// hands the second to the pane (`0019F834` finds it in the layout of the
+/// group, `[[context + 0x1C] + 8 * group]`; `002375D0` sets its text).
+const PANE_MESSAGE: usize = 0x001d_33cc;
+const PANE_FIND: usize = 0x0019_f834;
+const PANE_TEXT: usize = 0x0023_75d0;
+const CONTEXT_STRINGS: usize = 0x4;
+const CONTEXT_LAYOUTS: usize = 0x1c;
+/// What the version line says behind "Ver. 1.5".
+const VERSION_SUFFIX: &[u8] = b"-offline";
 /// The original's router, `get_next_state(manager, current)`, and what it
 /// reads: the finished task at `manager + 0x10` with its outcome byte at
 /// `+0x30`, and the manager's "cancelled" flag, which it clears.
@@ -452,5 +465,58 @@ pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
         None => DELIVER_PENDING,
         Some(1) => DELIVER_DONE,
         Some(_) => DELIVER_FAILED,
+    }
+}
+
+/// Replaces the title screen's call that writes its version line
+/// (`0024BAE8`): the original call, then the same line with the patch's name
+/// behind it, added to the original's own string in place and handed to the
+/// pane with the original's two calls. Without room for it the line stays
+/// the original's.
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_version(
+    context: *const u8,
+    group: u32,
+    pane: u32,
+    message: u32,
+) {
+    unsafe {
+        let original: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) = transmute(PANE_MESSAGE);
+        original(context, group, pane, message);
+        let Some(text) = follow(context, CONTEXT_STRINGS).and_then(|strings| follow(strings, 4))
+        else {
+            return;
+        };
+        let (Some(data), Some(layouts)) = (follow(text, 4), follow(context, CONTEXT_LAYOUTS))
+        else {
+            return;
+        };
+        let data = data.cast_mut().cast::<u16>();
+        let room = usize::from(text.add(8).cast::<u16>().read());
+        if text.add(0xc).read() == 0 {
+            return;
+        }
+        let mut len = 0;
+        while len < room && data.add(len).read() != 0 {
+            len += 1;
+        }
+        if len == 0 || len + VERSION_SUFFIX.len() >= room {
+            return;
+        }
+        for (index, &unit) in VERSION_SUFFIX.iter().enumerate() {
+            data.add(len + index).write(u16::from(unit));
+        }
+        len += VERSION_SUFFIX.len();
+        data.add(len).write(0);
+        text.cast_mut().add(0xa).cast::<u16>().write(len as u16);
+        let find: unsafe extern "aapcs" fn(u32, u32) -> *const u8 = transmute(PANE_FIND);
+        let set: unsafe extern "aapcs" fn(*const u8, *const u8, i32) = transmute(PANE_TEXT);
+        let layout = layouts.add(group as usize * 8).cast::<u32>().read();
+        let found = find(layout, pane);
+        if !found.is_null() {
+            set(found, text, -1);
+        }
     }
 }

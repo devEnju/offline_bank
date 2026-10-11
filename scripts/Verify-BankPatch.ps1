@@ -117,10 +117,10 @@ try {
     # The last is the one every patch has: where the original's "show a
     # message" function goes first.
     $exportNames=@{
-        offline=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_dex_save_request','bank_offline_dex_records_update','bank_offline_dex_records_finish','bank_message_shown')
-        migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown')
+        offline=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_dex_save_request','bank_offline_dex_records_update','bank_offline_dex_records_finish','bank_message_shown','bank_version_shown')
+        migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown','bank_version_shown')
     }[$Patch]
-    $exportCount=@{offline=9;migrate=3}[$Patch]
+    $exportCount=@{offline=10;migrate=4}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
     $foreign=@{offline='bank_migrate_*';migrate='bank_offline_*'}[$Patch]
@@ -148,14 +148,17 @@ try {
     # called, the router is the patch's own, the first start has no
     # prompts (the notice is skipped to where accepting it continues), and
     # the "show a message" function (001d6650, push {r4-r8, lr}) goes to
-    # the entry that lets HOME and sleep through for a message that waits.
+    # the entry that lets HOME and sleep through for a message that waits,
+    # and the start screen's call that writes its version line (002b49c4,
+    # bl 001e21c8) goes to the entry that adds the patch's name to it.
     $router=$exportNames[0]
     $branches=@(
         @(0x29f338,0xe594002cL,0x29f4fc,$false),
         @(0x1040a4,0xeb000228L,'bank_bootstrap_startup',$true),
         @(0x2a5a2c,0xebfffed3L,$router,$true),
         @(0x2ac5b0,0xe5945040L,0x2ac8a8,$false),
-        @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
+        @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false),
+        @(0x2b49c4,0xebfcb5ffL,'bank_version_shown',$true)
     )
     if ($Patch -eq 'offline') {
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
@@ -202,7 +205,7 @@ try {
             @(0x361e84,0x2af034,0x2af124)
         )
     }
-    $regions=@{offline=26;migrate=15}[$Patch]
+    $regions=@{offline=27;migrate=16}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     [byte[]]$expected=[byte[]]::new($expandedSize)
     [Array]::Copy($original,0,$expected,0,$original.Length)
