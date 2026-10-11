@@ -19,8 +19,9 @@ No run is logged here one by one: the page does not say which check was made wit
 | Transporter | `Build-TransporterPatch.ps1` | `build/transporter/` |
 | Test package | `Build-BankTestPatches.ps1` | `build/bank-test/` |
 | Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/` |
+| Download, while the official service runs | `Build-BankDownloadPatch.ps1` | `build/bank-download/` |
 
-Every package says what it is on its start screen: "Ver. 1.5-offline" for Bank and for Transporter, "Ver. 1.5-migration", "Ver. 1.5-test". What the test package does is in [building.md](building.md#test-builds-for-an-interrupted-save).
+Every package says what it is on its start screen: "Ver. 1.5-offline" for Bank and for Transporter, "Ver. 1.5-migration", "Ver. 1.5-download", "Ver. 1.5-test". What the test package does is in [building.md](building.md#test-builds-for-an-interrupted-save).
 
 ## Which tests after which change
 
@@ -265,6 +266,22 @@ That a migration refuses a Bank with a Save and Quit in progress, and that a cut
 | new Bank | start Bank, with its game inserted and without it | `0000000B`, then the line about the HOME Menu; nothing changed |
 | test package of the other version | start Bank | the save is settled as that version settles it |
 | new Bank | start Bank | Bank opens |
+
+## The download from the official server
+
+Package `build/bank-download/`. None of these runs has been made yet. It needs the live service, an internet connection, the console's Nintendo Network ID and a game with a Pokédex. Back up Bank's extdata and that game first: the original saves the game once when it loads the Bank.
+
+| Run | Do | Must show |
+| --- | --- | --- |
+| D1 | Start screen | "Ver. 1.5-download" |
+| D2 | START, with an offline Bank on the card | after a loading screen `0000D0AD 00000002` under the line about the HOME Menu; nothing is contacted |
+| D3 | Move the offline Bank's files off the card (keep them). START, "Use Pokémon Bank", pick a game | the original connects and loads; no reward dialog, no boxes; then `0000D0AD 00000001` |
+| D4 | START again | `0000D0AD 00000002` |
+| D5 | Install the offline Bank and start it | the boxes and the transport box as they are on the server; 0 Poké Miles |
+| D6 | Install the original Bank without a patch and use it online | it opens as always: nothing is locked, and the boxes on the server are unchanged |
+| D7 | The download again, wireless off, no Bank on the card: START | the original's message about the connection, then its start screen; nothing written |
+
+D6 shows that the session was closed on the server; it is the run that matters most. If the original says the server is locked, wait as it asks and note it.
 
 ## If something else shows
 

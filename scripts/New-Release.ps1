@@ -4,6 +4,9 @@ param(
     # The one earlier version whose Bank this release converts. Only for the
     # release that changes how the Bank is stored; adds the migration zip.
     [string]$MigrateFrom = '',
+    # Adds the download zip: the patch that fetches the Bank from the
+    # official server while that service runs.
+    [switch]$Download,
     [switch]$Draft,
     [switch]$Publish
 )
@@ -32,6 +35,7 @@ if ($MigrateFrom) {
     }
 }
 
+if ($Download -and $Publish) { throw '-Publish finds the download zip of the earlier run by itself.' }
 $suffix = if ($Draft) { '-draft' } else { '' }
 $name = "offline_bank-$Version$suffix"
 $releaseRoot = Join-Path $projectRoot 'build/release'
@@ -40,6 +44,11 @@ $notesPath = Join-Path $releaseRoot "$name.md"
 # The migration zip carries the version it converts from.
 $migrationName = if ($MigrateFrom) { "offline_bank-$MigrateFrom-migration$suffix" } else { '' }
 $migrationZip = if ($MigrateFrom) { Join-Path $releaseRoot "$migrationName.zip" } else { '' }
+# The download zip carries the version whose offline Bank it writes.
+$downloadName = if ($Download) { "offline_bank-$Version-download$suffix" } else { '' }
+$downloadZip = if ($Download) { Join-Path $releaseRoot "$downloadName.zip" } else { '' }
+# The day the official service ends, in its own time zone.
+$serviceEnds = 'February 25, 2027'
 $bankTitle = '00040000000C9B00'
 $disclaimer = @(
     'Unofficial fan project. Not affiliated with or endorsed by Nintendo,'
@@ -74,6 +83,10 @@ if ($Publish) {
     if ($notes -match 'offline_bank-v\d+\.\d+\.\d+-migration\.zip') {
         $assets += Join-Path $releaseRoot $Matches[0]
     }
+    # And so does a download zip.
+    if ($notes -match 'offline_bank-v\d+\.\d+\.\d+-download\.zip') {
+        $assets += Join-Path $releaseRoot $Matches[0]
+    }
     foreach ($asset in $assets) {
         if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Missing $asset" }
         if ($notes -notmatch [regex]::Escape((Get-Sha256 $asset))) {
@@ -105,7 +118,7 @@ if (-not $Draft) {
     if ($dirty) { throw 'There are uncommitted changes. Commit them, or use -Draft for a test build.' }
     & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$Version" | Out-Null
     if ($LASTEXITCODE -eq 0) { throw "Tag $Version already exists." }
-    foreach ($path in @($zip, $notesPath, $migrationZip) | Where-Object { $_ }) {
+    foreach ($path in @($zip, $notesPath, $migrationZip, $downloadZip) | Where-Object { $_ }) {
         if (Test-Path -LiteralPath $path) { throw "Output already exists and will not be replaced: $path" }
     }
 }
@@ -150,11 +163,13 @@ try {
         '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Package 'transporter' 'Transporter') }
     }
     $migration = if ($MigrateFrom) { Get-Package 'bank-migrate' 'BankMigration' }
+    $downloaded = if ($Download) { Get-Package 'bank-download' 'BankDownload' }
 
     # 4. The zips, each laid out for the root of the SD card.
     $stage = Join-Path $releaseRoot $name
     $migrationStage = if ($MigrateFrom) { Join-Path $releaseRoot $migrationName } else { '' }
-    foreach ($path in @($stage, $zip, $notesPath, $migrationStage, $migrationZip) | Where-Object { $_ }) {
+    $downloadStage = if ($Download) { Join-Path $releaseRoot $downloadName } else { '' }
+    foreach ($path in @($stage, $zip, $notesPath, $migrationStage, $migrationZip, $downloadStage, $downloadZip) | Where-Object { $_ }) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse }
     }
     $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
@@ -195,6 +210,12 @@ try {
         $readme.Add("Coming from ${MigrateFrom}? Convert your Bank first with")
         $readme.Add("$migrationName.zip from this release.")
         $readme.Add("Older than ${MigrateFrom}? Install $MigrateFrom first and start Bank once.")
+    }
+    if ($Download) {
+        $readme.Add('')
+        $readme.Add('Pokemon still on the official server? Fetch them into a new offline')
+        $readme.Add("Bank first with $downloadName.zip from this release,")
+        $readme.Add("while the official service runs (until $serviceEnds).")
     }
     $readme.Add('')
     foreach ($title in $titles.Keys) {
@@ -251,6 +272,65 @@ try {
         Remove-Item -LiteralPath $migrationStage -Recurse
     }
 
+    # The download from the official server: its own zip, with everything
+    # its user has to know. This block goes when patches/bank-download goes.
+    if ($Download) {
+        $steps = [Collections.Generic.List[string]]::new()
+        $steps.Add("Pokemon Bank Offline Patch: download from the official server, for $Version$draftMark")
+        $steps.Add("Built $date from commit $source")
+        $steps.Add('')
+        $steps.AddRange([string[]]$disclaimer)
+        $steps.Add('')
+        $steps.Add('Fetches the Bank you have on the official Pokemon Bank server and writes')
+        $steps.Add("it to the SD card as the Bank of the offline patch $Version. It does")
+        $steps.Add('nothing else: it never opens the boxes and never saves to the server.')
+        $steps.Add("The official service ends on $serviceEnds. After that day this")
+        $steps.Add('patch cannot do anything.')
+        $steps.Add('')
+        $steps.Add('NOT TESTED against the official server: it was written and checked from')
+        $steps.Add('the code of the original alone, because its author has no Nintendo')
+        $steps.Add('Network ID to try it with. Make the backup of step 1. If it stops')
+        $steps.Add('anywhere, please report the last screen and any numbers.')
+        $steps.Add('')
+        $steps.Add('- Your Pokemon stay on the server as well; this makes a copy.')
+        $steps.Add('- It only writes when no offline Bank is on the SD card. An offline')
+        $steps.Add('  Bank you already have is never replaced or merged.')
+        $steps.Add('- Poke Miles are not fetched. The offline Bank starts with 0.')
+        $steps.Add('- You need what the original needs: an internet connection, your')
+        $steps.Add('  Nintendo Network ID on this console, and a compatible game with a')
+        $steps.Add('  Pokedex. As with any use of the original, the game you pick is saved')
+        $steps.Add('  once by Bank.')
+        $steps.Add('')
+        $steps.Add('1. Back up the extra data (extdata) of Pokemon Bank and your game saves,')
+        $steps.Add('   for example with Checkpoint.')
+        $steps.Add('2. Copy the luma folder of this zip to the root of the SD card. It')
+        $steps.Add('   replaces the two files of Pokemon Bank. The start screen then says')
+        $steps.Add('   "Ver. 1.5-download".')
+        $steps.Add('3. Start Pokemon Bank and press START. It connects as the original does.')
+        $steps.Add('   Choose "Use Pokemon Bank" and pick a game. After the loading screens')
+        $steps.Add('   two numbers appear under "Press HOME to return to the HOME Menu".')
+        $steps.Add('   This patch never opens the Bank; the numbers are all it shows.')
+        $steps.Add('     0000D0AD 00000001  Downloaded and written. Go on with step 4.')
+        $steps.Add('     0000D0AD 00000002  An offline Bank is already on the SD card.')
+        $steps.Add('                        Nothing was contacted or changed.')
+        $steps.Add('     00000BAD 00000001  The server holds no Bank for this console.')
+        $steps.Add('                        Nothing was created or changed.')
+        $steps.Add('     other numbers      Writing failed. Start Pokemon Bank again with')
+        $steps.Add('                        these files; that is always safe. If it keeps')
+        $steps.Add('                        happening, report both numbers.')
+        $steps.Add('   A message of the original instead (no connection, maintenance, the')
+        $steps.Add('   server is locked for a while) leads back to its start screen. Nothing')
+        $steps.Add('   was written; try again later.')
+        $steps.Add("4. Install ${Version}: copy the luma folder of $name.zip to")
+        $steps.Add('   the SD card. It replaces these files and installs Poke Transporter.')
+        $steps.Add('5. Start Pokemon Bank. Your boxes are there.')
+        $steps.Add('')
+        Add-Files $downloadStage $bankTitle $downloaded 'Pokemon Bank 1.5, download from the official server' "$downloadName.zip" $steps
+        [IO.File]::WriteAllLines((Join-Path $downloadStage 'README.txt'), $steps)
+        [IO.Compression.ZipFile]::CreateFromDirectory($downloadStage, $downloadZip)
+        Remove-Item -LiteralPath $downloadStage -Recurse
+    }
+
     # 5. Release notes: everything needed to trace this version.
     $notes = [Collections.Generic.List[string]]::new()
     $notes.Add("Pokémon Bank and Transporter Offline Patch $Version" + $(if ($Draft) { ' (draft)' }))
@@ -261,6 +341,10 @@ try {
     if ($MigrateFrom) {
         $notes.Add('')
         $notes.Add("**Coming from ${MigrateFrom}?** Convert your Bank first with ``$migrationName.zip``; the steps are in its ``README.txt``. It is only for a Bank last used with $MigrateFrom. Older than ${MigrateFrom}: install $MigrateFrom first and start Bank once.")
+    }
+    if ($Download) {
+        $notes.Add('')
+        $notes.Add("**Pokémon still on the official server?** ``$downloadName.zip`` fetches your Bank from the official server into a new offline Bank; the steps are in its ``README.txt``. It works while the official service runs, until $serviceEnds, and only when no offline Bank is on the SD card yet. It has not been tested against the official server; back up first.")
     }
     $notes.Add('')
     $notes.Add('| | |')
@@ -273,6 +357,10 @@ try {
     if ($MigrateFrom) {
         $notes.Add("| Migration package | ``$($migration.Name)`` |")
         $notes.Add("| ``$migrationName.zip`` | ``$(Get-Sha256 $migrationZip)`` |")
+    }
+    if ($Download) {
+        $notes.Add("| Download package | ``$($downloaded.Name)`` |")
+        $notes.Add("| ``$downloadName.zip`` | ``$(Get-Sha256 $downloadZip)`` |")
     }
     $notes.Add('')
     $notes.Add('| In | File | SHA-256 |')
@@ -292,6 +380,7 @@ try {
 Write-Host ''
 Write-Host "Archive: $zip"
 if ($MigrateFrom) { Write-Host "Archive: $migrationZip" }
+if ($Download) { Write-Host "Archive: $downloadZip" }
 Write-Host "Notes:   $notesPath"
 if ($Draft) {
     Write-Host 'Draft: no tag was created. Do not publish these files.'

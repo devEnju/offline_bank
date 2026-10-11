@@ -23,6 +23,7 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | --- | --- |
 | [patches/bank/](../patches/bank/src/) | The offline patch: ARMv6K code injected into Bank. Hooks in [runtime.rs](../patches/bank/src/runtime.rs) and [dex.rs](../patches/bank/src/dex.rs), routing in [navigation.rs](../patches/bank/src/navigation.rs), the storage jobs in [storage_worker.rs](../patches/bank/src/storage_worker.rs), game adapters. |
 | [crates/bank-common/](../crates/bank-common/src/) | What every patch for Bank shares: the start-up hook, file access ([fs.rs](../crates/bank-common/src/fs.rs)), file coordination ([bank_files.rs](../crates/bank-common/src/bank_files.rs)), the worker thread, the original's task objects and dialogs. See [Patches for Bank](#patches-for-bank). |
+| [patches/bank-download/](../patches/bank-download/src/) | The download patch: routing in [navigation.rs](../patches/bank-download/src/navigation.rs), the two file jobs in [download.rs](../patches/bank-download/src/download.rs), the hooks in [runtime.rs](../patches/bank-download/src/runtime.rs). |
 | [patches/bank-migrate/](../patches/bank-migrate/src/) | The migration patch from v0.2.1: the conversion in [migrate.rs](../patches/bank-migrate/src/migrate.rs) and two hooks. |
 | [crates/offline-core/](../crates/offline-core/src/) | `no_std`, no `unsafe`. Bank file and journal, side files, transport rules, Miles rules, game-image hashing. |
 | [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. Verifies the inputs, parses the linked ELF, emits the paired `code.ips` and `exheader.bin`. [bank15.rs](../crates/patch-builder/src/bank15.rs) holds what belongs to the program and the edits more than one patch makes; each patch has a profile: [bank15/offline.rs](../crates/patch-builder/src/bank15/offline.rs), [bank15/migrate.rs](../crates/patch-builder/src/bank15/migrate.rs). |
@@ -56,6 +57,51 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 | Regions / entry functions | 27 / 10 | 16 / 4 |
 
 `bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`ui::version`). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", or "Ver. 1.5-test" in a test build.
+
+### The download patch
+
+It lets the original run its whole online session and takes what the load put into the Bank object. Its edits: the start-up hook and its call, the kept archive (`0029f338`), the router call (`002a5a2c`), the version line (`002b49c4`), task 9's update and busy poll (`00361cfc`, `00361d0c`), and the update of task `0xC` (`00361be4`). Eight regions, five entry functions. It does not edit the first start, the show-message function (the original refuses HOME and sleep for its whole online session itself), the load, the save, the reward claim, the Pokédex callbacks, the clock or the main menu.
+
+**The original's online session**, as its router (`002a5580`) orders the tasks:
+
+| Task | What it does | Leads to |
+| --- | --- | --- |
+| 3 | game scan | 5 |
+| 5, 8, `0xF` | connect, sign in, account check | 8, `0xF`, 9 |
+| 9 | open the Bank; with reply byte `[[task + 0x28] + 0x20] == 0x35` it greets the user and creates one (`002ae620`) | 4, or `0x1C` when the scan found no game and the user chose Pokémon HOME |
+| 4 | main menu | `0xA` for "Use Pokémon Bank" |
+| `0xA`, `0xB` | game selection, scene | `0x11`, or `0x12` |
+| `0x11`, `0x12`, `0x17` | checks of the last session: another copy of the game, a session left open | `0x10` |
+| `0x10` | load (`002af460`): request `002a3550`, the reply into the Bank object (`002af808`), the server's session numbers into the chosen game's save, which is saved (`002af638`..`002af6c8`), and into Bank's own save (`002af720`) | `0xC` |
+| `0xC`, `0xD` | reward step and claim | `0x19`; with outcome `0x15`, cancelled, `0x13` |
+| `0x19`, 7 | boxes, save | |
+| `0x13` | leave without saving (`002aeb9c`): one request, `001d5c28(request, reply object, 0)`; it reads nothing the reward or box steps set | `0x14` |
+| `0x14` | cleanup, disconnect | start screen |
+
+The load is why a game has to be chosen: it writes into that game. Its set-up being the original's, the session has to be closed the original's way afterwards.
+
+**What the patch changes** ([navigation.rs](../patches/bank-download/src/navigation.rs), tested against a transcription of the table above):
+
+- *After the scan, task 9 runs once before anything is contacted.* Its hook shows the loading panel and has the worker ask `BankFiles::open` whether a Bank of the offline patch is on the card. If one is, the result is `D0AD 2`. If none is, the task ends and the router answers 5, the original's connect, where the original would have gone from the scan. A Bank file whose creation was cut counts as none.
+- *Online, task 9 is the original's.* Both slots call the function they held. Before the original's first frame the update hook reads the reply byte above; with `0x35` it ends the task as failed, which the original answers with cleanup, and the result is `BAD 1`. The patch creates nothing on the server.
+- *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (side files first, the Bank file last, no Miles), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
+- *After cleanup, task 9 runs again* if a result exists, and shows it with `Notice::done`, the migration's screen. Its set-up creates the shared UI that cleanup destroyed (`002aeb1c`).
+
+Everything in the Bank object comes along: boxes, the transport box, the Pokédex part. Poké Miles do not: the rewards file starts empty.
+
+**What was checked in the original's code**, since no run against the server has been made:
+
+| Question | Found |
+| --- | --- |
+| Is the Bank object filled when the reward step begins? | Yes. The load task's own reply listener (`002d11b0`, in its listener table at `00361f04`) checks the reply and restores it into the object at `[[task + 8] + 0xcc]`, before the task reports success. |
+| Does the reward step's set-up contact the server? | No. `002ad77c` stores the shared UI and registers its listener. |
+| What does the original do for a cancelled reward step? | State 6 (`002ad6a8`) waits for the menu's closing animation and sets outcome `0x15`; the task's end (`002ad724`) makes the same wait. The patch sets the outcome; no menu was opened. |
+| What does leaving without saving need? | `002aeb9c`: a request object and the reply object every task holds. Its set-up shows the loading panel itself. |
+| Can task 9 end before it did anything? | Yes. Its end (`002aea7c`) releases the request only if there is one; the offline patch ends it the same way. |
+| Does the connect step cope with a task 9 before it? | Yes. Its set-up (`002af34c`) takes the shared UI or creates it, and opens the loading panel itself. |
+| Does task 9 work after cleanup? | Its set-up (`002aeb1c`) creates the shared UI if cleanup destroyed it. The hook then opens the loading panel before the result, so that the screen starts as the migration's does. |
+
+What the code cannot show: how the original behaves online with about 0.8 MB less memory, which the payload takes as in the migration, and anything the server does differently from what the original's code expects.
 
 ### Edits to the original
 

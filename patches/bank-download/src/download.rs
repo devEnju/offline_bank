@@ -1,0 +1,103 @@
+//! The two things the patch does with Bank's files, and the numbers it
+//! shows. Both go through `bank-common`, as every write of the offline
+//! patch does, so what is written here is what the offline patch reads.
+
+use bank_common::bank_files::{self, BankFiles, Files};
+use offline_core::Storage;
+
+/// First number of a result that is no error.
+pub const DONE: u32 = 0xd0ad;
+/// Second number: the Bank was downloaded and written.
+pub const WRITTEN: u32 = 1;
+/// Second number: a Bank was on the card already, and nothing was done.
+pub const PRESENT: u32 = 2;
+/// First number when the patch stopped before doing anything.
+pub const REFUSED: u32 = 0xbad;
+/// Second number: the server holds no Bank, and the patch creates none.
+pub const NO_BANK_ON_SERVER: u32 = 1;
+
+type Outcome<T, F> = Result<T, bank_files::Error<<<F as Files>::Storage as Storage>::Error>>;
+
+/// Whether the card holds a Bank of the offline patch. A Bank file whose
+/// creation was cut before a Bank became current in it counts as none; the
+/// next download finishes it (`BankFiles::open`). Nothing is written.
+pub fn present<F: Files>(files: F) -> Outcome<bool, F> {
+    Ok(BankFiles::new(files).open()?.is_some())
+}
+
+/// Writes the native Bank body in `staging` as a new Bank: every side file
+/// first, the Bank file last, with no Poké Miles. `false`, with nothing
+/// written, if a Bank is on the card after all: one is never replaced.
+pub fn write<F: Files>(files: F, staging: &mut [u8]) -> Outcome<bool, F> {
+    let mut files = BankFiles::new(files);
+    if files.open()?.is_some() {
+        return Ok(false);
+    }
+    files.initialize(staging)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use bank_common::testing::*;
+    use offline_core::rewards::Stored;
+    use std::format;
+
+    #[test]
+    fn an_empty_card_gets_the_bank_as_it_was_loaded_and_a_second_run_leaves_it() {
+        let disk = Shared::default();
+        assert_eq!(present(disk.clone()), Ok(false));
+        // Boxes, Pokédex and a transport box with Pokémon in it.
+        let loaded = body(0x31, 0x44, 7);
+        assert_eq!(write(disk.clone(), &mut loaded.clone()), Ok(true));
+        let (bytes, read) = load(&mut opened(&disk.reboot()));
+        assert!(bytes == loaded);
+        // No Poké Miles come with it.
+        assert_eq!(read.rewards, Stored::NONE);
+        assert!(!read.dex_missing && !read.transport_missing);
+
+        // A Bank is there now: found, and never written over.
+        assert_eq!(present(disk.reboot()), Ok(true));
+        let other = body(0x52, 0x66, 0);
+        assert_eq!(write(disk.reboot(), &mut other.clone()), Ok(false));
+        assert!(load(&mut opened(&disk.reboot())).0 == loaded);
+    }
+
+    #[test]
+    fn a_write_cut_at_any_point_counts_as_no_bank_and_the_next_one_finishes_it() {
+        for console in [false, true] {
+            let loaded = body(0x31, 0x44, 3);
+            let empty = Shared::default().like(console);
+            let counting = empty.cut_after(usize::MAX);
+            assert_eq!(write(counting.clone(), &mut loaded.clone()), Ok(true));
+            let total = counting.0.borrow().operations;
+            assert!(total > 20);
+            for cut in 0..total {
+                let context = format!("console {console}, cut {cut}");
+                let disk = empty.cut_after(cut);
+                assert!(
+                    write(disk.clone(), &mut loaded.clone()).is_err(),
+                    "{context}"
+                );
+                let after = disk.reboot();
+                match present(after.clone()) {
+                    // The Bank became current with the last write that
+                    // counts: it is complete.
+                    Ok(true) => assert!(load(&mut opened(&after)).0 == loaded, "{context}"),
+                    // Not yet: the next download writes it whole.
+                    Ok(false) => {
+                        assert_eq!(
+                            write(after.clone(), &mut loaded.clone()),
+                            Ok(true),
+                            "{context}"
+                        );
+                        assert!(load(&mut opened(&after.reboot())).0 == loaded, "{context}");
+                    }
+                    Err(error) => panic!("{context}: {error:?}"),
+                }
+            }
+        }
+    }
+}

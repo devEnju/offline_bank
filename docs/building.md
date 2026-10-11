@@ -127,6 +127,31 @@ In this order, stopping at the first problem, it:
 4. writes `build/release/offline_bank-v1.0.0.zip`;
 5. writes the release notes `build/release/offline_bank-v1.0.0.md`;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
+### The download from the official server
+
+While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)).
+
+```powershell
+./scripts/Build-BankDownloadPatch.ps1
+```
+
+This builds it into `build/bank-download/` and verifies it (`Verify-BankPatch.ps1 -Patch download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
+
+**It has not been run against the official server.** It was written from the original's code alone; the checks made there are listed in [internals.md](internals.md#the-download-patch). Its guide in the release says so.
+
+It ends, like the migration, on two numbers under the original's line about the HOME Menu:
+
+| Numbers | Meaning |
+| --- | --- |
+| `0000D0AD 00000001` | downloaded and written |
+| `0000D0AD 00000002` | an offline Bank was on the card already; nothing was contacted or changed |
+| `00000BAD 00000001` | the server holds no Bank for this console; nothing was created or changed |
+| any other pair | the files could not be read or written; the numbers are the offline Bank's ([bank.md](bank.md#troubleshooting)) |
+
+A message of the original on the way (no connection, maintenance, the server locked for a while) leads back to its start screen as it always did; nothing is written then.
+
+Nothing depends on it: when the service has ended, the crate, `bank15/download.rs`, the script, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+
 
 **A release that changes how the Bank is stored** names the one version it converts from:
 
@@ -136,13 +161,21 @@ In this order, stopping at the first problem, it:
 
 It then writes a second zip, `offline_bank-v0.2.1-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. No other release ships a migration, and the `README.txt` of every release names the oldest Bank the version continues (`$bankFilesSince` in the script). Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
 
+**A release made while the official service runs** can ship the download:
+
+```powershell
+./scripts/New-Release.ps1 -Version v0.4.0 -Download
+```
+
+It then writes one more zip, `offline_bank-v0.4.0-download.zip`: the download patch for Bank's folder and a `README.txt` with what it needs, its steps and its numbers. The guide belongs to the release, like the migration's.
+
 Nothing is pushed or uploaded. Try the zip on a console first, then publish:
 
 ```powershell
 ./scripts/New-Release.ps1 -Version v1.0.0 -Publish
 ```
 
-This pushes the tag and creates the GitHub release with the zip, a migration zip the notes name, and the notes through the `gh` tool. It refuses if a zip changed since its notes were written. By hand instead: `git push origin v1.0.0`, then on GitHub draft a new release for that tag, paste the notes file and attach the zip.
+This pushes the tag and creates the GitHub release with the zip, a migration zip or a download zip the notes name, and the notes through the `gh` tool. It refuses if a zip changed since its notes were written. By hand instead: `git push origin v1.0.0`, then on GitHub draft a new release for that tag, paste the notes file and attach the zip.
 
 To withdraw a version before it is published, delete the local tag (`git tag -d v1.0.0`) and the two files. `-Draft` packs the working tree as it is for your own testing: no tag, and the zip is marked as a draft.
 
@@ -162,6 +195,7 @@ Patch files are never committed to the repository; they exist only as release do
 ```text
 patches/bank/           the offline patch for Bank
 patches/bank-migrate/   the migration patch for Bank, from v0.2.1
+patches/bank-download/  the download patch for Bank, from the official server
 patches/transporter/    code injected into Transporter
 crates/bank-common/     what every patch for Bank shares: files, worker thread, dialogs
 crates/offline-core/    storage format and hand-over rules, shared by all patches

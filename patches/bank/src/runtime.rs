@@ -4,13 +4,13 @@
 //! See docs/bank.md for the original application flow.
 
 use crate::{
-    native_bank::NativeBank,
     native_game::{GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll},
     storage_worker::{BankWorker, GameEvidence, Job, Reply},
     transaction::Trainer,
 };
 use bank_common::{
     bank_files::Loaded,
+    native_bank::NativeBank,
     task::{
         checked_pointer, read_word, storage_activity, write_word, NotNative, Notice, Task,
         FS_SESSION, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE,
