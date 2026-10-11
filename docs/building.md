@@ -61,20 +61,20 @@ Recovery after a power cut cannot be triggered on demand on a console, so one ex
 
 This builds and verifies it into `build/bank-test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
 
-- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. The five buttons carry the names of what they do, in English in every language; these are the only texts of its own that any build has. Back on the game selection leads to the menu again.
+- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. All five buttons say "Use Pokémon Bank" in the console's language, and the four rehearsals have a word in brackets behind it, the same in every language. Back on the game selection leads to the menu again.
 - The reward dialogs never come, and nothing is claimed, so that a run is short.
 - While the menu is on screen Bank's files are open, and HOME works there; closing Bank from the HOME Menu at that point writes nothing.
 
 | Button on the main menu | What Save and Quit does | The card afterwards |
 | --- | --- | --- |
-| Normal save | Saves normally. | |
-| Stop before the game | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
-| Stop after the game | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
-| Write the record | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
-| Write the boxes | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Use Pokémon Bank | Saves normally. | |
+| Use Pokémon Bank (before) | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
+| Use Pokémon Bank (after) | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
+| Use Pokémon Bank (record) | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
+| Use Pokémon Bank (boxes) | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
 | Back | The original's: asks, then returns to the start screen. | |
 
-The two stops test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); "Normal save" of the same package settles what they left. The two that write for a while give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
+The two stops test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); The plain "Use Pokémon Bank" of the same package settles what they left. The two that write for a while give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
 
 The PC tests run the same loops under a simulated cut at every write:
 

@@ -1243,8 +1243,9 @@ pub unsafe extern "aapcs" fn bank_version_shown(
 /// with the listener at task 4's `+0x34`). While the menu waits for a choice
 /// (state 1), every entry but the original's own way out opens the Bank as
 /// "Use Pokémon Bank" does, and says which Save and Quit the session
-/// rehearses. The entries in the order of the screen, with the labels
-/// `bank_test_menu_update` gives them:
+/// rehearses. The entries in the order of the screen; `bank_test_menu_update`
+/// labels the four rehearsals "Use Pokémon Bank (before)", "(after)",
+/// "(record)", "(boxes)":
 ///
 /// | entry | the original's | here |
 /// | --- | --- | --- |
@@ -1295,23 +1296,27 @@ pub unsafe extern "aapcs" fn bank_test_menu_chosen(listener: *mut u8, entry: u32
     }
 }
 
-/// Test builds: the labels of the main menu's five entries, by the text pane
-/// the original labels each with (001d62f0: panes 0x13, 0x1f, 0x66, 0x24,
-/// 0x29 of layout group 1, for its messages 0x29, 0x2A, 0x56, 0x2B, 0x2C),
-/// in the order of the screen. "Back" keeps the original's text.
+/// Test builds: what the four rehearsals' buttons say behind the original's
+/// "Use Pokémon Bank" (message 0x29, in the console's language), by the
+/// text pane the original labels each with (001d62f0: panes 0x1f, 0x66,
+/// 0x24, 0x29 of layout group 1, for its messages 0x2A, 0x56, 0x2B, 0x2C),
+/// in the order of the screen. The first button, pane 0x13, has that message
+/// already, and "Back" keeps its own.
 #[cfg(feature = "test-build")]
-const MENU_LABELS: [(u32, &[u8]); 5] = [
-    (0x13, b"Normal save"),
-    (0x1f, b"Stop before the game"),
-    (0x66, b"Stop after the game"),
-    (0x24, b"Write the record"),
-    (0x29, b"Write the boxes"),
+const MENU_SUFFIXES: [(u32, &[u8]); 4] = [
+    (0x1f, b" (before)"),
+    (0x66, b" (after)"),
+    (0x24, b" (record)"),
+    (0x29, b" (boxes)"),
 ];
+#[cfg(feature = "test-build")]
+const MENU_USE_MESSAGE: u32 = 0x29;
 
 /// Test builds: stands in for the main menu's update (table slot 003617bc,
 /// the original's 002a6750). In its first state, before the menu waits for
-/// a choice and after its initializer has labelled the buttons, the entries
-/// get the names of what they rehearse; then the original runs.
+/// a choice and after its initializer has labelled the buttons, the four
+/// rehearsals' buttons get the first button's text with the name of what
+/// they rehearse behind it; then the original runs.
 /// # Safety
 /// Called only through that table slot, with the live main-menu task.
 #[cfg(feature = "test-build")]
@@ -1319,11 +1324,9 @@ const MENU_LABELS: [(u32, &[u8]); 5] = [
 pub unsafe extern "aapcs" fn bank_test_menu_update(task: *mut u8) -> u32 {
     let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(0x002a_6750usize) };
     if unsafe { read_word(task, 0x10) } == 0 {
-        let context = checked_pointer(unsafe { read_word(task, 0x38) })
-            .and_then(|ui| checked_pointer(unsafe { read_word(ui, 0x5c) }));
-        if let Ok(context) = context {
-            for (pane, label) in MENU_LABELS {
-                unsafe { bank_common::ui::label(context, 1, pane, label) };
+        if let Ok(ui) = checked_pointer(unsafe { read_word(task, 0x38) }) {
+            for (pane, suffix) in MENU_SUFFIXES {
+                unsafe { bank_common::ui::button(ui, 1, pane, MENU_USE_MESSAGE, suffix) };
             }
         }
     }

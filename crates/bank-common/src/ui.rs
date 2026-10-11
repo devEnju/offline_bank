@@ -301,23 +301,12 @@ unsafe fn hand_over(
     }
 }
 
-/// Writes the start screen's version line with `suffix` behind it, "Ver.
-/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
-/// the one call of 001e21c8(context, group, pane, message) that the start
-/// screen makes for its message 0x4E (002b49c4).
-///
-/// That function loads the message into the first of the context's two
-/// work strings, fills in its values into the second, and hands the second
-/// to the pane. Here the original runs first, the suffix is added to the
-/// second string in place, and the pane is given it again. Without room for
-/// the suffix the line stays the original's.
-/// # Safety
-/// The arguments are those of the replaced call, on the main thread.
-pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
+/// Adds `suffix`, plain Latin letters, to the text the original has just
+/// put into the work string and into pane `pane` of the layout of `group`,
+/// and gives the pane the longer text. Without room for it the pane keeps
+/// the original's text.
+unsafe fn add_suffix(context: *mut u8, group: u32, pane: u32, suffix: &[u8]) {
     unsafe {
-        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
-            transmute(0x001e_21c8usize);
-        original(context, group, pane, message);
         let Some((text, data, room)) = work_string(context) else {
             return;
         };
@@ -335,25 +324,42 @@ pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suf
     }
 }
 
-/// Test builds: gives a text pane a text of the patch's own, in plain Latin
-/// letters, the way the original labels a button from a message (001e0ef8:
-/// the message into the work string, the string to the pane). Without room
-/// the pane keeps its text.
+/// Writes the start screen's version line with `suffix` behind it, "Ver.
+/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
+/// the one call of 001e21c8(context, group, pane, message) that the start
+/// screen makes for its message 0x4E (002b49c4).
+///
+/// That function loads the message into the first of the context's two
+/// work strings, fills in its values into the second, and hands the second
+/// to the pane. Here the original runs first, the suffix is added to the
+/// second string in place, and the pane is given it again.
 /// # Safety
-/// `context` is the live UI context (`ui + 0x5c`), on the main thread, with
-/// the layout of `group` built.
-#[cfg(feature = "test-build")]
-pub unsafe fn label(context: *mut u8, group: u32, pane: u32, label: &[u8]) {
+/// The arguments are those of the replaced call, on the main thread.
+pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
     unsafe {
-        let Some((text, data, room)) = work_string(context) else {
+        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
+            transmute(0x001e_21c8usize);
+        original(context, group, pane, message);
+        add_suffix(context, group, pane, suffix);
+    }
+}
+
+/// Test builds: labels a button with the original's `message` and `suffix`
+/// behind it. The original's 001e0ef8(ui, group, pane, message), as its
+/// menus label their buttons, loads the message into the second work string
+/// and hands it to the pane; the suffix is added to that string in place and
+/// the pane given it again.
+/// # Safety
+/// `ui` is the live native task UI with the layout of `group` built, on the
+/// main thread.
+#[cfg(feature = "test-build")]
+pub unsafe fn button(ui: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
+    unsafe {
+        let Ok(context) = pointer(word(ui, 0x5c)) else {
             return;
         };
-        if label.len() >= room {
-            return;
-        }
-        for (index, &unit) in label.iter().enumerate() {
-            data.add(index).write(u16::from(unit));
-        }
-        hand_over(context, group, pane, (text, data, label.len()));
+        let label: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(0x001e_0ef8usize);
+        label(ui, group, pane, message);
+        add_suffix(context, group, pane, suffix);
     }
 }
