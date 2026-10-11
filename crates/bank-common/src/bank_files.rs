@@ -110,6 +110,23 @@ pub trait Files {
     ) -> Result<Self::Storage, <Self::Storage as Storage>::Error>;
 }
 
+/// The files in Bank's extdata, opened through the session borrowed from
+/// the original (`task::FS_SESSION`).
+#[cfg(target_arch = "arm")]
+pub struct ExtFiles {
+    pub session: u32,
+}
+#[cfg(target_arch = "arm")]
+impl Files for ExtFiles {
+    type Storage = crate::fs::ExtdataStorage;
+    fn open(&mut self, file: FileName) -> Result<Option<Self::Storage>, crate::fs::Error> {
+        unsafe { crate::fs::ExtdataStorage::open_existing(self.session, file.units()) }
+    }
+    fn create(&mut self, file: FileName) -> Result<Self::Storage, crate::fs::Error> {
+        unsafe { crate::fs::ExtdataStorage::create_new(self.session, file.units()) }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Problem {

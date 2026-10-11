@@ -7,7 +7,6 @@
 //! The builder must verify the complete input before emitting any patch.
 
 pub mod local_clock;
-pub mod native_bank;
 pub mod navigation;
 
 pub mod native_game;

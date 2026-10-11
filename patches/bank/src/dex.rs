@@ -99,7 +99,7 @@ pub fn evidence(body: &[u8]) -> Result<Evidence, DexError> {
 #[cfg(target_arch = "arm")]
 mod native {
     use super::*;
-    use crate::native_bank::NativeBank;
+    use bank_common::native_bank::NativeBank;
     use core::{cell::UnsafeCell, mem::transmute};
 
     #[derive(Clone, Copy, PartialEq, Eq)]

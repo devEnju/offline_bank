@@ -109,8 +109,8 @@ mod arm {
     #[cfg(feature = "test-build")]
     use bank_common::rehearsal::{self, Rehearsal};
     use bank_common::{
-        bank_files::{self, BankFiles, FileName, Files},
-        fs::{self, ExtdataStorage, GameMainReader},
+        bank_files::{self, BankFiles, ExtFiles},
+        fs::{self, GameMainReader},
         session,
         worker::{Service, Shared, Worker, WorkerError, WorkerErrorKind},
     };
@@ -130,19 +130,6 @@ mod arm {
     unsafe impl Sync for Held {}
     static HELD_LISTS: Held = Held(UnsafeCell::new([[[0; 3]; HELD]; 2]));
 
-    /// The files in Bank's extdata, opened through the borrowed session.
-    struct ExtFiles {
-        session: u32,
-    }
-    impl Files for ExtFiles {
-        type Storage = ExtdataStorage;
-        fn open(&mut self, file: FileName) -> Result<Option<ExtdataStorage>, fs::Error> {
-            unsafe { ExtdataStorage::open_existing(self.session, file.units()) }
-        }
-        fn create(&mut self, file: FileName) -> Result<ExtdataStorage, fs::Error> {
-            unsafe { ExtdataStorage::create_new(self.session, file.units()) }
-        }
-    }
     static SHARED: Shared<StorageWorker> = Shared::new();
     /// The worker of the offline patch.
     pub(crate) type BankWorker = Worker<StorageWorker>;

@@ -14,6 +14,7 @@
 pub mod bank_files;
 pub mod bootstrap;
 pub mod fs;
+pub mod native_bank;
 pub mod numbers;
 #[cfg(feature = "test-build")]
 pub mod rehearsal;
