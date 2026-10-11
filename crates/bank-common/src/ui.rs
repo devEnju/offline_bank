@@ -2,9 +2,9 @@
 //!
 //! Every text is the original's own, in the language of the screens. The
 //! error dialog is the first sentence of the original's message for a failed
-//! save with two code numbers on the dialog's third line, and as its next
-//! page the start screen's line about the HOME Menu with the same numbers;
-//! nothing else is written here.
+//! save, and as its next page the start screen's line about the HOME Menu
+//! with two code numbers on the dialog's third line; nothing else is written
+//! here.
 
 use crate::numbers;
 use core::mem::transmute;
@@ -65,17 +65,16 @@ unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize
 /// is the whole screen.
 ///
 /// The reason is the original's message `reason` up to the end of its first
-/// part, with the two code numbers on the third line: for the failure
-/// message its first sentence, which has one or two lines in every language
-/// of the original. The line about the HOME Menu, message 0x4D, becomes the
-/// page after it, with the same numbers on its third line.
+/// part, unchanged: for the failure message its first sentence. The line
+/// about the HOME Menu, message 0x4D, becomes the page after it, with the
+/// two code numbers on its third line.
 ///
 /// Both texts are the original's, loaded by 001d6650 into the UI's own
 /// string object: first the line, which is copied out, then the reason. The
 /// string is changed in place and handed to the dialog again (001d643c, the
-/// call 001d6650 ends its text set-up with). Where there is no room for the
-/// numbers a text stays as it is; without room for the page the reason
-/// stays alone.
+/// call 001d6650 ends its text set-up with). Without room for the numbers
+/// the line stays as it is; without room for the page the reason stays
+/// alone.
 /// # Safety
 /// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
 /// (task10). Its context and allocated string object must remain live while
@@ -110,7 +109,7 @@ pub unsafe fn stop(ui: *mut u8, reason: Option<u32>, first: u32, second: u32) ->
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Ok(());
     };
-    let mut len = numbers::put(room, len, first, second).unwrap_or(len);
+    let mut len = numbers::cut(&room[..len]);
     if home_len != 0 {
         len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
     }

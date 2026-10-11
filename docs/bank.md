@@ -179,9 +179,9 @@ The message only comes for a Save and Quit that was cut off. An error in a runni
 
 ## Troubleshooting
 
-An error ends this run of Bank. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language) with two numbers on the third line: `XXXXXXXX YYYYYYYY`. Only the numbers tell what happened; the sentence about the server is not to be taken literally. The first number says which step failed, the second why.
+An error ends this run of Bank. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
 
-After A the original's line "Press HOME to return to the HOME Menu" appears with the same two numbers under it, and it stays: nothing else reacts, because nothing can go on. Press HOME, close Bank, and start it again. Bank's files are closed before the numbers appear.
+After A the original's line "Press HOME to return to the HOME Menu" appears with two numbers under it, `XXXXXXXX YYYYYYYY`, and it stays: nothing else reacts, because nothing can go on. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
 
 | First number | Step |
 | --- | --- |
@@ -222,4 +222,4 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 - **Power cuts.** A cut during Save and Quit can only damage the file being written, which Bank does not need and replaces. It cannot protect against damage to the SD card's own file table; that holds for every save on the console.
 - **Interrupted Save and Quit.** One case can lose Pokémon: see [If Save and Quit is interrupted](#if-save-and-quit-is-interrupted).
 - **Clock.** A console date set ahead is paid as if the days had passed.
-- **Errors are final for a run of Bank.** After the two numbers only the line about the HOME Menu follows. Close Bank from the HOME Menu and start it again. A save that waits for its game is not an error: it leads back to the start screen ([above](#a-save-that-waits-for-its-game)).
+- **Errors are final for a run of Bank.** After the message only the line about the HOME Menu follows, with the two numbers. Close Bank from the HOME Menu and start it again. A save that waits for its game is not an error: it leads back to the start screen ([above](#a-save-that-waits-for-its-game)).

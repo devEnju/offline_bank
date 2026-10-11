@@ -60,8 +60,8 @@ With the normal Bank package. What each feature is meant to do is in [bank.md](b
 | Move Pokémon both ways, rename a box, Save and Quit, restart. | Everything persisted in Bank and in the game. No missing or duplicate Pokémon. |
 | Press HOME and close the lid right after leaving the start screen, while the Bank loads after selecting a game, and during Save and Quit. | Nothing happens while a loading screen is shown. On the start screen, game selection, in the boxes, and on an error screen both work as usual. |
 | No usable game present. | The original "no game" notice once, then the start screen. |
-| An error with two numbers (a stop package, [below](#an-interrupted-save-and-quit)): press A. | The line "Press HOME to return to the HOME Menu" with the same two numbers on its third line. A, B and START do nothing. HOME opens the HOME Menu, the lid puts the console to sleep, and Bank can be closed from the HOME Menu. |
-| The same with Bank started from a running game (run 4): press HOME on the screen with the numbers, before A. | The HOME Menu appears. |
+| An error (a stop package, [below](#an-interrupted-save-and-quit)): "The server did not receive the data." with the arrow and without numbers. Press A. | The line "Press HOME to return to the HOME Menu" with the two numbers on its third line. A, B and START do nothing. HOME opens the HOME Menu, the lid puts the console to sleep, and Bank can be closed from the HOME Menu. |
+| The same with Bank started from a running game (run 4): press HOME on the error's first screen, before A. | The HOME Menu appears. |
 | A console on which Bank's extdata cannot be created for lack of space on the SD card: press HOME on the original's message about it. | The HOME Menu appears. |
 
 ### Poké Miles
@@ -149,7 +149,7 @@ The saves are in the chosen language.
 
 ## An interrupted Save and Quit
 
-The two stop packages end Save and Quit at a fixed point with an error on purpose. Press A; the line about the HOME Menu follows with the same numbers. Close Bank from the HOME Menu, do the "Then" step, and start Bank again. What Bank decides is explained in [bank.md](bank.md#if-save-and-quit-is-interrupted).
+The two stop packages end Save and Quit at a fixed point with an error on purpose. Press A on the message; the line about the HOME Menu follows with the numbers. Close Bank from the HOME Menu, do the "Then" step, and start Bank again. What Bank decides is explained in [bank.md](bank.md#if-save-and-quit-is-interrupted).
 
 ### The game keeps its old save
 
@@ -223,7 +223,7 @@ Start from a console whose Bank was last used with the old version, and from a b
 
 | Run | Installed | Do | Must show |
 | --- | --- | --- | --- |
-| 16 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number, then the line about the HOME Menu with the same numbers; nothing changed |
+| 16 | new Bank | start Bank, before converting | the error message, then the line about the HOME Menu with `00000003` and the size of the file it refused as second number; nothing changed |
 | 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
 | 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with `0000600D 00000001` on its third line, and nothing before it. Close Bank from the HOME Menu |
 | 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |

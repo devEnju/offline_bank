@@ -1,11 +1,12 @@
-//! The line of two numbers that a patch puts into a message of the original,
-//! where it goes, and the page that follows it.
+//! What a patch does to a message of the original for its last screen: the
+//! cut after its first part, the line of two numbers, and the page that
+//! follows.
 //!
 //! A message is the original's own text in UTF-16 units. A line feed ends a
 //! line; a control code is the unit `0x10`, the number of units that follow,
 //! then the code and its arguments; the code `0xBE01` ends a page (wait for a
 //! button, then clear). The dialog holds three lines, and the numbers are
-//! always its third: only a first page of one or two lines gets them.
+//! always its third: only a first part of one or two lines gets them.
 
 /// A control code in the original's texts.
 const CONTROL: u16 = 0x10;
@@ -62,9 +63,16 @@ fn first_part(text: &[u16]) -> (Option<usize>, Option<usize>) {
     (None, line)
 }
 
-/// Ends the message in `text[..len]` after its first part and puts the
-/// numbers on the third line there. The first part is the first page or, in
-/// a message of one page, its first line. `text` is the whole room of the
+/// Where the first part of the message `text` ends: its first page or, in
+/// a message of one page, its first line. Nothing is written; a message
+/// that ends there is the original's own text up to that point.
+pub fn cut(text: &[u16]) -> usize {
+    let (page, feed) = first_part(text);
+    page.or(feed).unwrap_or(text.len())
+}
+
+/// Ends the message in `text[..len]` after its first part (`cut`) and puts
+/// the numbers on the third line there. `text` is the whole room of the
 /// string, and the unit after the message stays free for its end mark.
 /// Answers the new length, or `None` with the message untouched: its first
 /// page has three lines already, or the room is too small.
@@ -72,8 +80,7 @@ pub fn put(text: &mut [u16], len: usize, first: u32, second: u32) -> Option<usiz
     if len > text.len() {
         return None;
     }
-    let (page, feed) = first_part(&text[..len]);
-    let end = page.or(feed).unwrap_or(len);
+    let end = cut(&text[..len]);
     let lines = 1 + text[..end]
         .iter()
         .filter(|&&unit| unit == LINE_FEED)
@@ -239,7 +246,21 @@ mod tests {
     }
 
     #[test]
-    fn the_error_screen_is_the_reason_with_its_numbers_and_then_the_home_line_with_them() {
+    fn the_cut_leaves_the_first_page_or_the_first_line_as_it_is() {
+        // Nine languages: the first page, of one or two lines.
+        for shape in [&[1, 2][..], &[2, 2], &[2, 3], &[3, 1]] {
+            let text = message(shape);
+            let end = cut(&text);
+            assert_eq!(text[..end], message(&shape[..1]));
+        }
+        // One page: its first line.
+        assert_eq!(cut(&message(&[2])), 4);
+        assert_eq!(cut(&message(&[1])), 4);
+        assert_eq!(cut(&[]), 0);
+    }
+
+    #[test]
+    fn the_error_screen_is_the_reason_as_it_is_and_then_the_home_line_with_the_numbers() {
         // The HOME line is one line: the numbers go two lines under it.
         let mut home = [0xffff; 64];
         home[..4].copy_from_slice(&message(&[1]));
@@ -248,16 +269,13 @@ mod tests {
         let reason = message(&[2, 3]);
         let mut buffer = vec![0xffff; 128];
         buffer[..reason.len()].copy_from_slice(&reason);
-        let len = put(&mut buffer, reason.len(), 3, 0x7a00_0201).unwrap();
+        let len = cut(&reason);
         let len = append_page(&mut buffer, len, &home[..home_len]).unwrap();
         let all: Vec<String> = pages(&buffer[..len])
             .iter()
             .map(|page| String::from_utf16(page).unwrap())
             .collect();
-        assert_eq!(
-            all,
-            ["text\ntext\n00000003 7A000201", "text\n\n00000003 7A000201"]
-        );
+        assert_eq!(all, ["text\ntext", "text\n\n00000003 7A000201"]);
     }
 
     #[test]
