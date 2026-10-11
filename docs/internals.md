@@ -89,6 +89,20 @@ The load is why a game has to be chosen: it writes into that game. Its set-up be
 
 Everything in the Bank object comes along: boxes, the transport box, the Pokédex part. Poké Miles do not: the rewards file starts empty.
 
+**What was checked in the original's code**, since no run against the server has been made:
+
+| Question | Found |
+| --- | --- |
+| Is the Bank object filled when the reward step begins? | Yes. The load task's own reply listener (`002d11b0`, in its listener table at `00361f04`) checks the reply and restores it into the object at `[[task + 8] + 0xcc]`, before the task reports success. |
+| Does the reward step's set-up contact the server? | No. `002ad77c` stores the shared UI and registers its listener. |
+| What does the original do for a cancelled reward step? | State 6 (`002ad6a8`) waits for the menu's closing animation and sets outcome `0x15`; the task's end (`002ad724`) makes the same wait. The patch sets the outcome; no menu was opened. |
+| What does leaving without saving need? | `002aeb9c`: a request object and the reply object every task holds. Its set-up shows the loading panel itself. |
+| Can task 9 end before it did anything? | Yes. Its end (`002aea7c`) releases the request only if there is one; the offline patch ends it the same way. |
+| Does the connect step cope with a task 9 before it? | Yes. Its set-up (`002af34c`) takes the shared UI or creates it, and opens the loading panel itself. |
+| Does task 9 work after cleanup? | Its set-up (`002aeb1c`) creates the shared UI if cleanup destroyed it. The hook then opens the loading panel before the result, so that the screen starts as the migration's does. |
+
+What the code cannot show: how the original behaves online with about 0.8 MB less memory, which the payload takes as in the migration, and anything the server does differently from what the original's code expects.
+
 ### Edits to the original
 
 The offline patch: 27 regions (26 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a third profile, `test`: these edits and two of those five locations, which only it may edit.

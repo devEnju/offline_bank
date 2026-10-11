@@ -269,7 +269,7 @@ That a migration refuses a Bank with a Save and Quit in progress, and that a cut
 
 ## The download from the official server
 
-Package `build/bank-download/`. It needs the live service, an internet connection, the console's Nintendo Network ID and a game with a Pokédex. Back up Bank's extdata and that game first: the original saves the game once when it loads the Bank.
+Package `build/bank-download/`. None of these runs has been made yet. It needs the live service, an internet connection, the console's Nintendo Network ID and a game with a Pokédex. Back up Bank's extdata and that game first: the original saves the game once when it loads the Bank.
 
 | Run | Do | Must show |
 | --- | --- | --- |

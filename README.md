@@ -68,7 +68,7 @@ Transporter lists the games of one language at a time, and starts with the conso
 The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games).
 ### Can I get my Pokémon from the official Pokémon Bank?
 
-While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and shows two numbers. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, it does not fetch Poké Miles, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip.
+While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and shows two numbers. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, it does not fetch Poké Miles, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip. This patch has not been tested against the official server yet; back up first.
 
 ### Why do I need a migration between two versions?
 

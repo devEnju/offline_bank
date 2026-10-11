@@ -287,6 +287,11 @@ try {
         $steps.Add("The official service ends on $serviceEnds. After that day this")
         $steps.Add('patch cannot do anything.')
         $steps.Add('')
+        $steps.Add('NOT TESTED against the official server: it was written and checked from')
+        $steps.Add('the code of the original alone, because its author has no Nintendo')
+        $steps.Add('Network ID to try it with. Make the backup of step 1. If it stops')
+        $steps.Add('anywhere, please report the last screen and any numbers.')
+        $steps.Add('')
         $steps.Add('- Your Pokemon stay on the server as well; this makes a copy.')
         $steps.Add('- It only writes when no offline Bank is on the SD card. An offline')
         $steps.Add('  Bank you already have is never replaced or merged.')
@@ -339,7 +344,7 @@ try {
     }
     if ($Download) {
         $notes.Add('')
-        $notes.Add("**Pokémon still on the official server?** ``$downloadName.zip`` fetches your Bank from the official server into a new offline Bank; the steps are in its ``README.txt``. It works while the official service runs, until $serviceEnds, and only when no offline Bank is on the SD card yet.")
+        $notes.Add("**Pokémon still on the official server?** ``$downloadName.zip`` fetches your Bank from the official server into a new offline Bank; the steps are in its ``README.txt``. It works while the official service runs, until $serviceEnds, and only when no offline Bank is on the SD card yet. It has not been tested against the official server; back up first.")
     }
     $notes.Add('')
     $notes.Add('| | |')

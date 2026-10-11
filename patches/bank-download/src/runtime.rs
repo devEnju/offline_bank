@@ -129,6 +129,9 @@ struct Runtime {
     stage: Stage,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
+    /// Whether the task 9 that shows the result has brought up the loading
+    /// panel, as the task that looked at the card did.
+    panel: bool,
     notice: Notice,
 }
 struct State(UnsafeCell<Runtime>);
@@ -142,6 +145,7 @@ static STATE: State = State(UnsafeCell::new(Runtime {
     job: None,
     stage: Stage::Looking,
     numbers: None,
+    panel: false,
     notice: Notice::new(),
 }));
 struct Guard;
@@ -215,7 +219,7 @@ impl Runtime {
     /// worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
         unsafe {
-            self.job(task, |_| {
+            self.job(task, |state| {
                 let panel = task.ui().map_err(|_| [NATIVE_OBJECT, 0])?;
                 ui::loading(panel, ui::BANK_LOADING_MESSAGE).map_err(|_| [NATIVE_OBJECT, 0])?;
                 // The task's +1c continuation is this patch's poller while
@@ -224,6 +228,7 @@ impl Runtime {
                 write_word(task.raw(), 0x10, 1);
                 // Files are read until the reply.
                 storage_activity(true);
+                state.panel = true;
                 Ok(Job::Look {
                     session: FS_SESSION.read(),
                 })
@@ -291,6 +296,7 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
                 // sends the session on to the original's connect.
                 state.stage = Stage::NoneFound;
                 state.owner = 0;
+                state.panel = false;
                 storage_activity(false);
                 task.end_busy();
                 return task.finish(true);
@@ -300,6 +306,19 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
         }
     }
     if let Some([first, second]) = state.numbers {
+        if !state.panel {
+            // A task 9 that begins with the result, after cleanup: it is
+            // first brought to where the one that looked at the card stood
+            // when it had its answer, the state the result screen is known
+            // from. The screen comes on the next frame.
+            state.panel = true;
+            if let Ok(panel) = task.ui() {
+                let _ = unsafe { ui::loading(panel, ui::BANK_LOADING_MESSAGE) };
+            }
+            task.begin_busy();
+            unsafe { write_word(raw, 0x10, 1) };
+            return 0;
+        }
         // The numbers are the result, under the original's line about the
         // HOME Menu. That screen does not end: Bank is closed from the HOME
         // Menu. The session, if there was one, has ended in cleanup before.
