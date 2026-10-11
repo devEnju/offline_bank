@@ -42,8 +42,11 @@ pub fn destination(current: u32, outcome: u8, native: u32, turn_back: bool) -> u
         (MAIN_MENU, MENU_USE) if MENU => SELECT,
         (SELECT, 5) => SCENE,
         (SCENE, _) => LOAD,
-        // Native Back returns to the menu; cleanup destroys the shared UI so
-        // the next entry from the start screen recreates it.
+        // Native Back returns to the menu, and so does the test build's,
+        // where another rehearsal can be chosen. Without a menu, cleanup
+        // destroys the shared UI so the next entry from the start screen
+        // recreates it.
+        (SELECT, 0x13) if MENU => MAIN_MENU,
         (SELECT, 0x13) => CLEANUP,
         (LOAD, 4) => 0xc,
         (MAIN_MENU, _) => CLEANUP,
@@ -77,6 +80,9 @@ mod tests {
     /// What follows an opened Bank: game selection, or in the console test
     /// build the main menu.
     const AFTER_OPEN: u32 = if MENU { MAIN_MENU } else { SELECT };
+    /// What follows Back on game selection: the start screen through
+    /// cleanup, or in the console test build the main menu again.
+    const AFTER_BACK: u32 = if MENU { MAIN_MENU } else { CLEANUP };
 
     #[test]
     fn only_scan_opening_loading_and_saving_refuse_home() {
@@ -97,12 +103,14 @@ mod tests {
     }
 
     #[test]
-    fn main_menu_is_a_destination_in_the_test_build_only_and_only_after_opening() {
+    fn main_menu_is_a_destination_in_the_test_build_only_after_opening_and_after_back() {
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for native in 0..=0x1d {
                     for turn_back in [false, true] {
-                        let menu = MENU && (current, outcome, turn_back) == (OPEN, 4, false);
+                        let menu = MENU
+                            && ((current, outcome, turn_back) == (OPEN, 4, false)
+                                || (current, outcome) == (SELECT, 0x13));
                         assert_eq!(
                             destination(current, outcome, native, turn_back) == MAIN_MENU,
                             menu,
@@ -125,7 +133,7 @@ mod tests {
     fn opening_goes_to_selection_and_back_returns_through_cleanup() {
         // Native 002a5580 answers 4 (menu) for both of these.
         assert_eq!(destination(OPEN, 4, MAIN_MENU, false), AFTER_OPEN);
-        assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), CLEANUP);
+        assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), AFTER_BACK);
         // Native cleanup then selects the start screen, unchanged.
         assert_eq!(destination(CLEANUP, 3, START_SCREEN, false), START_SCREEN);
         assert_eq!(destination(START_SCREEN, 4, 3, false), 3);
@@ -134,7 +142,7 @@ mod tests {
             assert_eq!(destination(3, 4, 5, false), OPEN);
             assert_eq!(destination(3, 0x17, 5, false), OPEN);
             assert_eq!(destination(OPEN, 4, MAIN_MENU, false), AFTER_OPEN);
-            assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), CLEANUP);
+            assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), AFTER_BACK);
         }
     }
 

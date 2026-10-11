@@ -54,6 +54,11 @@ mod linked {
     #[link_section = ".bank.link_roots"]
     static MENU: unsafe extern "aapcs" fn(*mut u8, u32) =
         bank_payload::runtime::bank_test_menu_chosen;
+    #[cfg(feature = "test-build")]
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static MENU_UPDATE: unsafe extern "aapcs" fn(*mut u8) -> u32 =
+        bank_payload::runtime::bank_test_menu_update;
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
         // Panic cannot fall through into native saving or a partly updated Bank.

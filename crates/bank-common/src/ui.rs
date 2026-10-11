@@ -262,49 +262,31 @@ pub unsafe fn other_copy(
     }
 }
 
-/// Writes the start screen's version line with `suffix` behind it, "Ver.
-/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
-/// the one call of 001e21c8(context, group, pane, message) that the start
-/// screen makes for its message 0x4E (002b49c4).
-///
-/// That function loads the message into the first of the context's two
-/// work strings (`[context + 4]`), fills in its values into the second, and
-/// hands the second to the pane (001e264c finds it, 0029a628 sets its
-/// text). Here the original runs first, the suffix is added to the second
-/// string in place, and the pane is given it again with the same two calls.
-/// Without room for the suffix the line stays the original's.
-/// # Safety
-/// The arguments are those of the replaced call, on the main thread.
-pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
+/// The second of the context's two work strings (`[context + 4]`), which
+/// the original fills and hands to a pane (001e21c8, 001e0ef8): the string
+/// object, its text, and its room in units.
+unsafe fn work_string(context: *mut u8) -> Option<(*mut u8, *mut u16, usize)> {
     unsafe {
-        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
-            transmute(0x001e_21c8usize);
-        original(context, group, pane, message);
-        let Ok(strings) = pointer(word(context, 4)) else {
-            return;
-        };
-        let Ok(text) = pointer(word(strings, 4)) else {
-            return;
-        };
-        let Ok(data) = pointer(word(text, 4)) else {
-            return;
-        };
-        let data = data.cast::<u16>();
-        let room = text.add(8).cast::<u16>().read() as usize;
+        let strings = pointer(word(context, 4)).ok()?;
+        let text = pointer(word(strings, 4)).ok()?;
+        let data = pointer(word(text, 4)).ok()?.cast::<u16>();
         if text.add(0xc).read() == 0 {
-            return;
+            return None;
         }
-        let mut len = 0;
-        while len < room && data.add(len).read() != 0 {
-            len += 1;
-        }
-        if len == 0 || len + suffix.len() >= room {
-            return;
-        }
-        for (index, &unit) in suffix.iter().enumerate() {
-            data.add(len + index).write(u16::from(unit));
-        }
-        len += suffix.len();
+        Some((text, data, text.add(8).cast::<u16>().read() as usize))
+    }
+}
+
+/// Ends the work string at `len` and gives it to pane `pane` of the layout
+/// of `group`, with the original's two calls: 001e264c finds the pane,
+/// 0029a628 sets its text.
+unsafe fn hand_over(
+    context: *mut u8,
+    group: u32,
+    pane: u32,
+    (text, data, len): (*mut u8, *mut u16, usize),
+) {
+    unsafe {
         data.add(len).write(0);
         text.add(0xa).cast::<u16>().write(len as u16);
         let Ok(layouts) = pointer(word(context, 0x1c)) else {
@@ -316,5 +298,62 @@ pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suf
         if !found.is_null() {
             set(found, text, -1);
         }
+    }
+}
+
+/// Writes the start screen's version line with `suffix` behind it, "Ver.
+/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
+/// the one call of 001e21c8(context, group, pane, message) that the start
+/// screen makes for its message 0x4E (002b49c4).
+///
+/// That function loads the message into the first of the context's two
+/// work strings, fills in its values into the second, and hands the second
+/// to the pane. Here the original runs first, the suffix is added to the
+/// second string in place, and the pane is given it again. Without room for
+/// the suffix the line stays the original's.
+/// # Safety
+/// The arguments are those of the replaced call, on the main thread.
+pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
+    unsafe {
+        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
+            transmute(0x001e_21c8usize);
+        original(context, group, pane, message);
+        let Some((text, data, room)) = work_string(context) else {
+            return;
+        };
+        let mut len = 0;
+        while len < room && data.add(len).read() != 0 {
+            len += 1;
+        }
+        if len == 0 || len + suffix.len() >= room {
+            return;
+        }
+        for (index, &unit) in suffix.iter().enumerate() {
+            data.add(len + index).write(u16::from(unit));
+        }
+        hand_over(context, group, pane, (text, data, len + suffix.len()));
+    }
+}
+
+/// Test builds: gives a text pane a text of the patch's own, in plain Latin
+/// letters, the way the original labels a button from a message (001e0ef8:
+/// the message into the work string, the string to the pane). Without room
+/// the pane keeps its text.
+/// # Safety
+/// `context` is the live UI context (`ui + 0x5c`), on the main thread, with
+/// the layout of `group` built.
+#[cfg(feature = "test-build")]
+pub unsafe fn label(context: *mut u8, group: u32, pane: u32, label: &[u8]) {
+    unsafe {
+        let Some((text, data, room)) = work_string(context) else {
+            return;
+        };
+        if label.len() >= room {
+            return;
+        }
+        for (index, &unit) in label.iter().enumerate() {
+            data.add(index).write(u16::from(unit));
+        }
+        hand_over(context, group, pane, (text, data, label.len()));
     }
 }

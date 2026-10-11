@@ -1243,15 +1243,16 @@ pub unsafe extern "aapcs" fn bank_version_shown(
 /// with the listener at task 4's `+0x34`). While the menu waits for a choice
 /// (state 1), every entry but the original's own way out opens the Bank as
 /// "Use Pokémon Bank" does, and says which Save and Quit the session
-/// rehearses:
+/// rehearses. The entries in the order of the screen, with the labels
+/// `bank_test_menu_update` gives them:
 ///
 /// | entry | the original's | here |
 /// | --- | --- | --- |
 /// | 0 | Use Pokémon Bank | no rehearsal |
 /// | 1 | Learn about Pokémon Bank | stop before the game is written |
-/// | 2 | View Your Support ID Number | stop after the game is written |
-/// | 3 | Download Poké Transporter | write the journal record for a while |
-/// | 5 | Move Pokémon to Pokémon HOME | write the spare snapshot for a while |
+/// | 5 | Move Pokémon to Pokémon HOME | stop after the game is written |
+/// | 2 | View Your Support ID Number | write the journal record for a while |
+/// | 3 | Download Poké Transporter | write the spare snapshot for a while |
 /// | 4 | Back | the original's: its question, then the start screen |
 ///
 /// What "Use Pokémon Bank" does is done here as the original does it for an
@@ -1270,9 +1271,9 @@ pub unsafe extern "aapcs" fn bank_test_menu_chosen(listener: *mut u8, entry: u32
     let rehearsal = match entry {
         0 => Rehearsal::None,
         1 => Rehearsal::StopBeforeGame,
-        2 => Rehearsal::StopAfterGame,
-        3 => Rehearsal::TearRecord,
-        5 => Rehearsal::TearBoxes,
+        5 => Rehearsal::StopAfterGame,
+        2 => Rehearsal::TearRecord,
+        3 => Rehearsal::TearBoxes,
         _ => return unsafe { original(listener, entry) },
     };
     if checked_pointer(task as u32).is_err() || unsafe { read_word(task, 0x10) } != 1 {
@@ -1292,4 +1293,39 @@ pub unsafe extern "aapcs" fn bank_test_menu_chosen(listener: *mut u8, entry: u32
         let enable: unsafe extern "aapcs" fn(u32, u32) = transmute(0x001e_9748usize);
         enable(read_word(ui, 0x80), 0);
     }
+}
+
+/// Test builds: the labels of the main menu's five entries, by the text pane
+/// the original labels each with (001d62f0: panes 0x13, 0x1f, 0x66, 0x24,
+/// 0x29 of layout group 1, for its messages 0x29, 0x2A, 0x56, 0x2B, 0x2C),
+/// in the order of the screen. "Back" keeps the original's text.
+#[cfg(feature = "test-build")]
+const MENU_LABELS: [(u32, &[u8]); 5] = [
+    (0x13, b"Normal save"),
+    (0x1f, b"Stop before the game"),
+    (0x66, b"Stop after the game"),
+    (0x24, b"Write the record"),
+    (0x29, b"Write the boxes"),
+];
+
+/// Test builds: stands in for the main menu's update (table slot 003617bc,
+/// the original's 002a6750). In its first state, before the menu waits for
+/// a choice and after its initializer has labelled the buttons, the entries
+/// get the names of what they rehearse; then the original runs.
+/// # Safety
+/// Called only through that table slot, with the live main-menu task.
+#[cfg(feature = "test-build")]
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_test_menu_update(task: *mut u8) -> u32 {
+    let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(0x002a_6750usize) };
+    if unsafe { read_word(task, 0x10) } == 0 {
+        let context = checked_pointer(unsafe { read_word(task, 0x38) })
+            .and_then(|ui| checked_pointer(unsafe { read_word(ui, 0x5c) }));
+        if let Ok(context) = context {
+            for (pane, label) in MENU_LABELS {
+                unsafe { bank_common::ui::label(context, 1, pane, label) };
+            }
+        }
+    }
+    unsafe { original(task) }
 }
