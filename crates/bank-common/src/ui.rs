@@ -6,8 +6,8 @@
 //! page the start screen's line about the HOME Menu with the same numbers;
 //! nothing else is written here.
 
+use crate::numbers;
 use core::mem::transmute;
-use offline_core::numbers;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

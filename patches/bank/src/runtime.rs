@@ -762,7 +762,6 @@ impl Runtime {
                 self.turn_back = true;
                 self.step = Step::TurnBack;
                 task.end_busy();
-                storage_activity(false);
                 unsafe {
                     bank_common::ui::other_copy(
                         ui,
@@ -805,7 +804,6 @@ impl Runtime {
                     self.turn_back = true;
                     self.step = Step::TurnBack;
                     task.end_busy();
-                    storage_activity(false);
                     unsafe { bank_common::ui::notice(ui, bank_common::ui::NO_GAME_NOTICE) }
                         .map_err(|_| Fault::NativeObject)?;
                     return Ok(false);

@@ -1,5 +1,5 @@
-//! The line of two numbers that Bank and Poké Transporter put into a message
-//! of the original, and where it goes.
+//! The line of two numbers that a patch puts into a message of the original,
+//! where it goes, and the page that follows it.
 //!
 //! A message is the original's own text in UTF-16 units. A line feed ends a
 //! line; a control code is the unit `0x10`, the number of units that follow,
