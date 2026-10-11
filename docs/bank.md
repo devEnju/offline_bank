@@ -163,7 +163,15 @@ When the interrupted session moved Pokémon both ways and its game is not there,
 
 > You previously used a different copy of this game. Please try again using (name)'s game (Trainer ID No. (number)).
 
-Name and number are those of the game the session was made with; the number has five digits for X, Y, Omega Ruby and Alpha Sapphire and six for the later games. After A Bank is back on its start screen. Put that game in (or take out the cartridge that stands in for the installed copy) and press START: Bank then looks at its save and finishes or undoes the interrupted Save and Quit as in the first table. Bank does not have to be closed for this.
+Name and number are those of the game the session was made with; the number has five digits for X, Y, Omega Ruby and Alpha Sapphire and six for the later games. After A Bank is back on its start screen. Make that game the one Bank finds and press START: Bank then looks at its save and finishes or undoes the interrupted Save and Quit as in the first table. Bank does not have to be closed for this.
+
+| The interrupted session was with | At START | The message names | What to do |
+| --- | --- | --- | --- |
+| a cartridge | the cartridge is not inserted | the cartridge's game | Insert the cartridge. |
+| the installed copy | a cartridge of the same game is inserted, so Bank reads the cartridge and not the installed copy | the **installed copy's** game, not the cartridge's | Take the cartridge out. |
+| the installed copy | the game is no longer installed | the installed copy's game | Install it again with its save. |
+
+The message only comes for a Save and Quit that was cut off. An error in a running session, for example a cartridge pulled out during Save and Quit, ends that run of Bank with two numbers ([Troubleshooting](#troubleshooting)); nothing is waiting then. Start Bank again with the game in, and if the save was cut off, this section applies.
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
