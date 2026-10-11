@@ -92,7 +92,7 @@ Version 0.2.1 stored the Bank in four files; since v0.3.0 it has ten ([internals
 
 This builds it into `build/bank-migrate/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
-It belongs to that one step and ships only with release v0.3.0 ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+It belongs to that one step and ships with the releases that follow it while users of v0.2.1 are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
 This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always two numbers under the original's line about the HOME Menu, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
 
@@ -153,21 +153,21 @@ A message of the original on the way (no connection, maintenance, the server loc
 Nothing depends on it: when the service has ended, the crate, `bank15/download.rs`, the script, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
 
-**A release that changes how the Bank is stored** names the one version it converts from:
+**A release that ships the migration** names the one version it converts from, the version before the Bank was last stored differently:
 
 ```powershell
-./scripts/New-Release.ps1 -Version v0.3.0 -MigrateFrom v0.2.1
+./scripts/New-Release.ps1 -Version v0.3.1 -MigrateFrom v0.2.1
 ```
 
-It then writes a second zip, `offline_bank-v0.2.1-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. No other release ships a migration, and the `README.txt` of every release names the oldest Bank the version continues (`$bankFilesSince` in the script). Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
+It then writes a second zip, `offline_bank-v0.2.1-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. The `README.txt` of every release names the oldest Bank the version continues (`$bankFilesSince` in the script). Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
 
 **A release made while the official service runs** can ship the download:
 
 ```powershell
-./scripts/New-Release.ps1 -Version v0.4.0 -Download
+./scripts/New-Release.ps1 -Version v0.3.1 -Download
 ```
 
-It then writes one more zip, `offline_bank-v0.4.0-download.zip`: the download patch for Bank's folder and a `README.txt` with what it needs, its steps and its numbers. The guide belongs to the release, like the migration's.
+It then writes one more zip, `offline_bank-download.zip`, without a version in its name: the download patch for Bank's folder and a `README.txt` with what it needs, its steps and its numbers. The guide belongs to the release, like the migration's.
 
 Nothing is pushed or uploaded. Try the zip on a console first, then publish:
 

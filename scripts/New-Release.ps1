@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    # The one earlier version whose Bank this release converts. Only for the
-    # release that changes how the Bank is stored; adds the migration zip.
+    # The one earlier version whose Bank this release converts: the version
+    # before the Bank was last stored differently. Adds the migration zip.
     [string]$MigrateFrom = '',
     # Adds the download zip: the patch that fetches the Bank from the
     # official server while that service runs.
@@ -23,16 +23,12 @@ if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version must look like v1.0.
 if ($Draft -and $Publish) { throw 'A draft cannot be published.' }
 
 # The first version that stores the Bank the way this one does. A Bank last
-# used with an older version is not continued by a newer one; the release
-# named here ships the migration for the version before it, and no other
-# release ships one.
+# used with an older version is not continued by a newer one; a release
+# from this version on can ship the migration for the version before it.
 $bankFilesSince = 'v0.3.0'
 if ($MigrateFrom) {
     if ($MigrateFrom -notmatch '^v\d+\.\d+\.\d+$') { throw "MigrateFrom must look like v1.0.0: $MigrateFrom" }
     if ($Publish) { throw '-Publish finds the migration zip of the earlier run by itself.' }
-    if ($Version -ne $bankFilesSince) {
-        throw "Only $bankFilesSince, which changed how the Bank is stored, ships a migration."
-    }
 }
 
 if ($Download -and $Publish) { throw '-Publish finds the download zip of the earlier run by itself.' }
@@ -44,8 +40,9 @@ $notesPath = Join-Path $releaseRoot "$name.md"
 # The migration zip carries the version it converts from.
 $migrationName = if ($MigrateFrom) { "offline_bank-$MigrateFrom-migration$suffix" } else { '' }
 $migrationZip = if ($MigrateFrom) { Join-Path $releaseRoot "$migrationName.zip" } else { '' }
-# The download zip carries the version whose offline Bank it writes.
-$downloadName = if ($Download) { "offline_bank-$Version-download$suffix" } else { '' }
+# The download zip has no version in its name: it belongs to the official
+# service, not to a version of the patch.
+$downloadName = if ($Download) { "offline_bank-download$suffix" } else { '' }
 $downloadZip = if ($Download) { Join-Path $releaseRoot "$downloadName.zip" } else { '' }
 # The day the official service ends, in its own time zone.
 $serviceEnds = 'February 25, 2027'
@@ -84,7 +81,7 @@ if ($Publish) {
         $assets += Join-Path $releaseRoot $Matches[0]
     }
     # And so does a download zip.
-    if ($notes -match 'offline_bank-v\d+\.\d+\.\d+-download\.zip') {
+    if ($notes -match 'offline_bank-download\.zip') {
         $assets += Join-Path $releaseRoot $Matches[0]
     }
     foreach ($asset in $assets) {
