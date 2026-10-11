@@ -3,16 +3,16 @@
 //! start screen to "open Bank" and none behind it.
 
 use super::{
-    archive_preservation_candidate, first_start_edits, router_call, startup_call, word, Profile,
-    OPEN_TASK,
+    archive_preservation_candidate, first_start_edits, message_hook, router_call, startup_call,
+    word, Profile, MESSAGE_ENTRY, OPEN_TASK,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
 
 pub const PROFILE: Profile = Profile {
     name: "migrate",
-    entries: &["bank_migrate_next", "bank_migrate_open"],
-    // Thirteen edited words plus the linked bootstrap bytes.
-    regions: 14,
+    entries: &["bank_migrate_next", "bank_migrate_open", MESSAGE_ENTRY],
+    // Fourteen edited words plus the linked bootstrap bytes.
+    regions: 15,
     edits,
 };
 
@@ -21,14 +21,16 @@ fn edits(_: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
         payload.bootstrap_entry,
         payload.export("bank_migrate_next")?,
         payload.export("bank_migrate_open")?,
+        payload.export(MESSAGE_ENTRY)?,
     )
 }
 
-fn hook_edits(startup: u32, next: u32, open: u32) -> crate::Result<Vec<CheckedEdit>> {
+fn hook_edits(startup: u32, next: u32, open: u32, message: u32) -> crate::Result<Vec<CheckedEdit>> {
     let mut edits = vec![
         archive_preservation_candidate(),
         startup_call(startup)?,
         router_call(next)?,
+        message_hook(message)?,
     ];
     // Task 9 keeps its native constructor, init and end; its update and
     // busy poll run the conversion.
@@ -46,7 +48,7 @@ mod tests {
 
     #[test]
     fn the_migration_edits_the_way_to_opening_and_nothing_behind_it() {
-        let edits = hook_edits(0x313910, 0x3fb000, 0x3fb200).unwrap();
+        let edits = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400).unwrap();
         assert_eq!(edits.len(), PROFILE.regions - 1);
         let at = |address: u32| {
             edits
@@ -63,7 +65,7 @@ mod tests {
             assert_eq!(edit.expected, expected.to_le_bytes());
             assert_eq!(edit.replacement, replacement.to_le_bytes());
         }
-        for address in [0x0029f338, 0x001040a4, 0x002a5a2c] {
+        for address in [0x0029f338, 0x001040a4, 0x002a5a2c, 0x001d6650] {
             assert!(at(address).is_some());
         }
         // Loading, saving, rewards, Pokédex, the timestamp and the scene
@@ -90,12 +92,12 @@ mod tests {
         offsets.sort_unstable();
         offsets.dedup();
         assert_eq!(offsets.len(), edits.len());
-        assert!(hook_edits(0x313910, 0x80000000, 0x3fb200).is_err());
+        assert!(hook_edits(0x313910, 0x80000000, 0x3fb200, 0x3fb400).is_err());
     }
 
     #[test]
     fn every_edit_of_the_migration_is_one_the_offline_patch_makes_at_the_same_place() {
-        let migration = hook_edits(0x313910, 0x3fb000, 0x3fb200).unwrap();
+        let migration = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400).unwrap();
         let offline_edits = offline::sample_edits();
         assert!(migration.len() < offline_edits.len());
         for edit in &migration {
@@ -105,9 +107,12 @@ mod tests {
                 .unwrap();
             assert_eq!(same.expected, edit.expected);
         }
+        // Its own entry functions are its own; the one of `bank-common`
+        // is the same in both.
         assert!(PROFILE
             .entries
             .iter()
-            .all(|entry| !offline::PROFILE.entries.contains(entry)));
+            .all(|entry| *entry == MESSAGE_ENTRY || !offline::PROFILE.entries.contains(entry)));
+        assert!(offline::PROFILE.entries.contains(&MESSAGE_ENTRY));
     }
 }

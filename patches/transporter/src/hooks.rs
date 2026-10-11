@@ -11,6 +11,7 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use offline_core::{
+    numbers::{self, Rest},
     sections::TRANSPORT_SLOTS,
     sidecar::{Sidecar, SLOTS},
     transport::{self, KIND},
@@ -24,9 +25,21 @@ pub(crate) const FILE_READ: usize = 0x0015_930c;
 pub(crate) const FILE_WRITE: usize = 0x0015_9390;
 pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
 pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
-/// The original's "show this message and wait for it to be acknowledged":
-/// `(ui, message, 1)`, as every one of its tasks calls it.
+/// The original's "show this message": `(ui, message, wait)`. With 1 the
+/// dialog ends when its last page is acknowledged, as every one of its
+/// tasks calls it; with 0 it stays, as its message 0x1F does (`002452DC`).
 const SHOW_MESSAGE: usize = 0x0019_b50c;
+/// One frame of a dialog, `(context)` with the context at `ui + 0x5C`: 4
+/// once a waiting dialog was acknowledged (`0024700C`).
+const DIALOG_POLL: usize = 0x0019_b4bc;
+const UI_CONTEXT: usize = 0x5c;
+const ACKNOWLEDGED: u32 = 4;
+/// The dialog's own string object at `ui + 0x8C`, which the show function
+/// fills and hands to the dialog through `0019C7D4(context, string)`. It is
+/// the string class of Bank's dialogs: data at `+4`, room at `+8`, length at
+/// `+0xA` (both in units), a flag at `+0xC` that it has a buffer.
+const UI_TEXT: usize = 0x8c;
+const DIALOG_TEXT: usize = 0x0019_c7d4;
 /// The original's router, `get_next_state(manager, current)`, and what it
 /// reads: the finished task at `manager + 0x10` with its outcome byte at
 /// `+0x30`, and the manager's "cancelled" flag, which it clears.
@@ -67,11 +80,14 @@ const JOB_CHECK: u32 = 0;
 const JOB_DELIVER: u32 = 1;
 
 /// Worker state. Only the main thread starts and collects a job; while one
-/// runs, the worker reads `task` and `job` and writes the two atomics.
+/// runs, the worker reads `task` and `job` and writes the atomics.
 #[repr(C)]
 struct Shared {
     phase: AtomicU32,
     result: AtomicU32,
+    /// The two numbers of a refusal that has them, behind `numbered`.
+    numbers: [AtomicU32; 2],
+    numbered: AtomicU32,
     handle: UnsafeCell<u32>,
     task: UnsafeCell<*const u8>,
     job: UnsafeCell<u32>,
@@ -81,10 +97,15 @@ unsafe impl Sync for Shared {}
 static STATE: Shared = Shared {
     phase: AtomicU32::new(IDLE),
     result: AtomicU32::new(0),
+    numbers: [AtomicU32::new(0), AtomicU32::new(0)],
+    numbered: AtomicU32::new(0),
     handle: UnsafeCell::new(0),
     task: UnsafeCell::new(core::ptr::null()),
     job: UnsafeCell::new(0),
 };
+/// What is on screen once the check has refused (`layout::Refused`). Only
+/// the main thread reads and writes it.
+static REFUSED: AtomicU32 = AtomicU32::new(Refused::No as u32);
 
 #[repr(C, align(8))]
 struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
@@ -106,22 +127,34 @@ struct File {
     written: [bool; SLOTS],
 }
 impl File {
-    /// `None` when Bank's extdata or both files do not exist, access is
-    /// refused, or a file is not exactly the size Bank creates.
-    unsafe fn open() -> Option<Self> {
-        let mut handles = [None; SLOTS];
-        for (handle, path) in handles.iter_mut().zip(MOVER_PATHS) {
-            *handle = unsafe { Self::open_one(path) }.ok()?;
-        }
-        let file = Self {
-            handles,
+    /// `Err` when Bank's extdata or both files do not exist or access is
+    /// refused, with the result of the first open that failed, or when a
+    /// file is not exactly the size Bank creates.
+    unsafe fn open() -> Result<Self, Found> {
+        // Whatever was opened is closed again if this ends early.
+        let mut file = Self {
+            handles: [None; SLOTS],
             written: [false; SLOTS],
         };
-        file.handles.iter().any(Option::is_some).then_some(file)
+        let mut failed = None;
+        for (handle, path) in file.handles.iter_mut().zip(MOVER_PATHS) {
+            match unsafe { Self::open_one(path) } {
+                Ok(opened) => *handle = Some(opened),
+                Err(Found::Closed(code)) => {
+                    failed.get_or_insert(code);
+                }
+                Err(found) => return Err(found),
+            }
+        }
+        match failed {
+            Some(code) if file.handles.iter().all(Option::is_none) => Err(Found::Closed(code)),
+            _ => Ok(file),
+        }
     }
-    /// `Ok(None)` for a file that is not there or cannot be opened, `Err`
-    /// for one of another size: that is not a file of this layout.
-    unsafe fn open_one(path: &[u8]) -> Result<Option<u32>, ()> {
+    /// `Found::Closed` for a file that is not there or cannot be opened,
+    /// `Found::Size` for one of another size: that is not a file of this
+    /// layout.
+    unsafe fn open_one(path: &[u8]) -> Result<u32, Found> {
         type Open = unsafe extern "aapcs" fn(
             *const u32,
             *mut u32,
@@ -157,16 +190,24 @@ impl File {
                 0,
             )
         };
-        if code < 0 || handle == 0 {
-            return Ok(None);
+        if code < 0 {
+            return Err(Found::Closed(code as u32));
+        }
+        if handle == 0 {
+            return Err(Found::Closed(NO_HANDLE));
         }
         let size: Size = unsafe { transmute(FILE_SIZE) };
         let mut length = 0;
-        if unsafe { size(&handle, &mut length) } < 0 || length != KIND.slot_len() {
+        let code = unsafe { size(&handle, &mut length) };
+        if code < 0 || length != KIND.slot_len() {
             unsafe { close(handle) };
-            return Err(());
+            return Err(if code < 0 {
+                Found::Closed(code as u32)
+            } else {
+                Found::Size(length)
+            });
         }
-        Ok(Some(handle))
+        Ok(handle)
     }
     /// The slot file that holds `offset..offset + length`, and where in it.
     fn locate(&self, offset: u64, length: usize) -> Result<(usize, u32, u64), ()> {
@@ -281,23 +322,31 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
     }
 }
 
-/// The file work of one job. Runs on the worker thread.
+/// The file work of one job. Runs on the worker thread. The check answers
+/// the message to show, or 0 for none, and leaves the numbers that go with
+/// it; the delivery answers 1 when it is written.
 unsafe fn work(job: u32, task: *const u8) -> u32 {
-    let Some(file) = (unsafe { File::open() }) else {
-        return if job == JOB_CHECK {
-            refusal_message(None).unwrap_or(0)
-        } else {
-            0
-        };
-    };
-    let mut file = Sidecar::new(file, KIND);
+    let file = unsafe { File::open() };
     if job == JOB_CHECK {
-        // The message to show, or 0 for none.
-        return refusal_message(file.slots().ok().as_ref()).unwrap_or(0);
+        let found = match file {
+            Ok(file) => Found::Slots(Sidecar::new(file, KIND).slots().ok()),
+            Err(found) => found,
+        };
+        let Some(refusal) = refusal(&found) else {
+            return 0;
+        };
+        let (first, second) = refusal.numbers.unwrap_or_default();
+        STATE.numbers[0].store(first, Ordering::Relaxed);
+        STATE.numbers[1].store(second, Ordering::Relaxed);
+        STATE
+            .numbered
+            .store(u32::from(refusal.numbers.is_some()), Ordering::Relaxed);
+        return refusal.message;
     }
-    let Some((records, tags)) = (unsafe { native_box(task) }) else {
+    let (Ok(file), Some((records, tags))) = (file, unsafe { native_box(task) }) else {
         return 0;
     };
+    let mut file = Sidecar::new(file, KIND);
     u32::from(transport::deliver(&mut file, records, tags).is_ok())
 }
 
@@ -377,12 +426,27 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     let outcome = unsafe { follow(manager, MANAGER_TASK) }
         .map(|task| unsafe { task.add(TASK_OUTCOME).read() });
     let native = unsafe { original(manager, current) };
+    // A step has ended: no refusal of the check is on screen any more.
+    REFUSED.store(Refused::No as u32, Ordering::Relaxed);
     let Some(outcome) = outcome else {
         return native;
     };
     let next = navigation::destination(current, outcome, native, cancelled);
     unsafe { refuse_home(navigation::loads(next)) };
     next
+}
+
+/// The original's "show a message" function was entered with a message that
+/// waits for an answer (the stub of the patched site at 0019B50C, link.rs).
+/// Such a message is where a step that reads or writes has nothing left to
+/// do but end, so the refusal the router entry began for it ends here. The
+/// original's own bit for a Virtual Console save that is being written is
+/// not this one and stays as it is.
+/// # Safety
+/// Called only from that stub, on the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_message_waits() {
+    unsafe { refuse_home(false) };
 }
 
 /// The game list is set up and on screen: every save has been read, and it
@@ -398,37 +462,87 @@ pub unsafe extern "aapcs" fn transporter_list_ready() {
 /// Asks, when START was pressed and before the original searches for games,
 /// whether Bank can take a delivery: the question the original put to the
 /// server after a game was chosen. If not, the original's message for it is
-/// shown here and the search ends as it does for "no game found": back to
-/// the title screen.
+/// shown here, and once it was acknowledged the original's line about the
+/// HOME Menu, which stays: no session can begin until Bank was opened. The
+/// search is held in its first step for that, which calls this every frame.
+/// The "open Pokémon Bank" message has several causes and carries two
+/// numbers for them, on its first page and under the line.
 /// # Safety
 /// Called only from the stub of the patched site at 00246F48 (link.rs) with
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
+    let numbers = (STATE.numbered.load(Ordering::Relaxed) != 0).then(|| {
+        (
+            STATE.numbers[0].load(Ordering::Relaxed),
+            STATE.numbers[1].load(Ordering::Relaxed),
+        )
+    });
+    let refused = Refused::of(REFUSED.load(Ordering::Relaxed));
+    if refused != Refused::No {
+        let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
+            return SEARCH_END;
+        };
+        let Some(context) = (unsafe { follow(ui, UI_CONTEXT) }) else {
+            return SEARCH_END;
+        };
+        // Each frame of a dialog is this call, also of one that stays.
+        let poll: unsafe extern "aapcs" fn(*const u8) -> u32 = unsafe { transmute(DIALOG_POLL) };
+        let next = refused.next(unsafe { poll(context) } == ACKNOWLEDGED);
+        if next != refused {
+            unsafe { show(ui, MESSAGE_HOME, false, numbers, Rest::Dropped) };
+            REFUSED.store(next as u32, Ordering::Relaxed);
+        }
+        return SEARCH_PENDING;
+    }
     match unsafe { step(task, JOB_CHECK) } {
         None => SEARCH_PENDING,
         Some(0) => SEARCH_GO,
         Some(message) => {
+            let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
+                return SEARCH_END;
+            };
             // Nothing more is read: HOME and sleep work on the message.
             unsafe { refuse_home(false) };
-            if unsafe { show(task, message) } {
-                SEARCH_SHOWN
-            } else {
-                SEARCH_END
-            }
+            unsafe { show(ui, message, true, numbers, Rest::Kept) };
+            REFUSED.store(Refused::Message as u32, Ordering::Relaxed);
+            SEARCH_PENDING
         }
     }
 }
 
-/// Shows an original message the way the game search shows its own.
-/// `false` when the task's dialog owner is not a pointer.
-unsafe fn show(task: *const u8, message: u32) -> bool {
-    let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
-        return false;
-    };
+/// Shows an original message the way the game search shows its own, and
+/// puts `numbers` on the third line of its first page, in the dialog's own
+/// string, which is handed to the dialog again as the show function does.
+/// Without room for them the message stays as it is.
+unsafe fn show(ui: *const u8, message: u32, wait: bool, numbers: Option<(u32, u32)>, rest: Rest) {
     let show: unsafe extern "aapcs" fn(*const u8, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
-    unsafe { show(ui, message, 1) };
-    true
+    unsafe { show(ui, message, u32::from(wait)) };
+    let Some((first, second)) = numbers else {
+        return;
+    };
+    unsafe {
+        let (Some(context), Some(text)) = (follow(ui, UI_CONTEXT), follow(ui, UI_TEXT)) else {
+            return;
+        };
+        let Some(data) = follow(text, 4) else {
+            return;
+        };
+        let (text, data) = (text.cast_mut(), data.cast_mut().cast::<u16>());
+        let room = usize::from(text.add(8).cast::<u16>().read());
+        let len = usize::from(text.add(0xa).cast::<u16>().read());
+        if text.add(0xc).read() == 0 || len == 0 || len >= room || data.add(len).read() != 0 {
+            return;
+        }
+        let units = slice::from_raw_parts_mut(data, room);
+        let Some(len) = numbers::put(units, len, first, second, rest) else {
+            return;
+        };
+        units[len] = 0;
+        text.add(0xa).cast::<u16>().write(len as u16);
+        let begin: unsafe extern "aapcs" fn(*const u8, *mut u8) = transmute(DIALOG_TEXT);
+        begin(context, text);
+    }
 }
 
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,

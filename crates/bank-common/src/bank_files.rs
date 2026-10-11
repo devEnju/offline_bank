@@ -1445,4 +1445,52 @@ mod tests {
             assert!(recovered(&restarted, game).0 == bytes);
         }
     }
+
+    #[test]
+    fn a_save_that_waits_for_its_game_writes_nothing_and_is_settled_once_it_is_there() {
+        // A session that deposited one Pokémon and withdrew another.
+        let old = bank(0x31, &[(0, 0, pokemon(1)), (0, 1, pokemon(2))], 0);
+        let new = bank(0x52, &[(0, 0, pokemon(1)), (3, 3, pokemon(9))], 0);
+        for (game, kept) in [(BEFORE, &old), (AFTER, &new)] {
+            let disk = fresh(&bank(0, &[], 0));
+            let mut files = BankFiles::new(disk.clone());
+            files.open().unwrap();
+            load(&mut files);
+            files
+                .prepare(&mut old.clone(), stored(7, 1, 2), GAME, [8; 32], [9; 32])
+                .unwrap();
+            files.reconcile(observed([9; 32])).unwrap();
+            files.tidy_transport().unwrap();
+            assert!(load(&mut files).0 == old);
+            files
+                .prepare(&mut new.clone(), stored(9, 2, 2), GAME, BEFORE, AFTER)
+                .unwrap();
+            end_session(&mut files, &disk);
+
+            // START without the game, as often as it is pressed: the save
+            // waits, nothing is written, and the session ends like any.
+            for _ in 0..3 {
+                assert!(matches!(files.open(), Ok(Some(Phase::Prepared(_)))));
+                let written = disk.0.borrow().operations;
+                let (mut before, mut after) = (Box::new([[0; 3]; HELD]), Box::new([[0; 3]; HELD]));
+                let moved = files
+                    .pending_moves(&mut vec![0; BLOB_SIZE], &mut before, &mut after)
+                    .unwrap();
+                assert_eq!((moved.deposited, moved.withdrawn), (1, 1));
+                assert_eq!(moved::choose_unseen(moved), None);
+                assert_eq!(disk.0.borrow().operations, written);
+                assert!(matches!(files.phase(), Ok(Phase::Prepared(_))));
+                end_session(&mut files, &disk);
+            }
+
+            // START with the game there, in the same run: its save decides.
+            assert!(matches!(files.open(), Ok(Some(Phase::Prepared(_)))));
+            files.reconcile(observed(game)).unwrap();
+            files.tidy_transport().unwrap();
+            let (bytes, _) = load(&mut files);
+            assert!(&bytes == kept);
+            end_session(&mut files, &disk);
+            assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
+        }
+    }
 }

@@ -638,7 +638,7 @@ mod tests {
         }
         for at in [
             0x910, 0x914, 0x1000, 0x1004, 0x1008, 0x100c, 0x1010, 0x1014, 0x1018, 0x101c, 0x1020,
-            0x1024, 0x1028, 0x102c, 0x1030,
+            0x1024, 0x1028, 0x102c, 0x1030, 0x1034,
         ] {
             u32_at(&mut elf, at, 0xe12fff1e); // synthetic ARM BX LR
         }
@@ -655,7 +655,7 @@ mod tests {
             (3, ".data", 1, 3, 0x3fc000, 0x2000, 4, 0, 4, 0),
             (4, ".bss", 8, 3, 0x3fc004, 0x2004, 0xffc, 0, 4, 0),
             (5, ".ARM.attributes", 0x70000003, 0, 0, 0x2100, 24, 0, 1, 0),
-            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 336, 8, 4, 16),
+            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 352, 8, 4, 16),
             (7, ".shstrtab", 3, 0, 0, 0x2400, 0, 0, 1, 0),
             (8, ".strtab", 3, 0, 0, 0x2500, 0, 0, 1, 0),
         ] {
@@ -703,6 +703,8 @@ mod tests {
                 0x12,
                 2,
             ),
+            // The entry of `bank-common` that every patch exports.
+            ("bank_message_shown", 0x3fb034, 4, 0x12, 2),
         ]
         .into_iter()
         .enumerate()
@@ -724,7 +726,8 @@ mod tests {
         let parsed = inspect(&elf).unwrap();
         assert_eq!(parsed.entry, 0x3fb000);
         assert_eq!(parsed.export("bank_offline_timestamp"), Ok(0x3fb018));
-        assert_eq!(parsed.entries.len(), 8);
+        assert_eq!(parsed.entries.len(), 9);
+        assert_eq!(parsed.export("bank_message_shown"), Ok(0x3fb034));
         assert!(parsed.export("bank_offline_menu").is_err());
         assert_eq!(parsed.executable_size, 0x1000);
         assert_eq!(parsed.memory_size, 0x2000);

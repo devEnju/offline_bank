@@ -68,7 +68,8 @@ pub const ENTRY_LANGUAGE_BACK: u32 = PAYLOAD_ADDRESS + 52;
 pub const ENTRY_TITLE_BEGIN: u32 = PAYLOAD_ADDRESS + 56;
 pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 60;
 pub const ENTRY_LIST_READY: u32 = PAYLOAD_ADDRESS + 64;
-pub const ENTRY_COUNT: u32 = 17;
+pub const ENTRY_MESSAGE: u32 = PAYLOAD_ADDRESS + 68;
+pub const ENTRY_COUNT: u32 = 18;
 
 enum Word {
     Raw(u32),
@@ -93,6 +94,14 @@ const EDITS: &[(u32, u32, Word)] = &[
     // #0x38]): the list is set up and on screen. The stub lets HOME and
     // sleep through again and runs the instruction.
     (0x0024_45ec, 0xe594_0038, BranchLink(ENTRY_LIST_READY)),
+    // The original's "show a message" function, its first instruction (was:
+    // push {r4-r8, lr}). The stub runs it, lets HOME and sleep through if
+    // the message waits for an answer, and goes on at 0019B510. A branch,
+    // not a call: lr is the caller's. Every message a step that reads or
+    // writes ends with comes through here: "Could not find a game", the
+    // three about the chosen game's save or card, and the closing message
+    // of a transfer.
+    (0x0019_b50c, 0xe92d_41f0, Branch(ENTRY_MESSAGE)),
     // Game search, first step (was: ldr r0, [r0], the start of the cartridge
     // scan). The stub asks the check entry with the task (r4) whether Bank
     // can take a delivery, and either goes on with the search or ends it
@@ -738,10 +747,19 @@ mod tests {
         );
         // Sites that leave the original for good: plain branches to stubs
         // that go on inside the original themselves.
-        for (address, entry) in [(0x0024_6f48, ENTRY_CHECK), (0x0024_a150, ENTRY_DELIVER)] {
+        for (address, entry) in [
+            (0x0024_6f48, ENTRY_CHECK),
+            (0x0024_a150, ENTRY_DELIVER),
+            (0x0019_b50c, ENTRY_MESSAGE),
+        ] {
             let jump = word(address, &Branch(entry));
             assert_eq!(branch_target(address, jump, false), Some(entry));
         }
+        // The message function's first instruction is push {r4-r8, lr},
+        // which its stub runs before it goes on behind it.
+        assert!(EDITS
+            .iter()
+            .any(|(address, original, _)| (*address, *original) == (0x0019_b50c, 0xe92d_41f0)));
         // The original start-up call that the hook replaces and then makes.
         assert_eq!(
             branch_target(STARTUP_CALL, 0xeb00_0228, true),

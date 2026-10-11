@@ -97,6 +97,22 @@ pub(crate) fn router_call(target: u32) -> crate::Result<CheckedEdit> {
     ))
 }
 
+/// The entry function of `bank-common` that every patch exports beside its
+/// own: where the original's "show a message" function goes first.
+pub(crate) const MESSAGE_ENTRY: &str = "bank_message_shown";
+
+/// The first instruction of the original's "show a message" function
+/// (001d6650, `push {r4-r8, lr}`), to that entry. It runs the instruction,
+/// lets HOME and sleep through if the message waits for an answer, and goes
+/// on at 001d6654. A branch, not a call: `lr` is the caller's.
+pub(crate) fn message_hook(target: u32) -> crate::Result<CheckedEdit> {
+    Ok(word(
+        0x001d6650,
+        0xe92d41f0,
+        crate::encode_arm_branch(0x001d6650, target, false)?,
+    ))
+}
+
 /// Task 9, "open Bank": the update and busy-poll slots of its vtable with
 /// the functions they hold.
 pub(crate) const OPEN_TASK: [(u32, u32); 2] = [(0x00361cfc, 0x002ae568), (0x00361d0c, 0x002b4a20)];
@@ -226,6 +242,17 @@ mod tests {
         }
         assert!(startup_call(0x80000000).is_err());
         assert!(router_call(0x80000000).is_err());
+        // The message function's first instruction, push {r4-r8, lr}, to
+        // the entry: a branch, so that the caller's lr stays.
+        let message = message_hook(0x3fb600).unwrap();
+        assert_eq!(message.offset, 0x000d6650);
+        assert_eq!(message.expected, [0xf0, 0x41, 0x2d, 0xe9]);
+        assert_eq!(
+            message.replacement,
+            encode_arm_branch(0x001d6650, 0x3fb600, false).unwrap()
+        );
+        assert_eq!(message.replacement[3], 0xea);
+        assert!(message_hook(0x80000000).is_err());
         assert_eq!(
             FIRST_START_ACCEPT_BRANCH.to_le_bytes(),
             encode_arm_branch(0x002ac5b0, 0x002ac8a8, false).unwrap()

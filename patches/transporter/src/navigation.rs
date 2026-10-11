@@ -41,7 +41,9 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
 /// save; `hooks::transporter_list_ready` lets HOME through again once it is
 /// on screen), reading the chosen game, the Bank step (it saves its record
 /// into the game), and the transfer. HOME and sleep are refused from the
-/// moment one of them is chosen. Every other step waits for the user.
+/// moment one of them is chosen, until it ends or shows a message that
+/// waits for an answer (`hooks::transporter_message_waits`). Every other
+/// step waits for the user.
 pub const fn loads(next: u32) -> bool {
     matches!(next, SEARCH | LIST | READ | BANK_STEP | TRANSFER)
 }
@@ -151,9 +153,9 @@ mod tests {
         assert!(loads(destination(READ, 3, 0xa, false)));
         assert!(!loads(destination(BANK_STEP, 4, QUESTION, false)));
         assert!(loads(destination(QUESTION, 4, TRANSFER, false)));
-        // Every way back to the title screen ends the refusal: nothing
-        // found or a message after START, Back on the list, a refusal of
-        // the original, "No" at the question, and the end of a transfer.
+        // Every way back to the title screen ends the refusal: no game
+        // found after START, Back on the list, a refusal of the original,
+        // "No" at the question, and the end of a transfer.
         for (current, outcome) in [
             (SEARCH, 2),
             (LIST, 5),

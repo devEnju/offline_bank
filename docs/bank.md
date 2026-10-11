@@ -14,7 +14,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Loading screens, messages, sounds. | The originals. |
 | First start: asks for a language, which cannot be changed later. | Never asks. Bank is always in the console's language ([below](#first-start)). |
 | First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
-| HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else. |
+| HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original redemption is kept. Server gifts and distributions are skipped. |
 | Pokédex and adventure records update when you visit the records screen. | They update at Save and Quit, with the original rules ([below](#pokédex-and-adventure-records)). |
@@ -142,7 +142,7 @@ Until step 3 Bank still holds both sets of boxes. If the power fails, the next s
 | Unchanged | The power failed before step 2 was finished. | Goes back to its old boxes. Nothing was moved. |
 | The one Bank wrote | The power failed after step 2. | Keeps its new boxes. Everything was moved. |
 | Something else: the game was played and saved, a new game was started on it, or it is another cartridge of the game | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. |
-| The game is not inserted, or only its other copy is there (see below) | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game (error `7`). |
+| The game is not inserted, or only its other copy is there (see below) | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game ([below](#a-save-that-waits-for-its-game)). |
 
 In the first two cases nothing is lost and nothing exists twice. **So after an interrupted Save and Quit, start Bank again with the same game inserted before you play it.**
 
@@ -157,20 +157,29 @@ When the game's save cannot say, Bank takes the boxes that cannot lose a Pokémo
 
 Only the last row can lose Pokémon. Pokémon moved between Bank's own boxes, and a delivery from Poké Transporter taken in that session, count as neither deposited nor withdrawn.
 
+### A save that waits for its game
+
+When the interrupted session moved Pokémon both ways and its game is not there, Bank changes nothing and says which game it needs, with the original's own message for it:
+
+> You previously used a different copy of this game. Please try again using (name)'s game (Trainer ID No. (number)).
+
+Name and number are those of the game the session was made with; the number has five digits for X, Y, Omega Ruby and Alpha Sapphire and six for the later games. After A Bank is back on its start screen. Put that game in (or take out the cartridge that stands in for the installed copy) and press START: Bank then looks at its save and finishes or undoes the interrupted Save and Quit as in the first table. Bank does not have to be closed for this.
+
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
-**After updating the patch.** A Save and Quit that was interrupted under another version of the patch is finished by that version only; any other shows error `B` and changes nothing. Put that version back, start Bank once, then switch.
+**After updating the patch.** A Save and Quit that was interrupted under another version of the patch is finished by that version only; any other shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
 
 ## Troubleshooting
 
-An error ends the session; restart Bank afterwards. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language) with two numbers on the third line: `XXXXXXXX YYYYYYYY`. Only the numbers tell what happened; the sentence about the server is not to be taken literally. The first number says which step failed, the second why.
+An error ends this run of Bank. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language) with two numbers on the third line: `XXXXXXXX YYYYYYYY`. Only the numbers tell what happened; the sentence about the server is not to be taken literally. The first number says which step failed, the second why.
+
+After A the original's line "Press HOME to return to the HOME Menu" appears with the same two numbers under it, and it stays: nothing else reacts, because nothing can go on. Press HOME, close Bank, and start it again. Bank's files are closed before the numbers appear.
 
 | First number | Step |
 | --- | --- |
 | `3`, `4` | Opening or creating the files |
 | `5` | The stored data is not valid |
 | `6` | Console clock |
-| `7` | An interrupted Save and Quit that moved Pokémon both ways is waiting for its game. Insert that game and start Bank again ([details](#if-save-and-quit-is-interrupted)). |
 | `9` | Loading |
 | `A`–`E` | Game save |
 | `F` | Preparing the save |
@@ -205,4 +214,4 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 - **Power cuts.** A cut during Save and Quit can only damage the file being written, which Bank does not need and replaces. It cannot protect against damage to the SD card's own file table; that holds for every save on the console.
 - **Interrupted Save and Quit.** One case can lose Pokémon: see [If Save and Quit is interrupted](#if-save-and-quit-is-interrupted).
 - **Clock.** A console date set ahead is paid as if the days had passed.
-- **Errors are final for the session.** After an error with the two numbers, restart Bank. Until then, pressing START shows the same error again and opens nothing.
+- **Errors are final for a run of Bank.** After the two numbers only the line about the HOME Menu follows. Close Bank from the HOME Menu and start it again. A save that waits for its game is not an error: it leads back to the start screen ([above](#a-save-that-waits-for-its-game)).

@@ -1,8 +1,8 @@
 //! The offline patch: Bank without its server.
 
 use super::{
-    archive_preservation_candidate, first_start_edits, router_call, startup_call, word, Profile,
-    CODE_BASE, OPEN_TASK,
+    archive_preservation_candidate, first_start_edits, message_hook, router_call, startup_call,
+    word, Profile, CODE_BASE, MESSAGE_ENTRY, OPEN_TASK,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
 
@@ -17,9 +17,10 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_dex_save_request",
         "bank_offline_dex_records_update",
         "bank_offline_dex_records_finish",
+        MESSAGE_ENTRY,
     ],
-    // Twenty-four edited words plus the linked bootstrap bytes.
-    regions: 25,
+    // Twenty-five edited words plus the linked bootstrap bytes.
+    regions: 26,
     edits,
 };
 
@@ -49,6 +50,7 @@ fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
         dex_save_request: payload.export("bank_offline_dex_save_request")?,
         dex_records_update: payload.export("bank_offline_dex_records_update")?,
         dex_records_finish: payload.export("bank_offline_dex_records_finish")?,
+        message: payload.export(MESSAGE_ENTRY)?,
     })
 }
 
@@ -63,6 +65,7 @@ struct HookTargets {
     dex_save_request: u32,
     dex_records_update: u32,
     dex_records_finish: u32,
+    message: u32,
 }
 fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     // All addresses and original words independently checked against the whole
@@ -77,6 +80,7 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
         ),
         startup_call(targets.startup)?,
         router_call(targets.next)?,
+        message_hook(targets.message)?,
     ];
     // Original read-only vtables: taskC/D rewards, task9 open, task0x10 load, task7 normal /
     // forced-busy updates. Native constructors/init/end callbacks remain intact.
@@ -116,6 +120,7 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
         dex_save_request: 0x3fc400,
         dex_records_update: 0x3fc600,
         dex_records_finish: 0x3fc800,
+        message: 0x3fca00,
     })
     .unwrap()
 }
@@ -138,6 +143,7 @@ mod tests {
             dex_save_request: 0x3fc400,
             dex_records_update: 0x3fc600,
             dex_records_finish: 0x3fc800,
+            message: 0x3fca00,
         };
         let edits = native_hook_edits(targets).unwrap();
         assert_eq!(edits.len(), PROFILE.regions - 1);
@@ -202,6 +208,11 @@ mod tests {
         );
         // An entry tail branch must not replace LR as BL would.
         assert_eq!(timestamp.replacement[3], 0xea);
+        let message = edits.iter().find(|e| e.offset == 0x000d6650).unwrap();
+        assert_eq!(
+            message.replacement,
+            encode_arm_branch(0x001d6650, targets.message, false).unwrap()
+        );
         assert!(native_hook_edits(HookTargets {
             timestamp: 0x80000000,
             ..targets

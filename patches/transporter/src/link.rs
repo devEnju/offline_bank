@@ -11,7 +11,8 @@ mod linked {
     };
     use transporter_payload::gen5::transporter_slot_holds;
     use transporter_payload::hooks::{
-        transporter_check, transporter_deliver, transporter_list_ready, transporter_next,
+        transporter_check, transporter_deliver, transporter_list_ready, transporter_message_waits,
+        transporter_next,
     };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
@@ -48,6 +49,7 @@ mod linked {
         "b transporter_title_begin_stub",
         "b transporter_title_end_stub",
         "b transporter_list_ready_stub",
+        "b transporter_message_stub",
         next = sym transporter_next,
         cart_read = sym transporter_cart_read,
         cart_write = sym transporter_cart_write,
@@ -168,13 +170,29 @@ mod linked {
         "pop {{r1-r3, r12, lr}}",
         "ldr r0, [r4, #0x38]",
         "bx lr",
+        // The original's "show a message" function, its first instruction
+        // (0019B50C, was: push {r4-r8, lr}). r0 = ui, r1 = message, r2 =
+        // whether the message waits for an answer; lr is the caller's. The
+        // instruction is run here; for a message that waits the entry lets
+        // HOME and sleep through; then on inside the original with every
+        // register as it came.
+        "transporter_message_stub:",
+        "push {{r4, r5, r6, r7, r8, lr}}",
+        "cmp r2, #0",
+        "beq 5f",
+        "push {{r0-r3, r12, lr}}",
+        "bl {message_waits}",
+        "pop {{r0-r3, r12, lr}}",
+        "5:",
+        "ldr r12, =0x0019b510",
+        "bx r12",
         // Game search, first step (00246F48, was: ldr r0, [r0], the start
         // of the cartridge scan). r4 = task; lr is free, the original
-        // function saved its own. 1: still checking, the search's "nothing
-        // this frame" return. 2: a message is on screen; 00247000 selects
-        // the search's own step that waits for it and ends the search.
-        // 3: its ending without a message. Else: the replaced instruction,
-        // with r0 as the search had loaded it, and on with the search.
+        // function saved its own. 1: still checking, or a refusal is on
+        // screen: the search's "nothing this frame" return, which leaves it
+        // in this step. 2: its ending without a message. Else: the replaced
+        // instruction, with r0 as the search had loaded it, and on with the
+        // search.
         "transporter_check_stub:",
         "mov r0, r4",
         "bl {check}",
@@ -182,9 +200,6 @@ mod linked {
         "ldreq r12, =0x00247024",
         "bxeq r12",
         "cmp r0, #2",
-        "ldreq r12, =0x00247000",
-        "bxeq r12",
-        "cmp r0, #3",
         "ldreq r12, =0x0024702c",
         "bxeq r12",
         "ldr r0, =0x00329380",
@@ -234,6 +249,7 @@ mod linked {
         "bx lr",
         ".ltorg",
         check = sym transporter_check,
+        message_waits = sym transporter_message_waits,
         list_ready = sym transporter_list_ready,
         deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,

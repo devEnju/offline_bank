@@ -23,11 +23,13 @@ pub const SAVE: u32 = 7;
 pub const CLEANUP: u32 = 0x14;
 
 /// `outcome` is the finished task's byte `+0x30`; `native` is what the original
-/// router returned for it. `no_games` is set when opening found no usable game.
-pub fn destination(current: u32, outcome: u8, native: u32, no_games: bool) -> u32 {
+/// router returned for it. `turn_back` is set when opening ended at a notice
+/// that leads back to the start screen: no usable game, or a save in progress
+/// that waits for its game.
+pub fn destination(current: u32, outcome: u8, native: u32, turn_back: bool) -> u32 {
     match (current, outcome) {
         (3, 4 | 0x17) => OPEN,
-        (OPEN, 4) if no_games => CLEANUP,
+        (OPEN, 4) if turn_back => CLEANUP,
         (OPEN, 4) => SELECT,
         (SELECT, 5) => SCENE,
         (SCENE, _) => LOAD,
@@ -86,9 +88,9 @@ mod tests {
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for native in 0..=0x1d {
-                    for no_games in [false, true] {
+                    for turn_back in [false, true] {
                         assert_ne!(
-                            destination(current, outcome, native, no_games),
+                            destination(current, outcome, native, turn_back),
                             MAIN_MENU,
                             "{current:#x} {outcome:#x} {native:#x}"
                         );

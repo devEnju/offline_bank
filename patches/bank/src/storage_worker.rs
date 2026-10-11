@@ -1,7 +1,10 @@
 //! Storage operations executed only by the dedicated native SDK worker.
 //! No job calls UI functions or accesses a live NativeBank object.
 
-use crate::native_game::{GameIoDescriptor, PreparedImage, SecureValues};
+use crate::{
+    native_game::{GameIoDescriptor, PreparedImage, SecureValues},
+    transaction::Trainer,
+};
 use bank_common::bank_files::Loaded;
 use offline_core::{rewards::Stored, Fingerprint, Phase, RecoveryDecision};
 
@@ -38,6 +41,8 @@ pub enum Job {
         game: GameIoDescriptor,
         prepared: PreparedImage,
         baseline: GameEvidence,
+        /// Whose game it is, read when the game was loaded.
+        trainer: Trainer,
         /// The Miles state that must commit with this save.
         rewards: Stored,
     },
@@ -76,6 +81,13 @@ pub enum Reply {
     },
     Inspected(GameEvidence),
     ReadyToWrite,
+    /// The save in progress moved Pokémon both ways and its game is not
+    /// there: it waits for the game of this title and trainer. Nothing was
+    /// written, and a later opening settles it.
+    Waiting {
+        title: u64,
+        trainer: Trainer,
+    },
     Closed,
 }
 
@@ -210,13 +222,13 @@ mod arm {
         /// snapshot that cannot lose a Pokémon. `seen` says that a game of
         /// its title is there, with a save that is neither image. Without
         /// one only a save that moved Pokémon one way, or none, is
-        /// resolved; one that moved them both ways waits for its game, and
-        /// nothing is written.
+        /// resolved; one that moved them both ways waits for its game:
+        /// `None`, and nothing is written.
         fn settle_by_moves(
             &mut self,
             staging: &mut [u8],
             seen: bool,
-        ) -> Result<RecoveryDecision, WorkerError> {
+        ) -> Result<Option<RecoveryDecision>, WorkerError> {
             // SAFETY: see `Held`; no other reference exists.
             let [before, after] = unsafe { &mut *HELD_LISTS.0.get() };
             let moved = self
@@ -226,10 +238,14 @@ mod arm {
             let decision = if seen {
                 moved::choose(moved)
             } else {
-                moved::choose_unseen(moved).ok_or(WorkerError::operation(7, 0))?
+                match moved::choose_unseen(moved) {
+                    Some(decision) => decision,
+                    None => return Ok(None),
+                }
             };
             self.files
                 .reconcile_as(decision)
+                .map(Some)
                 .map_err(|e| files_error(e, 16))
         }
         /// The end of a recovery or a Save and Quit, once the save in
@@ -313,8 +329,10 @@ mod arm {
                     Ok(Reply::Inspected(evidence))
                 }
                 Job::InspectAndLoad { game } => {
+                    // An opening settles a save in progress or ends there;
+                    // no game is loaded beside one.
                     if !matches!(self.phase()?, Phase::Clean(_)) {
-                        return Err(WorkerError::operation(7, 0));
+                        return Err(WorkerError::operation(16, 0));
                     }
                     let evidence = inspect(game)?;
                     // A save in progress that was settled without its game
@@ -331,20 +349,30 @@ mod arm {
                     let Phase::Prepared(pending) = self.phase()? else {
                         return Err(WorkerError::operation(16, 0));
                     };
+                    let waiting = Reply::Waiting {
+                        title: pending.game.title_id,
+                        trainer: Trainer::of(&pending.game),
+                    };
                     let Some(game) = game else {
-                        let decision = self.settle_by_moves(staging, false)?;
-                        return self.settled(staging, None, decision);
+                        // No game shows which kind of copy the save was
+                        // made with; its binding must still be this
+                        // version's, on one kind or the other.
+                        transaction::bound(&pending).map_err(|_| WorkerError::operation(11, 0))?;
+                        return match self.settle_by_moves(staging, false)? {
+                            Some(decision) => self.settled(staging, None, decision),
+                            None => Ok(waiting),
+                        };
                     };
                     let evidence = inspect(game)?;
                     let matched = matched(&pending, &evidence)?;
                     let decision = match matched {
                         Match::Before => {
                             require_secure(game, evidence.secure.current)?;
-                            self.reconcile(&pending, &evidence)?
+                            Some(self.reconcile(&pending, &evidence)?)
                         }
                         Match::After => {
                             finish_secure(game, evidence.secure)?;
-                            self.reconcile(&pending, &evidence)?
+                            Some(self.reconcile(&pending, &evidence)?)
                         }
                         // A save that is neither image, on the kind of
                         // copy the save in progress was made with: the game
@@ -358,7 +386,10 @@ mod arm {
                         // game that is not there.
                         Match::Other(Found::StandIn) => self.settle_by_moves(staging, false)?,
                     };
-                    self.settled(staging, Some(evidence), decision)
+                    match decision {
+                        Some(decision) => self.settled(staging, Some(evidence), decision),
+                        None => Ok(waiting),
+                    }
                 }
                 Job::Finalize { game } => {
                     let Phase::Prepared(pending) = self.phase()? else {
@@ -396,6 +427,7 @@ mod arm {
                     game,
                     prepared,
                     baseline,
+                    trainer,
                     rewards,
                 } => {
                     if game.kind != prepared.kind
@@ -456,12 +488,15 @@ mod arm {
                         return Err(WorkerError::operation(11, 0));
                     }
                     // Bound to the kind of copy, so that a recovery can
-                    // tell this copy from one that stands in for it.
+                    // tell this copy from one that stands in for it, and
+                    // naming its trainer, for a recovery that has to wait
+                    // for it.
                     let identity = transaction::identity(
                         baseline.title,
                         images.before,
                         images.after,
                         Medium::of(baseline.cartridge),
+                        trainer,
                     )
                     .map_err(|_| WorkerError::operation(12, 0))?;
                     // Side files first, then the Bank journal.

@@ -21,6 +21,9 @@ mod linked {
     #[link_section = ".bank.link_roots"]
     static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
         bank_common::bootstrap::bank_bootstrap_startup;
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static MESSAGE: unsafe extern "aapcs" fn() = bank_common::task::bank_message_shown;
 
     #[used]
     #[link_section = ".bank.link_roots"]

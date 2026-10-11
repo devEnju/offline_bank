@@ -7,6 +7,7 @@ use crate::{
     native_bank::NativeBank,
     native_game::{GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll},
     storage_worker::{BankWorker, GameEvidence, Job, Reply},
+    transaction::Trainer,
 };
 use bank_common::{
     bank_files::Loaded,
@@ -38,7 +39,6 @@ pub enum Fault {
     StorageCreate = 4,
     StorageInvalid = 5,
     Clock = 6,
-    RecoveryRequired = 7,
     StorageLoad = 9,
     GameRead = 10,
     GameChanged = 11,
@@ -68,7 +68,9 @@ enum Step {
     Introduce,
     Initialize,
     Recover,
-    NoGames,
+    /// A notice of the original is up that leads back to the start screen:
+    /// no usable game, or a save in progress that waits for its game.
+    TurnBack,
     Load,
     SaveInspect,
     SavePrepare,
@@ -87,12 +89,17 @@ struct Runtime {
     /// reply is collected.
     closing: Option<JobId>,
     baseline: Option<GameEvidence>,
+    /// Whose game the loaded one is, read with `baseline`.
+    trainer: Option<Trainer>,
     save_dex: Option<crate::dex::Evidence>,
     fault: Fault,
     native_result: u32,
     pending: bool,
     notice: Notice,
-    no_games: bool,
+    /// The files are closed and the error screen is up.
+    stopped: bool,
+    /// Opening ended at a notice that leads back to the start screen.
+    turn_back: bool,
     rewards: RewardSession,
     /// The native blank transport-box record and its format tag, captured from
     /// the freshly constructed Bank before the first restore.
@@ -136,12 +143,14 @@ static STATE: Shared = Shared(UnsafeCell::new(Runtime {
     files_used: false,
     closing: None,
     baseline: None,
+    trainer: None,
     save_dex: None,
     fault: Fault::None,
     native_result: 0,
     pending: false,
     notice: Notice::new(),
-    no_games: false,
+    stopped: false,
+    turn_back: false,
     rewards: RewardSession::NONE,
     blank: None,
 }));
@@ -269,9 +278,28 @@ fn gen6_gift(game: *mut u8) -> Result<*mut u8, Fault> {
     Ok(gift)
 }
 impl Runtime {
+    /// One frame of a task after an error: the session is over. Its files
+    /// are closed first, as cleanup closes them for a session that ends
+    /// there, since the error screen lets HOME through and nothing follows
+    /// it. Until they are, the loading screen stays and HOME is refused.
     fn report_failure(&mut self, task: Task) -> u32 {
+        if !self.stopped {
+            if let (Some(id), Some(worker)) = (self.job, self.worker.as_mut()) {
+                // A job that is still out holds what the task lent it.
+                match worker.poll(id) {
+                    Ok(None) => return 0,
+                    Err(_) if worker.active() => return 0,
+                    _ => self.job = None,
+                }
+            }
+            self.close_files();
+            if !self.files_closed() {
+                return 0;
+            }
+            self.stopped = true;
+        }
         self.notice
-            .report(task, self.fault as u32, self.native_result)
+            .stop(task, self.fault as u32, self.native_result)
     }
     fn worker_error(&mut self, error: WorkerError) -> Fault {
         self.native_result = error.native_result();
@@ -279,7 +307,6 @@ impl Runtime {
             2 => Fault::NativeObject,
             3 => Fault::StorageOpen,
             4 => Fault::StorageCreate,
-            7 => Fault::RecoveryRequired,
             9 => Fault::StorageLoad,
             10 => Fault::GameRead,
             11 => Fault::GameChanged,
@@ -634,7 +661,7 @@ impl Runtime {
         if self.step == Step::Introduce {
             return unsafe { self.introduce(task) };
         }
-        if self.step == Step::NoGames {
+        if self.step == Step::TurnBack {
             if self.owner != task.raw() as usize {
                 return Err(Fault::NativeObject);
             }
@@ -660,9 +687,10 @@ impl Runtime {
             task.begin_busy();
             unsafe { write_word(task.raw(), 0x10, 1) };
             self.baseline = None;
+            self.trainer = None;
             self.rewards = RewardSession::NONE;
             if opening {
-                self.no_games = false;
+                self.turn_back = false;
                 self.capture_blank(task)?;
                 let session = unsafe { FS_SESSION.read() };
                 self.submit(task, Step::Open, Job::Open { session })?;
@@ -703,19 +731,48 @@ impl Runtime {
                 },
             ) => {
                 self.pending = true;
-                let kind = (1..=8)
-                    .filter_map(|id| GameKind::try_from(id).ok())
-                    .find(|kind| kind.title_id() == pending.game.title_id)
-                    .ok_or(Fault::RecoveryRequired)?;
+                // The record is the patch's own: a title that is none of
+                // the eight is not valid stored data.
+                let kind =
+                    GameKind::of_title(pending.game.title_id).ok_or(Fault::StorageInvalid)?;
                 // A game that is not there is not waited for when the save
-                // can be settled without it; the worker decides.
+                // can be settled without it; the worker decides. A game
+                // that is there and is not what a load would read fails as
+                // it would for a load.
                 let game =
                     match unsafe { GameIoDescriptor::from_loaded_kind(task.pointer(8)?, kind) } {
                         Ok(game) => Some(game),
                         Err(NativeGameError::NotLoaded) => None,
-                        Err(_) => return Err(Fault::RecoveryRequired),
+                        Err(_) => return Err(Fault::GameRead),
                     };
                 self.submit(task, Step::Recover, Job::Recover { game })?;
+                Ok(false)
+            }
+            (Step::Recover, Reply::Waiting { title, trainer }) => {
+                // The save in progress waits for its game, and nothing was
+                // written. The original's message for another copy of a
+                // game names it; the start screen follows, where the game
+                // can be put in and START pressed again.
+                let gen7 = GameKind::of_title(title)
+                    .ok_or(Fault::StorageInvalid)?
+                    .gen7();
+                let ui = task.ui()?;
+                let heap = checked_pointer(unsafe { read_word(task.raw(), 0xc) })?;
+                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+                self.turn_back = true;
+                self.step = Step::TurnBack;
+                task.end_busy();
+                storage_activity(false);
+                unsafe {
+                    bank_common::ui::other_copy(
+                        ui,
+                        heap,
+                        &trainer.name,
+                        trainer.id,
+                        Trainer::digits(gen7),
+                    )
+                }
+                .map_err(|_| Fault::NativeObject)?;
                 Ok(false)
             }
             (
@@ -745,8 +802,8 @@ impl Runtime {
                 if !available {
                     // Native selection would repeat this notice without an
                     // exit. Show it once, then return to the start screen.
-                    self.no_games = true;
-                    self.step = Step::NoGames;
+                    self.turn_back = true;
+                    self.step = Step::TurnBack;
                     task.end_busy();
                     storage_activity(false);
                     unsafe { bank_common::ui::notice(ui, bank_common::ui::NO_GAME_NOTICE) }
@@ -763,8 +820,17 @@ impl Runtime {
                     ..
                 },
             ) => {
+                // Whose game it is, kept with its fingerprint: a save in
+                // progress is bound to both. The original's reader also
+                // reloads the Pokédex views, so it runs before the restore,
+                // which leaves them as it always has.
+                let (_, gen7) = selected_game(task)?;
+                let (name, id) =
+                    unsafe { crate::dex::trainer(task.pointer(8)?, task.bank_pointer()?) }
+                        .map_err(|_| Fault::NativeObject)?;
                 self.restore_bank(task, loaded)?;
                 self.baseline = Some(evidence);
+                self.trainer = Some(Trainer::of_game(&name, id, gen7));
                 self.pending = false;
                 capture_counts(task)?;
                 self.begin_rewards(task, loaded.rewards)?;
@@ -838,6 +904,7 @@ impl Runtime {
                     .freeze()
                     .map_err(|_| Fault::GamePrepare)?;
                 let rewards = self.rewards.settlement.ok_or(Fault::RewardState)?;
+                let trainer = self.trainer.ok_or(Fault::GameRead)?;
                 self.stage_bank(task)?;
                 // Conservative until Finalize succeeds: failed preparation may
                 // already have published a durable pending journal replica.
@@ -849,6 +916,7 @@ impl Runtime {
                         game: descriptor,
                         prepared,
                         baseline: original,
+                        trainer,
                         rewards,
                     },
                 )?;
@@ -914,9 +982,10 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         if cancelled {
             break 'route 0x14;
         }
-        // After an error nothing is opened again in this session. The game
-        // scan still leads to task 9, whose hook shows the error again;
-        // everything else ends in cleanup.
+        // After an error nothing is opened again in this session. Its
+        // screen does not end, so a task only gets here if that screen
+        // could not be shown: the game scan then still leads to task 9,
+        // whose hook tries again, and everything else ends in cleanup.
         if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
             break 'route 0x14;
         }
@@ -926,7 +995,7 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
             }
         }
         // The main menu (task 4) is never created; see navigation.rs.
-        let destination = crate::navigation::destination(current, outcome, next, state.no_games);
+        let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
         // Refuse HOME and sleep across a whole chain of loading tasks, not
         // only while one of their jobs runs.
         if crate::navigation::loads(destination) {
