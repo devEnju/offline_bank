@@ -162,32 +162,18 @@ unsafe extern "aapcs" {
     pub fn bank_message_shown();
 }
 
-/// What the error screen of a patch has shown so far.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Shown {
-    Nothing,
-    /// The original's failure message with the two numbers, until it is
-    /// acknowledged.
-    Numbers,
-    /// The original's line about the HOME Menu with the same numbers. It
-    /// stays; nothing follows it.
-    Home,
-}
-
-/// The screen a patch ends on when nothing can go on: the two numbers
-/// (`ui::show`), and once they were acknowledged the original's line "Press
-/// HOME to return to the HOME Menu" with the numbers under it. That line
-/// stays, as the original's own message with it does (task 0, 002a9204,
-/// message 0x1C): its task shows it without a wait and never ends.
+/// The screen a patch ends on when nothing can go on (`ui::stop`): one
+/// dialog with the two numbers, and after A the original's line "Press HOME
+/// to return to the HOME Menu" with the numbers under it. It stays, as the
+/// original's own message with that line does (task 0, 002a9204, message
+/// 0x1C): its task shows it without a wait and never ends.
 pub struct Notice {
-    shown: Shown,
+    shown: bool,
 }
 impl Notice {
     #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
-        Self {
-            shown: Shown::Nothing,
-        }
+        Self { shown: false }
     }
     /// One frame of the task's update. The result is the update's own: 0,
     /// as nothing ends this screen but closing Bank. Only a screen that
@@ -197,42 +183,24 @@ impl Notice {
             task.end_busy();
             return task.finish(false);
         };
-        let next = match self.shown {
-            Shown::Nothing => {
-                // Nothing more is read or written: HOME works on the error
-                // screen, and closing Bank from the HOME Menu ends the task
-                // the original's way.
-                storage_activity(false);
-                task.end_busy();
-                // Loading may still be animating; end its sound before the dialog.
-                let _ = unsafe { crate::ui::stop_loading(ui) };
-                let shown =
-                    unsafe { crate::ui::show(ui, crate::ui::FAILURE_NOTICE, true, first, second) };
-                shown.map(|()| Shown::Numbers)
-            }
-            Shown::Numbers => match unsafe { crate::ui::acknowledged(ui) } {
-                Ok(false) => Ok(Shown::Numbers),
-                Ok(true) => {
-                    let shown = unsafe {
-                        crate::ui::show(ui, crate::ui::HOME_NOTICE, false, first, second)
-                    };
-                    shown.map(|()| Shown::Home)
-                }
-                Err(error) => Err(error),
-            },
+        let shown = if self.shown {
             // Each frame only keeps the dialog alive, as the original's
-            // task does for its own.
-            Shown::Home => unsafe { crate::ui::acknowledged(ui) }.map(|_| Shown::Home),
+            // task does for its own; its pages turn inside the dialog.
+            unsafe { crate::ui::acknowledged(ui) }.map(|_| ())
+        } else {
+            // Nothing more is read or written: HOME works on the error
+            // screen, and closing Bank from the HOME Menu ends the task
+            // the original's way.
+            storage_activity(false);
+            task.end_busy();
+            // Loading may still be animating; end its sound before the dialog.
+            let _ = unsafe { crate::ui::stop_loading(ui) };
+            unsafe { crate::ui::stop(ui, crate::ui::FAILURE_NOTICE, first, second) }
         };
-        match next {
-            Ok(shown) => {
-                self.shown = shown;
-                0
-            }
-            Err(_) => {
-                self.shown = Shown::Nothing;
-                task.finish(false)
-            }
+        self.shown = shown.is_ok();
+        match shown {
+            Ok(()) => 0,
+            Err(_) => task.finish(false),
         }
     }
 }

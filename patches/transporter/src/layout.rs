@@ -45,8 +45,11 @@ pub const MESSAGE_OPEN_BANK: u32 = 3;
 pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 
 /// The original's message 0x27, the title screen's own line: "Press HOME to
-/// return to the HOME Menu". One line in every language of the original.
+/// return to the HOME Menu". One line in every language of the original,
+/// of 11 to 42 units.
 pub const MESSAGE_HOME: u32 = 0x27;
+/// Room for that line while it is carried from one message to the other.
+pub const HOME_ROOM: usize = 96;
 
 /// The message that stops a session before it begins, for the two slots of
 /// Bank's transport box; `None` when a transfer may go ahead. Slots that are
@@ -65,37 +68,6 @@ pub fn refusal_message(slots: Option<&[Option<Slot>; SLOTS]>) -> Option<u32> {
     } else {
         // Two valid empty slots: a Bank save was not finished.
         Some(MESSAGE_OPEN_BANK)
-    }
-}
-
-/// What is on screen once the check has refused. Nothing leads back from
-/// here: the session cannot begin until Bank was opened, so the last screen
-/// stays, as the original's own message with that line does (`00245274`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum Refused {
-    /// The check has not refused.
-    No = 0,
-    /// The message, until it is acknowledged.
-    Message = 1,
-    /// The line about the HOME Menu.
-    Home = 2,
-}
-impl Refused {
-    pub const fn of(value: u32) -> Self {
-        match value {
-            1 => Self::Message,
-            2 => Self::Home,
-            _ => Self::No,
-        }
-    }
-    /// The screen of the next frame; `acknowledged` is the dialog's answer
-    /// of this one. A change to `Home` is when that line is shown.
-    pub const fn next(self, acknowledged: bool) -> Self {
-        match self {
-            Self::Message if acknowledged => Self::Home,
-            other => other,
-        }
     }
 }
 
@@ -169,24 +141,6 @@ mod tests {
         }
         // The worker reports "go on" as 0, which no message may be.
         assert_eq!((MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY), (3, 5));
-    }
-
-    #[test]
-    fn a_refusal_ends_on_the_line_about_the_home_menu_and_stays_there() {
-        // The message until it is acknowledged, then the line.
-        assert_eq!(Refused::Message.next(false), Refused::Message);
-        assert_eq!(Refused::Message.next(true), Refused::Home);
-        // Whatever the dialog answers from then on, the line stays, and no
-        // screen ever leads back to a check that has not refused.
-        for acknowledged in [false, true] {
-            assert_eq!(Refused::Home.next(acknowledged), Refused::Home);
-            assert_eq!(Refused::No.next(acknowledged), Refused::No);
-        }
-        for refused in [Refused::No, Refused::Message, Refused::Home] {
-            assert_eq!(Refused::of(refused as u32), refused);
-        }
-        assert_eq!(Refused::of(7), Refused::No);
-        assert_eq!(MESSAGE_HOME, 0x27);
     }
 
     #[test]

@@ -91,6 +91,22 @@ pub fn put(text: &mut [u16], len: usize, first: u32, second: u32) -> Option<usiz
     Some(new_len)
 }
 
+/// Adds `page` behind the message in `text[..len]` as one more page: the
+/// page break, a line feed, as the original begins every later page of its
+/// messages, and the page's text. Answers the new length, or `None` with
+/// the message untouched if the room is too small. As in `put`, the unit
+/// after the message stays free for its end mark.
+pub fn append_page(text: &mut [u16], len: usize, page: &[u16]) -> Option<usize> {
+    let lead = [CONTROL, 1, NEW_PAGE, LINE_FEED];
+    let new_len = len.checked_add(lead.len())?.checked_add(page.len())?;
+    if len > text.len() || new_len >= text.len() {
+        return None;
+    }
+    text[len..len + lead.len()].copy_from_slice(&lead);
+    text[len + lead.len()..new_len].copy_from_slice(page);
+    Some(new_len)
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -188,6 +204,76 @@ mod tests {
         assert_eq!(put(&mut buffer, text.len(), 1, 2), None);
         assert_eq!(buffer[..text.len()], text);
         assert_eq!(put(&mut [0; 4], 5, 1, 2), None);
+    }
+
+    /// The pages of a message, each without the line feed a later page
+    /// begins with.
+    fn pages(text: &[u16]) -> Vec<Vec<u16>> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let (Some(end), _) = first_part(rest) {
+            out.push(rest[..end].to_vec());
+            assert_eq!(rest[end + PAGE.len()], LINE_FEED);
+            rest = &rest[end + PAGE.len() + 1..];
+        }
+        out.push(rest.to_vec());
+        out
+    }
+
+    #[test]
+    fn a_page_is_added_behind_the_last_one_as_the_original_writes_pages() {
+        let home: Vec<u16> = "home".encode_utf16().collect();
+        // Messages of one, two and three pages, as the original has them.
+        for shape in [&[1][..], &[3], &[2, 2], &[2, 3], &[1, 3, 2]] {
+            let text = message(shape);
+            let mut buffer = vec![0xffff; 128];
+            buffer[..text.len()].copy_from_slice(&text);
+            let len = append_page(&mut buffer, text.len(), &home).unwrap();
+            // What was there is unchanged, and the new page is the last.
+            assert_eq!(buffer[..text.len()], text);
+            let all = pages(&buffer[..len]);
+            assert_eq!(all.len(), shape.len() + 1);
+            assert_eq!(all[..shape.len()], pages(&text));
+            assert_eq!(all[shape.len()], home);
+        }
+    }
+
+    #[test]
+    fn the_error_screen_is_the_reason_with_its_numbers_and_then_the_home_line_with_them() {
+        // The HOME line is one line: the numbers go two lines under it.
+        let mut home = [0xffff; 64];
+        home[..4].copy_from_slice(&message(&[1]));
+        let home_len = put(&mut home, 4, 3, 0x7a00_0201).unwrap();
+        // Bank's failure message, cut after its first page.
+        let reason = message(&[2, 3]);
+        let mut buffer = vec![0xffff; 128];
+        buffer[..reason.len()].copy_from_slice(&reason);
+        let len = put(&mut buffer, reason.len(), 3, 0x7a00_0201).unwrap();
+        let len = append_page(&mut buffer, len, &home[..home_len]).unwrap();
+        let all: Vec<String> = pages(&buffer[..len])
+            .iter()
+            .map(|page| String::from_utf16(page).unwrap())
+            .collect();
+        assert_eq!(
+            all,
+            ["text\ntext\n00000003 7A000201", "text\n\n00000003 7A000201"]
+        );
+    }
+
+    #[test]
+    fn a_page_without_room_is_not_added() {
+        let text = message(&[2, 2]);
+        let page = [0x41; 5];
+        let needed = text.len() + 4 + page.len();
+        let mut buffer = vec![0xffff; needed];
+        buffer[..text.len()].copy_from_slice(&text);
+        assert_eq!(append_page(&mut buffer, text.len(), &page), None);
+        assert_eq!(buffer[..text.len()], text);
+        assert!(buffer[text.len()..].iter().all(|&unit| unit == 0xffff));
+        // One unit stays free for the end mark.
+        buffer.push(0xffff);
+        assert_eq!(append_page(&mut buffer, text.len(), &page), Some(needed));
+        assert_eq!(append_page(&mut [0; 4], 5, &page), None);
     }
 
     #[test]

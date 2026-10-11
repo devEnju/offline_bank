@@ -2,9 +2,9 @@
 //!
 //! Every text is the original's own, in the language of the screens. The
 //! error dialog is the first sentence of the original's message for a failed
-//! save with two code numbers on the dialog's third line, and the same
-//! numbers go under the start screen's line about the HOME Menu; nothing
-//! else is written here.
+//! save with two code numbers on the dialog's third line, and as its next
+//! page the start screen's line about the HOME Menu with the same numbers;
+//! nothing else is written here.
 
 use core::mem::transmute;
 use offline_core::numbers;
@@ -33,29 +33,15 @@ pub const FAILURE_NOTICE: u32 = 0xb;
 /// to the HOME Menu". One line in every language of the original.
 pub const HOME_NOTICE: u32 = 0x4d;
 
-/// Shows an original message through 001d6650, as its task 0x16 does for
-/// the failure message, and puts the two code numbers on the third line of
-/// its first part, in the UI's own string object. What followed that part is
-/// dropped: the failure message ends after its first sentence, which has one
-/// or two lines in every language of the original. The string is handed to
-/// the dialog again (001d643c, the call 001d6650 ends its text set-up with).
-/// Without room for the numbers the message stays as it is.
-///
-/// With `wait` the dialog ends when its last page is acknowledged. Without,
-/// it stays, as the original's message 0x1C does (002a926c): nothing ends it.
-/// # Safety
-/// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
-/// (task10). Its context and allocated string object must remain live until
-/// poll returns true. No other writer may modify that dialog while it is shown.
-pub unsafe fn show(
-    ui: *mut u8,
-    message: u32,
-    wait: bool,
-    fault: u32,
-    native_result: u32,
-) -> Result<(), Error> {
-    unsafe { display(ui, message, wait)? };
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
+/// The longest line about the HOME Menu with its numbers that is carried
+/// from one message to the other. The line has 11 to 42 units in the ten
+/// languages of the original.
+const HOME_ROOM: usize = 96;
+
+/// The dialog's own string object at `ui + 0x94`, its room in units, and
+/// the length of the text in it. `None` if it is not a text that can be
+/// changed in place.
+unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize)>, Error> {
     let text = pointer(unsafe { word(ui, 0x94) })?;
     let data = pointer(unsafe { word(text, 4) })?.cast::<u16>();
     let capacity = unsafe { text.add(8).cast::<u16>().read() } as usize;
@@ -64,16 +50,58 @@ pub unsafe fn show(
         return Err(Error::MissingBuffer);
     }
     if len == 0 || len >= capacity || unsafe { data.add(len).read() } != 0 {
-        return Ok(());
+        return Ok(None);
     }
+    Ok(Some((
+        text,
+        unsafe { core::slice::from_raw_parts_mut(data, capacity) },
+        len,
+    )))
+}
+
+/// Shows the screen a patch ends on, as one dialog that does not end, the
+/// way the original shows its message 0x1C (002a926c): a reason, and after
+/// A the line about the HOME Menu, which stays.
+///
+/// The reason is the original's message `reason` up to the end of its first
+/// part, with the two code numbers on the third line: for the failure
+/// message its first sentence, which has one or two lines in every language
+/// of the original. The line about the HOME Menu, message 0x4D, becomes the
+/// page after it, with the same numbers on its third line.
+///
+/// Both texts are the original's, loaded by 001d6650 into the UI's own
+/// string object: first the line, which is copied out, then the reason. The
+/// string is changed in place and handed to the dialog again (001d643c, the
+/// call 001d6650 ends its text set-up with). Where there is no room for the
+/// numbers a text stays as it is; without room for the page the reason
+/// stays alone.
+/// # Safety
+/// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
+/// (task10). Its context and allocated string object must remain live while
+/// the dialog is shown. No other writer may modify that dialog meanwhile.
+pub unsafe fn stop(ui: *mut u8, reason: u32, first: u32, second: u32) -> Result<(), Error> {
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = unsafe { transmute(0x001d_643cusize) };
+    let mut home = [0u16; HOME_ROOM];
+    let mut home_len = 0;
+    unsafe { display(ui, HOME_NOTICE, false)? };
+    if let Some((_, room, len)) = unsafe { text(ui)? } {
+        if len < HOME_ROOM {
+            home[..len].copy_from_slice(&room[..len]);
+            home_len = numbers::put(&mut home, len, first, second).unwrap_or(len);
+        }
+    }
+    unsafe { display(ui, reason, false)? };
+    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+        return Ok(());
+    };
+    let mut len = numbers::put(room, len, first, second).unwrap_or(len);
+    if home_len != 0 {
+        len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
+    }
+    room[len] = 0;
     unsafe {
-        let room = core::slice::from_raw_parts_mut(data, capacity);
-        let Some(len) = numbers::put(room, len, fault, native_result) else {
-            return Ok(());
-        };
-        room[len] = 0;
         text.add(0xa).cast::<u16>().write(len as u16);
-        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
         begin(context, text);
     }
     Ok(())
@@ -82,7 +110,7 @@ pub unsafe fn show(
 /// One frame of a dialog (001d6600). True once a waiting dialog was
 /// acknowledged; a dialog that does not wait is only kept alive by this.
 /// # Safety
-/// `ui` and its context must satisfy show's lifetime contract, with the same
+/// `ui` and its context must satisfy stop's lifetime contract, with the same
 /// dialog still active. Only the main task thread may poll it.
 pub unsafe fn acknowledged(ui: *mut u8) -> Result<bool, Error> {
     pointer(ui as u32)?;
@@ -106,7 +134,7 @@ const OTHER_COPY_NOTICE: u32 = 0xa;
 /// then lets 0025da24 load the original localized message into the UI's own
 /// string object. No text is written by this patch.
 /// # Safety
-/// `ui` has show's native lifetime contract. The task must keep returning each
+/// `ui` has stop's native lifetime contract. The task must keep returning each
 /// frame while the storage worker runs, so status and audio keep updating.
 pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
     pointer(ui as u32)?;
@@ -126,7 +154,7 @@ pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
 /// 0x50011, hide pane 0x97, and unbind animation 0. The skipped main-menu
 /// initializer 002a6e38 did this before; game selection does not.
 /// # Safety
-/// `ui` has show's native lifetime contract, on the main task thread.
+/// `ui` has stop's native lifetime contract, on the main task thread.
 pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
     pointer(ui as u32)?;
     let context = pointer(unsafe { word(ui, 0x5c) })?;
@@ -146,7 +174,7 @@ pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
 /// 002b6114(0x10004, 0x3c, 0), the call before each of that character's
 /// speeches. The messages themselves are shown by the task's own states.
 /// # Safety
-/// `ui` has show's native lifetime contract, on the main task thread.
+/// `ui` has stop's native lifetime contract, on the main task thread.
 pub unsafe fn welcome(ui: *mut u8) -> Result<(), Error> {
     unsafe { stop_loading(ui)? };
     unsafe {
@@ -174,7 +202,7 @@ unsafe fn display(ui: *mut u8, message: u32, wait: bool) -> Result<(), Error> {
 /// Shows an original localized notice with acknowledgement. Poll
 /// `acknowledged` afterwards.
 /// # Safety
-/// `ui` has show's native lifetime contract, with no other dialog active.
+/// `ui` has stop's native lifetime contract, with no other dialog active.
 pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
     unsafe { display(ui, message, true) }
 }
@@ -188,7 +216,7 @@ pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
 /// to 2, for the grammar of a text; this message refers to it in none of
 /// its languages, and 0 is given. Poll `acknowledged` afterwards.
 /// # Safety
-/// `ui` has show's native lifetime contract, with no other dialog active;
+/// `ui` has stop's native lifetime contract, with no other dialog active;
 /// `heap` is the live heap of the task that owns `ui`.
 pub unsafe fn other_copy(
     ui: *mut u8,
