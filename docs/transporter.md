@@ -19,7 +19,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Language screen | Switches the language of the screens as long as the app is open | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
 | Notice that nicknames and OT names with prohibited words will be erased | Shown; the server erased them | Skipped. No name is ever changed offline. The other notices are unchanged. |
 | HOME and sleep | Refused from connecting until disconnecting | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the title screen, the game list, the notices, the question, and every message that waits for a button, the closing message of a transfer included. |
-| Screens and messages | | The originals; no new text. One message gets two numbers that say why it came ([below](#transfers-and-refusals)). |
+| Screens and messages | | The originals; no new text |
 
 Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produce Gen 7 Pokémon, as with the original service.
 
@@ -39,15 +39,6 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 | "Your communication with Pokémon Bank did not complete correctly during your last session. Please open Pokémon Bank and perform the cleanup process…" | Bank's files are not ready for a delivery: Bank has an unfinished save, the offline Bank has never been started on this console, its Bank is from a version this Transporter does not continue, or Transporter cannot open or read Bank's data. | Open Bank. It finishes what is unfinished or says what is wrong. Then Save and Quit once. |
 
 The second message is the original's for a session the server asked to clean up; there is no cleanup to perform by hand. Every other message of the original comes where it always did, for the game that was chosen.
-
-**The numbers of the second message.** It stands for several causes, so two numbers say which: on the third line of its first page, and again under the line about the HOME Menu. They are Bank's numbers and mean what they mean there ([bank.md](bank.md#troubleshooting)). The first message has one cause and no numbers.
-
-| Numbers | What Transporter found |
-| --- | --- |
-| `00000003` and one of the console's result codes | Bank's data or its transport box files do not open: the offline Bank was never started on this console, or its Bank is from a version this Transporter does not continue. |
-| `00000003` and a small number | A transport box file has that size instead of the expected one. |
-| `00000009 7A000201` | One of the two transport box files is missing or does not read, for example after a power cut. |
-| `00000010 00000000` | Bank has a save that is not finished. |
 
 Transporter never creates or deletes files and touches no Bank file other than `/mover.bin` and `/mover.alt.bin`; it only ever writes to the one of the two that Bank is not using. If that file is missing or unreadable, for example after a power cut, Transporter refuses; open Bank and Save and Quit once, which writes it anew.
 
@@ -120,7 +111,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | --- | --- |
 | Transporter does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Transporter is not version 1.5. |
 | START always answers "Pokémon remains in the Transport Box". | Open Bank, empty the transport box, and Save and Quit. |
-| START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later and that Bank and Transporter are from the same release, and otherwise please report it with the two numbers of the message ([above](#transfers-and-refusals)). |
+| START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later and that Bank and Transporter are from the same release, and otherwise please report it. |
 | After a refusal only "Press HOME to return to the HOME Menu" is left. | Intended: nothing can be transferred until Bank was opened. Close Transporter from the HOME Menu. |
 | The original failure message after confirming a transfer. | The delivery could not be written. The source game was not changed. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |
@@ -129,12 +120,12 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | The last entry of the language list shows Chinese text instead of Back. | The screen's layout is not the one the patch knows, so it was left as it is. Transporter is not version 1.5, or its files are modified. The entry still works as Back. |
 | A save on the SD card is reported as damaged. | The original's own check failed on the file's contents, as it would on a cartridge. |
 
-**Reporting a problem.** Open an issue with the console model, Luma version, the release or package name, the source game, which screen was showing when it stopped, the two numbers if it showed any, and whether the source game still holds the Pokémon.
+**Reporting a problem.** Open an issue with the console model, Luma version, the release or package name, the source game, which screen was showing when it stopped, and whether the source game still holds the Pokémon.
 
 ## Limits
 
 - **A duplicate after a power cut.** The delivery is written before the Pokémon are removed from the game. If the power fails exactly between the two, they are in Bank and still in the game. The original prevented this with the server's help; the patch does not.
-- **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them; the two numbers on it tell them apart.
+- **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them. Which of them it is shows when Bank is opened: Bank solves it or says it with its own numbers.
 - **Access to Bank's data and to the SD card.** Transporter's own header grants neither. Luma3DS gives every application full filesystem access, which is what makes both work; this needs Luma3DS v10.0 or later.
 - **Saves on the SD card.** Only revisions `00` and `01` are looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
 - **Language of the screens.** It can no longer be changed inside Transporter; it is the console's.

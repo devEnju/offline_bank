@@ -7,7 +7,7 @@
 //! else is written here.
 
 use core::mem::transmute;
-use offline_core::numbers::{self, Rest};
+use offline_core::numbers;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -68,7 +68,7 @@ pub unsafe fn show(
     }
     unsafe {
         let room = core::slice::from_raw_parts_mut(data, capacity);
-        let Some(len) = numbers::put(room, len, fault, native_result, Rest::Dropped) else {
+        let Some(len) = numbers::put(room, len, fault, native_result) else {
             return Ok(());
         };
         room[len] = 0;

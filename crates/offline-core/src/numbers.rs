@@ -17,16 +17,6 @@ pub const LEN: usize = 17;
 /// The dialog's last line.
 const LINE: usize = 3;
 
-/// What becomes of the message behind the numbers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Rest {
-    /// The message ends with the numbers. Its first part is its first page
-    /// or, in a message of one page, its first line.
-    Dropped,
-    /// The pages after the first follow as they are.
-    Kept,
-}
-
 /// The line of numbers: both as eight hexadecimal digits.
 pub fn line(first: u32, second: u32) -> [u16; LEN] {
     let mut out = [0; LEN];
@@ -72,21 +62,18 @@ fn first_part(text: &[u16]) -> (Option<usize>, Option<usize>) {
     (None, line)
 }
 
-/// Puts the numbers on the third line of the first page of the message in
-/// `text[..len]`. `text` is the whole room of the string, and the unit after
-/// the message stays free for its end mark. Answers the new length, or `None`
-/// with the message untouched: its first page has three lines already, or
-/// the room is too small.
-pub fn put(text: &mut [u16], len: usize, first: u32, second: u32, rest: Rest) -> Option<usize> {
+/// Ends the message in `text[..len]` after its first part and puts the
+/// numbers on the third line there. The first part is the first page or, in
+/// a message of one page, its first line. `text` is the whole room of the
+/// string, and the unit after the message stays free for its end mark.
+/// Answers the new length, or `None` with the message untouched: its first
+/// page has three lines already, or the room is too small.
+pub fn put(text: &mut [u16], len: usize, first: u32, second: u32) -> Option<usize> {
     if len > text.len() {
         return None;
     }
     let (page, feed) = first_part(&text[..len]);
-    let end = match (rest, page) {
-        (_, Some(page)) => page,
-        (Rest::Dropped, None) => feed.unwrap_or(len),
-        (Rest::Kept, None) => len,
-    };
+    let end = page.or(feed).unwrap_or(len);
     let lines = 1 + text[..end]
         .iter()
         .filter(|&&unit| unit == LINE_FEED)
@@ -95,18 +82,12 @@ pub fn put(text: &mut [u16], len: usize, first: u32, second: u32, rest: Rest) ->
         return None;
     }
     let feeds = LINE - lines;
-    let added = feeds + LEN;
-    let tail = match rest {
-        Rest::Dropped => 0,
-        Rest::Kept => len - end,
-    };
-    let new_len = end + added + tail;
+    let new_len = end + feeds + LEN;
     if new_len >= text.len() {
         return None;
     }
-    text.copy_within(end..end + tail, end + added);
     text[end..end + feeds].fill(LINE_FEED);
-    text[end + feeds..end + added].copy_from_slice(&line(first, second));
+    text[end + feeds..new_len].copy_from_slice(&line(first, second));
     Some(new_len)
 }
 
@@ -136,10 +117,10 @@ mod tests {
         }
         out
     }
-    fn put_in(text: &[u16], room: usize, rest: Rest) -> Option<Vec<u16>> {
+    fn put_in(text: &[u16], room: usize) -> Option<Vec<u16>> {
         let mut buffer = vec![0xffff; room];
         buffer[..text.len()].copy_from_slice(text);
-        let len = put(&mut buffer, text.len(), 3, 0x7a00_0201, rest)?;
+        let len = put(&mut buffer, text.len(), 3, 0x7a00_0201)?;
         assert!(len < room);
         // Nothing behind the new end was needed for it.
         Some(buffer[..len].to_vec())
@@ -171,71 +152,42 @@ mod tests {
     }
 
     #[test]
-    fn the_numbers_are_the_third_line_of_the_first_page() {
+    fn the_message_ends_with_the_numbers_on_the_third_line() {
         // One line: an empty line between, as under the HOME line.
-        for rest in [Rest::Dropped, Rest::Kept] {
-            let out = put_in(&message(&[1]), 64, rest).unwrap();
-            assert_eq!(first_page(&out), ["text", "", "00000003 7A000201"]);
-        }
-        // Two lines: directly under them.
-        let out = put_in(&message(&[2, 3]), 96, Rest::Kept).unwrap();
-        assert_eq!(first_page(&out), ["text", "text", "00000003 7A000201"]);
-    }
-
-    #[test]
-    fn a_kept_message_goes_on_with_its_later_pages_unchanged() {
-        // Poké Transporter's "open Pokémon Bank" message in the ten
-        // languages: two lines on its first page in all of them, two or
-        // three on its second.
-        for second in [3, 3, 2, 2, 3, 2, 2, 3, 3, 3] {
-            let text = message(&[2, second]);
-            let page = first_part(&text).0.unwrap();
-            let out = put_in(&text, 128, Rest::Kept).unwrap();
-            assert_eq!(first_page(&out), ["text", "text", "00000003 7A000201"]);
-            let moved = first_part(&out).0.unwrap();
-            assert_eq!(moved, page + 1 + LEN);
-            assert_eq!(out[moved..], text[page..]);
-        }
-    }
-
-    #[test]
-    fn a_dropped_message_ends_with_the_numbers() {
-        // Bank's failure message: its first page has one or two lines.
+        let out = put_in(&message(&[1]), 64).unwrap();
+        assert_eq!(first_page(&out), ["text", "", "00000003 7A000201"]);
+        // Bank's failure message: its first page has one or two lines, and
+        // what follows that page is dropped.
         for first in [1, 2] {
-            let out = put_in(&message(&[first, 2]), 96, Rest::Dropped).unwrap();
+            let out = put_in(&message(&[first, 2]), 96).unwrap();
             assert_eq!(first_part(&out).0, None);
             assert_eq!(out[out.len() - LEN..], numbers());
             assert_eq!(first_page(&out).len(), 3);
         }
+        let out = put_in(&message(&[2, 3]), 96).unwrap();
+        assert_eq!(first_page(&out), ["text", "text", "00000003 7A000201"]);
         // One language has it on one page, its first sentence on one line.
-        let out = put_in(&message(&[2]), 64, Rest::Dropped).unwrap();
+        let out = put_in(&message(&[2]), 64).unwrap();
         assert_eq!(first_page(&out), ["text", "", "00000003 7A000201"]);
     }
 
     #[test]
     fn a_first_page_of_three_lines_is_left_alone() {
-        for rest in [Rest::Dropped, Rest::Kept] {
-            assert_eq!(put_in(&message(&[3, 3]), 128, rest), None);
-            assert_eq!(put_in(&message(&[4, 1]), 128, rest), None);
-        }
-        // Kept, a message of one page is that page as a whole.
-        assert_eq!(put_in(&message(&[3]), 128, Rest::Kept), None);
-        assert_eq!(put_in(&message(&[4]), 128, Rest::Kept), None);
+        assert_eq!(put_in(&message(&[3, 3]), 128), None);
+        assert_eq!(put_in(&message(&[4, 1]), 128), None);
     }
 
     #[test]
     fn without_room_nothing_is_written() {
         let text = message(&[2, 2]);
-        for rest in [Rest::Dropped, Rest::Kept] {
-            let needed = put_in(&text, 128, rest).unwrap().len();
-            // One unit stays free for the end mark.
-            assert!(put_in(&text, needed + 1, rest).is_some());
-            let mut buffer = vec![0xffff; needed];
-            buffer[..text.len()].copy_from_slice(&text);
-            assert_eq!(put(&mut buffer, text.len(), 1, 2, rest), None);
-            assert_eq!(buffer[..text.len()], text);
-        }
-        assert_eq!(put(&mut [0; 4], 5, 1, 2, Rest::Kept), None);
+        let needed = put_in(&text, 128).unwrap().len();
+        // One unit stays free for the end mark.
+        assert!(put_in(&text, needed + 1).is_some());
+        let mut buffer = vec![0xffff; needed];
+        buffer[..text.len()].copy_from_slice(&text);
+        assert_eq!(put(&mut buffer, text.len(), 1, 2), None);
+        assert_eq!(buffer[..text.len()], text);
+        assert_eq!(put(&mut [0; 4], 5, 1, 2), None);
     }
 
     #[test]

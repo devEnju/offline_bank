@@ -48,62 +48,23 @@ pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 /// return to the HOME Menu". One line in every language of the original.
 pub const MESSAGE_HOME: u32 = 0x27;
 
-/// The first numbers of Bank's error screen that say the same here
-/// (docs/bank.md, "Troubleshooting"): opening the files, loading them, and
-/// an interrupted save that has to be finished.
-pub const STEP_OPEN: u32 = 3;
-pub const STEP_LOAD: u32 = 9;
-pub const STEP_RECOVERY: u32 = 0x10;
-/// Bank's second numbers: a call that succeeded without a handle for the
-/// file, and a transport file that is damaged.
-pub const NO_HANDLE: u32 = 0x7100_0003;
-pub const TRANSPORT_DAMAGED: u32 = 0x7a00_0201;
-
-/// What the check found of Bank's transport box.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Found {
-    /// Neither file of the box opens: Bank's extdata is not there, the
-    /// offline Bank was never started, or its Bank is not converted. With
-    /// the console's result code of the first open that failed.
-    Closed(u32),
-    /// A file of another size than Bank creates.
-    Size(u64),
-    /// The two slots; `None` if a slot could not be read.
-    Slots(Option<[Option<Slot>; SLOTS]>),
-}
-
-/// The message that stops a session before it begins, and the two numbers
-/// that go with it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Refusal {
-    pub message: u32,
-    /// Only the "open Pokémon Bank" message has more than one cause.
-    pub numbers: Option<(u32, u32)>,
-}
-
-/// `None` when a transfer may go ahead.
-pub fn refusal(found: &Found) -> Option<Refusal> {
-    let open_bank = |first, second| {
-        Some(Refusal {
-            message: MESSAGE_OPEN_BANK,
-            numbers: Some((first, second)),
-        })
+/// The message that stops a session before it begins, for the two slots of
+/// Bank's transport box; `None` when a transfer may go ahead. Slots that are
+/// `None` could not be read at all: a file is missing, of another size or
+/// unreadable, or Bank's extdata is not there. Opening Bank shows or solves
+/// each of these, so the message carries no numbers of its own.
+pub fn refusal_message(slots: Option<&[Option<Slot>; SLOTS]>) -> Option<u32> {
+    let Some(slots) = slots else {
+        return Some(MESSAGE_OPEN_BANK);
     };
-    match found {
-        Found::Closed(code) => open_bank(STEP_OPEN, *code),
-        // As Bank shows a size: never one of the console's result codes.
-        Found::Size(size) => open_bank(STEP_OPEN, (*size as u32) & 0x6fff_ffff),
-        Found::Slots(None) => open_bank(STEP_LOAD, TRANSPORT_DAMAGED),
-        Found::Slots(Some(slots)) if transport::may_deliver(slots) => None,
+    if transport::may_deliver(slots) {
+        None
+    } else if slots.iter().flatten().any(|slot| slot.count != 0) {
         // Pokémon are in the way: in Bank's box, or in a waiting delivery.
-        Found::Slots(Some(slots)) if slots.iter().flatten().any(|slot| slot.count != 0) => {
-            Some(Refusal {
-                message: MESSAGE_BOX_NOT_EMPTY,
-                numbers: None,
-            })
-        }
+        Some(MESSAGE_BOX_NOT_EMPTY)
+    } else {
         // Two valid empty slots: a Bank save was not finished.
-        Found::Slots(Some(_)) => open_bank(STEP_RECOVERY, 0),
+        Some(MESSAGE_OPEN_BANK)
     }
 }
 
@@ -176,7 +137,7 @@ mod tests {
         })
     }
     fn message(slots: [Option<Slot>; SLOTS]) -> Option<u32> {
-        refusal(&Found::Slots(Some(slots))).map(|refusal| refusal.message)
+        refusal_message(Some(&slots))
     }
 
     #[test]
@@ -196,13 +157,7 @@ mod tests {
         // An unfinished Bank save, and files that are not there or do not
         // read: Bank before its first start, or one not yet converted.
         assert_eq!(message([slot(0), slot(0)]), Some(MESSAGE_OPEN_BANK));
-        for found in [
-            Found::Slots(None),
-            Found::Closed(0xc880_4478),
-            Found::Size(14_112),
-        ] {
-            assert_eq!(refusal(&found).unwrap().message, MESSAGE_OPEN_BANK);
-        }
+        assert_eq!(refusal_message(None), Some(MESSAGE_OPEN_BANK));
         // A refusal is exactly where the delivery itself would refuse.
         for slots in [
             [None, None],
@@ -214,28 +169,6 @@ mod tests {
         }
         // The worker reports "go on" as 0, which no message may be.
         assert_eq!((MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY), (3, 5));
-    }
-
-    #[test]
-    fn only_the_message_with_several_causes_gets_numbers_and_they_are_banks() {
-        let numbers = |found| refusal(&found).unwrap().numbers;
-        // Opening the files: the console's own code, or the size found.
-        assert_eq!(numbers(Found::Closed(0xc880_4478)), Some((3, 0xc880_4478)));
-        assert_eq!(numbers(Found::Closed(NO_HANDLE)), Some((3, 0x7100_0003)));
-        assert_eq!(numbers(Found::Size(14_112)), Some((3, 14_112)));
-        // A size never reads as a result code of the console or of Bank.
-        assert_eq!(numbers(Found::Size(u64::MAX)), Some((3, 0x6fff_ffff)));
-        // Loading: the transport file is damaged.
-        assert_eq!(numbers(Found::Slots(None)), Some((9, 0x7a00_0201)));
-        // An interrupted save has to be finished.
-        assert_eq!(
-            numbers(Found::Slots(Some([slot(0), slot(0)]))),
-            Some((0x10, 0))
-        );
-        // Pokémon in the way is one cause, and its message says it.
-        for slots in [[slot(2), None], [slot(0), slot(5)], [slot(1), slot(1)]] {
-            assert_eq!(numbers(Found::Slots(Some(slots))), None);
-        }
     }
 
     #[test]

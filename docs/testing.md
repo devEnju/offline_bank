@@ -113,11 +113,11 @@ With the normal Bank and Transporter packages. What each feature is meant to do 
 
 | Do this | Expected |
 | --- | --- |
-| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START, without numbers. After A the line "Press HOME to return to the HOME Menu", without numbers. No game list appears. A, B and START do nothing; HOME opens the HOME Menu, the lid puts the console to sleep, and Transporter can be closed from the HOME Menu. |
+| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START. After A the line "Press HOME to return to the HOME Menu". No game list appears. A, B and START do nothing; HOME opens the HOME Menu, the lid puts the console to sleep, and Transporter can be closed from the HOME Menu. |
 | Leave some Pokémon in the transport box, Save and Quit, start Transporter and press START. | The same two screens, until the transport box is empty and saved. |
 | Empty Box 1, Bank's transport box empty. | The original message that there is nothing to transport, then the title screen. |
-| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, with `00000003` and a result code on the third line of its first page. Its second page is the original's. Then the line about the HOME Menu with the same numbers on its third line. After Bank was started once, START leads to the game list. |
-| The same on a console set to French, and on one set to Japanese. | The same three screens. The numbers are on the third line of the first page and of the line about the HOME Menu; that line reads correctly, in Japanese with its two kanji. |
+| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, both pages as the original has them, then the line about the HOME Menu. No numbers anywhere. After Bank was started once, START leads to the game list. |
+| The same on a console set to French, and on one set to Japanese. | The same three screens. The line about the HOME Menu reads correctly, in Japanese with its two kanji. |
 | No game in the listed language, Bank ready: press START. | "Could not find a game", then the title screen, as before; START can be pressed again. |
 
 ### Language of the games
@@ -225,7 +225,7 @@ Start from a console whose Bank was last used with the old version, and from a b
 | Run | Installed | Do | Must show |
 | --- | --- | --- | --- |
 | 16 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number, then the line about the HOME Menu with the same numbers; nothing changed |
-| 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START with `00000003` and a second number, then the line about the HOME Menu with the same numbers; no game list appears |
+| 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the line about the HOME Menu; no game list appears |
 | 18 | migration | start Bank, press START | a loading screen, then `0000600D 00000001`; after A the line about the HOME Menu with the same numbers. Close Bank from the HOME Menu |
 | 19 | migration | start Bank again, press START | `0000600D 00000002`, and the same line after A |
 | 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
