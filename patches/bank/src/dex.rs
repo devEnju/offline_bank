@@ -331,6 +331,20 @@ mod native {
         write_state(state);
     }
 
+    /// The trainer of the selected game as the original reads it for its
+    /// records (0026de9c): the name with its end mark, and the game's 32-bit
+    /// trainer ID. Nothing of the Bank is changed.
+    ///
+    /// # Safety
+    /// Main UI thread only, with a game selected. manager and bank must be
+    /// the session's exclusively accessible native objects, with no
+    /// outstanding game/storage worker access.
+    pub unsafe fn trainer(manager: *mut u8, bank: *mut u8) -> Result<([u16; 13], u32), DexError> {
+        let mut selected = unsafe { Selection::capture(manager, bank) }?;
+        let key = unsafe { selected.key(manager, bank) };
+        Ok((key.name, key.trainer_id))
+    }
+
     /// Imports records and Dex immediately before freezing the Bank snapshot.
     /// A declined replacement keeps the prior family. An unconfirmed mismatch
     /// fails before a journal or game write can start.

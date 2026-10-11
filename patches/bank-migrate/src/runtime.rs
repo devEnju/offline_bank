@@ -2,8 +2,9 @@
 //!
 //! The router hook leads from the game scan to task 9, "open Bank", and from
 //! there back to the start screen. The task 9 hook shows the loading
-//! screen, has the worker run the conversion, and shows its result as the
-//! screen with two numbers. Starting again runs it again, which is safe.
+//! screen, has the worker run the conversion, and shows its result as two
+//! numbers under the original's line about the HOME Menu, which stays.
+//! Starting Bank again runs it again, which is safe.
 
 use crate::{
     migrate::{self, Card},
@@ -95,7 +96,7 @@ struct Runtime {
     worker: Option<Worker<Converter>>,
     owner: usize,
     job: Option<JobId>,
-    /// What the last run ended with, while its screen is up.
+    /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
     notice: Notice,
 }
@@ -243,13 +244,25 @@ pub unsafe extern "aapcs" fn bank_migrate_open(raw: *mut u8) -> u32 {
             Ok(Some(numbers)) | Err(numbers) => state.numbers = Some(numbers),
         }
     }
+    // The numbers are the result, so they come at once, under the
+    // original's line about the HOME Menu. That screen does not end:
+    // nothing can go on in this patch, whatever the result. Bank is closed
+    // from the HOME Menu, and the next start converts again, which finds
+    // the work done and says so.
     let [first, second] = state.numbers.unwrap_or([NATIVE_OBJECT, 0]);
-    let finished = state.notice.report(task, first, second);
-    if finished != 0 {
-        // Acknowledged: the next start converts again, which finds the
-        // work done and says so.
-        state.numbers = None;
-        state.owner = 0;
-    }
-    finished
+    state.notice.done(task, first, second)
+}
+
+/// Replaces the start screen's call that writes its version line
+/// (002b49c4): the line says which patch runs.
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_version_shown(
+    context: *mut u8,
+    group: u32,
+    pane: u32,
+    message: u32,
+) {
+    unsafe { ui::version(context, group, pane, message, b"-migration") }
 }

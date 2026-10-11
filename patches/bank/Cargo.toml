@@ -14,13 +14,9 @@ crate-type = ["rlib"]
 
 [features]
 linked-image = []
-# Console test builds for rehearsing an interrupted Save and Quit
+# The console test build for rehearsing an interrupted Save and Quit
 # (docs/building.md). Never part of a release.
-test-build = []
-test-stop-before-game = ["test-build"]
-test-stop-after-game = ["test-build"]
-test-tear-record = ["test-build", "bank-common/test-tear-record"]
-test-tear-boxes = ["test-build", "bank-common/test-tear-boxes"]
+test-build = ["bank-common/test-build"]
 
 [[bin]]
 name = "bank-payload-link"

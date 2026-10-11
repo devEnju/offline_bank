@@ -2,9 +2,11 @@
 //!
 //! Every text is the original's own, in the language of the screens. The
 //! error dialog is the first sentence of the original's message for a failed
-//! save with two code numbers on the dialog's third line; nothing else is
-//! written here.
+//! save, and as its next page the start screen's line about the HOME Menu
+//! with two code numbers on the dialog's third line; nothing else is written
+//! here.
 
+use crate::numbers;
 use core::mem::transmute;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,78 +29,19 @@ unsafe fn word(base: *mut u8, offset: usize) -> u32 {
 /// Native message 0xB, which the original shows after a failed save
 /// (task 0x16, 002a9118): "The server did not receive the data. ..."
 pub const FAILURE_NOTICE: u32 = 0xb;
-/// A control code in the original's texts: this unit, the number of units
-/// that follow, then the code and its arguments.
-const CONTROL: u16 = 0x10;
-/// The control code between two pages: wait for a button, then clear.
-const NEW_PAGE: u16 = 0xbe01;
-const LINE_FEED: u16 = 0x0a;
-/// Two numbers of eight digits with a space between them.
-const CODES: usize = 17;
-/// The dialog holds three lines; the numbers are always on the last.
-const CODE_LINE: usize = 3;
+/// Native message 0x4D, the start screen's own line: "Press HOME to return
+/// to the HOME Menu". One line in every language of the original.
+pub const HOME_NOTICE: u32 = 0x4d;
 
-/// The line of numbers under the failure message's first sentence.
-fn codes(fault: u32, native_result: u32) -> [u16; CODES] {
-    let mut out = [0; CODES];
-    let mut at = 0;
-    for (index, value) in [fault, native_result].into_iter().enumerate() {
-        if index == 1 {
-            out[at] = u16::from(b' ');
-            at += 1;
-        }
-        for shift in (0..8).rev() {
-            let digit = ((value >> (shift * 4)) & 15) as u8;
-            out[at] = u16::from(if digit < 10 {
-                b'0' + digit
-            } else {
-                b'A' + digit - 10
-            });
-            at += 1;
-        }
-    }
-    out
-}
+/// The longest line about the HOME Menu with its numbers that is carried
+/// from one message to the other. The line has 11 to 42 units in the ten
+/// languages of the original.
+const HOME_ROOM: usize = 96;
 
-/// Where the first sentence of the failure message ends ("the data was not
-/// received"; what follows is advice about the Game Card): at its first
-/// page break. One language has the whole message on one page, the
-/// sentence on its first line; there it ends at the first line feed.
-fn first_sentence_end(text: &[u16]) -> usize {
-    let mut line = None;
-    let mut at = 0;
-    while at < text.len() {
-        if text[at] != CONTROL {
-            if text[at] == LINE_FEED && line.is_none() {
-                line = Some(at);
-            }
-            at += 1;
-            continue;
-        }
-        if at + 2 >= text.len() {
-            break;
-        }
-        if text[at + 2] == NEW_PAGE {
-            return at;
-        }
-        at += 2 + usize::from(text[at + 1]);
-    }
-    line.unwrap_or(text.len())
-}
-
-/// Shows the original's failure message through 001d6650, as its task 0x16
-/// does, then ends it after its first sentence, which has one or two lines
-/// in every language of the original, and puts the two code numbers on the
-/// third line, in the UI's own string object. The string is handed to the
-/// dialog again (001d643c, the call 001d6650 ends its text set-up with).
-/// Without room for the numbers the message stays as it is.
-/// # Safety
-/// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
-/// (task10). Its context and allocated string object must remain live until
-/// poll returns true. No other writer may modify that dialog while it is shown.
-pub unsafe fn show(ui: *mut u8, fault: u32, native_result: u32) -> Result<(), Error> {
-    unsafe { notice(ui, FAILURE_NOTICE)? };
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
+/// The dialog's own string object at `ui + 0x94`, its room in units, and
+/// the length of the text in it. `None` if it is not a text that can be
+/// changed in place.
+unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize)>, Error> {
     let text = pointer(unsafe { word(ui, 0x94) })?;
     let data = pointer(unsafe { word(text, 4) })?.cast::<u16>();
     let capacity = unsafe { text.add(8).cast::<u16>().read() } as usize;
@@ -106,37 +49,78 @@ pub unsafe fn show(ui: *mut u8, fault: u32, native_result: u32) -> Result<(), Er
     if unsafe { text.add(0xc).read() } == 0 {
         return Err(Error::MissingBuffer);
     }
-    let codes = codes(fault, native_result);
-    if len == 0 || unsafe { data.add(len).read() } != 0 {
-        return Ok(());
+    if len == 0 || len >= capacity || unsafe { data.add(len).read() } != 0 {
+        return Ok(None);
     }
-    unsafe {
-        let message = core::slice::from_raw_parts(data, len);
-        let mut at = first_sentence_end(message);
-        let lines = 1 + message[..at]
-            .iter()
-            .filter(|&&unit| unit == LINE_FEED)
-            .count();
-        let feeds = CODE_LINE.saturating_sub(lines).max(1);
-        if capacity <= at + feeds + codes.len() {
-            return Ok(());
-        }
-        for _ in 0..feeds {
-            data.add(at).write(LINE_FEED);
-            at += 1;
-        }
-        core::ptr::copy_nonoverlapping(codes.as_ptr(), data.add(at), codes.len());
-        at += codes.len();
-        data.add(at).write(0);
-        text.add(0xa).cast::<u16>().write(at as u16);
+    Ok(Some((
+        text,
+        unsafe { core::slice::from_raw_parts_mut(data, capacity) },
+        len,
+    )))
+}
+
+/// Shows the screen a patch ends on, as one dialog that does not end, the
+/// way the original shows its message 0x1C (002a926c): a reason, and after
+/// A the line about the HOME Menu, which stays. Without a reason the line
+/// is the whole screen.
+///
+/// The reason is the original's message `reason` up to the end of its first
+/// part, unchanged: for the failure message its first sentence. The line
+/// about the HOME Menu, message 0x4D, becomes the page after it, with the
+/// two code numbers on its third line.
+///
+/// Both texts are the original's, loaded by 001d6650 into the UI's own
+/// string object: first the line, which is copied out, then the reason. The
+/// string is changed in place and handed to the dialog again (001d643c, the
+/// call 001d6650 ends its text set-up with). Without room for the numbers
+/// the line stays as it is; without room for the page the reason stays
+/// alone.
+/// # Safety
+/// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
+/// (task10). Its context and allocated string object must remain live while
+/// the dialog is shown. No other writer may modify that dialog meanwhile.
+pub unsafe fn stop(ui: *mut u8, reason: Option<u32>, first: u32, second: u32) -> Result<(), Error> {
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    // Ends the text at `len` and hands it to the dialog.
+    let begin = |text: *mut u8, room: &mut [u16], len: usize| unsafe {
         let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
+        room[len] = 0;
+        text.add(0xa).cast::<u16>().write(len as u16);
         begin(context, text);
+    };
+    let mut home = [0u16; HOME_ROOM];
+    let mut home_len = 0;
+    unsafe { display(ui, HOME_NOTICE, false)? };
+    if let Some((text, room, len)) = unsafe { text(ui)? } {
+        let Some(_) = reason else {
+            let len = numbers::put(room, len, first, second).unwrap_or(len);
+            begin(text, room, len);
+            return Ok(());
+        };
+        if len < HOME_ROOM {
+            home[..len].copy_from_slice(&room[..len]);
+            home_len = numbers::put(&mut home, len, first, second).unwrap_or(len);
+        }
     }
+    let Some(reason) = reason else {
+        return Ok(());
+    };
+    unsafe { display(ui, reason, false)? };
+    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+        return Ok(());
+    };
+    let mut len = numbers::cut(&room[..len]);
+    if home_len != 0 {
+        len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
+    }
+    begin(text, room, len);
     Ok(())
 }
 
+/// One frame of a dialog (001d6600). True once a waiting dialog was
+/// acknowledged; a dialog that does not wait is only kept alive by this.
 /// # Safety
-/// `ui` and its context must satisfy show's lifetime contract, with the same
+/// `ui` and its context must satisfy stop's lifetime contract, with the same
 /// dialog still active. Only the main task thread may poll it.
 pub unsafe fn acknowledged(ui: *mut u8) -> Result<bool, Error> {
     pointer(ui as u32)?;
@@ -152,12 +136,15 @@ pub const CREATING_MESSAGE: u32 = 2;
 pub const BANK_LOADING_MESSAGE: u32 = 0xe;
 /// Native notice 0x1A, shown by game selection when no game can be used.
 pub const NO_GAME_NOTICE: u32 = 0x1a;
+/// Native message 0xA: "You previously used a different copy of this game.
+/// Please try again using {name}'s game (Trainer ID No. {number})."
+const OTHER_COPY_NOTICE: u32 = 0xa;
 
 /// Starts the native loading panel, sound, and animation through 001d5b44,
 /// then lets 0025da24 load the original localized message into the UI's own
 /// string object. No text is written by this patch.
 /// # Safety
-/// `ui` has show's native lifetime contract. The task must keep returning each
+/// `ui` has stop's native lifetime contract. The task must keep returning each
 /// frame while the storage worker runs, so status and audio keep updating.
 pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
     pointer(ui as u32)?;
@@ -177,7 +164,7 @@ pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
 /// 0x50011, hide pane 0x97, and unbind animation 0. The skipped main-menu
 /// initializer 002a6e38 did this before; game selection does not.
 /// # Safety
-/// `ui` has show's native lifetime contract, on the main task thread.
+/// `ui` has stop's native lifetime contract, on the main task thread.
 pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
     pointer(ui as u32)?;
     let context = pointer(unsafe { word(ui, 0x5c) })?;
@@ -197,7 +184,7 @@ pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
 /// 002b6114(0x10004, 0x3c, 0), the call before each of that character's
 /// speeches. The messages themselves are shown by the task's own states.
 /// # Safety
-/// `ui` has show's native lifetime contract, on the main task thread.
+/// `ui` has stop's native lifetime contract, on the main task thread.
 pub unsafe fn welcome(ui: *mut u8) -> Result<(), Error> {
     unsafe { stop_loading(ui)? };
     unsafe {
@@ -209,17 +196,170 @@ pub unsafe fn welcome(ui: *mut u8) -> Result<(), Error> {
     Ok(())
 }
 
-/// Shows an original localized notice with acknowledgement through 001d6650,
-/// exactly as native tasks call it. Poll `acknowledged` afterwards.
-/// # Safety
-/// `ui` has show's native lifetime contract, with no other dialog active.
-pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
+/// Shows an original localized message through 001d6650, exactly as native
+/// tasks call it.
+unsafe fn display(ui: *mut u8, message: u32, wait: bool) -> Result<(), Error> {
     pointer(ui as u32)?;
     pointer(unsafe { word(ui, 0x5c) })?;
     pointer(unsafe { word(ui, 0x78) })?;
     pointer(unsafe { word(ui, 0x94) })?;
     let show: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
         unsafe { transmute(0x001d_6650usize) };
-    unsafe { show(ui, 0, message, 1) };
+    unsafe { show(ui, 0, message, u32::from(wait)) };
     Ok(())
+}
+
+/// Shows an original localized notice with acknowledgement. Poll
+/// `acknowledged` afterwards.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
+    unsafe { display(ui, message, true) }
+}
+
+/// Shows the original's message for another copy of a game, filled the way
+/// its own task fills it (002a8c24..002a8ca0): a string object from the
+/// trainer's name (001dfd90, on `heap`, the task's own), the name as the
+/// message's value 0 (002b67d8), the number as its value 1 with `digits`
+/// digits (001e6c0c), the message, and the string object's end (002297a4).
+/// The original gives 002b67d8 a fourth value from its server's reply, of 0
+/// to 2, for the grammar of a text; this message refers to it in none of
+/// its languages, and 0 is given. Poll `acknowledged` afterwards.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active;
+/// `heap` is the live heap of the task that owns `ui`.
+pub unsafe fn other_copy(
+    ui: *mut u8,
+    heap: *mut u8,
+    name: &[u16; 12],
+    number: u32,
+    digits: u32,
+) -> Result<(), Error> {
+    pointer(ui as u32)?;
+    pointer(heap as u32)?;
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    pointer(unsafe { word(ui, 0x78) })?;
+    pointer(unsafe { word(ui, 0x94) })?;
+    // The original's source is zero-terminated: 12 units and the end mark.
+    let mut source = [0u16; 13];
+    source[..12].copy_from_slice(name);
+    // The string object: vtable, buffer, room, length, flag (16 bytes).
+    let mut string = [0u32; 4];
+    unsafe {
+        let create: unsafe extern "aapcs" fn(*mut u32, *const u16, *mut u8) =
+            transmute(0x001d_fd90usize);
+        let set_name: unsafe extern "aapcs" fn(*mut u8, u32, *mut u32, u32) =
+            transmute(0x002b_67d8usize);
+        let set_number: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32, u32, u32) =
+            transmute(0x001e_6c0cusize);
+        let destroy: unsafe extern "aapcs" fn(*mut u32) = transmute(0x0022_97a4usize);
+        create(string.as_mut_ptr(), source.as_ptr(), heap);
+        set_name(context, 0, string.as_mut_ptr(), 0);
+        set_number(context, 1, number, digits, 2, 1);
+        let shown = display(ui, OTHER_COPY_NOTICE, true);
+        destroy(string.as_mut_ptr());
+        shown
+    }
+}
+
+/// The second of the context's two work strings (`[context + 4]`), which
+/// the original fills and hands to a pane (001e21c8, 001e0ef8): the string
+/// object, its text, and its room in units.
+unsafe fn work_string(context: *mut u8) -> Option<(*mut u8, *mut u16, usize)> {
+    unsafe {
+        let strings = pointer(word(context, 4)).ok()?;
+        let text = pointer(word(strings, 4)).ok()?;
+        let data = pointer(word(text, 4)).ok()?.cast::<u16>();
+        if text.add(0xc).read() == 0 {
+            return None;
+        }
+        Some((text, data, text.add(8).cast::<u16>().read() as usize))
+    }
+}
+
+/// Ends the work string at `len` and gives it to pane `pane` of the layout
+/// of `group`, with the original's two calls: 001e264c finds the pane,
+/// 0029a628 sets its text.
+unsafe fn hand_over(
+    context: *mut u8,
+    group: u32,
+    pane: u32,
+    (text, data, len): (*mut u8, *mut u16, usize),
+) {
+    unsafe {
+        data.add(len).write(0);
+        text.add(0xa).cast::<u16>().write(len as u16);
+        let Ok(layouts) = pointer(word(context, 0x1c)) else {
+            return;
+        };
+        let find: unsafe extern "aapcs" fn(u32, u32) -> *mut u8 = transmute(0x001e_264cusize);
+        let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, i32) = transmute(0x0029_a628usize);
+        let found = find(word(layouts, group as usize * 8), pane);
+        if !found.is_null() {
+            set(found, text, -1);
+        }
+    }
+}
+
+/// Adds `suffix`, plain Latin letters, to the text the original has just
+/// put into the work string and into pane `pane` of the layout of `group`,
+/// and gives the pane the longer text. Without room for it the pane keeps
+/// the original's text.
+unsafe fn add_suffix(context: *mut u8, group: u32, pane: u32, suffix: &[u8]) {
+    unsafe {
+        let Some((text, data, room)) = work_string(context) else {
+            return;
+        };
+        let mut len = 0;
+        while len < room && data.add(len).read() != 0 {
+            len += 1;
+        }
+        if len == 0 || len + suffix.len() >= room {
+            return;
+        }
+        for (index, &unit) in suffix.iter().enumerate() {
+            data.add(len + index).write(u16::from(unit));
+        }
+        hand_over(context, group, pane, (text, data, len + suffix.len()));
+    }
+}
+
+/// Writes the start screen's version line with `suffix` behind it, "Ver.
+/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
+/// the one call of 001e21c8(context, group, pane, message) that the start
+/// screen makes for its message 0x4E (002b49c4).
+///
+/// That function loads the message into the first of the context's two
+/// work strings, fills in its values into the second, and hands the second
+/// to the pane. Here the original runs first, the suffix is added to the
+/// second string in place, and the pane is given it again.
+/// # Safety
+/// The arguments are those of the replaced call, on the main thread.
+pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
+    unsafe {
+        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
+            transmute(0x001e_21c8usize);
+        original(context, group, pane, message);
+        add_suffix(context, group, pane, suffix);
+    }
+}
+
+/// Test builds: labels a button with the original's `message` and `suffix`
+/// behind it. The original's 001e0ef8(ui, group, pane, message), as its
+/// menus label their buttons, loads the message into the second work string
+/// and hands it to the pane; the suffix is added to that string in place and
+/// the pane given it again.
+/// # Safety
+/// `ui` is the live native task UI with the layout of `group` built, on the
+/// main thread.
+#[cfg(feature = "test-build")]
+pub unsafe fn button(ui: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
+    unsafe {
+        let Ok(context) = pointer(word(ui, 0x5c)) else {
+            return;
+        };
+        let label: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(0x001e_0ef8usize);
+        label(ui, group, pane, message);
+        add_suffix(context, group, pane, suffix);
+    }
 }

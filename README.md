@@ -61,17 +61,20 @@ The two files of a title only work as a pair; never mix files from different rel
 
 ## FAQ
 
-### Why can't I see my Virtual Console title of Pokémon Green?
+### Why can't I see some of my Virtual Console titles?
 
-Transporter lists the games of one language at a time, and starts with the console's language. Pokémon Green exists in Japanese only. Press L on Transporter's title screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
+Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's title screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
 
 The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games).
-
 ### Why do I need a migration between two versions?
 
 The normal patches read only the files of their own version, so that they stay free of code for earlier formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
 
 When a release changes how the Bank is stored, as v0.3.0 did, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how ([background](docs/building.md#the-migration-from-v021)).
+
+### Why has the save format been changed?
+
+So that a power cut cannot cost you the Bank. Up to v0.2.1 a cut during Save and Quit could leave the one Bank file unreadable, and with it every box. Since v0.3.0 everything is stored in pairs of files, and a save only writes into the file of a pair that is not in use. A cut can then only damage a file Bank does not need, and the next start goes on with the other one ([details](docs/bank.md#where-the-bank-is-stored)).
 
 ## Problems and feature requests
 

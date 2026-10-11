@@ -24,9 +24,22 @@ pub(crate) const FILE_READ: usize = 0x0015_930c;
 pub(crate) const FILE_WRITE: usize = 0x0015_9390;
 pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
 pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
-/// The original's "show this message and wait for it to be acknowledged":
-/// `(ui, message, 1)`, as every one of its tasks calls it.
+/// The original's "show this message and wait": `(ui, message, 1)`, as the
+/// game search calls it for its own message 0 (`00246FFC`).
 const SHOW_MESSAGE: usize = 0x0019_b50c;
+/// The title screen's "put this message into its pane": `(context, group,
+/// pane, message)`, as it calls it for its version line, message 0x29
+/// (`0024BAE8`). It loads the message into the first of the context's two
+/// work strings (`[context + 4]`), fills in its values into the second, and
+/// hands the second to the pane (`0019F834` finds it in the layout of the
+/// group, `[[context + 0x1C] + 8 * group]`; `002375D0` sets its text).
+const PANE_MESSAGE: usize = 0x001d_33cc;
+const PANE_FIND: usize = 0x0019_f834;
+const PANE_TEXT: usize = 0x0023_75d0;
+const CONTEXT_STRINGS: usize = 0x4;
+const CONTEXT_LAYOUTS: usize = 0x1c;
+/// What the version line says behind "Ver. 1.5".
+const VERSION_SUFFIX: &[u8] = b"-offline";
 /// The original's router, `get_next_state(manager, current)`, and what it
 /// reads: the finished task at `manager + 0x10` with its outcome byte at
 /// `+0x30`, and the manager's "cancelled" flag, which it clears.
@@ -109,14 +122,14 @@ impl File {
     /// `None` when Bank's extdata or both files do not exist, access is
     /// refused, or a file is not exactly the size Bank creates.
     unsafe fn open() -> Option<Self> {
-        let mut handles = [None; SLOTS];
-        for (handle, path) in handles.iter_mut().zip(MOVER_PATHS) {
-            *handle = unsafe { Self::open_one(path) }.ok()?;
-        }
-        let file = Self {
-            handles,
+        // Whatever was opened is closed again if this ends early.
+        let mut file = Self {
+            handles: [None; SLOTS],
             written: [false; SLOTS],
         };
+        for (handle, path) in file.handles.iter_mut().zip(MOVER_PATHS) {
+            *handle = unsafe { Self::open_one(path) }.ok()?;
+        }
         file.handles.iter().any(Option::is_some).then_some(file)
     }
     /// `Ok(None)` for a file that is not there or cannot be opened, `Err`
@@ -281,21 +294,16 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
     }
 }
 
-/// The file work of one job. Runs on the worker thread.
+/// The file work of one job. Runs on the worker thread. The check answers
+/// the message to show, or 0 for none; the delivery answers 1 when it is
+/// written.
 unsafe fn work(job: u32, task: *const u8) -> u32 {
-    let Some(file) = (unsafe { File::open() }) else {
-        return if job == JOB_CHECK {
-            refusal_message(None).unwrap_or(0)
-        } else {
-            0
-        };
-    };
-    let mut file = Sidecar::new(file, KIND);
+    let file = unsafe { File::open() }.map(|file| Sidecar::new(file, KIND));
     if job == JOB_CHECK {
-        // The message to show, or 0 for none.
-        return refusal_message(file.slots().ok().as_ref()).unwrap_or(0);
+        let slots = file.and_then(|mut file| file.slots().ok());
+        return refusal_message(slots.as_ref()).unwrap_or(0);
     }
-    let Some((records, tags)) = (unsafe { native_box(task) }) else {
+    let (Some(mut file), Some((records, tags))) = (file, unsafe { native_box(task) }) else {
         return 0;
     };
     u32::from(transport::deliver(&mut file, records, tags).is_ok())
@@ -385,6 +393,19 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     next
 }
 
+/// The original's "show a message" function was entered with a message that
+/// waits for an answer (the stub of the patched site at 0019B50C, link.rs).
+/// Such a message is where a step that reads or writes has nothing left to
+/// do but end, so the refusal the router entry began for it ends here. The
+/// original's own bit for a Virtual Console save that is being written is
+/// not this one and stays as it is.
+/// # Safety
+/// Called only from that stub, on the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_message_waits() {
+    unsafe { refuse_home(false) };
+}
+
 /// The game list is set up and on screen: every save has been read, and it
 /// waits for the user.
 /// # Safety
@@ -409,8 +430,6 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
         None => SEARCH_PENDING,
         Some(0) => SEARCH_GO,
         Some(message) => {
-            // Nothing more is read: HOME and sleep work on the message.
-            unsafe { refuse_home(false) };
             if unsafe { show(task, message) } {
                 SEARCH_SHOWN
             } else {
@@ -420,8 +439,10 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
     }
 }
 
-/// Shows an original message the way the game search shows its own.
-/// `false` when the task's dialog owner is not a pointer.
+/// Shows an original message the way the game search shows its own. It
+/// waits for an answer, so HOME and sleep work on it
+/// (`transporter_message_waits`). `false` when the task's dialog owner is
+/// not a pointer.
 unsafe fn show(task: *const u8, message: u32) -> bool {
     let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
         return false;
@@ -444,5 +465,58 @@ pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
         None => DELIVER_PENDING,
         Some(1) => DELIVER_DONE,
         Some(_) => DELIVER_FAILED,
+    }
+}
+
+/// Replaces the title screen's call that writes its version line
+/// (`0024BAE8`): the original call, then the same line with the patch's name
+/// behind it, added to the original's own string in place and handed to the
+/// pane with the original's two calls. Without room for it the line stays
+/// the original's.
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_version(
+    context: *const u8,
+    group: u32,
+    pane: u32,
+    message: u32,
+) {
+    unsafe {
+        let original: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) = transmute(PANE_MESSAGE);
+        original(context, group, pane, message);
+        let Some(text) = follow(context, CONTEXT_STRINGS).and_then(|strings| follow(strings, 4))
+        else {
+            return;
+        };
+        let (Some(data), Some(layouts)) = (follow(text, 4), follow(context, CONTEXT_LAYOUTS))
+        else {
+            return;
+        };
+        let data = data.cast_mut().cast::<u16>();
+        let room = usize::from(text.add(8).cast::<u16>().read());
+        if text.add(0xc).read() == 0 {
+            return;
+        }
+        let mut len = 0;
+        while len < room && data.add(len).read() != 0 {
+            len += 1;
+        }
+        if len == 0 || len + VERSION_SUFFIX.len() >= room {
+            return;
+        }
+        for (index, &unit) in VERSION_SUFFIX.iter().enumerate() {
+            data.add(len + index).write(u16::from(unit));
+        }
+        len += VERSION_SUFFIX.len();
+        data.add(len).write(0);
+        text.cast_mut().add(0xa).cast::<u16>().write(len as u16);
+        let find: unsafe extern "aapcs" fn(u32, u32) -> *const u8 = transmute(PANE_FIND);
+        let set: unsafe extern "aapcs" fn(*const u8, *const u8, i32) = transmute(PANE_TEXT);
+        let layout = layouts.add(group as usize * 8).cast::<u32>().read();
+        let found = find(layout, pane);
+        if !found.is_null() {
+            set(found, text, -1);
+        }
     }
 }

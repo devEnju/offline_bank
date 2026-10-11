@@ -7,6 +7,7 @@ use crate::{
     native_bank::NativeBank,
     native_game::{GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll},
     storage_worker::{BankWorker, GameEvidence, Job, Reply},
+    transaction::Trainer,
 };
 use bank_common::{
     bank_files::Loaded,
@@ -38,7 +39,6 @@ pub enum Fault {
     StorageCreate = 4,
     StorageInvalid = 5,
     Clock = 6,
-    RecoveryRequired = 7,
     StorageLoad = 9,
     GameRead = 10,
     GameChanged = 11,
@@ -68,7 +68,9 @@ enum Step {
     Introduce,
     Initialize,
     Recover,
-    NoGames,
+    /// A notice of the original is up that leads back to the start screen:
+    /// no usable game, or a save in progress that waits for its game.
+    TurnBack,
     Load,
     SaveInspect,
     SavePrepare,
@@ -87,12 +89,17 @@ struct Runtime {
     /// reply is collected.
     closing: Option<JobId>,
     baseline: Option<GameEvidence>,
+    /// Whose game the loaded one is, read with `baseline`.
+    trainer: Option<Trainer>,
     save_dex: Option<crate::dex::Evidence>,
     fault: Fault,
     native_result: u32,
     pending: bool,
     notice: Notice,
-    no_games: bool,
+    /// The files are closed and the error screen is up.
+    stopped: bool,
+    /// Opening ended at a notice that leads back to the start screen.
+    turn_back: bool,
     rewards: RewardSession,
     /// The native blank transport-box record and its format tag, captured from
     /// the freshly constructed Bank before the first restore.
@@ -136,12 +143,14 @@ static STATE: Shared = Shared(UnsafeCell::new(Runtime {
     files_used: false,
     closing: None,
     baseline: None,
+    trainer: None,
     save_dex: None,
     fault: Fault::None,
     native_result: 0,
     pending: false,
     notice: Notice::new(),
-    no_games: false,
+    stopped: false,
+    turn_back: false,
     rewards: RewardSession::NONE,
     blank: None,
 }));
@@ -269,9 +278,28 @@ fn gen6_gift(game: *mut u8) -> Result<*mut u8, Fault> {
     Ok(gift)
 }
 impl Runtime {
+    /// One frame of a task after an error: the session is over. Its files
+    /// are closed first, as cleanup closes them for a session that ends
+    /// there, since the error screen lets HOME through and nothing follows
+    /// it. Until they are, the loading screen stays and HOME is refused.
     fn report_failure(&mut self, task: Task) -> u32 {
+        if !self.stopped {
+            if let (Some(id), Some(worker)) = (self.job, self.worker.as_mut()) {
+                // A job that is still out holds what the task lent it.
+                match worker.poll(id) {
+                    Ok(None) => return 0,
+                    Err(_) if worker.active() => return 0,
+                    _ => self.job = None,
+                }
+            }
+            self.close_files();
+            if !self.files_closed() {
+                return 0;
+            }
+            self.stopped = true;
+        }
         self.notice
-            .report(task, self.fault as u32, self.native_result)
+            .stop(task, self.fault as u32, self.native_result)
     }
     fn worker_error(&mut self, error: WorkerError) -> Fault {
         self.native_result = error.native_result();
@@ -279,7 +307,6 @@ impl Runtime {
             2 => Fault::NativeObject,
             3 => Fault::StorageOpen,
             4 => Fault::StorageCreate,
-            7 => Fault::RecoveryRequired,
             9 => Fault::StorageLoad,
             10 => Fault::GameRead,
             11 => Fault::GameChanged,
@@ -634,7 +661,7 @@ impl Runtime {
         if self.step == Step::Introduce {
             return unsafe { self.introduce(task) };
         }
-        if self.step == Step::NoGames {
+        if self.step == Step::TurnBack {
             if self.owner != task.raw() as usize {
                 return Err(Fault::NativeObject);
             }
@@ -660,9 +687,10 @@ impl Runtime {
             task.begin_busy();
             unsafe { write_word(task.raw(), 0x10, 1) };
             self.baseline = None;
+            self.trainer = None;
             self.rewards = RewardSession::NONE;
             if opening {
-                self.no_games = false;
+                self.turn_back = false;
                 self.capture_blank(task)?;
                 let session = unsafe { FS_SESSION.read() };
                 self.submit(task, Step::Open, Job::Open { session })?;
@@ -703,19 +731,47 @@ impl Runtime {
                 },
             ) => {
                 self.pending = true;
-                let kind = (1..=8)
-                    .filter_map(|id| GameKind::try_from(id).ok())
-                    .find(|kind| kind.title_id() == pending.game.title_id)
-                    .ok_or(Fault::RecoveryRequired)?;
+                // The record is the patch's own: a title that is none of
+                // the eight is not valid stored data.
+                let kind =
+                    GameKind::of_title(pending.game.title_id).ok_or(Fault::StorageInvalid)?;
                 // A game that is not there is not waited for when the save
-                // can be settled without it; the worker decides.
+                // can be settled without it; the worker decides. A game
+                // that is there and is not what a load would read fails as
+                // it would for a load.
                 let game =
                     match unsafe { GameIoDescriptor::from_loaded_kind(task.pointer(8)?, kind) } {
                         Ok(game) => Some(game),
                         Err(NativeGameError::NotLoaded) => None,
-                        Err(_) => return Err(Fault::RecoveryRequired),
+                        Err(_) => return Err(Fault::GameRead),
                     };
                 self.submit(task, Step::Recover, Job::Recover { game })?;
+                Ok(false)
+            }
+            (Step::Recover, Reply::Waiting { title, trainer }) => {
+                // The save in progress waits for its game, and nothing was
+                // written. The original's message for another copy of a
+                // game names it; the start screen follows, where the game
+                // can be put in and START pressed again.
+                let gen7 = GameKind::of_title(title)
+                    .ok_or(Fault::StorageInvalid)?
+                    .gen7();
+                let ui = task.ui()?;
+                let heap = checked_pointer(unsafe { read_word(task.raw(), 0xc) })?;
+                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+                self.turn_back = true;
+                self.step = Step::TurnBack;
+                task.end_busy();
+                unsafe {
+                    bank_common::ui::other_copy(
+                        ui,
+                        heap,
+                        &trainer.name,
+                        trainer.id,
+                        Trainer::digits(gen7),
+                    )
+                }
+                .map_err(|_| Fault::NativeObject)?;
                 Ok(false)
             }
             (
@@ -745,10 +801,9 @@ impl Runtime {
                 if !available {
                     // Native selection would repeat this notice without an
                     // exit. Show it once, then return to the start screen.
-                    self.no_games = true;
-                    self.step = Step::NoGames;
+                    self.turn_back = true;
+                    self.step = Step::TurnBack;
                     task.end_busy();
-                    storage_activity(false);
                     unsafe { bank_common::ui::notice(ui, bank_common::ui::NO_GAME_NOTICE) }
                         .map_err(|_| Fault::NativeObject)?;
                     return Ok(false);
@@ -763,8 +818,17 @@ impl Runtime {
                     ..
                 },
             ) => {
+                // Whose game it is, kept with its fingerprint: a save in
+                // progress is bound to both. The original's reader also
+                // reloads the Pokédex views, so it runs before the restore,
+                // which leaves them as it always has.
+                let (_, gen7) = selected_game(task)?;
+                let (name, id) =
+                    unsafe { crate::dex::trainer(task.pointer(8)?, task.bank_pointer()?) }
+                        .map_err(|_| Fault::NativeObject)?;
                 self.restore_bank(task, loaded)?;
                 self.baseline = Some(evidence);
+                self.trainer = Some(Trainer::of_game(&name, id, gen7));
                 self.pending = false;
                 capture_counts(task)?;
                 self.begin_rewards(task, loaded.rewards)?;
@@ -838,6 +902,7 @@ impl Runtime {
                     .freeze()
                     .map_err(|_| Fault::GamePrepare)?;
                 let rewards = self.rewards.settlement.ok_or(Fault::RewardState)?;
+                let trainer = self.trainer.ok_or(Fault::GameRead)?;
                 self.stage_bank(task)?;
                 // Conservative until Finalize succeeds: failed preparation may
                 // already have published a durable pending journal replica.
@@ -849,6 +914,7 @@ impl Runtime {
                         game: descriptor,
                         prepared,
                         baseline: original,
+                        trainer,
                         rewards,
                     },
                 )?;
@@ -914,9 +980,10 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         if cancelled {
             break 'route 0x14;
         }
-        // After an error nothing is opened again in this session. The game
-        // scan still leads to task 9, whose hook shows the error again;
-        // everything else ends in cleanup.
+        // After an error nothing is opened again in this session. Its
+        // screen does not end, so a task only gets here if that screen
+        // could not be shown: the game scan then still leads to task 9,
+        // whose hook tries again, and everything else ends in cleanup.
         if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
             break 'route 0x14;
         }
@@ -925,8 +992,9 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
                 manager.add(0x1c).write(0);
             }
         }
-        // The main menu (task 4) is never created; see navigation.rs.
-        let destination = crate::navigation::destination(current, outcome, next, state.no_games);
+        // The main menu (task 4) is never created, but in the console test
+        // build; see navigation.rs.
+        let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
         // Refuse HOME and sleep across a whole chain of loading tasks, not
         // only while one of their jobs runs.
         if crate::navigation::loads(destination) {
@@ -1076,7 +1144,11 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             let balance = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
                 .and_then(|bank| bank.miles())
                 .map_err(|_| Fault::NativeObject)?;
-            if rewards::nothing_to_get(entry.new_day(), balance, false) {
+            // A test build never stops at the rewards: it takes the same
+            // way whatever there is to get, and claims nothing.
+            if cfg!(feature = "test-build")
+                || rewards::nothing_to_get(entry.new_day(), balance, false)
+            {
                 if !is_guard {
                     // The original ends the loading panel in state 0x1b
                     // before it looks at the total (002aac80).
@@ -1145,4 +1217,118 @@ pub unsafe extern "aapcs" fn bank_offline_timestamp(
             local_date(words.as_mut_ptr());
         })
     }
+}
+
+/// Replaces the start screen's call that writes its version line
+/// (002b49c4): the line says which patch runs.
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_version_shown(
+    context: *mut u8,
+    group: u32,
+    pane: u32,
+    message: u32,
+) {
+    const SUFFIX: &[u8] = if cfg!(feature = "test-build") {
+        b"-test"
+    } else {
+        b"-offline"
+    };
+    unsafe { bank_common::ui::version(context, group, pane, message, SUFFIX) }
+}
+
+/// Test builds: stands in for the main menu's listener "an entry was
+/// chosen" (table slot 003617dc, the original's 002a6c84(listener, entry)
+/// with the listener at task 4's `+0x34`). While the menu waits for a choice
+/// (state 1), every entry but the original's own way out opens the Bank as
+/// "Use Pokémon Bank" does, and says which Save and Quit the session
+/// rehearses. The entries in the order of the screen; `bank_test_menu_update`
+/// labels the four rehearsals "Use Pokémon Bank (before)", "(after)",
+/// "(record)", "(boxes)":
+///
+/// | entry | the original's | here |
+/// | --- | --- | --- |
+/// | 0 | Use Pokémon Bank | no rehearsal |
+/// | 1 | Learn about Pokémon Bank | stop before the game is written |
+/// | 5 | Move Pokémon to Pokémon HOME | stop after the game is written |
+/// | 2 | View Your Support ID Number | write the journal record for a while |
+/// | 3 | Download Poké Transporter | write the spare snapshot for a while |
+/// | 4 | Back | the original's: its question, then the start screen |
+///
+/// What "Use Pokémon Bank" does is done here as the original does it for an
+/// account without a block (002a6d20..002a6ddc): outcome 0xC, state 0x13
+/// (the update's "finished"), the menu's buttons switched off. Its other
+/// branch asked the server's reply.
+/// # Safety
+/// Called only through that table slot, with the listener of the live
+/// main-menu task and the chosen entry.
+#[cfg(feature = "test-build")]
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_test_menu_chosen(listener: *mut u8, entry: u32) {
+    use bank_common::rehearsal::{choose, Rehearsal};
+    let original: unsafe extern "aapcs" fn(*mut u8, u32) = unsafe { transmute(0x002a_6c84usize) };
+    let task = unsafe { listener.sub(0x34) };
+    let rehearsal = match entry {
+        0 => Rehearsal::None,
+        1 => Rehearsal::StopBeforeGame,
+        5 => Rehearsal::StopAfterGame,
+        2 => Rehearsal::TearRecord,
+        3 => Rehearsal::TearBoxes,
+        _ => return unsafe { original(listener, entry) },
+    };
+    if checked_pointer(task as u32).is_err() || unsafe { read_word(task, 0x10) } != 1 {
+        return unsafe { original(listener, entry) };
+    }
+    let Ok(ui) = checked_pointer(unsafe { read_word(task, 0x38) }) else {
+        return unsafe { original(listener, entry) };
+    };
+    choose(rehearsal);
+    unsafe {
+        task.add(0x30).write(crate::navigation::MENU_USE);
+        write_word(task, 0x10, 0x13);
+        let buttons = read_word(ui, 0x10);
+        if buttons != 0 {
+            (buttons as *mut u8).add(0x25).write(0);
+        }
+        let enable: unsafe extern "aapcs" fn(u32, u32) = transmute(0x001e_9748usize);
+        enable(read_word(ui, 0x80), 0);
+    }
+}
+
+/// Test builds: what the four rehearsals' buttons say behind the original's
+/// "Use Pokémon Bank" (message 0x29, in the console's language), by the
+/// text pane the original labels each with (001d62f0: panes 0x1f, 0x66,
+/// 0x24, 0x29 of layout group 1, for its messages 0x2A, 0x56, 0x2B, 0x2C),
+/// in the order of the screen. The first button, pane 0x13, has that message
+/// already, and "Back" keeps its own.
+#[cfg(feature = "test-build")]
+const MENU_SUFFIXES: [(u32, &[u8]); 4] = [
+    (0x1f, b" (before)"),
+    (0x66, b" (after)"),
+    (0x24, b" (record)"),
+    (0x29, b" (boxes)"),
+];
+#[cfg(feature = "test-build")]
+const MENU_USE_MESSAGE: u32 = 0x29;
+
+/// Test builds: stands in for the main menu's update (table slot 003617bc,
+/// the original's 002a6750). In its first state, before the menu waits for
+/// a choice and after its initializer has labelled the buttons, the four
+/// rehearsals' buttons get the first button's text with the name of what
+/// they rehearse behind it; then the original runs.
+/// # Safety
+/// Called only through that table slot, with the live main-menu task.
+#[cfg(feature = "test-build")]
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_test_menu_update(task: *mut u8) -> u32 {
+    let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(0x002a_6750usize) };
+    if unsafe { read_word(task, 0x10) } == 0 {
+        if let Ok(ui) = checked_pointer(unsafe { read_word(task, 0x38) }) {
+            for (pane, suffix) in MENU_SUFFIXES {
+                unsafe { bank_common::ui::button(ui, 1, pane, MENU_USE_MESSAGE, suffix) };
+            }
+        }
+    }
+    unsafe { original(task) }
 }

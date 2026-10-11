@@ -121,8 +121,53 @@ pub fn storage_activity(active: bool) {
     }
 }
 
-/// The screen with two numbers (`ui::show`), shown by a task's update until
-/// it is acknowledged.
+// The original's "show a message" function, 001d6650(ui, kind, message,
+// wait), begins with `push {r4-r8, lr}`. A patch replaces that instruction
+// by a branch to this entry, which runs it, lets HOME and sleep through if
+// the message waits for an answer, and goes on inside the original.
+//
+// The patches refuse HOME and sleep by the task that comes next, for as
+// long as it reads or writes. A message that waits is where such a task has
+// nothing left to do but end, so the refusal the router hook began ends
+// here. The original's own bit for a game save that is being written is not
+// this one and stays as it is.
+core::arch::global_asm!(
+    ".syntax unified",
+    ".arm",
+    ".section .text.bank.message, \"ax\", %progbits",
+    ".align 2",
+    ".global bank_message_shown",
+    ".type bank_message_shown, %function",
+    "bank_message_shown:",
+    "push {{r4, r5, r6, r7, r8, lr}}",
+    "cmp r3, #0",
+    "beq 1f",
+    "push {{r0-r3, r12, lr}}",
+    "bl {waits}",
+    "pop {{r0-r3, r12, lr}}",
+    "1:",
+    "ldr r12, =0x001d6654",
+    "bx r12",
+    ".ltorg",
+    ".size bank_message_shown, .-bank_message_shown",
+    waits = sym message_waits,
+);
+extern "aapcs" fn message_waits() {
+    storage_activity(false);
+}
+unsafe extern "aapcs" {
+    /// # Safety
+    /// Only the first instruction of 001d6650 may branch here, with that
+    /// function's arguments and its caller's `lr`.
+    pub fn bank_message_shown();
+}
+
+/// The screen a patch ends on when nothing can go on (`ui::stop`): one
+/// dialog with the two numbers, and after A the original's line "Press HOME
+/// to return to the HOME Menu" with the numbers under it; or that line
+/// alone, for numbers that are a result and no error. It stays, as the
+/// original's own message with that line does (task 0, 002a9204, message
+/// 0x1C): its task shows it without a wait and never ends.
 pub struct Notice {
     shown: bool,
 }
@@ -131,33 +176,40 @@ impl Notice {
     pub const fn new() -> Self {
         Self { shown: false }
     }
-    /// One frame of the task's update: shows the numbers, then waits. The
-    /// result is the update's own: 0 while the screen is up, then the task
-    /// is finished as failed.
-    pub fn report(&mut self, task: Task, first: u32, second: u32) -> u32 {
+    /// One frame of the task's update after an error. The result is the
+    /// update's own: 0, as nothing ends this screen but closing Bank. Only a
+    /// screen that could not be shown finishes the task as failed.
+    pub fn stop(&mut self, task: Task, first: u32, second: u32) -> u32 {
+        self.end(task, Some(crate::ui::FAILURE_NOTICE), first, second)
+    }
+    /// The same for a patch whose work is done and whose numbers are its
+    /// result: the line about the HOME Menu with them, and nothing before.
+    pub fn done(&mut self, task: Task, first: u32, second: u32) -> u32 {
+        self.end(task, None, first, second)
+    }
+    fn end(&mut self, task: Task, reason: Option<u32>, first: u32, second: u32) -> u32 {
         let Ok(ui) = task.ui() else {
             task.end_busy();
             return task.finish(false);
         };
-        if !self.shown {
-            // Nothing more is read or written: HOME works on the error screen.
+        let shown = if self.shown {
+            // Each frame only keeps the dialog alive, as the original's
+            // task does for its own; its pages turn inside the dialog.
+            unsafe { crate::ui::acknowledged(ui) }.map(|_| ())
+        } else {
+            // Nothing more is read or written: HOME works on the error
+            // screen, and closing Bank from the HOME Menu ends the task
+            // the original's way.
             storage_activity(false);
+            task.end_busy();
             // Loading may still be animating; end its sound before the dialog.
             let _ = unsafe { crate::ui::stop_loading(ui) };
-            if unsafe { crate::ui::show(ui, first, second) }.is_err() {
-                task.end_busy();
-                return task.finish(false);
-            }
-            self.shown = true;
-            return 0;
-        }
-        match unsafe { crate::ui::acknowledged(ui) } {
-            Ok(false) => 0,
-            _ => {
-                self.shown = false;
-                task.end_busy();
-                task.finish(false)
-            }
+            unsafe { crate::ui::stop(ui, reason, first, second) }
+        };
+        self.shown = shown.is_ok();
+        match shown {
+            Ok(()) => 0,
+            Err(_) => task.finish(false),
         }
     }
 }

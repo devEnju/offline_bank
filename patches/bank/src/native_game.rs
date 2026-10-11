@@ -55,6 +55,17 @@ impl GameKind {
             Self::UltraSun | Self::UltraMoon => 39,
         }
     }
+    /// Sun, Moon, Ultra Sun and Ultra Moon, whose trainer ID the original
+    /// shows with six digits.
+    pub const fn gen7(self) -> bool {
+        self as u8 >= Self::Sun as u8
+    }
+    /// The game a title ID names, if it is one of the eight.
+    pub fn of_title(title: u64) -> Option<Self> {
+        (1..=8)
+            .filter_map(|id| Self::try_from(id).ok())
+            .find(|kind| kind.title_id() == title)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,6 +201,32 @@ impl PreparedImage {
                 .ok_or(NativeGameError::BlockOutsideFile)?;
         }
         Ok(metadata_offset)
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::*;
+
+    #[test]
+    fn a_title_names_one_of_the_eight_games_or_none() {
+        for id in 1..=8 {
+            let kind = GameKind::try_from(id).unwrap();
+            assert_eq!(GameKind::of_title(kind.title_id()), Some(kind));
+            // X, Y, Omega Ruby and Alpha Sapphire show five digits of a
+            // trainer ID, the four later games six.
+            assert_eq!(kind.gen7(), id >= 5);
+        }
+        // What a record of the patch can name and no game has: nothing,
+        // Bank itself, and a neighbour of a game's title.
+        for title in [
+            0,
+            0x0004_0000_000c_9b00,
+            GameKind::X.title_id() + 1,
+            GameKind::UltraMoon.title_id() + 0x100,
+        ] {
+            assert_eq!(GameKind::of_title(title), None);
+        }
     }
 }
 

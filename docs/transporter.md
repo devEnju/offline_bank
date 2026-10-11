@@ -18,7 +18,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Source of a Gen 5 game | Cartridge | Cartridge and saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)) |
 | Language screen | Switches the language of the screens as long as the app is open | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
 | Notice that nicknames and OT names with prohibited words will be erased | Shown; the server erased them | Skipped. No name is ever changed offline. The other notices are unchanged. |
-| HOME and sleep | Refused from connecting until disconnecting | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the title screen, the game list, the notices and the question. |
+| HOME and sleep | Refused from connecting until disconnecting | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the title screen, the game list, the notices, the question, and every message that waits for a button, the closing message of a transfer included. |
 | Screens and messages | | The originals; no new text |
 
 Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produce Gen 7 Pokémon, as with the original service.
@@ -124,7 +124,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 ## Limits
 
 - **A duplicate after a power cut.** The delivery is written before the Pokémon are removed from the game. If the power fails exactly between the two, they are in Bank and still in the game. The original prevented this with the server's help; the patch does not.
-- **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them.
+- **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them. Which of them it is shows when Bank is opened: Bank solves it or says it with its own numbers.
 - **Access to Bank's data and to the SD card.** Transporter's own header grants neither. Luma3DS gives every application full filesystem access, which is what makes both work; this needs Luma3DS v10.0 or later.
 - **Saves on the SD card.** Only revisions `00` and `01` are looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
 - **Language of the screens.** It can no longer be changed inside Transporter; it is the console's.

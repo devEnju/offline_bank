@@ -10,17 +10,17 @@ No run is logged here one by one: the page does not say which check was made wit
 
 1. **Back up** Bank's extdata and the saves of the games you will use, with [Checkpoint](https://github.com/BernardoGiordano/Checkpoint) ([how](bank.md#backing-up-the-bank)). Some runs leave the Bank and a game in a state that only the backup undoes.
 2. **Use Pokémon you can lose** or have twice. A few runs lose or duplicate one on purpose.
-3. **Switching packages.** Each package is a folder with `code.ips` and `exheader.bin`. Copy both to `SD:/luma/titles/00040000000C9B00/` for Bank, or `SD:/luma/titles/00040000000C9C00/` for Transporter, replacing the two files there.
-4. **Finish what a package began.** A Save and Quit that a test package left in progress must be settled with that same package, or the backup restored, before another package is tried.
+3. **Switching packages.** Each package is a folder with `code.ips` and `exheader.bin`; a folder always holds the latest build of its kind. Copy both to `SD:/luma/titles/00040000000C9B00/` for Bank, or `SD:/luma/titles/00040000000C9C00/` for Transporter, replacing the two files there.
+4. **Finish what a package began.** A Save and Quit that the test package left in progress must be settled with that package (the plain "Use Pokémon Bank"), or the backup restored, before another package is tried.
 
 | Package | Built by | Folder |
 | --- | --- | --- |
-| Bank | `Build-BankPatch.ps1` | `build/bank/<package>/` |
-| Transporter | `Build-TransporterPatch.ps1` | `build/transporter/<package>/` |
-| `stop-before-game`, `stop-after-game`, `tear-record`, `tear-boxes` | `Build-BankTestPatches.ps1` | `build/bank-test/<name>/` |
-| Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/<package>/` |
+| Bank | `Build-BankPatch.ps1` | `build/bank/` |
+| Transporter | `Build-TransporterPatch.ps1` | `build/transporter/` |
+| Test package | `Build-BankTestPatches.ps1` | `build/bank-test/` |
+| Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/` |
 
-What the four test packages do is in [building.md](building.md#test-builds-for-an-interrupted-save).
+Every package says what it is on its start screen: "Ver. 1.5-offline" for Bank and for Transporter, "Ver. 1.5-migration", "Ver. 1.5-test". What the test package does is in [building.md](building.md#test-builds-for-an-interrupted-save).
 
 ## Which tests after which change
 
@@ -60,6 +60,9 @@ With the normal Bank package. What each feature is meant to do is in [bank.md](b
 | Move Pokémon both ways, rename a box, Save and Quit, restart. | Everything persisted in Bank and in the game. No missing or duplicate Pokémon. |
 | Press HOME and close the lid right after leaving the start screen, while the Bank loads after selecting a game, and during Save and Quit. | Nothing happens while a loading screen is shown. On the start screen, game selection, in the boxes, and on an error screen both work as usual. |
 | No usable game present. | The original "no game" notice once, then the start screen. |
+| An error (the test package, [below](#an-interrupted-save-and-quit)): "The server did not receive the data." with the arrow and without numbers. Press A. | The line "Press HOME to return to the HOME Menu" with the two numbers on its third line. A, B and START do nothing. HOME opens the HOME Menu, the lid puts the console to sleep, and Bank can be closed from the HOME Menu. |
+| The same with Bank started from a running game (run 4): press HOME on the error's first screen, before A. | The HOME Menu appears. |
+| A console on which Bank's extdata cannot be created for lack of space on the SD card: press HOME on the original's message about it. | The HOME Menu appears. |
 
 ### Poké Miles
 
@@ -101,18 +104,20 @@ With the normal Bank and Transporter packages. What each feature is meant to do 
 | An egg in Box 1 beside other Pokémon. | The original dialog about Pokémon that cannot be transported appears for the egg; the others are offered. |
 | Any transfer. | The notice about nicknames and OT names does not appear; the notices about not being able to return Pokémon and about held items do. |
 | Press HOME and close the lid right after START, while the game list is being built, while the chosen game is read, and during the transfer. | Nothing happens. |
-| Press HOME and close the lid on the title screen, on the game list, on a message that follows START, and on the notices and the "move this Box?" question. | The HOME Menu opens; the lid puts the console to sleep. |
+| Press HOME and close the lid on the title screen, on the game list, and on the notices and the "move this Box?" question. | The HOME Menu opens; the lid puts the console to sleep. |
+| Press HOME and close the lid on each message that waits for A: "Could not find a game" (no game in the listed language), the closing message of a transfer, a damaged save's message, "No compatible Pokémon Game Card detected" (take the cartridge out while it is read, or after confirming the question), and the two messages of a refusal. | The HOME Menu opens; the lid puts the console to sleep. |
 | Press HOME together with A when confirming a game, and when confirming the question. | Nothing happens. |
-| After Back on the game list, after a message, and after a transfer: press HOME on the title screen. | The HOME Menu opens. |
+| After Back on the game list, after "Could not find a game", and after a transfer: press HOME on the title screen. | The HOME Menu opens. |
 
 ### Refusals
 
 | Do this | Expected |
 | --- | --- |
-| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START, then the title screen. No game list appears. |
-| Leave some Pokémon in the transport box, Save and Quit, start Transporter and press START. | The same message, until the transport box is empty and saved. |
+| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START: its first page with the arrow, after A its second without one, after A the title screen. No game list appears. |
+| Leave some Pokémon in the transport box, Save and Quit, start Transporter and press START. | The same two screens, until the transport box is empty and saved. |
 | Empty Box 1, Bank's transport box empty. | The original message that there is nothing to transport, then the title screen. |
-| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, then the title screen. After Bank was started once, START leads to the game list. |
+| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, both pages as the original has them, then the title screen. After Bank was started once, START leads to the game list. |
+| No game in the listed language, Bank ready: press START. | "Could not find a game", then the title screen, as before; START can be pressed again. |
 
 ### Language of the games
 
@@ -144,11 +149,24 @@ The saves are in the chosen language.
 
 ## An interrupted Save and Quit
 
-The two stop packages end Save and Quit at a fixed point with an error on purpose. Press A, close Bank, do the "Then" step, and start Bank again. What Bank decides is explained in [bank.md](bank.md#if-save-and-quit-is-interrupted).
+All runs here use the test package. After START it shows the original's main menu, and the button chosen there says what the Save and Quit of that session does:
+
+| Button on the main menu | What Save and Quit does | The card afterwards |
+| --- | --- | --- |
+| Use Pokémon Bank | Saves normally. | |
+| Use Pokémon Bank (before) | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
+| Use Pokémon Bank (after) | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
+| Use Pokémon Bank (record) | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
+| Use Pokémon Bank (boxes) | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Back | The original's: asks, then returns to the start screen. | |
+
+The two stops end Save and Quit at a fixed point with an error on purpose: "The server did not receive the data." Press A; the line about the HOME Menu follows with the numbers. Close Bank from the HOME Menu, do the "Then" step, and start Bank again. Where a run says "start Bank", choose the plain **Use Pokémon Bank** on the menu. Back on the game selection leads to the menu again, so another entry can be chosen without closing Bank. What Bank decides is explained in [bank.md](bank.md#if-save-and-quit-is-interrupted).
+
+The menu also shows what the original showed there about the pass; that is not part of any run. No reward dialog comes in this package.
 
 ### The game keeps its old save
 
-Package `stop-before-game`. Save and Quit shows `00007E57 00000001`.
+Menu entry **Use Pokémon Bank (before)**. Save and Quit ends on `00007E57 00000001`.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
@@ -161,28 +179,30 @@ Run 8 is the one case in which a Pokémon is lost by design; use one you do not 
 
 ### The game is not inserted
 
-Still `stop-before-game`, with a cartridge game that is not also installed.
+Still **Use Pokémon Bank (before)**, with a cartridge game that is not also installed.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
 | 9 | deposit one | take the cartridge out, start Bank | Bank opens; the deposited Pokémon is in Bank, and still on the cartridge |
-| 10 | deposit one, withdraw one | take the cartridge out, start Bank | error `00000007`; with the cartridge back in: boxes as before the session |
+| 10 | deposit one, withdraw one | take the cartridge out, start Bank | the original's message "You previously used a different copy of this game…" with the name and trainer ID of the cartridge's game; A leads to the start screen. With the cartridge back in, START without closing Bank: boxes as before the session |
+
+The trainer ID in that message has five digits for X, Y, Omega Ruby and Alpha Sapphire and six for the later games, as the game itself shows it.
 
 ### The same game as cartridge and installed
 
-Still `stop-before-game`. This needs one game both as a cartridge and installed, each with a save of its own. An installed copy that was never played has no save, and Bank does not find it.
+Still **Use Pokémon Bank (before)**. This needs one game both as a cartridge and installed, each with a save of its own. An installed copy that was never played has no save, and Bank does not find it.
 
 | Run | Session on | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- | --- |
 | 11 | cartridge | deposit one | take the cartridge out, start Bank | Bank opens; the deposited Pokémon is in Bank, and still on the cartridge |
-| 12 | cartridge | deposit one, withdraw one | take the cartridge out, start Bank | error `00000007`; with the cartridge back in: boxes as before the session |
-| 13 | installed copy, cartridge out | deposit one, withdraw one | put the cartridge in, start Bank | error `00000007`; with the cartridge out again: boxes as before the session |
+| 12 | cartridge | deposit one, withdraw one | take the cartridge out, start Bank | the message of run 10 with the name and trainer ID of the cartridge's game; with the cartridge back in, START: boxes as before the session |
+| 13 | installed copy, cartridge out | deposit one, withdraw one | put the cartridge in, start Bank | the message of run 10 with the name and trainer ID of the installed copy's game; with the cartridge out again, START: boxes as before the session |
 
-If run 12 or 13 opens Bank with the new boxes and no error, Bank did not tell the cartridge from the installed copy.
+If run 12 or 13 opens Bank with the new boxes and no message, Bank did not tell the cartridge from the installed copy.
 
 ### The game has its new save
 
-Package `stop-after-game`. Save and Quit shows `00007E57 00000002`.
+Menu entry **Use Pokémon Bank (after)**. Save and Quit ends on `00007E57 00000002`.
 
 | Run | In Bank, then Save and Quit | Then | Bank must show |
 | --- | --- | --- | --- |
@@ -191,15 +211,15 @@ Package `stop-after-game`. Save and Quit shows `00007E57 00000002`.
 
 ## A power cut during a save
 
-Packages `tear-boxes` and `tear-record`. They save normally, but first write for a while, so that a real cut lands inside a write. The saving screen stays clearly longer than usual.
+Menu entries **Use Pokémon Bank (boxes)** and **Use Pokémon Bank (record)** of the test package. They save normally, but first write for a while, so that a real cut lands inside a write. The saving screen stays clearly longer than usual.
 
-For each of the two packages, three to five times:
+For each of the two entries, three to five times:
 
 | Step | Do | Must show |
 | --- | --- | --- |
-| 1 | Open Bank, pick a game, move one Pokémon, Save and Quit | the saving screen |
+| 1 | Start Bank, choose the entry, pick a game, move one Pokémon, Save and Quit | the saving screen |
 | 2 | About five seconds in, cut the power for real | |
-| 3 | Start Bank | Bank opens, with the boxes as before step 1 |
+| 3 | Start Bank, Use Pokémon Bank | Bank opens, with the boxes as before step 1 |
 | 4 | Move one Pokémon, Save and Quit, and let it finish. Close Bank and start it again. | the save completes, and the change is there |
 
 How to cut the power, best first: pull the SD card, if the model lets you reach it while it runs; take out the battery; hold POWER. Holding POWER is the weakest, because the console may shut down in order and nothing is interrupted.
@@ -216,16 +236,16 @@ Start from a console whose Bank was last used with the old version, and from a b
 
 | Run | Installed | Do | Must show |
 | --- | --- | --- | --- |
-| 16 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number; nothing changed |
+| 16 | new Bank | start Bank, before converting | the error message, then the line about the HOME Menu with `00000003` and the size of the file it refused as second number; nothing changed |
 | 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
-| 18 | migration | start Bank, press START | a loading screen, then `0000600D 00000001` |
-| 19 | migration | the same again | `0000600D 00000002` |
+| 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with `0000600D 00000001` on its third line, and nothing before it. Close Bank from the HOME Menu |
+| 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |
 | 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
 | 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
 Runs 16 and 17 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
 
-A migration patch never opens the Bank. Its result is always two numbers:
+A migration patch never opens the Bank. Its result is always two numbers, under the line about the HOME Menu:
 
 | Numbers | Meaning |
 | --- | --- |
@@ -236,6 +256,15 @@ A migration patch never opens the Bank. Its result is always two numbers:
 | `00000BA1` to `00000BA4` | a step failed; the second number says why. Starting it again must be safe. |
 
 That a migration refuses a Bank with a Save and Quit in progress, and that a cut at any of its steps is picked up by the next start, is covered by its PC tests; released versions have no package that stops a save on purpose.
+
+**A Save and Quit left in progress by another version** is that version's to finish, with or without a migration between the two ([bank.md](bank.md#if-save-and-quit-is-interrupted)). This needs a test package built from the other version's sources:
+
+| Installed | Do | Must show |
+| --- | --- | --- |
+| test package of the other version | a Save and Quit that stops, A, close Bank | its numbers |
+| new Bank | start Bank, with its game inserted and without it | `0000000B`, then the line about the HOME Menu; nothing changed |
+| test package of the other version | start Bank | the save is settled as that version settles it |
+| new Bank | start Bank | Bank opens |
 
 ## If something else shows
 

@@ -10,6 +10,7 @@ use crate::{elf::PayloadElf, placement::InputIdentity, CheckedEdit, BANK_TITLE_I
 
 pub mod migrate;
 pub mod offline;
+pub mod test;
 
 pub const TMD_VERSION: u16 = 6272;
 pub const REMASTER_VERSION: u16 = 6;
@@ -43,11 +44,14 @@ pub struct Profile {
     pub entries: &'static [&'static str],
     /// Edited regions of the original, the start-up hook's bytes included.
     pub regions: usize,
+    /// The main-menu locations (`RETIRED_MENU_EDITS`) it edits. None for a
+    /// patch that is released: those never create the main menu.
+    pub menu_edits: &'static [u32],
     /// Every edit but the start-up hook's bytes. `code` is the original.
     edits: fn(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>>,
 }
 
-pub const PROFILES: [&Profile; 2] = [&offline::PROFILE, &migrate::PROFILE];
+pub const PROFILES: [&Profile; 3] = [&offline::PROFILE, &migrate::PROFILE, &test::PROFILE];
 
 pub fn profile(name: &str) -> crate::Result<&'static Profile> {
     PROFILES
@@ -94,6 +98,36 @@ pub(crate) fn router_call(target: u32) -> crate::Result<CheckedEdit> {
         0x002a5a2c,
         0xebfffed3,
         crate::encode_arm_branch(0x002a5a2c, target, true)?,
+    ))
+}
+
+/// The entry function of `bank-common` that every patch exports beside its
+/// own: where the original's "show a message" function goes first.
+pub(crate) const MESSAGE_ENTRY: &str = "bank_message_shown";
+
+/// The first instruction of the original's "show a message" function
+/// (001d6650, `push {r4-r8, lr}`), to that entry. It runs the instruction,
+/// lets HOME and sleep through if the message waits for an answer, and goes
+/// on at 001d6654. A branch, not a call: `lr` is the caller's.
+pub(crate) fn message_hook(target: u32) -> crate::Result<CheckedEdit> {
+    Ok(word(
+        0x001d6650,
+        0xe92d41f0,
+        crate::encode_arm_branch(0x001d6650, target, false)?,
+    ))
+}
+
+/// The entry function every patch has for the start screen's version line.
+pub(crate) const VERSION_ENTRY: &str = "bank_version_shown";
+
+/// The start screen's call that writes its version line, "Ver. 1.5" (was:
+/// bl 001e21c8, "put message 0x4E into its pane"), to that entry. It makes
+/// the original call and adds the patch's name to the line.
+pub(crate) fn version_call(target: u32) -> crate::Result<CheckedEdit> {
+    Ok(word(
+        0x002b49c4,
+        0xebfcb5ff,
+        crate::encode_arm_branch(0x002b49c4, target, true)?,
     ))
 }
 
@@ -144,7 +178,8 @@ pub(crate) fn first_start_edits() -> impl Iterator<Item = CheckedEdit> {
 }
 
 /// Main-menu locations edited by earlier builds. They must keep their original
-/// words: (virtual address, original little-endian word).
+/// words, but for the ones a profile names as its own (`Profile::menu_edits`):
+/// (virtual address, original little-endian word).
 pub const RETIRED_MENU_EDITS: [(u32, u32); 5] = [
     (0x001d6554, 0xeb0000ef),
     (0x002b33a4, 0xebfc853e),
@@ -170,15 +205,25 @@ pub fn prepare_development_patch(
     }
     for (address, original) in RETIRED_MENU_EDITS {
         let offset = (address - CODE_BASE) as usize;
-        if edits
+        let touching = edits
             .iter()
-            .any(|edit| edit.offset < offset + 4 && offset < edit.offset + edit.replacement.len())
-            || crate::le32(code, offset)? != original
-        {
+            .filter(|edit| {
+                edit.offset < offset + 4 && offset < edit.offset + edit.replacement.len()
+            })
+            .count();
+        let own = profile.menu_edits.contains(&address);
+        if touching != usize::from(own) || crate::le32(code, offset)? != original {
             return crate::fail(format!(
-                "retired main-menu location {address:#010x} is not original"
+                "main-menu location {address:#010x} is not as this profile has it"
             ));
         }
+    }
+    if profile
+        .menu_edits
+        .iter()
+        .any(|address| RETIRED_MENU_EDITS.iter().all(|(known, _)| known != address))
+    {
+        return crate::fail("profile names an unknown main-menu location");
     }
     crate::placement::prepare_expanded_data(
         code,
@@ -226,6 +271,17 @@ mod tests {
         }
         assert!(startup_call(0x80000000).is_err());
         assert!(router_call(0x80000000).is_err());
+        // The message function's first instruction, push {r4-r8, lr}, to
+        // the entry: a branch, so that the caller's lr stays.
+        let message = message_hook(0x3fb600).unwrap();
+        assert_eq!(message.offset, 0x000d6650);
+        assert_eq!(message.expected, [0xf0, 0x41, 0x2d, 0xe9]);
+        assert_eq!(
+            message.replacement,
+            encode_arm_branch(0x001d6650, 0x3fb600, false).unwrap()
+        );
+        assert_eq!(message.replacement[3], 0xea);
+        assert!(message_hook(0x80000000).is_err());
         assert_eq!(
             FIRST_START_ACCEPT_BRANCH.to_le_bytes(),
             encode_arm_branch(0x002ac5b0, 0x002ac8a8, false).unwrap()

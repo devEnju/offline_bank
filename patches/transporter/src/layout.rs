@@ -49,7 +49,8 @@ pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 /// The message that stops a session before it begins, for the two slots of
 /// Bank's transport box; `None` when a transfer may go ahead. Slots that are
 /// `None` could not be read at all: a file is missing, of another size or
-/// unreadable, or Bank's extdata is not there.
+/// unreadable, or Bank's extdata is not there. Opening Bank shows or solves
+/// each of these, so the message carries no numbers of its own.
 pub fn refusal_message(slots: Option<&[Option<Slot>; SLOTS]>) -> Option<u32> {
     let Some(slots) = slots else {
         return Some(MESSAGE_OPEN_BANK);
@@ -93,20 +94,24 @@ mod tests {
         assert_eq!(RECORDS_LEN + TRANSPORT_SLOTS, 6_990);
     }
 
+    fn slot(count: u32) -> Option<Slot> {
+        Some(Slot {
+            tag: None,
+            aux: 1,
+            count,
+            len: 0,
+            crc: 0,
+        })
+    }
+    fn message(slots: [Option<Slot>; SLOTS]) -> Option<u32> {
+        refusal_message(Some(&slots))
+    }
+
     #[test]
     fn the_check_tells_pokemon_in_the_way_from_a_bank_that_is_not_ready() {
-        let slot = |count| {
-            Some(Slot {
-                tag: None,
-                aux: 1,
-                count,
-                len: 0,
-                crc: 0,
-            })
-        };
-        assert_eq!(refusal_message(Some(&[None, None])), None);
-        assert_eq!(refusal_message(Some(&[slot(0), None])), None);
-        assert_eq!(refusal_message(Some(&[None, slot(0)])), None);
+        assert_eq!(message([None, None]), None);
+        assert_eq!(message([slot(0), None]), None);
+        assert_eq!(message([None, slot(0)]), None);
         // The "remains in the Transport Box" message only when one does.
         for slots in [
             [slot(2), None],
@@ -114,14 +119,11 @@ mod tests {
             [slot(3), slot(0)],
             [slot(1), slot(1)],
         ] {
-            assert_eq!(refusal_message(Some(&slots)), Some(MESSAGE_BOX_NOT_EMPTY));
+            assert_eq!(message(slots), Some(MESSAGE_BOX_NOT_EMPTY));
         }
         // An unfinished Bank save, and files that are not there or do not
         // read: Bank before its first start, or one not yet converted.
-        assert_eq!(
-            refusal_message(Some(&[slot(0), slot(0)])),
-            Some(MESSAGE_OPEN_BANK)
-        );
+        assert_eq!(message([slot(0), slot(0)]), Some(MESSAGE_OPEN_BANK));
         assert_eq!(refusal_message(None), Some(MESSAGE_OPEN_BANK));
         // A refusal is exactly where the delivery itself would refuse.
         for slots in [
@@ -130,10 +132,7 @@ mod tests {
             [slot(2), None],
             [slot(0), slot(0)],
         ] {
-            assert_eq!(
-                refusal_message(Some(&slots)).is_none(),
-                transport::may_deliver(&slots)
-            );
+            assert_eq!(message(slots).is_none(), transport::may_deliver(&slots));
         }
         // The worker reports "go on" as 0, which no message may be.
         assert_eq!((MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY), (3, 5));

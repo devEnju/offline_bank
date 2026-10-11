@@ -21,6 +21,13 @@ mod linked {
     #[link_section = ".bank.link_roots"]
     static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
         bank_common::bootstrap::bank_bootstrap_startup;
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static MESSAGE: unsafe extern "aapcs" fn() = bank_common::task::bank_message_shown;
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static VERSION: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
+        bank_payload::runtime::bank_version_shown;
 
     #[used]
     #[link_section = ".bank.link_roots"]
@@ -42,6 +49,16 @@ mod linked {
     #[link_section = ".bank.link_roots"]
     static DEX_FINISH: unsafe extern "aapcs" fn(*mut u8) =
         bank_payload::dex::bank_offline_dex_records_finish;
+    #[cfg(feature = "test-build")]
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static MENU: unsafe extern "aapcs" fn(*mut u8, u32) =
+        bank_payload::runtime::bank_test_menu_chosen;
+    #[cfg(feature = "test-build")]
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static MENU_UPDATE: unsafe extern "aapcs" fn(*mut u8) -> u32 =
+        bank_payload::runtime::bank_test_menu_update;
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
         // Panic cannot fall through into native saving or a partly updated Bank.

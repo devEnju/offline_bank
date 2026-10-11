@@ -1,24 +1,18 @@
+<#
+Builds the offline patch for Bank into build/bank and checks it with
+Verify-BankPatch.ps1. The folder holds one package, the latest: an existing
+one is replaced. Its name (Get-PackageId.ps1) is in PACKAGE.txt.
+#>
 [CmdletBinding()]
 param(
     [string]$CiaPath = 'input/Bank-v1.5-update.cia',
-    [string]$CtrtoolPath = 'tools/ctrtool.exe',
-    [string]$OutputDirectory = ''
+    [string]$CtrtoolPath = 'tools/ctrtool.exe'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Push-Location -LiteralPath $projectRoot
 try {
-    if ($OutputDirectory) {
-        $output = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
-            [IO.Path]::GetFullPath($OutputDirectory)
-        } else {
-            [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory))
-        }
-        if (Test-Path -LiteralPath $output) {
-            throw "Output already exists and will not be replaced: $output"
-        }
-    }
     & cargo +stable run --locked --offline -p patch-builder -- inspect $CiaPath
     if ($LASTEXITCODE -ne 0) { throw "CIA inspection failed: $LASTEXITCODE" }
     $records = @(& (Join-Path $PSScriptRoot 'Extract-Cia.ps1') -CiaPath $CiaPath -CtrtoolPath $CtrtoolPath)
@@ -31,16 +25,15 @@ try {
     & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') | Out-Host
     $elf = Join-Path $projectRoot 'build/intermediate/bank/bank-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
-    if (-not $OutputDirectory) {
-        $output = Join-Path $projectRoot ('build/bank/' + (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank))
-    }
-    if (Test-Path -LiteralPath $output) {
-        throw "Output already exists and will not be replaced: $output"
-    }
-    $parent = Split-Path -Parent $output
-    New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    & cargo +stable run --locked --offline -p patch-builder -- build-development offline $inputRecord.code $inputRecord.exheader $elf $output
+    $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank
+    $output = Join-Path $projectRoot 'build/bank'
+    if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+    & cargo +stable run --locked --offline -p patch-builder -- build-development offline $inputRecord.code $inputRecord.exheader $elf $output | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Development patch build failed: $LASTEXITCODE" }
-    Write-Host "Reviewable development patch: $output"
+    Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value $id
+    & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') | Out-Null
+    $report = Get-Content -LiteralPath (Join-Path $output 'verification.json') -Raw | ConvertFrom-Json
+    if ($report.status -ne 'passed') { throw 'Verification of the Bank package failed' }
+    Write-Host "Bank package $id`: $output (verified)"
     Write-Host 'No SD deployment performed. Console validation remains required.'
 } finally { Pop-Location }

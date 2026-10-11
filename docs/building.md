@@ -23,23 +23,23 @@ The builder identifies the inputs by hash and refuses any other version. The exp
 ./scripts/Build-TransporterPatch.ps1
 ```
 
-Each script unpacks its CIA, compiles the injected code, and writes a package:
+Each script unpacks its CIA, compiles the injected code, writes a package, and verifies it:
 
 ```text
-build/bank/<package>/           code.ips, exheader.bin, manifest.json, report.md
-build/transporter/<package>/    code.ips, exheader.bin, manifest.json, report.md
+build/bank/           code.ips, exheader.bin, manifest.json, report.md, verification.json, PACKAGE.txt
+build/transporter/    the same
 ```
 
-`<package>` is the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. An existing package is never replaced.
+A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The migration and the test package ([below](#test-builds-for-an-interrupted-save)) are built the same way, into `build/bank-migrate/` and `build/bank-test/`.
 
 ## Verify
 
 ```powershell
-./scripts/Verify-BankPatch.ps1 -Package <package>
-./scripts/Verify-TransporterPatch.ps1 -Package <package>
+./scripts/Verify-BankPatch.ps1
+./scripts/Verify-TransporterPatch.ps1
 ```
 
-The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed and that `exheader.bin` differs from the original only in its three size fields. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
+The build scripts run these themselves. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed and that `exheader.bin` differs from the original only in its three size fields. They also check that the package is the one of the current sources, by its name. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
 
 ## Tests
 
@@ -53,28 +53,33 @@ The tests run on the PC and cover the storage format, a power cut injected at ev
 
 ### Test builds for an interrupted save
 
-Recovery after a power cut cannot be triggered on demand on a console, so four extra Bank packages exist for rehearsing it. They are built behind cargo features that are off by default and are never part of a release.
+Recovery after a power cut cannot be triggered on demand on a console, so one extra Bank package exists for rehearsing it. It is built behind a cargo feature that is off by default and is never part of a release.
 
 ```powershell
 ./scripts/Build-BankTestPatches.ps1
 ```
 
-This builds and verifies each into `build/bank-test/<name>/`:
+This builds and verifies it into `build/bank-test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
 
-| Name | What Save and Quit does | The card afterwards |
+- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. All five buttons say "Use Pokémon Bank" in the console's language, and the four rehearsals have a word in brackets behind it, the same in every language. Back on the game selection leads to the menu again.
+- The reward dialogs never come, and nothing is claimed, so that a run is short.
+- While the menu is on screen Bank's files are open, and HOME works there; closing Bank from the HOME Menu at that point writes nothing.
+
+| Button on the main menu | What Save and Quit does | The card afterwards |
 | --- | --- | --- |
-| `stop-before-game` | Stops after the Bank has marked its save as in progress, before the game is written. Shows error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
-| `stop-after-game` | Stops after the game is written, before the mark is cleared. Shows error `00007E57 00000002`. | Mark set, the game has its new save. |
-| `tear-record` | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
-| `tear-boxes` | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Use Pokémon Bank | Saves normally. | |
+| Use Pokémon Bank (before) | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
+| Use Pokémon Bank (after) | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
+| Use Pokémon Bank (record) | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
+| Use Pokémon Bank (boxes) | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Back | The original's: asks, then returns to the start screen. | |
 
-The two stop packages test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)). The two tear packages give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
+The two stops test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); The plain "Use Pokémon Bank" of the same package settles what they left. The two that write for a while give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
 
 The PC tests run the same loops under a simulated cut at every write:
 
 ```powershell
-cargo +stable test -p bank-common --features test-tear-record --release --locked --offline
-cargo +stable test -p bank-common --features test-tear-boxes --release --locked --offline
+cargo +stable test -p bank-common --features test-build --release --locked --offline
 ```
 
 ### The migration from v0.2.1
@@ -85,11 +90,11 @@ Version 0.2.1 stored the Bank in four files; since v0.3.0 it has ten ([internals
 ./scripts/Build-BankMigrationPatch.ps1
 ```
 
-This builds it into `build/bank-migrate/<package>/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
+This builds it into `build/bank-migrate/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
 It belongs to that one step and ships only with release v0.3.0 ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
-This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always the screen with two numbers, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
+This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always two numbers under the original's line about the HOME Menu, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
 
 ## Release
 

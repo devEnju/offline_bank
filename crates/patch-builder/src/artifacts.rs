@@ -79,7 +79,7 @@ pub fn build_development_patch(
             "  }},\n",
             "  \"runtime_exports\": {},\n",
             "  \"native_edits\": {},\n",
-            "  \"main_menu_edits\": 0,\n",
+            "  \"main_menu_edits\": {},\n",
             "  \"paired_files_required\": true,\n",
             "  \"hardware_tested_by_builder\": false\n",
             "}}\n"
@@ -106,6 +106,7 @@ pub fn build_development_patch(
         exports,
         parsed.entries.len(),
         profile.regions,
+        profile.menu_edits.len(),
     );
     let report = format!(
         concat!(

@@ -152,7 +152,7 @@ impl<S: Storage> BankSession<S> {
     }
 
     /// Test builds only: see `BankStore::republish`.
-    #[cfg(feature = "test-tear-record")]
+    #[cfg(feature = "test-build")]
     pub fn tear_record(&mut self, passes: u32) -> Result<(), Error<S::Error>> {
         self.ensure_usable()?;
         for _ in 0..passes {
@@ -163,7 +163,7 @@ impl<S: Storage> BankSession<S> {
     }
 
     /// Test builds only: see `BankStore::rewrite_spare`.
-    #[cfg(feature = "test-tear-boxes")]
+    #[cfg(feature = "test-build")]
     pub fn tear_boxes(&mut self, payload: &mut [u8], passes: u32) -> Result<(), Error<S::Error>> {
         self.ensure_usable()?;
         let result = self.store.rewrite_spare(&self.head, payload, passes);
