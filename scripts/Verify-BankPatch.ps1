@@ -4,17 +4,19 @@ with patch-builder: it parses the ELF and IPS itself, rebuilds the expected imag
 from hardcoded reviewed addresses, and compares every byte. It reads only local
 build inputs and writes verification.json into the package folder.
 
--Patch says which patch for Bank the package is: the offline patch or the
-migration patch. Each has its own entry functions and its own list of
-regions it may edit, written out below.
+-Patch says which patch for Bank the package is: the offline patch, the
+migration patch, or the console test build of the offline patch. Each has
+its own entry functions and its own list of regions it may edit, written out
+below. The test build is the offline patch with one more entry function and
+one more region, in the main menu, which only it shows.
 #>
 [CmdletBinding()]
 param(
     [ValidatePattern('^[0-9a-f]{16}$')][string]$Package,
-    [ValidateSet('offline', 'migrate')][string]$Patch = 'offline',
+    [ValidateSet('offline', 'migrate', 'test')][string]$Patch = 'offline',
     [string]$ElfPath = '',
-    # A console test build (docs/building.md): its folder, relative to the
-    # repository, in place of a package name. Give its own ELF as well.
+    # The console test build (docs/building.md, -Patch test): its folder,
+    # relative to the repository, in place of a package name.
     [string]$TestPackagePath = ''
 )
 Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
@@ -36,8 +38,10 @@ function CString([byte[]]$bytes,[int]$offset) {
     Assert-Check ($end -ge $offset) 'Unterminated ELF string'
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
-$kind=@{offline='bank';migrate='bank-migrate'}[$Patch]
-if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$kind-payload.elf" }
+$kind=@{offline='bank';migrate='bank-migrate';test='bank-test'}[$Patch]
+$crate=@{offline='bank';migrate='bank-migrate';test='bank'}[$Patch]
+if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$crate-payload.elf" }
+if ($Patch -eq 'test' -and -not $TestPackagePath) { $TestPackagePath='build/bank-test' }
 if ($TestPackagePath) {
     $packagePath=$TestPackagePath
     $packageName=Split-Path -Leaf $TestPackagePath
@@ -116,16 +120,20 @@ try {
     # The entry functions of each patch; the first is the entry of the ELF.
     # The last is the one every patch has: where the original's "show a
     # message" function goes first.
+    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_dex_save_request','bank_offline_dex_records_update','bank_offline_dex_records_finish','bank_message_shown','bank_version_shown')
     $exportNames=@{
-        offline=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_dex_save_request','bank_offline_dex_records_update','bank_offline_dex_records_finish','bank_message_shown','bank_version_shown')
+        offline=$offlineNames
         migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown','bank_version_shown')
+        test=$offlineNames+@('bank_test_menu_chosen')
     }[$Patch]
-    $exportCount=@{offline=10;migrate=4}[$Patch]
+    $exportCount=@{offline=10;migrate=4;test=11}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
-    $foreign=@{offline='bank_migrate_*';migrate='bank_offline_*'}[$Patch]
+    $foreign=@{offline='bank_migrate_*';migrate='bank_offline_*';test='bank_migrate_*'}[$Patch]
     Assert-Check (@($symbols.Keys | Where-Object { $_ -like $foreign }).Count -eq 0) 'Entry function of another patch is linked'
     Assert-Check (@($symbols.Keys | Where-Object { $_ -like 'bank_offline_menu*' }).Count -eq 0) 'Removed menu wrappers still linked'
+    # The test build's menu entry is in no package that is released.
+    Assert-Check (($Patch -eq 'test') -eq $symbols.ContainsKey('bank_test_menu_chosen')) 'Menu entry of the test build'
     $wrapperNames=@('bank_svc_close_handle','bank_svc_wait_thread','bank_svc_get_resource_limit','bank_svc_get_resource_limit_values','bank_svc_get_resource_current_values')
     foreach($name in $wrapperNames) {
         Assert-Check ($symbols.ContainsKey($name)) ('Missing system-call wrapper '+$name)
@@ -160,10 +168,11 @@ try {
         @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false),
         @(0x2b49c4,0xebfcb5ffL,'bank_version_shown',$true)
     )
-    if ($Patch -eq 'offline') {
+    if ($Patch -ne 'migrate') {
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
     }
-    # Main-menu locations edited by earlier packages. They must stay original.
+    # Main-menu locations edited by earlier packages. They must stay original,
+    # but for the one the test build edits to show the menu (further down).
     $retired=@(
         @(0x1d6554,0xeb0000efL),
         @(0x2b33a4,0xebfc853eL),
@@ -172,7 +181,7 @@ try {
         @(0x3617dc,0x002a6c84L)
     )
     # Task 9, "open Bank": its update and busy poll.
-    $open=@{offline='bank_offline_load';migrate='bank_migrate_open'}[$Patch]
+    $open=@{offline='bank_offline_load';migrate='bank_migrate_open';test='bank_offline_load'}[$Patch]
     $pointers=@(
         @(0x361cfc,0x2ae568,$open),
         @(0x361d0c,0x2b4a20,$open),
@@ -190,7 +199,7 @@ try {
         @(0x2ac648,0xe6ff1075L,0xe3a01000L)
     )
     # Only the offline patch: loading, saving, rewards and the Pokédex.
-    if ($Patch -eq 'offline') {
+    if ($Patch -ne 'migrate') {
         $pointers+=@(
             @(0x33d30c,0x2a7578,'bank_offline_dex_save_request'),
             @(0x33d34c,0x2a71a8,'bank_offline_dex_records_finish'),
@@ -205,7 +214,14 @@ try {
             @(0x361e84,0x2af034,0x2af124)
         )
     }
-    $regions=@{offline=27;migrate=16}[$Patch]
+    # Only the test build: the main menu's listener "an entry was chosen"
+    # (its table slot, holding 002a6c84) is the build's own.
+    $menuEdits=@()
+    if ($Patch -eq 'test') {
+        $menuEdits=@(0x3617dc)
+        $pointers+=,@(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
+    }
+    $regions=@{offline=27;migrate=16;test=28}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     [byte[]]$expected=[byte[]]::new($expandedSize)
     [Array]::Copy($original,0,$expected,0,$original.Length)
@@ -281,6 +297,7 @@ try {
     foreach($location in $retired) {
         $offset=$location[0]-0x100000
         Assert-Check ((U32 $original $offset) -eq $location[1]) ('Original menu word '+$location[0].ToString('x8'))
+        if ($menuEdits -contains $location[0]) { continue }
         Assert-Check ((U32 $patched $offset) -eq $location[1]) ('Menu location is not original '+$location[0].ToString('x8'))
         Assert-Check ([Array]::IndexOf[byte]($allowed,1,$offset,4) -eq -1 -and [Array]::IndexOf[byte]($covered,1,$offset,4) -eq -1) ('Menu location still patched '+$location[0].ToString('x8'))
     }
@@ -306,16 +323,16 @@ try {
     Assert-Check ((($originalBssEnd+0xfff)-band -4096) -eq $rx.address) 'Payload follows original BSS'
     Assert-Check ((Hash $patched ($originalBssStart-0x100000) ($rx.address-$originalBssStart)) -eq (Hash ([byte[]]::new($rx.address-$originalBssStart)))) 'Former native BSS and alignment gap initialized'
 
-    Assert-Check ($branches.Count+$pointers.Count+1 -eq $regions -and $manifest.native_edits -eq $regions -and $manifest.main_menu_edits -eq 0) 'Native region count'
+    Assert-Check ($branches.Count+$pointers.Count+1 -eq $regions -and $manifest.native_edits -eq $regions -and $manifest.main_menu_edits -eq $menuEdits.Count) 'Native region count'
     $report=[ordered]@{
         status='passed'; package=$packageName; patch=$Patch; source_elf_sha256=$elfHash
         ips_sha256=(Hash $ips); paired_exheader_sha256=(Hash $header)
         ips_records=$records; native_regions=$regions; runtime_exports=$exportNames.Count
         system_call_wrappers=$wrapperNames.Count
-        original_main_menu_locations=@($retired | ForEach-Object { $_[0].ToString('x8') })
+        original_main_menu_locations=@($retired | Where-Object { $menuEdits -notcontains $_[0] } | ForEach-Object { $_[0].ToString('x8') })
         expanded_code_bytes=$expandedSize; expanded_code_sha256=$patchedHash
         initial_extension_fill='a5'; elf_loads=$loads
-        checks=@('original inputs unchanged','all IPS records bounded and disjoint','extension fully initialized from nonzero memory','native bytes preserved outside the allowed regions of this patch','five earlier main-menu locations equal the original executable and receive no IPS record','no menu wrapper symbol and no entry function of another patch is linked; five system-call wrappers are in RX memory','all branch and pointer targets match independently parsed ELF symbols','all ELF LOAD file and BSS bytes match','former native BSS and alignment gap zeroed','only paired exheader fields 0x34/0x38/0x3c changed','paired allocation exactly covers expanded image','manifest hashes, exports, placement, and status match')
+        checks=@('original inputs unchanged','all IPS records bounded and disjoint','extension fully initialized from nonzero memory','native bytes preserved outside the allowed regions of this patch','the earlier main-menu locations this patch does not name equal the original executable and receive no IPS record','no menu wrapper symbol and no entry function of another patch is linked; five system-call wrappers are in RX memory','all branch and pointer targets match independently parsed ELF symbols','all ELF LOAD file and BSS bytes match','former native BSS and alignment gap zeroed','only paired exheader fields 0x34/0x38/0x3c changed','paired allocation exactly covers expanded image','manifest hashes, exports, placement, and status match')
         limitations=@('static artifact verification; hardware behavior not established')
     }
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8

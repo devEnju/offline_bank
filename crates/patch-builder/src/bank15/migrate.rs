@@ -18,6 +18,7 @@ pub const PROFILE: Profile = Profile {
     ],
     // Fifteen edited words plus the linked bootstrap bytes.
     regions: 16,
+    menu_edits: &[],
     edits,
 };
 

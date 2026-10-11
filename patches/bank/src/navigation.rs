@@ -5,7 +5,8 @@
 //! loading, 0xc/0xd reward guard and claim, 0x19 box screen, 7 save, 0x14
 //! cleanup. The main menu is never a destination: opening leads straight to
 //! game selection, and leaving selection takes the native cleanup route back
-//! to the start screen.
+//! to the start screen. Only the console test build (docs/building.md) shows
+//! the menu, between opening and game selection, to choose its rehearsal on.
 //!
 //! Task 0xb runs only for its native start-up routine 002af12c, which destroys
 //! the text window, creates the character scene, and creates a new text
@@ -22,6 +23,12 @@ pub const LOAD: u32 = 0x10;
 pub const SAVE: u32 = 7;
 pub const CLEANUP: u32 = 0x14;
 
+/// Whether the main menu is shown: in the console test build only.
+pub const MENU: bool = cfg!(feature = "test-build");
+/// The main menu's outcome for "Use Pokémon Bank" (002a6d20), for which the
+/// original router answers game selection (002a56d4).
+pub const MENU_USE: u8 = 0xc;
+
 /// `outcome` is the finished task's byte `+0x30`; `native` is what the original
 /// router returned for it. `turn_back` is set when opening ended at a notice
 /// that leads back to the start screen: no usable game, or a save in progress
@@ -30,7 +37,9 @@ pub fn destination(current: u32, outcome: u8, native: u32, turn_back: bool) -> u
     match (current, outcome) {
         (3, 4 | 0x17) => OPEN,
         (OPEN, 4) if turn_back => CLEANUP,
+        (OPEN, 4) if MENU => MAIN_MENU,
         (OPEN, 4) => SELECT,
+        (MAIN_MENU, MENU_USE) if MENU => SELECT,
         (SELECT, 5) => SCENE,
         (SCENE, _) => LOAD,
         // Native Back returns to the menu; cleanup destroys the shared UI so
@@ -65,6 +74,10 @@ pub const fn loads(destination: u32) -> bool {
 mod tests {
     use super::*;
 
+    /// What follows an opened Bank: game selection, or in the console test
+    /// build the main menu.
+    const AFTER_OPEN: u32 = if MENU { MAIN_MENU } else { SELECT };
+
     #[test]
     fn only_scan_opening_loading_and_saving_refuse_home() {
         let loading: [u32; 5] = [3, OPEN, SCENE, LOAD, SAVE];
@@ -84,26 +97,34 @@ mod tests {
     }
 
     #[test]
-    fn main_menu_is_never_a_destination() {
+    fn main_menu_is_a_destination_in_the_test_build_only_and_only_after_opening() {
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for native in 0..=0x1d {
                     for turn_back in [false, true] {
-                        assert_ne!(
-                            destination(current, outcome, native, turn_back),
-                            MAIN_MENU,
+                        let menu = MENU && (current, outcome, turn_back) == (OPEN, 4, false);
+                        assert_eq!(
+                            destination(current, outcome, native, turn_back) == MAIN_MENU,
+                            menu,
                             "{current:#x} {outcome:#x} {native:#x}"
                         );
                     }
                 }
             }
         }
+        // From the menu only "Use Pokémon Bank" leads on, to game selection
+        // as in the original; everything else ends the session.
+        for outcome in 0..=u8::MAX {
+            let next = destination(MAIN_MENU, outcome, 0xa, false);
+            assert_eq!(next == SELECT, MENU && outcome == MENU_USE, "{outcome:#x}");
+            assert!(next == SELECT || next == CLEANUP);
+        }
     }
 
     #[test]
     fn opening_goes_to_selection_and_back_returns_through_cleanup() {
         // Native 002a5580 answers 4 (menu) for both of these.
-        assert_eq!(destination(OPEN, 4, MAIN_MENU, false), SELECT);
+        assert_eq!(destination(OPEN, 4, MAIN_MENU, false), AFTER_OPEN);
         assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), CLEANUP);
         // Native cleanup then selects the start screen, unchanged.
         assert_eq!(destination(CLEANUP, 3, START_SCREEN, false), START_SCREEN);
@@ -112,7 +133,7 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(destination(3, 4, 5, false), OPEN);
             assert_eq!(destination(3, 0x17, 5, false), OPEN);
-            assert_eq!(destination(OPEN, 4, MAIN_MENU, false), SELECT);
+            assert_eq!(destination(OPEN, 4, MAIN_MENU, false), AFTER_OPEN);
             assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), CLEANUP);
         }
     }
@@ -147,8 +168,9 @@ mod tests {
         // A rejected or invalid game in selection (outcome 6).
         assert_eq!(destination(SELECT, 6, CLEANUP, false), CLEANUP);
         assert_eq!(destination(OPEN, 4, MAIN_MENU, true), CLEANUP);
-        // A menu task that somehow ran can only leave through cleanup.
-        for outcome in [3, 0xc, 0xd, 0x17] {
+        // A menu task that somehow ran can only leave through cleanup; the
+        // test build's menu also for the original's eShop and HOME results.
+        for outcome in [3, 0xd, 0x17] {
             assert_eq!(destination(MAIN_MENU, outcome, 0xa, false), CLEANUP);
         }
         // Account, purchase, HOME, and service tasks stay unreachable.

@@ -59,7 +59,7 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 
 ### Edits to the original
 
-The offline patch: 27 regions (26 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original.
+The offline patch: 27 regions (26 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a third profile, `test`: these edits and one of those five locations, which only it may edit.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -105,6 +105,17 @@ Task object: vtable `+8` init, `+c` update, `+14` end, `+1c` busy poll; state at
 | `0xB` | Scene set-up | | |
 
 `navigation::destination` rewrites the original router's answer: `3 → 9`, `9 → 0xA` (original: 4), `0xA` outcome `0x13` → `0x14` (original: 4), `0xA` outcome 5 → `0xB` (as the original), `0xB → 0x10`, `0x10 → 0xC`, box-screen cancel → `0x14`, and anything outside a small allow-list → `0x14`. A host test covers every input.
+
+### The console test build
+
+[building.md](building.md#test-builds-for-an-interrupted-save) says what it is for. It is the offline patch built with the feature `test-build`, and differs in four places:
+
+- **The main menu is shown.** `navigation::destination` sends an opened Bank to task 4 and the menu's outcome `0xC` to game selection, as the original router does (`002a56d4`); every other outcome of the menu ends in cleanup. Task 4 runs unchanged: its initializer `002a6e38` ends the loading panel, shows the scene and writes the pass texts from the server's reply object (`task + 0x28`), which holds nothing offline, and `001d62f0` labels the buttons. Its update shows message `0x11` of text file 37 and waits in state 1.
+- **A choice is a rehearsal.** The menu's listener (`task + 0x34`, table at `003617dc`) has one function, `002a6c84(listener, entry)`, which steps back to the task and handles the entry (`002a6c8c`): 0 "Use Pokémon Bank" (outcome `0xC`, state `0x13`, unless the reply object blocks the account, byte `+0x4b`), 1 "Learn about" (state 2), 2 the Support ID (state 7), 3 Poké Transporter (`00246f20(0xc9c)` asks whether it is installed), 4 Back (state `0xc`, its question), 5 Pokémon HOME (outcome `0x17`). The test profile puts `bank_test_menu_chosen` into that slot. In state 1 it notes the rehearsal for entries 0, 1, 2, 3, 5 (`bank_common::rehearsal`) and does what entry 0 does without asking the reply object: outcome `0xC`, state `0x13`, the buttons switched off (`[ui + 0x10] + 0x25`, `001e9748([ui + 0x80], 0)`). Entry 4 and every other state go to the original.
+- **The rehearsal** is read by the worker at Save and Quit: the two stops in `storage_worker` (fault `7E57` with the stop point as second number), the two that write for a while in `BankFiles::prepare`.
+- **No reward dialog.** The reward hook takes its "nothing to get" way whatever there is ([Rewards](#rewards)).
+
+The version line reads "Ver. 1.5-test". No package that is released links `bank_test_menu_chosen` or `rehearsal`; the verify script checks the first.
 
 **What the skipped menu did.** Its initializer `002a6e38` also builds menu controls and account texts, so it is not called. Only its loading-transition calls are reproduced when task 9 succeeds: `001d6200(0x50011, 0, -1)` stops the loading sound, `001e7084(ctx, 0, 0x97, 0)` hides the loading pane, `001e69ac(ctx, 0, 0, 0)` unbinds animation 0. Game selection (`002ae310`, `002adc50`) creates or reuses the shared UI and registers its own controls.
 

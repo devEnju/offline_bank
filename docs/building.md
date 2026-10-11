@@ -53,28 +53,33 @@ The tests run on the PC and cover the storage format, a power cut injected at ev
 
 ### Test builds for an interrupted save
 
-Recovery after a power cut cannot be triggered on demand on a console, so four extra Bank packages exist for rehearsing it. They are built behind cargo features that are off by default and are never part of a release.
+Recovery after a power cut cannot be triggered on demand on a console, so one extra Bank package exists for rehearsing it. It is built behind a cargo feature that is off by default and is never part of a release.
 
 ```powershell
 ./scripts/Build-BankTestPatches.ps1
 ```
 
-This builds and verifies each into `build/bank-test/<name>/`:
+This builds and verifies it into `build/bank-test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
 
-| Name | What Save and Quit does | The card afterwards |
+- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. The buttons keep the original's labels; the patch writes no text.
+- The reward dialogs never come, and nothing is claimed, so that a run is short.
+- While the menu is on screen Bank's files are open, and HOME works there; closing Bank from the HOME Menu at that point writes nothing.
+
+| Button on the main menu | What Save and Quit does | The card afterwards |
 | --- | --- | --- |
-| `stop-before-game` | Stops after the Bank has marked its save as in progress, before the game is written. Shows error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
-| `stop-after-game` | Stops after the game is written, before the mark is cleared. Shows error `00007E57 00000002`. | Mark set, the game has its new save. |
-| `tear-record` | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
-| `tear-boxes` | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Use Pokémon Bank | Saves normally. | |
+| Learn about Pokémon Bank | **Stops before the game**: after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
+| View Your Support ID Number | **Stops after the game**: after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
+| Download Poké Transporter (or "Poké Transporter Downloaded") | **Writes the record**: first writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
+| Move Pokémon to Pokémon HOME | **Writes the boxes**: first writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Back | The original's: asks, then returns to the start screen. | |
 
-The two stop packages test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)). The two tear packages give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
+The two stops test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); "Use Pokémon Bank" of the same package settles what they left. The two that write for a while give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
 
 The PC tests run the same loops under a simulated cut at every write:
 
 ```powershell
-cargo +stable test -p bank-common --features test-tear-record --release --locked --offline
-cargo +stable test -p bank-common --features test-tear-boxes --release --locked --offline
+cargo +stable test -p bank-common --features test-build --release --locked --offline
 ```
 
 ### The migration from v0.2.1

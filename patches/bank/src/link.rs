@@ -49,6 +49,11 @@ mod linked {
     #[link_section = ".bank.link_roots"]
     static DEX_FINISH: unsafe extern "aapcs" fn(*mut u8) =
         bank_payload::dex::bank_offline_dex_records_finish;
+    #[cfg(feature = "test-build")]
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static MENU: unsafe extern "aapcs" fn(*mut u8, u32) =
+        bank_payload::runtime::bank_test_menu_chosen;
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
         // Panic cannot fall through into native saving or a partly updated Bank.

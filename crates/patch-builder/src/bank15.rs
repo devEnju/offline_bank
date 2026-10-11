@@ -10,6 +10,7 @@ use crate::{elf::PayloadElf, placement::InputIdentity, CheckedEdit, BANK_TITLE_I
 
 pub mod migrate;
 pub mod offline;
+pub mod test;
 
 pub const TMD_VERSION: u16 = 6272;
 pub const REMASTER_VERSION: u16 = 6;
@@ -43,11 +44,14 @@ pub struct Profile {
     pub entries: &'static [&'static str],
     /// Edited regions of the original, the start-up hook's bytes included.
     pub regions: usize,
+    /// The main-menu locations (`RETIRED_MENU_EDITS`) it edits. None for a
+    /// patch that is released: those never create the main menu.
+    pub menu_edits: &'static [u32],
     /// Every edit but the start-up hook's bytes. `code` is the original.
     edits: fn(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>>,
 }
 
-pub const PROFILES: [&Profile; 2] = [&offline::PROFILE, &migrate::PROFILE];
+pub const PROFILES: [&Profile; 3] = [&offline::PROFILE, &migrate::PROFILE, &test::PROFILE];
 
 pub fn profile(name: &str) -> crate::Result<&'static Profile> {
     PROFILES
@@ -174,7 +178,8 @@ pub(crate) fn first_start_edits() -> impl Iterator<Item = CheckedEdit> {
 }
 
 /// Main-menu locations edited by earlier builds. They must keep their original
-/// words: (virtual address, original little-endian word).
+/// words, but for the ones a profile names as its own (`Profile::menu_edits`):
+/// (virtual address, original little-endian word).
 pub const RETIRED_MENU_EDITS: [(u32, u32); 5] = [
     (0x001d6554, 0xeb0000ef),
     (0x002b33a4, 0xebfc853e),
@@ -200,15 +205,25 @@ pub fn prepare_development_patch(
     }
     for (address, original) in RETIRED_MENU_EDITS {
         let offset = (address - CODE_BASE) as usize;
-        if edits
+        let touching = edits
             .iter()
-            .any(|edit| edit.offset < offset + 4 && offset < edit.offset + edit.replacement.len())
-            || crate::le32(code, offset)? != original
-        {
+            .filter(|edit| {
+                edit.offset < offset + 4 && offset < edit.offset + edit.replacement.len()
+            })
+            .count();
+        let own = profile.menu_edits.contains(&address);
+        if touching != usize::from(own) || crate::le32(code, offset)? != original {
             return crate::fail(format!(
-                "retired main-menu location {address:#010x} is not original"
+                "main-menu location {address:#010x} is not as this profile has it"
             ));
         }
+    }
+    if profile
+        .menu_edits
+        .iter()
+        .any(|address| RETIRED_MENU_EDITS.iter().all(|(known, _)| known != address))
+    {
+        return crate::fail("profile names an unknown main-menu location");
     }
     crate::placement::prepare_expanded_data(
         code,

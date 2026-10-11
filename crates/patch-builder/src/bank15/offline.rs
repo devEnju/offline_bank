@@ -22,6 +22,7 @@ pub const PROFILE: Profile = Profile {
     ],
     // Twenty-six edited words plus the linked bootstrap bytes.
     regions: 27,
+    menu_edits: &[],
     edits,
 };
 
@@ -34,7 +35,7 @@ pub const SCENE_UPDATE: u32 = 0x002af034;
 pub const NATIVE_FINISHED: u32 = 0x002af124;
 pub const NATIVE_FINISHED_BODY: [u32; 2] = [0xe3a00001, 0xe12fff1e];
 
-fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
+pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
     for (index, word) in NATIVE_FINISHED_BODY.into_iter().enumerate() {
         let offset = (NATIVE_FINISHED - CODE_BASE) as usize + index * 4;
         if crate::le32(code, offset)? != word {

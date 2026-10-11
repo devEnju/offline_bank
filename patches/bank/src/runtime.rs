@@ -992,7 +992,8 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
                 manager.add(0x1c).write(0);
             }
         }
-        // The main menu (task 4) is never created; see navigation.rs.
+        // The main menu (task 4) is never created, but in the console test
+        // build; see navigation.rs.
         let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
         // Refuse HOME and sleep across a whole chain of loading tasks, not
         // only while one of their jobs runs.
@@ -1143,7 +1144,11 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             let balance = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
                 .and_then(|bank| bank.miles())
                 .map_err(|_| Fault::NativeObject)?;
-            if rewards::nothing_to_get(entry.new_day(), balance, false) {
+            // A test build never stops at the rewards: it takes the same
+            // way whatever there is to get, and claims nothing.
+            if cfg!(feature = "test-build")
+                || rewards::nothing_to_get(entry.new_day(), balance, false)
+            {
                 if !is_guard {
                     // The original ends the loading panel in state 0x1b
                     // before it looks at the total (002aac80).
@@ -1231,4 +1236,60 @@ pub unsafe extern "aapcs" fn bank_version_shown(
         b"-offline"
     };
     unsafe { bank_common::ui::version(context, group, pane, message, SUFFIX) }
+}
+
+/// Test builds: stands in for the main menu's listener "an entry was
+/// chosen" (table slot 003617dc, the original's 002a6c84(listener, entry)
+/// with the listener at task 4's `+0x34`). While the menu waits for a choice
+/// (state 1), every entry but the original's own way out opens the Bank as
+/// "Use Pokémon Bank" does, and says which Save and Quit the session
+/// rehearses:
+///
+/// | entry | the original's | here |
+/// | --- | --- | --- |
+/// | 0 | Use Pokémon Bank | no rehearsal |
+/// | 1 | Learn about Pokémon Bank | stop before the game is written |
+/// | 2 | View Your Support ID Number | stop after the game is written |
+/// | 3 | Download Poké Transporter | write the journal record for a while |
+/// | 5 | Move Pokémon to Pokémon HOME | write the spare snapshot for a while |
+/// | 4 | Back | the original's: its question, then the start screen |
+///
+/// What "Use Pokémon Bank" does is done here as the original does it for an
+/// account without a block (002a6d20..002a6ddc): outcome 0xC, state 0x13
+/// (the update's "finished"), the menu's buttons switched off. Its other
+/// branch asked the server's reply.
+/// # Safety
+/// Called only through that table slot, with the listener of the live
+/// main-menu task and the chosen entry.
+#[cfg(feature = "test-build")]
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_test_menu_chosen(listener: *mut u8, entry: u32) {
+    use bank_common::rehearsal::{choose, Rehearsal};
+    let original: unsafe extern "aapcs" fn(*mut u8, u32) = unsafe { transmute(0x002a_6c84usize) };
+    let task = unsafe { listener.sub(0x34) };
+    let rehearsal = match entry {
+        0 => Rehearsal::None,
+        1 => Rehearsal::StopBeforeGame,
+        2 => Rehearsal::StopAfterGame,
+        3 => Rehearsal::TearRecord,
+        5 => Rehearsal::TearBoxes,
+        _ => return unsafe { original(listener, entry) },
+    };
+    if checked_pointer(task as u32).is_err() || unsafe { read_word(task, 0x10) } != 1 {
+        return unsafe { original(listener, entry) };
+    }
+    let Ok(ui) = checked_pointer(unsafe { read_word(task, 0x38) }) else {
+        return unsafe { original(listener, entry) };
+    };
+    choose(rehearsal);
+    unsafe {
+        task.add(0x30).write(crate::navigation::MENU_USE);
+        write_word(task, 0x10, 0x13);
+        let buttons = read_word(ui, 0x10);
+        if buttons != 0 {
+            (buttons as *mut u8).add(0x25).write(0);
+        }
+        let enable: unsafe extern "aapcs" fn(u32, u32) = transmute(0x001e_9748usize);
+        enable(read_word(ui, 0x80), 0);
+    }
 }

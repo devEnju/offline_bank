@@ -1,24 +1,22 @@
 [CmdletBinding()]
 param(
-    # Which patch for Bank: the offline patch, or the migration patch.
-    [ValidateSet('offline', 'migrate')][string]$Patch = 'offline',
-    # Extra cargo features: the console test builds (docs/building.md).
-    [string[]]$Features = @(),
-    # Where the linked ELF goes, relative to the repository. A test build
-    # names its own folder so that the normal payload stays as it is.
-    [string]$IntermediateDirectory = ''
+    # Which patch for Bank: the offline patch, the migration patch, or the
+    # console test build of the offline patch (docs/building.md).
+    [ValidateSet('offline', 'migrate', 'test')][string]$Patch = 'offline'
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-# The crate, its linker script, and the name the package scripts know it by.
+# The crate, its linker script, its cargo features, and the name the package
+# scripts know it by. The test build has a folder of its own, so that the
+# normal payload stays as it is.
 $source = @{
-    'offline' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'bank' }
-    'migrate' = @{ Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Kind = 'bank-migrate' }
+    'offline' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'bank'; Features = @() }
+    'migrate' = @{ Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Kind = 'bank-migrate'; Features = @() }
+    'test' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'bank-test'; Features = @('test-build') }
 }[$Patch]
-if (-not $IntermediateDirectory) { $IntermediateDirectory = "build/intermediate/$($source.Kind)" }
 $linkerScript = Join-Path $projectRoot $source.Linker
-$outputDir = Join-Path $projectRoot $IntermediateDirectory
-$featureList = (@('linked-image') + $Features) -join ','
+$outputDir = Join-Path $projectRoot "build/intermediate/$($source.Kind)"
+$featureList = (@('linked-image') + $source.Features) -join ','
 $elfPath = Join-Path $outputDir "$($source.Crate).elf"
 $mapPath = Join-Path $outputDir "$($source.Crate).map"
 $toolchain = 'nightly-2026-10-03'
