@@ -9,9 +9,8 @@ rust-version.workspace = true
 offline-core = { path = "../offline-core" }
 
 [features]
-# The tear loops of the console test builds (docs/building.md). Never part of
-# a release.
-test-tear-record = ["offline-core/tear-test"]
-test-tear-boxes = ["offline-core/tear-test"]
+# The console test build with its rehearsals of an interrupted Save and Quit
+# (docs/building.md). Never part of a release.
+test-build = ["offline-core/tear-test"]
 # The simulated card of this crate's tests, for the tests of the patches.
 test-support = []

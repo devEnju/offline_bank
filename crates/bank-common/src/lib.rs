@@ -15,6 +15,8 @@ pub mod bank_files;
 pub mod bootstrap;
 pub mod fs;
 pub mod numbers;
+#[cfg(feature = "test-build")]
+pub mod rehearsal;
 pub mod session;
 #[cfg(target_arch = "arm")]
 pub mod task;

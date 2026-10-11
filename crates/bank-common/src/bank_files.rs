@@ -131,14 +131,8 @@ pub enum Error<E> {
 }
 type Outcome<T, F> = Result<T, Error<<<F as Files>::Storage as Storage>::Error>>;
 
-/// Test builds: how often a Save and Quit writes the journal record again
-/// before it goes on.
-#[cfg(feature = "test-tear-record")]
-const TEAR_RECORD_PASSES: u32 = 150;
-/// Test builds: how often a Save and Quit writes the spare snapshot slot
-/// before it goes on. Even, so that the payload ends as it began.
-#[cfg(feature = "test-tear-boxes")]
-const TEAR_BOXES_PASSES: u32 = 30;
+#[cfg(feature = "test-build")]
+use crate::rehearsal::{Rehearsal, TEAR_BOXES_PASSES, TEAR_RECORD_PASSES};
 
 /// What a load found beside the Bank regions now in the staging buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +154,9 @@ pub struct BankFiles<F: Files> {
     bank: Option<BankSession<F::Storage>>,
     /// The delivery taken at the last load, as (slot, id).
     adopted: Option<(usize, u32)>,
+    /// Test builds: what the next save rehearses.
+    #[cfg(feature = "test-build")]
+    rehearsal: Rehearsal,
 }
 
 fn side<E>(file: FileName) -> impl Fn(SidecarError<E>) -> Error<E> {
@@ -175,7 +172,15 @@ impl<F: Files> BankFiles<F> {
             files,
             bank: None,
             adopted: None,
+            #[cfg(feature = "test-build")]
+            rehearsal: Rehearsal::None,
         }
+    }
+    /// Test builds: what the next save rehearses. Only the two that write
+    /// for a while are made here; a stop is the caller's.
+    #[cfg(feature = "test-build")]
+    pub fn rehearse(&mut self, rehearsal: Rehearsal) {
+        self.rehearsal = rehearsal;
     }
     pub fn files_mut(&mut self) -> &mut F {
         &mut self.files
@@ -452,16 +457,20 @@ impl<F: Files> BankFiles<F> {
         let current = self.bank()?.tag().map_err(Error::Bank)?;
         // Test builds: keep the record being written for a while, so that a
         // real power cut lands inside one of its writes.
-        #[cfg(feature = "test-tear-record")]
-        self.bank()?
-            .tear_record(TEAR_RECORD_PASSES)
-            .map_err(Error::Bank)?;
+        #[cfg(feature = "test-build")]
+        if self.rehearsal == Rehearsal::TearRecord {
+            self.bank()?
+                .tear_record(TEAR_RECORD_PASSES)
+                .map_err(Error::Bank)?;
+        }
         let next = self.write_sides(staging, Some(current), current.generation + 1, stored)?;
         // Test builds: the same for the spare snapshot slot.
-        #[cfg(feature = "test-tear-boxes")]
-        self.bank()?
-            .tear_boxes(&mut staging[..BANK_SIZE], TEAR_BOXES_PASSES)
-            .map_err(Error::Bank)?;
+        #[cfg(feature = "test-build")]
+        if self.rehearsal == Rehearsal::TearBoxes {
+            self.bank()?
+                .tear_boxes(&mut staging[..BANK_SIZE], TEAR_BOXES_PASSES)
+                .map_err(Error::Bank)?;
+        }
         let prepared = self
             .bank()?
             .prepare_bytes(&staging[..BANK_SIZE], game, before, after)
@@ -665,13 +674,26 @@ mod tests {
 
     #[test]
     fn a_cut_at_every_write_of_a_save_leaves_one_consistent_save() {
-        every_cut_of_a_save(false);
+        every_cut_of_a_save(false, 0);
     }
     #[test]
     fn on_the_console_a_cut_at_every_write_of_a_save_leaves_one_consistent_save() {
-        every_cut_of_a_save(true);
+        every_cut_of_a_save(true, 0);
     }
-    fn every_cut_of_a_save(console: bool) {
+    /// The test build's two rehearsals that write for a while: a cut at
+    /// every one of their writes too leaves the old save.
+    #[cfg(feature = "test-build")]
+    #[test]
+    fn a_cut_at_every_write_of_a_rehearsed_save_leaves_one_consistent_save() {
+        for rehearsal in [Rehearsal::TearRecord, Rehearsal::TearBoxes] {
+            for console in [false, true] {
+                every_cut_of_a_save(console, rehearsal as u8);
+            }
+        }
+    }
+    /// `rehearsal` is 0 for a save as in a release.
+    #[cfg_attr(not(feature = "test-build"), allow(unused_variables))]
+    fn every_cut_of_a_save(console: bool, rehearsal: u8) {
         let old = body(0x31, 0x44, 2);
         let new = body(0x52, 0x66, 1);
         let committed = stored(7, 1, 3000);
@@ -696,12 +718,21 @@ mod tests {
         let save = |disk: &Shared| {
             let mut files = opened(disk);
             load(&mut files);
+            #[cfg(feature = "test-build")]
+            files.rehearse(match rehearsal {
+                3 => Rehearsal::TearRecord,
+                4 => Rehearsal::TearBoxes,
+                _ => Rehearsal::None,
+            });
             files.prepare(&mut new.clone(), next, GAME, BEFORE, AFTER)
         };
         let counting = base.cut_after(usize::MAX);
         save(&counting).unwrap();
         let total = counting.0.borrow().operations;
         assert!(total > 20);
+        // A rehearsal writes far more often than a save does.
+        #[cfg(feature = "test-build")]
+        assert_eq!(total > 100, rehearsal != 0);
 
         let old_state = (old.clone(), committed);
         let new_state = (new.clone(), next);
