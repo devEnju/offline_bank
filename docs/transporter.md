@@ -31,7 +31,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 **One save before the question.** Right after the chosen game is read, and before any notice or question, the original saves that game once. It stores a small note of its own there, which the server used to sort out an interrupted transfer; offline the note is empty and nothing reads it. No Pokémon data changes in that save, and it happens also if you then answer "No".
 
-**When Transporter refuses.** It asks about Bank when START is pressed on the title screen, before it looks for games. If Bank cannot take a delivery, it shows one of two messages of the original. After A the original's line "Press HOME to return to the HOME Menu" follows, and it stays: nothing can be transferred until Bank was opened, so nothing else reacts. Press HOME, close Transporter, and open Bank. No game has been read at that point.
+**When Transporter refuses.** It asks about Bank every time START is pressed on the title screen, before it looks for games. If Bank cannot take a delivery, it shows one of two messages of the original and returns to the title screen. No game has been read at that point.
 
 | Message | When | What to do |
 | --- | --- | --- |
@@ -112,7 +112,6 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | Transporter does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Transporter is not version 1.5. |
 | START always answers "Pokémon remains in the Transport Box". | Open Bank, empty the transport box, and Save and Quit. |
 | START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later and that Bank and Transporter are from the same release, and otherwise please report it. |
-| After a refusal only "Press HOME to return to the HOME Menu" is left. | Intended: nothing can be transferred until Bank was opened. Close Transporter from the HOME Menu. |
 | The original failure message after confirming a transfer. | The delivery could not be written. The source game was not changed. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |
 | A save on the SD card is not listed. | Its language is not the chosen one; a cartridge of the same game in that language is inserted; the name or folder differs from the pattern above; or the file is not 524,288 bytes. |

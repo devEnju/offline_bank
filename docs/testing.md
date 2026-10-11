@@ -42,7 +42,7 @@ With the normal Bank and Transporter packages.
 | --- | --- | --- |
 | 1 | Start Bank on a console whose Bank extdata is empty | The welcome, then an empty Bank |
 | 2 | Pick a game, move Pokémon both ways, Save and Quit. Open the same game again in the same session, move again, Save and Quit a second time. Close Bank and start it again. Once with an installed game and once with a cartridge, if you have both. | Everything where it was put, in Bank and in the game; nothing twice; Pokédex and Poké Miles as expected |
-| 3 | Transfer from a Generation 5 game with Transporter. Back on its title screen, press START again. Then open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again and press START. | The transfer completes. The second START answers with the "Pokémon remains in the Transport Box" message; after A only the line "Press HOME to return to the HOME Menu" is left, and no game list appears. Close Transporter from the HOME Menu. In Bank the Pokémon are there once. Afterwards START leads to the game list again. |
+| 3 | Transfer from a Generation 5 game with Transporter. Back on its title screen, press START again. Then open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again and press START. | The transfer completes. The second START answers with the "Pokémon remains in the Transport Box" message and returns to the title screen, without a game list. In Bank the Pokémon are there once. Afterwards START leads to the game list again. |
 | 4 | Start a game, press HOME, and start Bank from the HOME Menu without closing the game first. Press START, pick a game, look at the boxes, and leave; once with Save and Quit and once without saving. Back on the start screen, press HOME. | The HOME Menu appears, both times |
 
 ## Bank, feature by feature
@@ -113,11 +113,10 @@ With the normal Bank and Transporter packages. What each feature is meant to do 
 
 | Do this | Expected |
 | --- | --- |
-| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START. After A the line "Press HOME to return to the HOME Menu". No game list appears. A, B and START do nothing; HOME opens the HOME Menu, the lid puts the console to sleep, and Transporter can be closed from the HOME Menu. |
+| After a transfer, press START again without opening Bank in between. | The "Pokémon remains in the Transport Box" message right after START: its first page with the arrow, after A its second without one, after A the title screen. No game list appears. |
 | Leave some Pokémon in the transport box, Save and Quit, start Transporter and press START. | The same two screens, until the transport box is empty and saved. |
 | Empty Box 1, Bank's transport box empty. | The original message that there is nothing to transport, then the title screen. |
-| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, both pages as the original has them, then the line about the HOME Menu. No numbers anywhere. After Bank was started once, START leads to the game list. |
-| The same on a console set to French, and on one set to Japanese. | The same three screens. The line about the HOME Menu reads correctly, in Japanese with its two kanji. |
+| A console on which the offline Bank was never started: press START. | The "did not complete correctly… open Pokémon Bank" message right after START, both pages as the original has them, then the title screen. After Bank was started once, START leads to the game list. |
 | No game in the listed language, Bank ready: press START. | "Could not find a game", then the title screen, as before; START can be pressed again. |
 
 ### Language of the games
@@ -225,7 +224,7 @@ Start from a console whose Bank was last used with the old version, and from a b
 | Run | Installed | Do | Must show |
 | --- | --- | --- | --- |
 | 16 | new Bank | start Bank, before converting | error `00000003` with the size of the file it refused as second number, then the line about the HOME Menu with the same numbers; nothing changed |
-| 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the line about the HOME Menu; no game list appears |
+| 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
 | 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with `0000600D 00000001` on its third line, and nothing before it. Close Bank from the HOME Menu |
 | 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |
 | 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |

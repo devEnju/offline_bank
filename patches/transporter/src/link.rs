@@ -188,11 +188,11 @@ mod linked {
         "bx r12",
         // Game search, first step (00246F48, was: ldr r0, [r0], the start
         // of the cartridge scan). r4 = task; lr is free, the original
-        // function saved its own. 1: still checking, or a refusal is on
-        // screen: the search's "nothing this frame" return, which leaves it
-        // in this step. 2: its ending without a message. Else: the replaced
-        // instruction, with r0 as the search had loaded it, and on with the
-        // search.
+        // function saved its own. 1: still checking, the search's "nothing
+        // this frame" return. 2: a message is on screen; 00247000 selects
+        // the search's own step that waits for it and ends the search.
+        // 3: its ending without a message. Else: the replaced instruction,
+        // with r0 as the search had loaded it, and on with the search.
         "transporter_check_stub:",
         "mov r0, r4",
         "bl {check}",
@@ -200,6 +200,9 @@ mod linked {
         "ldreq r12, =0x00247024",
         "bxeq r12",
         "cmp r0, #2",
+        "ldreq r12, =0x00247000",
+        "bxeq r12",
+        "cmp r0, #3",
         "ldreq r12, =0x0024702c",
         "bxeq r12",
         "ldr r0, =0x00329380",

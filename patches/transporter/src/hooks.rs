@@ -11,7 +11,6 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use offline_core::{
-    numbers,
     sections::TRANSPORT_SLOTS,
     sidecar::{Sidecar, SLOTS},
     transport::{self, KIND},
@@ -25,20 +24,9 @@ pub(crate) const FILE_READ: usize = 0x0015_930c;
 pub(crate) const FILE_WRITE: usize = 0x0015_9390;
 pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
 pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
-/// The original's "show this message": `(ui, message, wait)`. With 1 the
-/// dialog ends when its last page is acknowledged, as every one of its
-/// tasks calls it; with 0 it stays, as its message 0x1F does (`002452DC`).
+/// The original's "show this message and wait": `(ui, message, 1)`, as the
+/// game search calls it for its own message 0 (`00246FFC`).
 const SHOW_MESSAGE: usize = 0x0019_b50c;
-/// One frame of a dialog, `(context)` with the context at `ui + 0x5C`: 4
-/// once a waiting dialog was acknowledged (`0024700C`).
-const DIALOG_POLL: usize = 0x0019_b4bc;
-const UI_CONTEXT: usize = 0x5c;
-/// The dialog's own string object at `ui + 0x8C`, which the show function
-/// fills and hands to the dialog through `0019C7D4(context, string)`. It is
-/// the string class of Bank's dialogs: data at `+4`, room at `+8`, length at
-/// `+0xA` (both in units), a flag at `+0xC` that it has a buffer.
-const UI_TEXT: usize = 0x8c;
-const DIALOG_TEXT: usize = 0x0019_c7d4;
 /// The original's router, `get_next_state(manager, current)`, and what it
 /// reads: the finished task at `manager + 0x10` with its outcome byte at
 /// `+0x30`, and the manager's "cancelled" flag, which it clears.
@@ -97,9 +85,6 @@ static STATE: Shared = Shared {
     task: UnsafeCell::new(core::ptr::null()),
     job: UnsafeCell::new(0),
 };
-/// Not zero once the check has refused and its dialog is on screen. Only
-/// the main thread reads and writes it.
-static REFUSED: AtomicU32 = AtomicU32::new(0);
 
 #[repr(C, align(8))]
 struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
@@ -387,8 +372,6 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     let outcome = unsafe { follow(manager, MANAGER_TASK) }
         .map(|task| unsafe { task.add(TASK_OUTCOME).read() });
     let native = unsafe { original(manager, current) };
-    // A step has ended: no refusal of the check is on screen any more.
-    REFUSED.store(0, Ordering::Relaxed);
     let Some(outcome) = outcome else {
         return native;
     };
@@ -423,95 +406,37 @@ pub unsafe extern "aapcs" fn transporter_list_ready() {
 /// Asks, when START was pressed and before the original searches for games,
 /// whether Bank can take a delivery: the question the original put to the
 /// server after a game was chosen. If not, the original's message for it is
-/// shown here with the original's line about the HOME Menu as its last
-/// page, and that dialog stays: no session can begin until Bank was opened.
-/// The search is held in its first step for that, which calls this every
-/// frame.
+/// shown here and the search ends as it does for "no game found": back to
+/// the title screen.
 /// # Safety
 /// Called only from the stub of the patched site at 00246F48 (link.rs) with
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    if REFUSED.load(Ordering::Relaxed) != 0 {
-        let context =
-            unsafe { follow(task, TASK_UI) }.and_then(|ui| unsafe { follow(ui, UI_CONTEXT) });
-        let Some(context) = context else {
-            return SEARCH_END;
-        };
-        // Each frame of a dialog is this call, also of one that stays; its
-        // pages turn inside the dialog.
-        let poll: unsafe extern "aapcs" fn(*const u8) -> u32 = unsafe { transmute(DIALOG_POLL) };
-        unsafe { poll(context) };
-        return SEARCH_PENDING;
-    }
     match unsafe { step(task, JOB_CHECK) } {
         None => SEARCH_PENDING,
         Some(0) => SEARCH_GO,
         Some(message) => {
-            let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
-                return SEARCH_END;
-            };
-            // Nothing more is read: HOME and sleep work on the message.
-            unsafe { refuse_home(false) };
-            unsafe { refuse(ui, message) };
-            REFUSED.store(1, Ordering::Relaxed);
-            SEARCH_PENDING
+            if unsafe { show(task, message) } {
+                SEARCH_SHOWN
+            } else {
+                SEARCH_END
+            }
         }
     }
 }
 
-/// The dialog's own string object, its room in units, and the length of
-/// the text in it. `None` if it is not a text that can be changed in place.
-unsafe fn text(ui: *const u8) -> Option<(*mut u8, &'static mut [u16], usize)> {
-    unsafe {
-        let text = follow(ui, UI_TEXT)?.cast_mut();
-        let data = follow(text, 4)?.cast_mut().cast::<u16>();
-        let room = usize::from(text.add(8).cast::<u16>().read());
-        let len = usize::from(text.add(0xa).cast::<u16>().read());
-        if text.add(0xc).read() == 0 || len == 0 || len >= room || data.add(len).read() != 0 {
-            return None;
-        }
-        Some((text, slice::from_raw_parts_mut(data, room), len))
-    }
-}
-
-/// Shows a refusal as one dialog that does not end, the way the original
-/// shows its message 0x1F (`002452DC`): the original's `message`, and as
-/// the page after its last the original's line about the HOME Menu, message
-/// 0x27, which stays. Both texts are loaded by the original's show function
-/// into the dialog's own string: first the line, which is copied out, then
-/// the message. The line is added in place (`numbers::append_page`) and the
-/// string handed to the dialog again, as the show function does. Without
-/// room for the page the message stays alone.
-unsafe fn refuse(ui: *const u8, message: u32) {
+/// Shows an original message the way the game search shows its own. It
+/// waits for an answer, so HOME and sleep work on it
+/// (`transporter_message_waits`). `false` when the task's dialog owner is
+/// not a pointer.
+unsafe fn show(task: *const u8, message: u32) -> bool {
+    let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
+        return false;
+    };
     let show: unsafe extern "aapcs" fn(*const u8, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
-    let mut home = [0u16; HOME_ROOM];
-    let mut home_len = 0;
-    unsafe { show(ui, MESSAGE_HOME, 0) };
-    if let Some((_, units, len)) = unsafe { text(ui) } {
-        if len < HOME_ROOM {
-            home[..len].copy_from_slice(&units[..len]);
-            home_len = len;
-        }
-    }
-    unsafe { show(ui, message, 0) };
-    if home_len == 0 {
-        return;
-    }
-    let (Some(context), Some((text, units, len))) =
-        (unsafe { follow(ui, UI_CONTEXT) }, unsafe { text(ui) })
-    else {
-        return;
-    };
-    let Some(len) = numbers::append_page(units, len, &home[..home_len]) else {
-        return;
-    };
-    units[len] = 0;
-    unsafe {
-        text.add(0xa).cast::<u16>().write(len as u16);
-        let begin: unsafe extern "aapcs" fn(*const u8, *mut u8) = transmute(DIALOG_TEXT);
-        begin(context, text);
-    }
+    unsafe { show(ui, message, 1) };
+    true
 }
 
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,

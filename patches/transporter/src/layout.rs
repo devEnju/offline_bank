@@ -29,10 +29,12 @@ pub const TASK_UI: usize = 0x34;
 
 /// Answers of the check entry, as the stub of the patched site at `00246F48`
 /// tests them (link.rs): go on with the game search; come back next frame;
-/// end the search at once, which leads back to the title screen.
+/// a message is on screen, so wait for it and end the search, which leads
+/// back to the title screen; end the search at once.
 pub const SEARCH_GO: u32 = 0;
 pub const SEARCH_PENDING: u32 = 1;
-pub const SEARCH_END: u32 = 2;
+pub const SEARCH_SHOWN: u32 = 2;
+pub const SEARCH_END: u32 = 3;
 
 /// The original's message 3: "Your communication with Pokémon Bank did not
 /// complete correctly during your last session. Please open Pokémon Bank
@@ -43,13 +45,6 @@ pub const MESSAGE_OPEN_BANK: u32 = 3;
 /// Box from your previous session. Please empty the Transport Box by using
 /// Pokémon Bank before using Poké Transporter."
 pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
-
-/// The original's message 0x27, the title screen's own line: "Press HOME to
-/// return to the HOME Menu". One line in every language of the original,
-/// of 11 to 42 units.
-pub const MESSAGE_HOME: u32 = 0x27;
-/// Room for that line while it is carried from one message to the other.
-pub const HOME_ROOM: usize = 96;
 
 /// The message that stops a session before it begins, for the two slots of
 /// Bank's transport box; `None` when a transfer may go ahead. Slots that are
