@@ -19,7 +19,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original redemption is kept. Server gifts and distributions are skipped. |
 | Pokédex and adventure records update when you visit the records screen. | They update at Save and Quit, with the original rules ([below](#pokédex-and-adventure-records)). |
 
-Not included: Pokémon HOME, purchases, importing a Bank from Nintendo's servers, event gifts, and import or export tools for save editors.
+Not included: Pokémon HOME, purchases, event gifts, and import or export tools for save editors.
 
 ## First start
 

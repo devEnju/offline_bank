@@ -15,8 +15,6 @@ code.bin     2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf
 exheader.bin 39d93584b07901dfa7ea2fc8ce1236cdd92476584ee2dbb60c11a4ae9402abf7
 ```
 
-Addresses are ARM virtual addresses of that image. They come from static analysis and host tests.
-
 ### Code
 
 | Where | Role |
@@ -26,7 +24,7 @@ Addresses are ARM virtual addresses of that image. They come from static analysi
 | [patches/bank-download/](../patches/bank-download/src/) | The download patch: routing in [navigation.rs](../patches/bank-download/src/navigation.rs), the two file jobs in [download.rs](../patches/bank-download/src/download.rs), the hooks in [runtime.rs](../patches/bank-download/src/runtime.rs). |
 | [patches/bank-migrate/](../patches/bank-migrate/src/) | The migration patch from v0.2.1: the conversion in [migrate.rs](../patches/bank-migrate/src/migrate.rs) and two hooks. |
 | [crates/offline-core/](../crates/offline-core/src/) | `no_std`, no `unsafe`. Bank file and journal, side files, transport rules, Miles rules, game-image hashing. |
-| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. Verifies the inputs, parses the linked ELF, emits the paired `code.ips` and `exheader.bin`. [bank15.rs](../crates/patch-builder/src/bank15.rs) holds what belongs to the program and the edits more than one patch makes; each patch has a profile: [bank15/offline.rs](../crates/patch-builder/src/bank15/offline.rs), [bank15/migrate.rs](../crates/patch-builder/src/bank15/migrate.rs). |
+| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. Verifies the inputs, parses the linked ELF, emits the paired `code.ips` and `exheader.bin`. [bank15.rs](../crates/patch-builder/src/bank15.rs) holds what belongs to the program and the edits more than one patch makes; each patch has a profile beside it in [bank15/](../crates/patch-builder/src/bank15/): `offline.rs`, `migrate.rs`, `download.rs`, `test.rs`. |
 
 ### Patches for Bank
 
@@ -105,7 +103,7 @@ What the code cannot show: how the original behaves online with about 0.8 MB les
 
 ### Edits to the original
 
-The offline patch: 27 regions (26 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a third profile, `test`: these edits and two of those five locations, which only it may edit.
+The offline patch: 27 regions (26 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -115,6 +113,7 @@ The offline patch: 27 regions (26 words and the start-up hook) and ten entry fun
 | `001d3bf4` | Timestamp helper with an online-client check | Tail branch to `bank_offline_timestamp` (local clock `0023a754`) |
 | `002a5a2c` | `BL 002a5580`, task router | `bank_offline_next` |
 | `001d6650` | `push {r4-r8, lr}`, the first instruction of "show a message" | Branch to `bank_message_shown`, which runs the instruction, lets HOME and sleep through if the message waits for an answer, and goes on at `001d6654` |
+| `002b49c4` | `BL 001e21c8`: the start screen writes its version line | `bank_version_shown`, which makes the call and adds "-offline" ([Patches for Bank](#patches-for-bank)) |
 | `00361e84` | Task `0xB` update `002af034`, a server check | The original "finished" stub `002af124`; the task's start-up routine stays |
 | `00361cfc`, `00361d0c` | Task 9 update `002ae568` and busy poll `002b4a20` | `bank_offline_load` |
 | `00361ed4`, `00361ee4` | Task `0x10` update `002af460` and busy poll | `bank_offline_load` |
@@ -408,8 +407,6 @@ code.bin     001c20ada74016507c969bb44a0a50f8edf803ec06a3fc46834263ba8df0fd2f
 exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 ```
 
-Addresses are ARM virtual addresses of that image. They come from static analysis and host tests.
-
 ### Code
 
 | Where | Role |
@@ -585,7 +582,7 @@ The list holds 40 entries: 40 kind bytes at `task + 0x3C` up to the count at `+0
 - **Virtual Console titles.** The scanner (`0024120C`) walks the table `002AFE0C`, 39 rows of `{ version, language id, title index }`, and gives row `i` the list kind `i + 5`. For each installed title, number `j` in the order found, it writes the kind to `scanner + 0x30 + j` and the trainer's name and ID to entry `base + j` of the list's info table (`[task + 0x38] + 0x90`, 0x24 bytes each: name 0x1A, ID at `+0x1C`), where `base` (`scanner + 0x5A`) is the number of entries before the titles. The game list appends the kinds in the loop `00245064`..`00245094`. Kinds and info only stay in step if every found title is listed, so the titles of other languages are left out where they are found: the title-scan entry replaces the scanner's question `002512A8(version, language)` (`002412D4`, its only caller) and answers no for them. Leaving them out in the list loop instead, as an earlier version did, showed each later title with the name and ID of its predecessor; the game opened was the right one, since confirming reads version and language from the table by the kind (`002448C0`, `0024492C`).
 - **Gen 5.** The scan for SD saves and the cartridge use the letter of the listed language ([Saves on the SD card](#saves-on-the-sd-card)).
 
-**The title screen.** The start prompt and the logo are pictures (`push_start_button.bclim` in the lower layout `Salmon_lower3`, `Salmon_logo.bclim` in the upper one), both in archive `a/0/4/6`, whose one entry exists in a variant per language id (0 the default, used for Japanese; 2, 3, 4, 5, 7, 8, 9, 10). English and Korean have the same prompt; the logo differs in all. An archive entry is read in the variant of the global at `002F4D7C` (`001DDC0C`), which the original sets through `001071B0` to the language of the screens whenever that changes (`00104EBC`, its only caller). The title screen's constructor (`0024B9E4`) loads its three archives (`0x2C`, `0x2D`, `0x2E`) and builds its layouts in one call (`0024BA70`); the title is built anew each time the language screen ends. The two entries call `001071B0` around that call: with the chosen language before it, if one was chosen, and with the language of the screens after it. The other two archives have one variant only, and the screen's texts come from the text archive of the screens' language, which that global does not touch.
+**The title screen.** The start prompt and the logo are pictures (`push_start_button.bclim` in the lower layout `Salmon_lower3`, `Salmon_logo.bclim` in the upper one), both in archive `a/0/4/6`, whose one entry exists in a variant per language id (0 the default, used for Japanese; 2, 3, 4, 5, 7, 8, 9, 10). Japanese, English and Korean have the same prompt; the logo differs in all. An archive entry is read in the variant of the global at `002F4D7C` (`001DDC0C`), which the original sets through `001071B0` to the language of the screens whenever that changes (`00104EBC`, its only caller). The title screen's constructor (`0024B9E4`) loads its three archives (`0x2C`, `0x2D`, `0x2E`) and builds its layouts in one call (`0024BA70`); the title is built anew each time the language screen ends. The two entries call `001071B0` around that call: with the chosen language before it, if one was chosen, and with the language of the screens after it. The other two archives have one variant only, and the screen's texts come from the text archive of the screens' language, which that global does not touch.
 
 **A console set to Chinese.** The screens are in Chinese (ids 9 and 10), the listed language is English until one is chosen, so English is the hidden entry. The Chinese entries are never offered as languages: list index 7 is the Back button, index 8 is hidden. Back reports id 9, which is ignored whatever the screens' language is. All ten text archives, both Chinese ones included, have message `0x1F` in file `0x18`.
 

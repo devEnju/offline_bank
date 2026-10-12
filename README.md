@@ -2,7 +2,9 @@
 
 > **This project was developed entirely with AI assistance:** analysis, code, tests, and documentation. It's tried on a real console, but it has not had the review or testing that a conventionally developed tool would have. Use it at your own risk and keep backups.
 
-Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5** work without Nintendo's servers. Bank keeps its boxes on the SD card; Transporter moves Pokémon from Gen 1, 2 and 5 games into Bank's transport box to prevent Gen 6 and 7 games to be cut off after the official servers go offline.
+Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5** work without Nintendo's servers. Bank keeps its boxes on the SD card; Transporter moves Pokémon from Gen 1, 2 and 5 games into Bank's transport box, so that they can still reach Gen 6 and 7 games after the official servers go offline.
+
+<p align="center"><img src="pictures/v0.2.1-migration-boxes.png" alt="The box screen of the patched Pokémon Bank"></p>
 
 **Status: development build.** It has been tried on one console only. Back up your game saves and Bank's extra data before trying it.
 
@@ -29,7 +31,7 @@ Details: [docs/transporter.md](docs/transporter.md).
 
 ## Download
 
-Releases are published on the [Releases page](../../releases) as one file, `offline_bank-<version>.zip`, laid out like the SD card:
+Each release on the [Releases page](../../releases) has the file `offline_bank-<version>.zip`, laid out like the SD card:
 
 ```text
 luma/titles/00040000000C9B00/code.ips        Pokémon Bank
@@ -66,6 +68,7 @@ The two files of a title only work as a pair; never mix files from different rel
 Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's title screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
 
 The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games).
+
 ### Can I get my Pokémon from the official Pokémon Bank?
 
 While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and shows two numbers. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, it does not fetch Poké Miles, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip. This patch has not been tested against the official server yet; back up first.
@@ -95,7 +98,7 @@ With enough information I will probably look into it, but this is a hobby projec
 
 ### Not included
 
-Pokémon HOME, purchases, importing a Bank from Nintendo's servers, legality checks (they existed only on the server), event gifts, and import or export tools for save editors.
+Pokémon HOME, purchases, legality checks (they existed only on the server), event gifts, and import or export tools for save editors.
 
 ## Credits
 

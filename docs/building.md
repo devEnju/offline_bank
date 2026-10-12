@@ -30,7 +30,7 @@ build/bank/           code.ips, exheader.bin, manifest.json, report.md, verifica
 build/transporter/    the same
 ```
 
-A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The migration and the test package ([below](#test-builds-for-an-interrupted-save)) are built the same way, into `build/bank-migrate/` and `build/bank-test/`.
+A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way: the test package into `build/bank-test/`, the migration into `build/bank-migrate/`, the download into `build/bank-download/` (all below).
 
 ## Verify
 
@@ -65,22 +65,17 @@ This builds and verifies it into `build/bank-test/`. Its start screen says "Ver.
 - The reward dialogs never come, and nothing is claimed, so that a run is short.
 - While the menu is on screen Bank's files are open, and HOME works there; closing Bank from the HOME Menu at that point writes nothing.
 
-| Button on the main menu | What Save and Quit does | The card afterwards |
-| --- | --- | --- |
-| Use Pokémon Bank | Saves normally. | |
-| Use Pokémon Bank (before) | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
-| Use Pokémon Bank (after) | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
-| Use Pokémon Bank (record) | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
-| Use Pokémon Bank (boxes) | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
-| Back | The original's: asks, then returns to the start screen. | |
-
-The two stops test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); The plain "Use Pokémon Bank" of the same package settles what they left. The two that write for a while give a real power cut a long time to land inside a write; a stop cannot produce a half-written file. The runs to make with them are in [testing.md](testing.md).
+The buttons, and the runs to make with them, are in [testing.md](testing.md#an-interrupted-save-and-quit). "(before)" and "(after)" stop Save and Quit at a fixed point and test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); the plain "Use Pokémon Bank" of the same package settles what they left. "(record)" and "(boxes)" write for a while before they save, which gives a real power cut a long time to land inside a write; a stop cannot produce a half-written file.
 
 The PC tests run the same loops under a simulated cut at every write:
 
 ```powershell
 cargo +stable test -p bank-common --features test-build --release --locked --offline
 ```
+
+## Other patches for Bank
+
+Two patches do one thing each and are not the offline patch. Each has its own crate, builder profile and script, and nothing depends on either.
 
 ### The migration from v0.2.1
 
@@ -95,6 +90,31 @@ This builds it into `build/bank-migrate/` and verifies it (`Verify-BankPatch.ps1
 It belongs to that one step and ships with the releases that follow it while users of v0.2.1 are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
 This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always two numbers under the original's line about the HOME Menu, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
+
+### The download from the official server
+
+While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)).
+
+```powershell
+./scripts/Build-BankDownloadPatch.ps1
+```
+
+This builds it into `build/bank-download/` and verifies it (`Verify-BankPatch.ps1 -Patch download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
+
+**It has not been run against the official server.** It was written from the original's code alone; the checks made there are listed in [internals.md](internals.md#the-download-patch). Its guide in the release says so.
+
+It ends, like the migration, on two numbers under the original's line about the HOME Menu:
+
+| Numbers | Meaning |
+| --- | --- |
+| `0000D0AD 00000001` | downloaded and written |
+| `0000D0AD 00000002` | an offline Bank was on the card already; nothing was contacted or changed |
+| `00000BAD 00000001` | the server holds no Bank for this console; nothing was created or changed |
+| any other pair | the files could not be read or written; the numbers are the offline Bank's ([bank.md](bank.md#troubleshooting)) |
+
+A message of the original on the way (no connection, maintenance, the server locked for a while) leads back to its start screen as it always did; nothing is written then.
+
+Nothing depends on it: when the service has ended, the crate, `bank15/download.rs`, the script, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
 ## Release
 
@@ -123,35 +143,10 @@ In this order, stopping at the first problem, it:
 
 1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the tag does not exist yet (files git does not track may lie in the folder);
 2. runs the tests, Clippy and the formatting check;
-3. builds both patches from the committed sources and verifies them (a package that already exists for the same sources is reused);
+3. builds both patches from the committed sources and verifies them;
 4. writes `build/release/offline_bank-v1.0.0.zip`;
 5. writes the release notes `build/release/offline_bank-v1.0.0.md`;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
-### The download from the official server
-
-While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)).
-
-```powershell
-./scripts/Build-BankDownloadPatch.ps1
-```
-
-This builds it into `build/bank-download/` and verifies it (`Verify-BankPatch.ps1 -Patch download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
-
-**It has not been run against the official server.** It was written from the original's code alone; the checks made there are listed in [internals.md](internals.md#the-download-patch). Its guide in the release says so.
-
-It ends, like the migration, on two numbers under the original's line about the HOME Menu:
-
-| Numbers | Meaning |
-| --- | --- |
-| `0000D0AD 00000001` | downloaded and written |
-| `0000D0AD 00000002` | an offline Bank was on the card already; nothing was contacted or changed |
-| `00000BAD 00000001` | the server holds no Bank for this console; nothing was created or changed |
-| any other pair | the files could not be read or written; the numbers are the offline Bank's ([bank.md](bank.md#troubleshooting)) |
-
-A message of the original on the way (no connection, maintenance, the server locked for a while) leads back to its start screen as it always did; nothing is written then.
-
-Nothing depends on it: when the service has ended, the crate, `bank15/download.rs`, the script, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
-
 
 **A release that ships the migration** names the one version it converts from, the version before the Bank was last stored differently:
 
@@ -203,6 +198,7 @@ crates/patch-builder/   host tool that checks the inputs and emits the patches
 targets/                ARM target description
 scripts/                build, verify, and release scripts
 docs/                   user guides, this page, internals, and the console tests
+pictures/               pictures for the README and for release guides
 input/, tools/          yours: the CIAs and ctrtool (git-ignored)
 build/                  generated: unpacked CIAs, intermediate files, packages, releases (git-ignored)
 ```
