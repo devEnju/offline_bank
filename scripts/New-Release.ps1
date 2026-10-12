@@ -112,7 +112,8 @@ if ($MigrateFrom) {
 if (-not $Draft) {
     $branch = Invoke-Git branch --show-current
     if ($branch -ne 'main') { throw "Releases are made from main; this is '$branch'." }
-    if ($dirty) { throw 'There are uncommitted changes. Commit them, or use -Draft for a test build.' }
+    # Files git does not track may lie in the folder; a tracked file must be as committed.
+    if (Invoke-Git status --porcelain --untracked-files=no) { throw 'There are uncommitted changes. Commit them, or use -Draft for a test build.' }
     & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$Version" | Out-Null
     if ($LASTEXITCODE -eq 0) { throw "Tag $Version already exists." }
     foreach ($path in @($zip, $notesPath, $migrationZip, $downloadZip) | Where-Object { $_ }) {
@@ -170,7 +171,7 @@ try {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse }
     }
     $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
-    $source = if ($dirty) { "$commit plus uncommitted changes" } else { $commit }
+    $source = if ($Draft -and $dirty) { "$commit plus uncommitted changes" } else { $commit }
     $draftMark = if ($Draft) { ' (DRAFT, not a release)' } else { '' }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $table = [Collections.Generic.List[string]]::new()
@@ -367,7 +368,7 @@ try {
 
     # 6. The tag, on the commit the zips were built from.
     if (-not $Draft) {
-        if ((Invoke-Git rev-parse HEAD) -ne $commit -or (Invoke-Git status --porcelain)) {
+        if ((Invoke-Git rev-parse HEAD) -ne $commit -or (Invoke-Git status --porcelain --untracked-files=no)) {
             throw 'The repository changed while the release was built; nothing was tagged.'
         }
         Invoke-Checked "tag $Version" { git -C $projectRoot tag -a $Version -F $notesPath --cleanup=verbatim $commit }

@@ -34,6 +34,7 @@ Every package says what it is on its start screen: "Ver. 1.5-offline" for Bank a
 | The Transporter patch, or the transport box files | Run 3 of [Normal use](#normal-use), and the matching part of [Transporter, feature by feature](#transporter-feature-by-feature); the HOME rows of [Transfers](#transfers) in any case |
 | How or where files are stored, with a migration for it | [Updating from the version before](#updating-from-the-version-before) as well |
 | A migration patch | [Updating from the version before](#updating-from-the-version-before) |
+| The download patch | [The download from the official server](#the-download-from-the-official-server) |
 
 ## Normal use
 
