@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(reward.replacement, 0x3fb600u32.to_le_bytes());
         // The original stays as it is where the offline patch replaces the
         // server: the first start's prompts, the load, the save, the reward
-        // claim, the Pokédex callbacks, the clock, the show-message function
+        // claim, the clock, the show-message function
         // (the original refuses HOME for its whole session itself), and the
         // main menu.
         for (address, _, _) in FIRST_START_EDITS {
@@ -115,7 +115,7 @@ mod tests {
         }
         for address in [
             0x001d6650, 0x001d3bf4, 0x00361ed4, 0x00361ee4, 0x00362034, 0x00362044, 0x00361a08,
-            0x00361e84, 0x0033d30c, 0x0033d34c, 0x003600cc,
+            0x00361e84,
         ] {
             assert!(at(address).is_none(), "{address:#x}");
         }

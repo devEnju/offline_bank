@@ -37,18 +37,6 @@ mod linked {
     #[link_section = ".bank.link_roots"]
     static TIMESTAMP: unsafe extern "aapcs" fn(*mut u8, *mut u8) -> u32 =
         bank_payload::runtime::bank_offline_timestamp;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static DEX_REQUEST: unsafe extern "aapcs" fn(*mut u8) =
-        bank_payload::dex::bank_offline_dex_save_request;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static DEX_UPDATE: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_payload::dex::bank_offline_dex_records_update;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static DEX_FINISH: unsafe extern "aapcs" fn(*mut u8) =
-        bank_payload::dex::bank_offline_dex_records_finish;
     #[cfg(feature = "test-build")]
     #[used]
     #[link_section = ".bank.link_roots"]

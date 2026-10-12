@@ -17,7 +17,6 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original redemption is kept. Server gifts and distributions are skipped. |
-| Pokédex and adventure records update when you visit the records screen. | They update at Save and Quit, with the original rules ([below](#pokédex-and-adventure-records)). |
 
 Not included: Pokémon HOME, purchases, event gifts, and import or export tools for save editors.
 
@@ -72,10 +71,11 @@ The patch adds one safety check: after a claim, the balance and the gift in the 
 
 ## Pokédex and adventure records
 
-The patch calls the original import functions, so the rules are Bank's own. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
+Unchanged from the original. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
 
-- Saving with a game **replaces that version's slot** with the game's Pokédex and adventure records. The other seven slots are untouched.
-- If the slot belongs to a different trainer, the original confirmation appears. Accepting replaces the slot, declining keeps it.
+- A game's Pokédex and adventure records are taken over when you **open the records screen** with that game; saving alone does not do it. They **replace that version's slot**. The other seven slots are untouched.
+- If the slot belongs to a different trainer, opening the screen takes nothing over. Choose that game's entry there and the original confirmation appears. Accepting replaces the slot, declining keeps it.
+- What was taken over is stored with the next Save and Quit. If you leave without saving, it is not.
 
 The original import copies; it does not merge within a version.
 
@@ -97,7 +97,7 @@ Ten files inside SD extdata archive `0x00000C9B`, the archive Bank already owns.
 - **A missing file is not an error.** No Pokédex files mean an empty Pokédex, no transport files an empty transport box, no rewards files zero Miles. The next save creates them.
 - **A file that a power cut left unreadable is replaced.** It is always the one that was being written, never the one in use. Bank goes on with the other file of the pair, and the next save deletes the unreadable one and writes it anew.
 - **A file of the wrong size is never touched.** Bank stops with error `3` and the size as second number. This is also what happens with a Bank that was last used with v0.2.1, whose `/bank.bin` is twice as large. Such a Bank is converted once, with the migration that ships with release v0.3.0; that release says how.
-- **A damaged Pokédex or Miles file in use does not stop Bank either.** The Pokédex then starts empty and the Miles at zero. Each game writes its part of the Pokédex and its records again at its next Save and Quit. A damaged transport box in use does stop Bank (error `9`), because it can hold Pokémon.
+- **A damaged Pokédex or Miles file in use does not stop Bank either.** The Pokédex then starts empty and the Miles at zero. Each game's part comes back when its records screen is opened and that session is saved. A damaged transport box in use does stop Bank (error `9`), because it can hold Pokémon.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
 - These files live inside console-managed, encrypted extdata. They are not loose files on the SD card, and Bank's own 128 KiB save is not where the boxes are.

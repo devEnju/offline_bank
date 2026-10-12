@@ -786,8 +786,8 @@ impl Runtime {
                     Some(loaded) => self.restore_bank(task, loaded)?,
                     // A newly created Bank: the live object is the body that
                     // was just written. Copying it back would only stall the
-                    // first start; forget stale Dex prompt state instead.
-                    None if self.step == Step::Initialize => unsafe { crate::dex::reset_session() },
+                    // first start.
+                    None if self.step == Step::Initialize => {}
                     None => return Err(Fault::StorageInvalid),
                 }
                 self.pending = false;
@@ -841,10 +841,6 @@ impl Runtime {
         if self.step == Step::Idle {
             self.baseline.ok_or(Fault::GameRead)?;
             let coordinator = task.pointer(8)?;
-            // Save-request hooks already ran any required native trainer
-            // confirmation. A declined replacement leaves that family intact.
-            unsafe { crate::dex::sync_before_save(coordinator, task.bank_pointer()?) }
-                .map_err(|_| Fault::NativeObject)?;
             task.begin_busy();
             unsafe { write_word(task.raw(), 0x10, 1) };
             let old_game = unsafe { read_word(coordinator, 0xf4) };

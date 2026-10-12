@@ -43,7 +43,7 @@ With the normal Bank and Transporter packages.
 | Run | Do | Must show |
 | --- | --- | --- |
 | 1 | Start Bank on a console whose Bank extdata is empty | The welcome, then an empty Bank |
-| 2 | Pick a game, move Pokémon both ways, Save and Quit. Open the same game again in the same session, move again, Save and Quit a second time. Close Bank and start it again. Once with an installed game and once with a cartridge, if you have both. | Everything where it was put, in Bank and in the game; nothing twice; Pokédex and Poké Miles as expected |
+| 2 | Pick a game, move Pokémon both ways, Save and Quit. Open the same game again in the same session, move again, Save and Quit a second time. Close Bank and start it again. Once with an installed game and once with a cartridge, if you have both. | Everything where it was put, in Bank and in the game; nothing twice; Poké Miles as expected |
 | 3 | Transfer from a Generation 5 game with Transporter. Back on its title screen, press START again. Then open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again and press START. | The transfer completes. The second START answers with the "Pokémon remains in the Transport Box" message and returns to the title screen, without a game list. In Bank the Pokémon are there once. Afterwards START leads to the game list again. |
 | 4 | Start a game, press HOME, and start Bank from the HOME Menu without closing the game first. Press START, pick a game, look at the boxes, and leave; once with Save and Quit and once without saving. Back on the start screen, press HOME. | The HOME Menu appears, both times |
 
@@ -87,8 +87,10 @@ The first Save and Quit only records the date and your Pokémon count N.
 
 | Do this | Expected |
 | --- | --- |
-| Save with Y, then with Ultra Sun. | A species known only to Y and one known only to Ultra Sun both show in the National Pokédex. |
-| Same version, different trainer (for example two Omega Ruby saves). | The original replacement prompt. Accept: that version's entries and records become the new save's. Decline: unchanged. |
+| Open Y, open the records screen, Save and Quit. Do the same with Ultra Sun. | A species known only to Y and one known only to Ultra Sun both show in the National Pokédex. |
+| Open a game whose Pokédex the Bank does not have, do not open the records screen, Save and Quit. | That game's Pokédex and records are not taken over. |
+| Open such a game, open the records screen, leave without saving. | Not taken over. |
+| Same version, different trainer (for example two Omega Ruby saves): open the records screen and choose that game's entry. | The original replacement prompt. Accept: that version's entries and records become the new save's. Decline: unchanged. Either way stored only by Save and Quit. |
 
 ## Transporter, feature by feature
 

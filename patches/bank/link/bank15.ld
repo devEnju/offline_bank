@@ -28,9 +28,6 @@ SECTIONS {
         KEEP(*(.text.bank_offline_save))
         KEEP(*(.text.bank_offline_rewards))
         KEEP(*(.text.bank_offline_timestamp))
-        KEEP(*(.text.bank_offline_dex_save_request))
-        KEEP(*(.text.bank_offline_dex_records_update))
-        KEEP(*(.text.bank_offline_dex_records_finish))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } :payload_rx

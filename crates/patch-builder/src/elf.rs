@@ -655,7 +655,7 @@ mod tests {
             (3, ".data", 1, 3, 0x3fc000, 0x2000, 4, 0, 4, 0),
             (4, ".bss", 8, 3, 0x3fc004, 0x2004, 0xffc, 0, 4, 0),
             (5, ".ARM.attributes", 0x70000003, 0, 0, 0x2100, 24, 0, 1, 0),
-            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 368, 8, 4, 16),
+            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 320, 8, 4, 16),
             (7, ".shstrtab", 3, 0, 0, 0x2400, 0, 0, 1, 0),
             (8, ".strtab", 3, 0, 0, 0x2500, 0, 0, 1, 0),
         ] {
@@ -682,9 +682,6 @@ mod tests {
             ("bank_offline_save", 0x3fb008, 4, 0x12, 2),
             ("bank_offline_rewards", 0x3fb014, 4, 0x12, 2),
             ("bank_offline_timestamp", 0x3fb018, 4, 0x12, 2),
-            ("bank_offline_dex_save_request", 0x3fb028, 4, 0x12, 2),
-            ("bank_offline_dex_records_update", 0x3fb02c, 4, 0x12, 2),
-            ("bank_offline_dex_records_finish", 0x3fb030, 4, 0x12, 2),
             ("bank_bootstrap_startup", BOOTSTRAP, 4, 0x12, 1),
             ("bank_bootstrap_enable_rx", BOOTSTRAP + 4, 4, 0x12, 1),
             ("__bank_payload_start", 0x3fb000, 0, 0x10, 0xfff1),
@@ -727,7 +724,7 @@ mod tests {
         let parsed = inspect(&elf).unwrap();
         assert_eq!(parsed.entry, 0x3fb000);
         assert_eq!(parsed.export("bank_offline_timestamp"), Ok(0x3fb018));
-        assert_eq!(parsed.entries.len(), 10);
+        assert_eq!(parsed.entries.len(), 7);
         assert_eq!(parsed.export("bank_message_shown"), Ok(0x3fb034));
         assert_eq!(parsed.export("bank_version_shown"), Ok(0x3fb038));
         assert!(parsed.export("bank_offline_menu").is_err());
@@ -744,7 +741,7 @@ mod tests {
     #[test]
     fn every_kernel_wrapper_is_required_as_a_global_arm_rx_function() {
         for (index, (name, _)) in KERNEL_WRAPPERS.iter().enumerate() {
-            let symbol = SYMOFF + (16 + index) * 16;
+            let symbol = SYMOFF + (13 + index) * 16;
             let mut missing = fixture();
             u32_at(&mut missing, symbol, 0);
             assert!(inspect(&missing)
@@ -799,7 +796,7 @@ mod tests {
         for (index, (_, words)) in KERNEL_WRAPPERS.iter().enumerate() {
             for size in [4, words.len() as u32 * 4 - 4, words.len() as u32 * 4 + 4] {
                 let mut invalid = fixture();
-                u32_at(&mut invalid, SYMOFF + (16 + index) * 16 + 8, size);
+                u32_at(&mut invalid, SYMOFF + (13 + index) * 16 + 8, size);
                 assert!(inspect(&invalid)
                     .unwrap_err()
                     .to_string()
@@ -822,20 +819,6 @@ mod tests {
         let mut thumb = fixture();
         u32_at(&mut thumb, SYMOFF + 5 * 16 + 4, 0x3fb019);
         assert!(inspect(&thumb).is_err());
-    }
-    #[test]
-    fn dex_hooks_require_independent_arm_exports() {
-        for symbol_index in 6..=8 {
-            let mut missing = fixture();
-            u32_at(&mut missing, SYMOFF + symbol_index * 16, 0);
-            assert!(inspect(&missing)
-                .unwrap_err()
-                .to_string()
-                .contains("missing ELF export bank_offline_"));
-            let mut writable = fixture();
-            u32_at(&mut writable, SYMOFF + symbol_index * 16 + 4, 0x3fc000);
-            assert!(inspect(&writable).is_err());
-        }
     }
     #[test]
     fn rejects_wrong_abi_relocations_tls_dynamic_and_bad_entries() {

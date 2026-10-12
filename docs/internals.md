@@ -51,14 +51,14 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 | The "show a message" function (`001d6650`) | `bank_message_shown` | `bank_message_shown` |
 | The start screen's version line (`002b49c4`) | `bank_version_shown`, "-offline" | `bank_version_shown`, "-migration" |
 | Task 9, update and busy poll (`00361cfc`, `00361d0c`) | `bank_offline_load` | `bank_migrate_open` |
-| Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the Pokédex callbacks, the timestamp helper (11 regions) | yes | no |
-| Regions / entry functions | 27 / 10 | 16 / 4 |
+| Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the timestamp helper (8 regions) | yes | no |
+| Regions / entry functions | 24 / 7 | 16 / 4 |
 
 `bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`ui::version`). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", or "Ver. 1.5-test" in a test build.
 
 ### The download patch
 
-It lets the original run its whole online session and takes what the load put into the Bank object. Its edits: the start-up hook and its call, the kept archive (`0029f338`), the router call (`002a5a2c`), the version line (`002b49c4`), task 9's update and busy poll (`00361cfc`, `00361d0c`), and the update of task `0xC` (`00361be4`). Eight regions, five entry functions. It does not edit the first start, the show-message function (the original refuses HOME and sleep for its whole online session itself), the load, the save, the reward claim, the Pokédex callbacks, the clock or the main menu.
+It lets the original run its whole online session and takes what the load put into the Bank object. Its edits: the start-up hook and its call, the kept archive (`0029f338`), the router call (`002a5a2c`), the version line (`002b49c4`), task 9's update and busy poll (`00361cfc`, `00361d0c`), and the update of task `0xC` (`00361be4`). Eight regions, five entry functions. It does not edit the first start, the show-message function (the original refuses HOME and sleep for its whole online session itself), the load, the save, the reward claim, the clock or the main menu.
 
 **The original's online session**, as its router (`002a5580`) orders the tasks:
 
@@ -103,7 +103,7 @@ What the code cannot show: how the original behaves online with about 0.8 MB les
 
 ### Edits to the original
 
-The offline patch: 27 regions (26 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
+The offline patch: 24 regions (23 words and the start-up hook) and seven entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -120,9 +120,6 @@ The offline patch: 27 regions (26 words and the start-up hook) and ten entry fun
 | `00362034`, `00362044` | Task 7 update `002b1cf8` and busy poll | `bank_offline_save` |
 | `00361be4` | Task `0xC` update `002ad1bc`, reward guard | `bank_offline_rewards` |
 | `00361a08` | Task `0xD` update `002a9750`, reward claim | `bank_offline_rewards` |
-| `0033d30c` | Box screen child callback `002a7578` | `bank_offline_dex_save_request` |
-| `003600cc` | Records task update `0026d8ec` | `bank_offline_dex_records_update` |
-| `0033d34c` | Records completion callback `002a71a8` | `bank_offline_dex_records_finish` |
 | `002a4898` | `BL 0025c08c`: apply the language of Bank's save | Nothing; the console's language stays |
 | `002a4940` | "Language known" flag is 0 without a saved language | 1: the language screen is never entered |
 | `002ac5b0` | Task 3 without a valid save: show the "Precaution for Use" notice | Branch to `002ac8a8`, where accepting it continues |
@@ -246,7 +243,17 @@ Save manager (0x100 bytes): selected kind at `+c8`; per kind `k` (1..8 = X, Y, O
 
 ### Pokédex
 
-Records task init `0026de9c` loads the eight version caches (`002b9a3c`). Import: `001e1ba8` copies nine record words, `002b8e00` stores trainer identity, `001e1b94` copies the game's Pokédex into its version region and marks it valid. `002cb7b8` compares identity for the original replacement prompt. The hooks run this import at Save and Quit instead of on a records visit, check that no other version changed, and after every body restore reload all caches (`002b9a3c`, `002b9b90`).
+The records screen is the original's; nothing of it is edited. Its task (init `0026de9c`, update `0026d8ec`) is the only place where a game's Pokédex and records get into the Bank: `002b8e00` stores the trainer's identity, `001e1ba8` copies nine record words, `001e1b94` copies the game's Pokédex into its version region and marks it valid, and no other function calls these three.
+
+| The records screen is opened and the game's version slot | Import |
+| --- | --- |
+| is empty (`001e1e58` answers 0) | At once, in state 0: identity, records, Pokédex |
+| belongs to the same trainer (`002cb7b8`) | At once, in state 0: records, Pokédex |
+| belongs to another trainer | None. Choosing that game's row (state 4) shows the replacement question; Yes is state 6, which imports all three, No is state 7 |
+
+State 0 imports only while the byte its caller passes is 0 (`[[task + 0x18]]`); the box screen's value was not traced. The import changes the Bank body in memory. The next Save and Quit stores it; without one it is gone, because the next opening restores the body from the files.
+
+What the patch does here ([dex.rs](../patches/bank/src/dex.rs)): after every body restore it reloads the eight version caches, which lie outside the body, and has the totals built anew (`002b9a3c`, `002b9b90`); it reads the selected game's trainer through `0026de9c` for the record of a save in progress (`dex::trainer`); and it compares a digest of the eight version regions between the body a save staged and the body restored after it (`dex::evidence`).
 
 ## Storage
 
