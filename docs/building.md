@@ -121,7 +121,7 @@ One command makes it. You choose the version:
 
 In this order, stopping at the first problem, it:
 
-1. checks that you are on `main`, that nothing is uncommitted, and that the tag does not exist yet;
+1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the tag does not exist yet (files git does not track may lie in the folder);
 2. runs the tests, Clippy and the formatting check;
 3. builds both patches from the committed sources and verifies them (a package that already exists for the same sources is reused);
 4. writes `build/release/offline_bank-v1.0.0.zip`;
