@@ -186,7 +186,15 @@ The message only comes for a Save and Quit that was cut off. An error in a runni
 
 An error ends this run of Bank. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
 
-After A the original's line "Press HOME to return to the HOME Menu" appears with two numbers under it, `XXXXXXXX YYYYYYYY`, and it stays: nothing else reacts, because nothing can go on. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
+After A the original's line "Press HOME to return to the HOME Menu" appears with two lines under it, and it stays: nothing else reacts, because nothing can go on.
+
+```text
+Press HOME to return to the HOME Menu
+v0.4.0
+XXXXXXXX YYYYYYYY
+```
+
+The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
 
 | First number | Step |
 | --- | --- |
@@ -218,7 +226,7 @@ After A the original's line "Press HOME to return to the HOME Menu" appears with
 
 Deleting Bank's Extra Data in System Settings may not remove the files.
 
-**Reporting a problem.** Open an issue with the console model, Luma version, the release or package name, the games involved, and a photo of any error screen. On an error, keep the SD card as it is.
+**Reporting a problem.** Open an issue with the console model, Luma version, the games involved, and a photo of any error screen, or its last two lines as text: the version and the two numbers. On an error, keep the SD card as it is.
 
 ## Limits
 

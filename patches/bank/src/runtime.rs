@@ -148,7 +148,7 @@ static STATE: Shared = Shared(UnsafeCell::new(Runtime {
     fault: Fault::None,
     native_result: 0,
     pending: false,
-    notice: Notice::new(),
+    notice: Notice::new(PACKAGE),
     stopped: false,
     turn_back: false,
     rewards: RewardSession::NONE,
@@ -1229,6 +1229,14 @@ pub unsafe extern "aapcs" fn bank_offline_timestamp(
         })
     }
 }
+
+/// What the error screen says behind the version: nothing for the offline
+/// patch, the test build's name for the test build.
+const PACKAGE: &[u8] = if cfg!(feature = "test-build") {
+    b"-test"
+} else {
+    b""
+};
 
 /// Replaces the start screen's call that writes its version line
 /// (002b49c4): the line says which patch runs.

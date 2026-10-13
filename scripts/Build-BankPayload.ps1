@@ -3,7 +3,10 @@ param(
     # Which patch for Bank: the offline patch, the migration patch, the
     # console test build of the offline patch, or the download patch
     # (docs/building.md).
-    [ValidateSet('offline', 'migrate', 'test', 'download')][string]$Patch = 'offline'
+    [ValidateSet('offline', 'migrate', 'test', 'download')][string]$Patch = 'offline',
+    # The version the package says it is on its error and result screens
+    # (docs/building.md). Without one it says "dev".
+    [ValidatePattern('^(v\d+\.\d+\.\d+(-draft)?)?$')][string]$Version = ''
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -22,8 +25,11 @@ $featureList = (@('linked-image') + $source.Features) -join ','
 $elfPath = Join-Path $outputDir "$($source.Crate).elf"
 $mapPath = Join-Path $outputDir "$($source.Crate).map"
 $toolchain = 'nightly-2026-10-03'
+# The payload reads the version from this variable when it is compiled.
+$versionBefore = $env:OFFLINE_BANK_VERSION
 Push-Location -LiteralPath $projectRoot
 try {
+    $env:OFFLINE_BANK_VERSION = if ($Version) { $Version } else { $null }
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
     $linkerArgument = '-T' + $linkerScript.Replace('\', '/')
     $mapArgument = '-Map=' + $mapPath.Replace('\', '/')
@@ -36,4 +42,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Linked ELF validation failed: $LASTEXITCODE" }
     Get-FileHash -Algorithm SHA256 -LiteralPath $elfPath
     Write-Host 'Linked native-adapter ELF validated. Runtime hook profile and console validation remain required.'
-} finally { Pop-Location }
+} finally {
+    $env:OFFLINE_BANK_VERSION = $versionBefore
+    Pop-Location
+}

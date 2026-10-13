@@ -6,7 +6,9 @@ one is replaced. Its name (Get-PackageId.ps1) is in PACKAGE.txt.
 [CmdletBinding()]
 param(
     [string]$CiaPath = 'input/Bank-v1.5-update.cia',
-    [string]$CtrtoolPath = 'tools/ctrtool.exe'
+    [string]$CtrtoolPath = 'tools/ctrtool.exe',
+    # The version the package says it is; without one, "dev" (docs/building.md).
+    [string]$Version = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -22,7 +24,7 @@ try {
     })
     if ($extractions.Count -ne 1) { throw 'Extraction did not return one input record.' }
     $inputRecord = $extractions[0]
-    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') | Out-Host
+    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Version $Version | Out-Host
     $elf = Join-Path $projectRoot 'build/intermediate/bank/bank-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank

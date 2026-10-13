@@ -152,8 +152,11 @@ try {
         }
         return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
     }
+    # A package for Bank says its version on its error and result screens.
+    # Of a draft, the offline package says so too.
     function Get-Package([string]$kind, [string]$title) {
-        & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") | Out-Host
+        $shown = if ($kind -eq 'transporter') { @{} } elseif ($Draft -and $kind -eq 'bank') { @{ Version = "$Version-draft" } } else { @{ Version = $Version } }
+        & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") @shown | Out-Host
         return Get-Verified $kind
     }
     $titles = [ordered]@{
