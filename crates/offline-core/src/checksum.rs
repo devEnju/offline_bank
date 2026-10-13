@@ -5,14 +5,21 @@ pub fn crc32(bytes: &[u8]) -> u32 {
     state.finish()
 }
 
-pub(crate) struct Crc32(u32);
+/// The same checksum over data that comes in pieces.
+pub struct Crc32(u32);
+
+impl Default for Crc32 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Crc32 {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(u32::MAX)
     }
 
-    pub(crate) fn update(&mut self, bytes: &[u8]) {
+    pub fn update(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             self.0 ^= u32::from(byte);
             for _ in 0..8 {
@@ -21,7 +28,7 @@ impl Crc32 {
         }
     }
 
-    pub(crate) fn finish(self) -> u32 {
+    pub fn finish(self) -> u32 {
         !self.0
     }
 }

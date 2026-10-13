@@ -77,7 +77,7 @@ While the official service runs, yes. It ends on February 25, 2027. A release ma
 
 The normal patches read only the files of their own version, so that they stay free of code for earlier formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
 
-When a release changes how the Bank is stored, as v0.3.0 did, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how ([background](docs/building.md#the-migration-from-v021)).
+When a release changes how the Bank is stored, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how ([background](docs/building.md#the-migration-from-the-previous-release)).
 
 ### Why has the save format been changed?
 

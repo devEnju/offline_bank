@@ -1,7 +1,8 @@
 #![no_std]
-//! The migration patch for Bank 1.5: converts the Bank that v0.2.1 stored
-//! into the files of v0.3.0, shows the result as two numbers, and does
-//! nothing else. It never opens the Bank, and it has none of the offline
+//! The migration patch for Bank 1.5: converts the Bank that the previous
+//! release stored into the current files, shows the result as two numbers,
+//! and does nothing else. It holds the only code that reads the previous
+//! release's files (`previous`). It never opens the Bank, and it has none of the offline
 //! patch's hooks beyond the way from the start screen to "open Bank".
 //!
 //! It belongs to that one step between two versions. Nothing depends on
@@ -13,6 +14,7 @@
 
 pub mod migrate;
 pub mod navigation;
+pub mod previous;
 
 #[cfg(target_arch = "arm")]
 pub mod runtime;

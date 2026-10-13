@@ -25,11 +25,15 @@ if ($Draft -and $Publish) { throw 'A draft cannot be published.' }
 # The first version that stores the Bank the way this one does. A Bank last
 # used with an older version is not continued by a newer one; a release
 # from this version on can ship the migration for the version before it.
-$bankFilesSince = 'v0.3.0'
+# The release that ships the migration is that first version itself; every
+# later one names it here.
+$bankFilesSince = ''
 if ($MigrateFrom) {
     if ($MigrateFrom -notmatch '^v\d+\.\d+\.\d+$') { throw "MigrateFrom must look like v1.0.0: $MigrateFrom" }
     if ($Publish) { throw '-Publish finds the migration zip of the earlier run by itself.' }
+    if (-not $bankFilesSince) { $bankFilesSince = $Version }
 }
+if (-not $bankFilesSince) { throw 'Set $bankFilesSince to the first version that stores the Bank as this one does, or name the version before it with -MigrateFrom.' }
 
 if ($Download -and $Publish) { throw '-Publish finds the download zip of the earlier run by itself.' }
 $suffix = if ($Draft) { '-draft' } else { '' }
@@ -223,7 +227,7 @@ try {
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
     Remove-Item -LiteralPath $stage -Recurse
 
-    # The migration from v0.2.1: its own zip, with everything its user has
+    # The migration from the previous release: its own zip, with everything its user has
     # to know. This block goes when patches/bank-migrate goes.
     if ($MigrateFrom) {
         $steps = [Collections.Generic.List[string]]::new()
@@ -252,13 +256,15 @@ try {
         $steps.Add('                        creates one.')
         $steps.Add("     00000BAD 00000007  A Save and Quit was interrupted. Put $MigrateFrom")
         $steps.Add('                        back, start Bank once, then begin again at step 3.')
+        $steps.Add("     00000BAD 00000008  The Bank needs a Save and Quit first. Put $MigrateFrom")
+        $steps.Add('                        back, open Bank with a game, Save and Quit, then')
+        $steps.Add('                        begin again at step 3.')
         $steps.Add('     00000BA1 to        A step failed. Start Pokemon Bank again with these')
         $steps.Add('     00000BA4           files; that is always safe. If it keeps happening,')
         $steps.Add('                        restore your backup and report both numbers.')
         $steps.Add("5. Install ${Version}: copy the luma folder of $name.zip to")
         $steps.Add('   the SD card. It replaces these files and updates Poke Transporter.')
-        $steps.Add('6. Start Pokemon Bank. Your boxes and Pokedex are as before. Poke Miles')
-        $steps.Add('   that were not redeemed start at 0.')
+        $steps.Add('6. Start Pokemon Bank. Your boxes, Pokedex and Poke Miles are as before.')
         $steps.Add('')
         $steps.Add('The conversion needs about 1.5 MB of free space on the SD card. If the')
         $steps.Add('power fails while it runs, start it again; the old Bank stays untouched')

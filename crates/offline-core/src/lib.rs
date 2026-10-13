@@ -77,7 +77,7 @@ mod format;
 mod hash;
 mod store;
 
-pub use checksum::crc32;
+pub use checksum::{crc32, Crc32};
 pub use format::{
     decide_recovery, Fingerprint, FormatError, GameIdentity, GameObservation, Metadata,
     PendingTransfer, Phase, RecoveryBlock, RecoveryDecision, Slot, SnapshotHeader, SnapshotRef,

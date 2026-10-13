@@ -77,9 +77,9 @@ cargo +stable test -p bank-common --features test-build --release --locked --off
 
 Two patches do one thing each and are not the offline patch. Each has its own crate, builder profile and script, and nothing depends on either.
 
-### The migration from v0.2.1
+### The migration from the previous release
 
-Version 0.2.1 stored the Bank in four files; since v0.3.0 it has ten ([internals.md](internals.md#files)). The step from the one to the other has a patch of its own, [patches/bank-migrate](../patches/bank-migrate/src/), which converts the Bank and does nothing else ([internals.md](internals.md#patches-for-bank)). The offline patch has no code for the earlier files.
+The release before this one stored the Bank differently ([internals.md](internals.md#files)). The step from the one to the other has a patch of its own, [patches/bank-migrate](../patches/bank-migrate/src/), which converts the Bank and does nothing else ([internals.md](internals.md#patches-for-bank)). It holds the only code that reads the earlier files: that release's storage code, frozen in [previous/](../patches/bank-migrate/src/previous/). The offline patch has no code for the earlier files.
 
 ```powershell
 ./scripts/Build-BankMigrationPatch.ps1
@@ -87,7 +87,7 @@ Version 0.2.1 stored the Bank in four files; since v0.3.0 it has ten ([internals
 
 This builds it into `build/bank-migrate/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
-It belongs to that one step and ships with the releases that follow it while users of v0.2.1 are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
 This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always two numbers under the original's line about the HOME Menu, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
 
@@ -151,10 +151,10 @@ In this order, stopping at the first problem, it:
 **A release that ships the migration** names the one version it converts from, the version before the Bank was last stored differently:
 
 ```powershell
-./scripts/New-Release.ps1 -Version v0.3.1 -MigrateFrom v0.2.1
+./scripts/New-Release.ps1 -Version v1.1.0 -MigrateFrom v1.0.0
 ```
 
-It then writes a second zip, `offline_bank-v0.2.1-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. The `README.txt` of every release names the oldest Bank the version continues (`$bankFilesSince` in the script). Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
+It then writes a second zip, `offline_bank-v1.0.0-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. The `README.txt` of every release names the oldest Bank the version continues: the release that ships the migration is that version itself, and every later release names it in `$bankFilesSince` in the script. Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
 
 **A release made while the official service runs** can ship the download:
 
@@ -189,7 +189,7 @@ Patch files are never committed to the repository; they exist only as release do
 
 ```text
 patches/bank/           the offline patch for Bank
-patches/bank-migrate/   the migration patch for Bank, from v0.2.1
+patches/bank-migrate/   the migration patch for Bank, from the previous release
 patches/bank-download/  the download patch for Bank, from the official server
 patches/transporter/    code injected into Transporter
 crates/bank-common/     what every patch for Bank shares: files, worker thread, dialogs

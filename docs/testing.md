@@ -250,7 +250,7 @@ Start from a console whose Bank was last used with the old version, and from a b
 | 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
 | 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with `0000600D 00000001` on its third line, and nothing before it. Close Bank from the HOME Menu |
 | 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |
-| 20 | new Bank | start Bank | boxes, Pokédex and transport box as they were under the old version; Poké Miles that were not redeemed start at 0 |
+| 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
 | 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
 Runs 16 and 17 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
@@ -263,6 +263,7 @@ A migration patch never opens the Bank. Its result is always two numbers, under 
 | `0000600D 00000002` | already converted; nothing changed |
 | `0000600D 00000000` | no Bank found |
 | `00000BAD 00000007` | the old Bank has a Save and Quit in progress; the old version has to finish it |
+| `00000BAD 00000008` | the old Bank has no Pokédex or no transport box for its current save; the old version writes them at its next Save and Quit |
 | `00000BA1` to `00000BA4` | a step failed; the second number says why. Starting it again must be safe. |
 
 That a migration refuses a Bank with a Save and Quit in progress, and that a cut at any of its steps is picked up by the next start, is covered by its PC tests; released versions have no package that stops a save on purpose.

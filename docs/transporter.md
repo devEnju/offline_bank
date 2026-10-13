@@ -42,7 +42,7 @@ The second message is the original's for a session the server asked to clean up;
 
 Transporter never creates or deletes files and touches no Bank file other than `/mover.bin` and `/mover.alt.bin`; it only ever writes to the one of the two that Bank is not using. If that file is missing or unreadable, for example after a power cut, Transporter refuses; open Bank and Save and Quit once, which writes it anew.
 
-**Bank and Transporter belong together.** A Bank that was last used with v0.2.1 keeps its transport box in a file of another name. This Transporter does not find it and refuses, and the Transporter of v0.2.1 refuses with a converted Bank. Update both, after converting the Bank with the migration that ships with release v0.3.0.
+**Bank and Transporter belong together.** A Bank that was last used with an earlier release may keep its transport box in another form. This Transporter then refuses, and the Transporter of that release refuses with a converted Bank. Update both, after converting the Bank with the migration that ships with the release that changed the files.
 
 ## Choosing the language of the games
 

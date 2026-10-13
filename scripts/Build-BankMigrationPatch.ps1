@@ -1,7 +1,7 @@
 <#
 Builds the migration patch for Bank into build/bank-migrate and checks it
 with Verify-BankPatch.ps1. The migration belongs to one step: it converts the
-Bank that v0.2.1 stored into the files of v0.3.0 and does nothing else; it
+Bank that the previous release stored into the current files and does nothing else; it
 never opens the Bank (docs/building.md). It is a crate of its own,
 patches/bank-migrate, with its own short list of edits. The folder holds one
 package, the latest: an existing one is replaced. Its name

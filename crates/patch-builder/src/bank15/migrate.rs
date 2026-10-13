@@ -1,4 +1,4 @@
-//! The migration patch: converts the Bank of v0.2.1 for v0.3.0 and does
+//! The migration patch: converts the Bank of the previous release and does
 //! nothing else. It makes the offline patch's edits on the way from the
 //! start screen to "open Bank" and none behind it.
 
