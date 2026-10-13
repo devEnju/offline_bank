@@ -424,7 +424,7 @@ mod tests {
     extern crate std;
     use super::*;
     use bank_common::testing::{
-        body, deliver, fresh, load, observed, opened, stored, Shared, AFTER, BEFORE, GAME,
+        body, deliver, fresh, load, miles_record, observed, opened, Shared, AFTER, BEFORE, GAME,
     };
     use offline_core::GameObservation;
     use std::{
@@ -738,7 +738,7 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut saved.clone(), stored(7, 1, 3000), GAME, BEFORE, AFTER)
+            .prepare(&mut saved.clone(), miles_record(7, 1), GAME, BEFORE, AFTER)
             .unwrap();
         files.reconcile(observed(AFTER)).unwrap();
         files.tidy_transport().unwrap();
@@ -781,7 +781,7 @@ mod tests {
         // And those bytes are the Bank: boxes, Pokédex, Miles, the delivery.
         let (bytes, loaded) = load(&mut opened(&disk));
         assert!(bytes == shown);
-        assert_eq!((loaded.delivered, loaded.rewards), (4, stored(7, 1, 3000)));
+        assert_eq!((loaded.delivered, loaded.rewards), (4, miles_record(7, 1)));
     }
 
     #[test]
@@ -839,7 +839,7 @@ mod tests {
         files
             .prepare(
                 &mut body(0x11, 0x22, 4),
-                stored(8, 2, 1),
+                miles_record(8, 2),
                 GAME,
                 [5; 32],
                 [6; 32],
@@ -955,7 +955,7 @@ mod tests {
             files
                 .prepare(
                     &mut saved.clone(),
-                    stored(9, 2, 2900),
+                    miles_record(9, 2),
                     GAME,
                     [5; 32],
                     [6; 32],
@@ -972,7 +972,7 @@ mod tests {
             let mut files = BankFiles::new(Final(card.restarted(None)));
             assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
             let loaded = files.read(&mut staging).unwrap();
-            assert_eq!(loaded.rewards, stored(9, 2, 2900));
+            assert_eq!(loaded.rewards, miles_record(9, 2));
             return;
         }
         panic!("one set of boxes is always spare");

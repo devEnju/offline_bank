@@ -31,19 +31,22 @@ pub unsafe fn timestamp_with(
     1
 }
 
-/// Console-local calendar day of a native packed timestamp, for reward
-/// accounting. Returns None for any value `timestamp_with` would reject.
-pub fn local_day(words: [u32; 2]) -> Option<offline_core::rewards::Date> {
+/// Console-local date and time, to the minute, of a native packed timestamp,
+/// for reward accounting. Returns None for any value `timestamp_with` would
+/// reject.
+pub fn local_moment(words: [u32; 2]) -> Option<offline_core::rewards::Moment> {
+    use offline_core::rewards::{Date, Moment};
     if !valid_date(words) {
         return None;
     }
     let packed = u64::from(words[0]) | (u64::from(words[1]) << 32);
-    offline_core::rewards::Date::new(
+    let day = Date::new(
         ((packed >> 26) & 0x3fff) as u16,
         ((packed >> 22) & 15) as u8,
         ((packed >> 17) & 31) as u8,
     )
-    .ok()
+    .ok()?;
+    Moment::new(day, ((packed >> 12) & 31) as u8, ((packed >> 6) & 63) as u8).ok()
 }
 
 fn valid_date(words: [u32; 2]) -> bool {
@@ -112,17 +115,19 @@ mod tests {
     }
 
     #[test]
-    fn reward_day_ignores_time_of_day_and_rejects_invalid_clocks() {
-        use offline_core::rewards::Date;
-        let late = local_day(date(2026, 12, 31, 23, 59, 59)).unwrap();
-        let early = local_day(date(2027, 1, 1, 0, 0, 0)).unwrap();
-        assert_eq!(late, Date::new(2026, 12, 31).unwrap());
-        assert_eq!(early, Date::new(2027, 1, 1).unwrap());
-        // One second across midnight is one calendar day.
-        assert_eq!(early.days_since(late), 1);
+    fn reward_moment_keeps_the_minute_and_rejects_invalid_clocks() {
+        use offline_core::rewards::{Date, Moment};
+        let late = local_moment(date(2026, 12, 31, 23, 59, 59)).unwrap();
+        let early = local_moment(date(2027, 1, 1, 0, 0, 0)).unwrap();
+        assert_eq!(late.day(), Date::new(2026, 12, 31).unwrap());
+        assert_eq!(early.day(), Date::new(2027, 1, 1).unwrap());
+        // One second across midnight crosses one clock hour and one day.
+        assert_eq!(early.hours_since(late), 1);
+        assert_eq!(early.day().days_since(late.day()), 1);
+        let leap = Date::new(2028, 2, 29).unwrap();
         assert_eq!(
-            local_day(date(2028, 2, 29, 12, 0, 0)),
-            Some(Date::new(2028, 2, 29).unwrap())
+            local_moment(date(2028, 2, 29, 12, 34, 56)),
+            Some(Moment::new(leap, 12, 34).unwrap())
         );
         let mut flags = date(2026, 10, 3, 12, 0, 0);
         flags[1] |= 0x100;
@@ -133,7 +138,7 @@ mod tests {
             date(2026, 10, 3, 24, 0, 0),
             flags,
         ] {
-            assert_eq!(local_day(invalid), None);
+            assert_eq!(local_moment(invalid), None);
         }
     }
 

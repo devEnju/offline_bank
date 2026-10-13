@@ -6,7 +6,7 @@ use crate::{
     transaction::Trainer,
 };
 use bank_common::bank_files::Loaded;
-use offline_core::{rewards::Stored, Fingerprint, Phase, RecoveryDecision};
+use offline_core::{rewards::Record, Fingerprint, Phase, RecoveryDecision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameEvidence {
@@ -44,7 +44,7 @@ pub enum Job {
         /// Whose game it is, read when the game was loaded.
         trainer: Trainer,
         /// The Miles state that must commit with this save.
-        rewards: Stored,
+        rewards: Record,
     },
     Finalize {
         game: GameIoDescriptor,

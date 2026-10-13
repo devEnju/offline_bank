@@ -82,10 +82,10 @@ The load is why a game has to be chosen: it writes into that game. Its set-up be
 
 - *After the scan, task 9 runs once before anything is contacted.* Its hook shows the loading panel and has the worker ask `BankFiles::open` whether a Bank of the offline patch is on the card. If one is, the result is `D0AD 2`. If none is, the task ends and the router answers 5, the original's connect, where the original would have gone from the scan. A Bank file whose creation was cut counts as none.
 - *Online, task 9 is the original's.* Both slots call the function they held. Before the original's first frame the update hook reads the reply byte above; with `0x35` it ends the task as failed, which the original answers with cleanup, and the result is `BAD 1`. The patch creates nothing on the server.
-- *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (side files first, the Bank file last, no Miles), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
+- *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (side files first, the Bank file last, no rewards record), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
 - *After cleanup, task 9 runs again* if a result exists, and shows it with `Notice::done`, the migration's screen. Its set-up creates the shared UI that cleanup destroyed (`002aeb1c`).
 
-Everything in the Bank object comes along: boxes, the transport box, the Pokédex part. Poké Miles do not: the rewards file starts empty.
+Everything in the Bank object comes along: boxes, the transport box, the Pokédex part, and the Miles balance with its reward date, which are fields of the object. The rewards file starts empty: no carried remainder and no redemption yet.
 
 **What was checked in the original's code**, since no run against the server has been made:
 
@@ -235,10 +235,11 @@ Save manager (0x100 bytes): selected kind at `+c8`; per kind `k` (1..8 = X, Y, O
 ### Rewards
 
 - Count: `001d5ec0(bank + 0xbb520)`, 100 boxes × 30 slots. Balance: `001d588c` / `001d59fc` on `bank + 0xbb528`.
-- Native accrual in guard state 0 and claim state `0x1b` is `count × (1/30) × hours × (1/24)`. The hook sets the stored reward date to the session date first, so native accrual is zero; local earnings are added to the balance when task `0x10` finishes.
+- Native accrual in guard state 0 and claim state `0x1b` is `count × (1/30) × hours × (1/24)`. The hook sets the stored reward date to the session date first, so native accrual is zero; the patch's own accounting has put the earnings into the balance when task `0x10` finished.
+- **Accounting** ([rewards.rs](../crates/offline-core/src/rewards.rs)) is the same step with the remainder kept, on the same fields. 720 Pokémon-hours are one Mile. When task `0x10` finishes, `begin_rewards` takes the reward date (`bank + 0x168`, six bytes: u16 year, month, day, hour, minute; `001d5880` points at it), the balance and the count from the restored object and adds `count × clock hours` since that date to the remainder of the rewards record; the whole Miles go into the balance (`rewards::enter`). At Save and Quit `settle_rewards` adds the hours since the load at the count of the load and writes the balance and the date into the object before it is staged (`rewards::settle`); the remainder and the day of a redemption go into the rewards record. Clock hours are the full hours crossed between two moments, so no part of an hour is dropped at a save. The date written is the later of the stored one and now, and the redeemed day the later of the stored one and today: neither goes back. An object without a valid date earns nothing until its first save.
 - The claim hook starts task `0xD` at state `0x1b` with `+4c = 1`, `+50 = 0`, and session `+38 = -1`, which skips service queries and distributions. Allowed states: `0`, `7..0xd`, `0x16`, `0x1b..0x22`.
 - The allowed states are a guard, not a path a user can reach. From `0x1b` with `+4c = 1` and session `+38 = -1`, the claim task goes to `0x22` (total 0) or `0x16`, then through `7`..`0xd`, `0x1c`, `0x1e`..`0x22`; state `0xa` becomes `0xb` in the choice listener `002d144c`. States outside the list are set only by the server-reply listener `002ab17c`, by the dialog listener `002d0c4c` from state `0x1a`, and by the branches of states `0` and `0x1b` that those two fields rule out. The guard task has eight states, all allowed.
-- Nothing to get (`rewards::nothing_to_get`: today is not later than the record's accounted-through date, balance below 10, no gift): the hook sets the guard to state 4 (`002ad658`, outcome 5, no notice 7 / `0x51` about a present in the game) and the claim to state `0x22` (`002ab124`, the original's end for a total of 0), after ending the loading panel as the original's state `0x1b` does before it looks at the total (`002aac80`). Otherwise claim state `0x1b` shows message `0xE` for any total above 0 and state `0x16` message `0xF` below 10 or the choice `0x10` from 10 on.
+- What is said (`rewards::dialog`, from the redeemed day, the day of the reward date as loaded, and the balance): nothing without a balance or after a redemption today; an offer for 10 or more; for 1 to 9 the message, unless the last save was today. For nothing, the hook sets the claim to state `0x22` (`002ab124`, the original's end for a total of 0), after ending the loading panel as the original's state `0x1b` does before it looks at the total (`002aac80`). The guard goes to state 4 (`002ad658`, outcome 5, no notice 7 / `0x51` about a present in the game or a full gift list) unless there is an offer: its notices stand in the way of a redemption only. Otherwise claim state `0x1b` shows message `0xE` for any total above 0 and state `0x16` message `0xF` below 10 or the choice `0x10` from 10 on. A verified redemption (below) sets the redeemed day at the next save.
 - Redemption runs in state `0xb` (choice at `+60`, quote at `+50`) and ends in `0xc`. Gen 6 writes the gift buffer from `(*(game + 0x1c384))->vtable[2]`: flag `+1ff |= 0x80`, Miles at `+6a2`, BP at `+6a0`. Gen 7 inserts a 0x108-byte record (type 3 at `+51`, amount at `+68`) through `002b6d68` into the 48-slot store at `game + 0xad43c`; the original ignores that call's result, so the hook compares counts and the new record. `002b6d68` counts the used slots (a nonzero title halfword, as `001d58b0` does) and copies the record to the slot of that number (`002b7130`..`002b7140`), so the hook reads the new record at the count it took before the claim, the same slot the original writes.
 
 ### Pokédex
@@ -281,7 +282,7 @@ All files are in SD extdata archive `0x00000C9B` (created by the original with r
 
 | Container | Length | Body ranges of one payload |
 | --- | --- | --- |
-| Bank | 1,461,332 | `0..AAF14`, `ACA44..AD5FC`, `AD61A..AD61C`, `B4A9C..BB518` (730,442 bytes). The Miles field `170` is stored as zero. |
+| Bank | 1,461,332 | `0..AAF14`, `ACA44..AD5FC`, `AD61A..AD61C`, `B4A9C..BB518` (730,442 bytes) |
 | Pokédex | 59,776 | `AD61C..B4A9C` (29,824 bytes) |
 | Transport box | 14,112 | `AAF14..ACA44` then `AD5FC..AD61A` (6,990 bytes) |
 | Rewards | 160 | none; a 16-byte record |
@@ -348,7 +349,17 @@ The payload follows at +64. An all-zero or damaged header is a void slot. Writin
 
 **Keeping the files in step** ([bank_files.rs](../crates/bank-common/src/bank_files.rs)). A save writes every side file's spare slot, tagged with the snapshot about to be written (generation + 1, CRC of the new Bank payload), and only then prepares the Bank journal. A load uses the slot whose tag equals the current snapshot. A rolled-back save leaves the old slots matching; a committed one makes the new slots match. Missing side files load as defaults, and so do a Pokédex file and a rewards file without a readable matching slot; only the transport box is an error then.
 
-**Rewards record** (16 bytes, [rewards.rs](../crates/offline-core/src/rewards.rs)): u32 balance; u8 state (0 none, 1 record); u8 fraction 0..29; u16 saved count; accounted-through date (u16 year, month, day); 4 zero bytes.
+**Rewards record** (16 bytes, [rewards.rs](../crates/offline-core/src/rewards.rs)): what the native body has no field for.
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | Not read, written as zero |
+| 4 | 2 | Remainder in Pokémon-hours. A save writes 0..719; a larger number is paid out at the next load like any other |
+| 6 | 2 | Not read, written as zero |
+| 8 | 4 | Day of the last redemption (u16 year, month, day); all zero: never redeemed |
+| 12 | 4 | Zero |
+
+The Miles balance and the reward date are fields of the Bank body ([Native body](#native-body)) and are stored with it.
 
 ### An interrupted save
 

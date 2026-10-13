@@ -22,6 +22,9 @@ pub const BOX_NAME_SIZE: usize = 0x24;
 /// Whole Poké Miles, a u32 at object `+178`. Native accessors 001d588c and
 /// 001d59fc clamp it to 65,535.
 pub const MILES_OFFSET: usize = 0x170;
+/// The reward date, six bytes at object `+168` (native 001d5880): the date
+/// and time up to which Miles are counted.
+pub const REWARD_DATE_OFFSET: usize = 0x160;
 const FORMAT_OFFSET: usize = 0x15C;
 const BOX_COUNT_OFFSET: usize = 0x15E;
 
@@ -73,6 +76,16 @@ impl<'a> NativeBlobView<'a> {
     pub fn miles(self) -> u32 {
         let at = MILES_OFFSET;
         u32::from_le_bytes(self.data[at..at + 4].try_into().unwrap()).min(0xffff)
+    }
+
+    /// The stored reward date; `None` while the body holds no date.
+    pub fn reward_date(self) -> Option<crate::rewards::Moment> {
+        let at = REWARD_DATE_OFFSET;
+        crate::rewards::Moment::from_native(
+            self.data[at..at + crate::rewards::Moment::NATIVE_SIZE]
+                .try_into()
+                .unwrap(),
+        )
     }
 
     /// Copies every serialized byte, including fields whose meanings are unknown.
@@ -314,6 +327,15 @@ mod tests {
         data[MILES_OFFSET..MILES_OFFSET + 4].copy_from_slice(&0x1_0000_u32.to_le_bytes());
         assert_eq!(NativeBlobView::parse_layout(&data).unwrap().miles(), 0xffff);
         const { assert!(MILES_OFFSET + 4 <= BOXES_OFFSET) };
+        const { assert!(REWARD_DATE_OFFSET + crate::rewards::Moment::NATIVE_SIZE <= MILES_OFFSET) };
+        assert_eq!(
+            NativeBlobView::parse_layout(&data).unwrap().reward_date(),
+            None
+        );
+        let at = REWARD_DATE_OFFSET;
+        data[at..at + 6].copy_from_slice(&[0xea, 0x07, 10, 6, 18, 10]);
+        let date = NativeBlobView::parse_layout(&data).unwrap().reward_date();
+        assert_eq!(date.unwrap().to_native(), [0xea, 0x07, 10, 6, 18, 10]);
     }
 
     #[test]

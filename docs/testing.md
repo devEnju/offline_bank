@@ -68,20 +68,26 @@ With the normal Bank package. What each feature is meant to do is in [bank.md](b
 
 ### Poké Miles
 
-The first Save and Quit only records the date and your Pokémon count N.
+A new Bank starts counting with its first Save and Quit. `N` is the number of Pokémon in the boxes when the game was loaded; 720 Pokémon-hours are one Mile.
 
 | Do this | Expected |
 | --- | --- |
-| Next day (or console date +1), open and select a game. | `N ÷ 30` Miles more than before, rounded down. |
-| Decline, withdraw some Pokémon, Save and Quit, reopen the same day. | Balance unchanged. |
-| Same day, a different game. | Same balance. No second credit. |
-| Fewer than 10 Miles, first opening on a later day than the last Save and Quit (whether or not Miles were added). | Original messages, no redemption choices. Again at each opening until a Save and Quit on that day. |
-| Fewer than 10 Miles, reopened the same day after Save and Quit (for example the remainder after redeeming Battle Points). | No reward dialog; the boxes open directly. Also no "present waiting" notice from a Gen 6 game. |
-| 10 or more Miles saved without redeeming, reopened the same day. | The redemption choices appear as before. |
+| Save and Quit, set the console clock `H` full hours ahead (or wait), open and select a game. | `N × H ÷ 720` Miles more than before, rounded down. |
+| With 720 or more Pokémon: Save and Quit at some minute 50, open ten minutes later, after the full hour. | The Miles of one hour. |
+| 15 Pokémon, open and Save and Quit once a day. | 1 Mile every second day. |
+| Open, deposit Pokémon, Save and Quit some hours later. Open the next day. | The hours before the save are paid for the old number, those after it for the new one. |
+| Open a different game in the same hour. | Same balance. No second credit. |
+| Fewer than 10 Miles, not redeemed today, the last Save and Quit on an earlier day. | Original message, no redemption choices. Again at each opening until a Save and Quit on that day. |
+| Fewer than 10 Miles, reopened the same day after Save and Quit. | No reward dialog; the boxes open directly. |
+| The same balance once it has reached 10 on that day (many Pokémon, some hours later). | The message and the redemption choices. |
+| 10 or more Miles, decline, Save and Quit, reopen the same day. | The choices again, with the Miles of the hours since. |
+| Redeem Miles or Battle Points, Save and Quit, reopen the same day, also with 10 or more by then. | No reward dialog. On the next day the dialog comes again. |
+| A Gen 6 game with a gift still waiting in it (or a Gen 7 game with a full gift list), with fewer than 10 Miles or after a redemption today. | No notice about it. |
+| The same with 10 or more Miles and no redemption today. | The original's notice about it. |
 | 10 or more, Gen 6: Miles one day, Battle Points another. | Miles: balance 0. BP: `Miles ÷ 10` to the game, remainder kept. The gift waits in the game after Save and Quit. |
 | 10 or more, Gen 7. | Miles refused by the original message; BP arrives in the gift list. |
-| Redeem, then leave without saving. | Balance as before the claim; no gift in the game. |
-| Set the date back a day, open, Save and Quit. | Save works. No Miles. After returning to the real date, none earned twice. |
+| Redeem, then leave without saving. | Balance as before the claim; no gift in the game; the dialog again at the next opening. |
+| Set the date back a day, open, Save and Quit. | Save works. No Miles, no dialog. After returning to the real date, none earned twice. |
 
 ### Pokédex
 
@@ -244,7 +250,7 @@ Start from a console whose Bank was last used with the old version, and from a b
 | 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
 | 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with `0000600D 00000001` on its third line, and nothing before it. Close Bank from the HOME Menu |
 | 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |
-| 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
+| 20 | new Bank | start Bank | boxes, Pokédex and transport box as they were under the old version; Poké Miles that were not redeemed start at 0 |
 | 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
 Runs 16 and 17 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
@@ -280,7 +286,7 @@ Package `build/bank-download/`. None of these runs has been made yet. It needs t
 | D2 | START, with an offline Bank on the card | after a loading screen `0000D0AD 00000002` under the line about the HOME Menu; nothing is contacted |
 | D3 | Move the offline Bank's files off the card (keep them). START, "Use Pokémon Bank", pick a game | the original connects and loads; no reward dialog, no boxes; then `0000D0AD 00000001` |
 | D4 | START again | `0000D0AD 00000002` |
-| D5 | Install the offline Bank and start it | the boxes and the transport box as they are on the server; 0 Poké Miles |
+| D5 | Install the offline Bank and start it | the boxes, the transport box and the Poké Miles as they are on the server |
 | D6 | Install the original Bank without a patch and use it online | it opens as always: nothing is locked, and the boxes on the server are unchanged |
 | D7 | The download again, wireless off, no Bank on the card: START | the original's message about the connection, then its start screen; nothing written |
 

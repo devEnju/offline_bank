@@ -24,8 +24,8 @@ use core::{
 };
 use offline_core::{
     native_blob::NativeBlobView,
-    rewards::{self, Currency, Date, Entry, Receipt, RewardError, Stored},
-    sections::{DEX, MILES, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
+    rewards::{self, Currency, Dialog, Entry, Moment, Receipt, Record, RewardError},
+    sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
     Phase, RecoveryDecision,
 };
 
@@ -110,7 +110,7 @@ struct Runtime {
 #[derive(Clone, Copy)]
 struct RewardSession {
     entry: Option<Entry>,
-    settlement: Option<Stored>,
+    settlement: Option<Record>,
     claimed: bool,
 }
 impl RewardSession {
@@ -192,7 +192,6 @@ fn local_date(task: Task) -> Result<(), Fault> {
 /// coordinator, as the original does for its transfer record.
 fn capture_counts(task: Task) -> Result<(), Fault> {
     let coordinator = task.pointer(8)?;
-    let bank = task.bank_pointer()?;
     unsafe {
         if coordinator.add(0xc8).read() != 0 {
             let selected: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 =
@@ -215,18 +214,25 @@ fn capture_counts(task: Task) -> Result<(), Fault> {
             let game_count = count(boxes, heap(0x17), 1);
             write_word(coordinator, 0xf4, game_count);
         }
-        let helper = checked_pointer(read_word(bank, 0xbb520))?;
-        let count: unsafe extern "aapcs" fn(*mut u8) -> u32 = transmute(0x001d_5ec0usize);
-        write_word(coordinator, 0xf8, count(helper));
+        write_word(coordinator, 0xf8, bank_count(task)?);
     }
     Ok(())
 }
-fn today() -> Result<Date, Fault> {
+/// The Pokémon in the Bank's hundred boxes, as native 001d5ec0 counts them
+/// for the transfer record and for the Miles.
+fn bank_count(task: Task) -> Result<u32, Fault> {
+    let bank = task.bank_pointer()?;
+    let helper = checked_pointer(unsafe { read_word(bank, 0xbb520) })?;
+    let count: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(0x001d_5ec0usize) };
+    Ok(unsafe { count(helper) })
+}
+/// The console's date and time, to the minute.
+fn clock() -> Result<Moment, Fault> {
     let mut words = [0u32; 2];
     // Native 0023a754 preserves upper flag bits, so the words start zeroed.
     let local_date: unsafe extern "aapcs" fn(*mut u32) = unsafe { transmute(0x0023_a754usize) };
     unsafe { local_date(words.as_mut_ptr()) };
-    crate::local_clock::local_day(words).ok_or(Fault::Clock)
+    crate::local_clock::local_moment(words).ok_or(Fault::Clock)
 }
 fn reward_fault(error: RewardError) -> Fault {
     match error {
@@ -399,7 +405,6 @@ impl Runtime {
         }
     }
     /// Stages the live native body for the worker, which cuts it into files.
-    /// The Miles balance travels separately and is not part of the Bank file.
     fn stage_bank(&mut self, task: Task) -> Result<(), Fault> {
         let bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
@@ -410,7 +415,6 @@ impl Runtime {
             .staging_mut()
             .map_err(|_| Fault::StorageLoad)?;
         staging.copy_from_slice(snapshot.as_bytes());
-        staging[MILES].fill(0);
         if self.step == Step::SaveInspect {
             self.save_dex = Some(dex);
         }
@@ -502,14 +506,18 @@ impl Runtime {
         }
         Ok(())
     }
-    /// Starts the session's provisional reward state from the stored Miles
-    /// record. The new balance is calculated first; only the result is put
-    /// into the native object for the original reward screens.
-    fn begin_rewards(&mut self, task: Task, stored: Stored) -> Result<(), Fault> {
+    /// Starts the session's provisional reward state from what was loaded:
+    /// the balance and the reward date of the Bank body, the Pokémon in its
+    /// boxes, and the record beside it. The hours since that date are paid
+    /// into the native balance, where the original reward screens read it.
+    fn begin_rewards(&mut self, task: Task, record: Record) -> Result<(), Fault> {
+        let count = bank_count(task)?;
         let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
+        let stored = bank.reward_date().map_err(|_| Fault::NativeObject)?;
+        let balance = bank.miles().map_err(|_| Fault::NativeObject)?;
         let entry =
-            rewards::enter(stored.accounting, stored.balance, today()?).map_err(reward_fault)?;
+            rewards::enter(record, stored, balance, count, clock()?).map_err(reward_fault)?;
         bank.set_miles(entry.balance());
         self.rewards = RewardSession {
             entry: Some(entry),
@@ -519,19 +527,17 @@ impl Runtime {
         Ok(())
     }
     /// Reads the clock again at Save and Quit and fixes the Miles state that
-    /// must be written with this save's Pokémon changes.
-    fn settle_rewards(&mut self, task: Task, saved_count: u32) -> Result<(), Fault> {
+    /// must be written with this save's Pokémon changes: the balance and the
+    /// reward date in the Bank body, the record for the rewards file.
+    fn settle_rewards(&mut self, task: Task) -> Result<(), Fault> {
         let entry = self.rewards.entry.ok_or(Fault::RewardState)?;
         let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
         let balance = bank.miles().map_err(|_| Fault::NativeObject)?;
-        let settlement =
-            rewards::settle(&entry, balance, saved_count, today()?).map_err(reward_fault)?;
+        let settlement = rewards::settle(&entry, balance, clock()?, self.rewards.claimed);
         bank.set_miles(settlement.balance);
-        self.rewards.settlement = Some(Stored {
-            balance: settlement.balance,
-            accounting: Some(settlement.accounting),
-        });
+        bank.set_reward_date(settlement.date);
+        self.rewards.settlement = Some(settlement.record);
         Ok(())
     }
     fn probe_claim(&mut self, task: Task) -> Result<ClaimProbe, Fault> {
@@ -853,7 +859,7 @@ impl Runtime {
                 write_word(coordinator, 0xf8, old_bank);
             }
             // An earlier clock earns nothing; only an invalid one stops here.
-            self.settle_rewards(task, new_bank)?;
+            self.settle_rewards(task)?;
             let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
                 .map_err(|_| Fault::NativeObject)?;
             bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
@@ -1069,7 +1075,8 @@ fn freeze_accrual_date(task: Task) -> Result<(), Fault> {
     checked_pointer(date as u32)?;
     // Native timestamp has minute precision. Matching the session date gives
     // zero whole elapsed hours, so the native hourly accrual adds nothing on
-    // top of the calendar-day accounting applied when the Bank was loaded.
+    // top of the accounting applied when the Bank was loaded, which keeps
+    // the remainder. Save and Quit writes the date of the save.
     let addresses = [
         0x001d5864usize,
         0x001d5848,
@@ -1132,26 +1139,34 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
                     write_word(raw, 0x10, 0x1b);
                 }
             }
-            // Still the saved day and nothing to redeem: both tasks go to states of
-            // their own that end without a word. The guard's is "no present
-            // in the way" (outcome 5), the claim's its end for a total of
-            // zero. Bank has no gifts to hand out offline.
+            // Nothing to say: both tasks go to states of their own that end
+            // without a word. The guard's is "no present in the way"
+            // (outcome 5), the claim's its end for a total of zero. Bank has
+            // no gifts to hand out offline.
             let entry = state.rewards.entry.ok_or(Fault::RewardState)?;
             let balance = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
                 .and_then(|bank| bank.miles())
                 .map_err(|_| Fault::NativeObject)?;
             // A test build never stops at the rewards: it takes the same
             // way whatever there is to get, and claims nothing.
-            if cfg!(feature = "test-build")
-                || rewards::nothing_to_get(entry.new_day(), balance, false)
-            {
-                if !is_guard {
-                    // The original ends the loading panel in state 0x1b
-                    // before it looks at the total (002aac80).
-                    unsafe { bank_common::ui::stop_loading(task.ui()?) }
-                        .map_err(|_| Fault::NativeObject)?;
+            let dialog = if cfg!(feature = "test-build") {
+                Dialog::Silent
+            } else {
+                entry.dialog(balance)
+            };
+            if is_guard {
+                // The guard's notices, a present still waiting in the game
+                // or a full gift list, stand in the way of a redemption
+                // only: without an offer it has nothing to say either.
+                if dialog != Dialog::Offer {
+                    unsafe { write_word(raw, 0x10, 4) };
                 }
-                unsafe { write_word(raw, 0x10, if is_guard { 4 } else { 0x22 }) };
+            } else if dialog == Dialog::Silent {
+                // The original ends the loading panel in state 0x1b
+                // before it looks at the total (002aac80).
+                unsafe { bank_common::ui::stop_loading(task.ui()?) }
+                    .map_err(|_| Fault::NativeObject)?;
+                unsafe { write_word(raw, 0x10, 0x22) };
             }
         }
         Ok(session)
