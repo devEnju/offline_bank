@@ -1388,7 +1388,7 @@ mod tests {
         for cut in 0..=total {
             let disk = base.cut_after(cut);
             let done = try_deliver(&disk, 7).is_some();
-            assert_eq!(done, cut == total, "cut {cut}");
+            assert!(done || cut < total, "cut {cut}");
             let disk = disk.reboot();
             // Transporter's check is exactly where a delivery would refuse.
             assert_eq!(
@@ -1400,7 +1400,12 @@ mod tests {
             let (bytes, loaded) = load(&mut opened(&disk));
             let shown = loaded.delivered as usize;
             assert!(shown == 0 || shown == 7, "cut {cut}: {shown}");
+            // What Transporter was told is what Bank shows: "done" from the
+            // first durable journal record on, also when the second one
+            // was cut. Only the simple card can keep a record whose sync
+            // was cut.
             assert!(!done || shown == 7, "cut {cut}");
+            assert!(done || shown == 0 || !console, "cut {cut}");
             assert!(bytes == body(0x31, 0x44, shown), "cut {cut}: body differs");
             assert_eq!(disk.0.borrow().operations, 0, "cut {cut}: a load wrote");
             whole += usize::from(shown == 7);

@@ -21,10 +21,11 @@
 //!    is then loaded and must be the same body. Only then a marker file is
 //!    created. Until the marker exists the old files are untouched, and a
 //!    start begins again.
-//! 2. *Finish.* With the marker, the temporary files are the Bank. The old
+//! 2. *Finish.* With the marker, the temporary files are the Bank, and at
+//!    every start they must load as one before anything is removed. The old
 //!    files are removed, the final files are written from the temporary ones
-//!    (the journal records last) and compared, the marker is removed, and
-//!    then the temporary files.
+//!    (the journal records last) and compared, and must load as the same
+//!    Bank; then the marker is removed, and then the temporary files.
 
 use crate::previous::{self, bank_files as old};
 use bank_common::{
@@ -134,9 +135,13 @@ const PREVIOUS: [old::FileName; 4] = [
     old::FileName::Transport,
     old::FileName::Bank,
 ];
-/// Files that only the previous release has. Where one is, its Bank is.
-fn only_previous() -> &'static [UnitFile] {
-    old::FileName::Rewards.units()
+/// Whether a Bank of the previous release is there: one of its journal
+/// records, which have another size than the current ones. Its other
+/// files say nothing: some it can do without, and the rest have the names
+/// of current ones.
+fn previous_bank<C: Card>(card: &mut C) -> Result<bool, C::Error> {
+    let records = &old::FileName::Bank.units()[..2];
+    Ok(card.exists(&records[..1])? || card.exists(&records[1..])?)
 }
 static TEMPORARY_BANK: [UnitFile; 4] = [
     UnitFile::new("/m0.tmp", RECORD),
@@ -172,8 +177,7 @@ fn io<E>(step: Step) -> impl Fn(E) -> Stopped<E> {
 /// `buffer` is working room of at least one native Bank body.
 pub fn run<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<Done, C> {
     if !card.exists(&MARKER).map_err(io(Step::ReadOld))? {
-        let previous = card.open(only_previous()).map_err(io(Step::ReadOld))?;
-        if previous.is_none() {
+        if !previous_bank(card).map_err(io(Step::ReadOld))? {
             // What a finished run may have left when it was cut at its end.
             for file in ORDER {
                 card.remove(temporary(file)).map_err(io(Step::WriteNew))?;
@@ -187,7 +191,6 @@ pub fn run<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<Done, C> {
                 Done::NoBank
             });
         }
-        drop(previous);
         stage(card, buffer)?;
     }
     finish(card, buffer)?;
@@ -237,6 +240,37 @@ impl<C: Card> Files for Temporary<'_, C> {
     fn create(&mut self, file: FileName) -> Result<Self::Storage, C::Error> {
         self.0.create(temporary(file))
     }
+}
+
+/// The current containers under their own names.
+struct Current<'a, C: Card>(&'a mut C);
+impl<C: Card> Files for Current<'_, C> {
+    type Storage = C::Storage;
+    fn open(&mut self, file: FileName) -> Result<Option<Self::Storage>, C::Error> {
+        self.0.open(file.units())
+    }
+    fn create(&mut self, file: FileName) -> Result<Self::Storage, C::Error> {
+        self.0.create(file.units())
+    }
+}
+
+/// Loads the Bank in `files` into `body` and answers the checksum of the
+/// body. It has to be whole and at rest; nothing is written.
+fn load<F: Files>(
+    files: F,
+    body: &mut [u8],
+    step: Step,
+) -> Result<u32, Stopped<<F::Storage as Storage>::Error>> {
+    let mut bank = BankFiles::new(files);
+    match bank.open().map_err(unwritten(step))? {
+        Some(Phase::Clean(_)) => {}
+        Some(Phase::Prepared(_)) => return Err(Stopped::Failed(step, Cause::Mismatch)),
+        None => return Err(Stopped::Failed(step, Cause::Missing)),
+    }
+    if bank.read(body).map_err(unwritten(step))?.transport_missing {
+        return Err(Stopped::Failed(step, Cause::Mismatch));
+    }
+    Ok(crc32(body))
 }
 
 /// Why the previous release's code could not read its Bank.
@@ -308,13 +342,7 @@ fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
     bank.initialize(body).map_err(unwritten(write))?;
     drop(bank);
     // The new files must load as the Bank the old files were.
-    let mut bank = BankFiles::new(Temporary(card));
-    let Some(Phase::Clean(_)) = bank.open().map_err(unwritten(write))? else {
-        return Err(Stopped::Failed(write, Cause::Mismatch));
-    };
-    let loaded = bank.read(body).map_err(unwritten(write))?;
-    drop(bank);
-    if loaded.transport_missing || crc32(body) != converted {
+    if load(Temporary(card), body, write)? != converted {
         return Err(Stopped::Failed(write, Cause::Mismatch));
     }
     card.remove(&MARKER).map_err(io(write))?;
@@ -326,6 +354,12 @@ fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
 fn finish<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
     let read = Step::WriteTemporary;
     let write = Step::WriteNew;
+    // The temporary files are all there is of the Bank once the old files
+    // go: they must still load as one, at every start that goes on here.
+    let Some(body) = buffer.get_mut(..BLOB_SIZE) else {
+        return Err(Stopped::Failed(read, Cause::Damaged));
+    };
+    let converted = load(Temporary(card), body, read)?;
     for file in PREVIOUS {
         card.remove(file.units()).map_err(io(Step::RemoveOld))?;
     }
@@ -355,6 +389,14 @@ fn finish<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
         }
         to.sync().map_err(io(write))?;
         same(&mut from, &mut to, file.size(), buffer, read, write)?;
+    }
+    // The final files must load as that Bank before what they were made
+    // from goes.
+    let Some(body) = buffer.get_mut(..BLOB_SIZE) else {
+        return Err(Stopped::Failed(write, Cause::Damaged));
+    };
+    if load(Current(card), body, write)? != converted {
+        return Err(Stopped::Failed(write, Cause::Mismatch));
     }
     // The marker first: without it the temporary files mean nothing.
     card.remove(&MARKER).map_err(io(write))?;
@@ -874,7 +916,7 @@ mod tests {
                 let after = cut_card.restarted(None);
                 if after.0.borrow().files.contains_key(MARKER[0].path) {
                     resumed += 1;
-                } else if after.0.borrow().files.contains_key(only_previous()[0].path) {
+                } else if previous_bank(&mut after.clone()).unwrap() {
                     // Until the marker exists the old Bank is whole.
                     let mut bank = old::BankFiles::new(Before(after.clone()));
                     assert!(matches!(bank.open(), Ok(Some(previous::Phase::Clean(_)))));
@@ -896,6 +938,74 @@ mod tests {
             // Some cuts fell after the marker: those went on, not again.
             assert!(resumed > 10);
         }
+    }
+
+    #[test]
+    fn a_bank_without_rewards_files_is_converted_as_that_release_reads_it() {
+        let (card, body) = used(false);
+        for unit in old::FileName::Rewards.units() {
+            card.0.borrow_mut().files.remove(unit.path);
+        }
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        assert!(only_the_new_files(&card));
+        // No remainder, never redeemed.
+        assert!(current(&card).unwrap() == with_record(body, Record::NONE));
+    }
+
+    #[test]
+    fn a_run_that_goes_on_removes_nothing_unless_the_temporary_bank_still_loads() {
+        let buffer = &mut vec![0; BLOB_SIZE];
+        let (staged, body) = used(false);
+        stage(&mut staged.clone(), buffer).unwrap();
+        let damage = |change: &dyn Fn(&mut State)| {
+            let card = staged.restarted(None);
+            change(&mut card.0.borrow_mut());
+            card
+        };
+        let cases = [
+            // One byte of the boxes, of the main file, of a journal record.
+            (
+                damage(&|state| state.files.get_mut("/m2.tmp").unwrap()[77] ^= 1),
+                Cause::Damaged,
+            ),
+            (
+                damage(&|state| state.files.get_mut("/m4.tmp").unwrap()[77] ^= 1),
+                Cause::Damaged,
+            ),
+            (
+                damage(&|state| {
+                    state.files.get_mut("/m0.tmp").unwrap()[77] ^= 1;
+                    state.files.get_mut("/m1.tmp").unwrap()[77] ^= 1;
+                }),
+                Cause::Damaged,
+            ),
+            // The temporary Bank gone.
+            (
+                damage(&|state| {
+                    for unit in &TEMPORARY_BANK {
+                        state.files.remove(unit.path);
+                    }
+                }),
+                Cause::Missing,
+            ),
+        ];
+        for (card, cause) in cases {
+            let files = card.files();
+            assert_eq!(
+                convert(&card),
+                Err(Stopped::Failed(Step::WriteTemporary, cause))
+            );
+            // The old Bank is still there, whole.
+            assert!(card.files() == files);
+            let mut bank = old::BankFiles::new(Before(card.clone()));
+            assert!(matches!(bank.open(), Ok(Some(previous::Phase::Clean(_)))));
+            let mut staging = vec![0; BLOB_SIZE];
+            bank.read(&mut staging).unwrap();
+            assert!(with_record(staging, kept()) == body);
+        }
+        // Undamaged, the same card is finished.
+        assert_eq!(convert(&staged), Ok(Done::Converted));
+        assert!(current(&staged).unwrap() == body);
     }
 
     #[test]

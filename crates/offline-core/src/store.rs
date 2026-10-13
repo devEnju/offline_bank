@@ -191,21 +191,30 @@ fn publish<S: Storage>(
 ) -> Result<Head, StoreError<S::Error>> {
     let bytes = metadata.encode().map_err(StoreError::Format)?;
     for slot in [previously_selected.other(), previously_selected] {
-        let offset = record_offset(slot);
-        // The other replica is complete while this one is written, so
-        // one that an interrupted write left unusable is discarded and
-        // written once more.
-        if put_record(storage, offset, &bytes).is_err() {
-            storage
-                .recreate(offset, METADATA_SIZE as u64)
-                .map_err(StoreError::Io)?;
-            put_record(storage, offset, &bytes)?;
-        }
+        put_replica(storage, slot, &bytes)?;
     }
     Ok(Head {
         metadata,
         preferred: Slot::A,
     })
+}
+
+/// Writes one replica. The other replica is complete while this one is
+/// written, so one that an interrupted write left unusable is discarded and
+/// written once more.
+fn put_replica<S: Storage>(
+    storage: &mut S,
+    slot: Slot,
+    bytes: &[u8; METADATA_SIZE],
+) -> Result<(), StoreError<S::Error>> {
+    let offset = record_offset(slot);
+    if put_record(storage, offset, bytes).is_err() {
+        storage
+            .recreate(offset, METADATA_SIZE as u64)
+            .map_err(StoreError::Io)?;
+        put_record(storage, offset, bytes)?;
+    }
+    Ok(())
 }
 
 fn put_record<S: Storage>(
@@ -268,24 +277,33 @@ impl<S: Storage> Journal<S> {
     }
 
     /// Publishes a delivery whose bytes, with the checksum `crc`, are durable
-    /// in the transport file's copy that is not in use. Until this returns
-    /// the delivery does not exist.
+    /// in the transport file's copy that is not in use. The delivery exists
+    /// from the moment the first replica is durable, and so that is what
+    /// this answers for: an error means that there is no delivery. If the
+    /// second replica cannot be written, the journal is as after a power
+    /// cut between the two, and Bank's next save writes it.
     pub fn announce(&mut self, head: &Head, crc: u32) -> Result<Head, StoreError<S::Error>> {
-        if self.load()? != Some(*head) {
-            return Err(StoreError::StaleHead);
-        }
+        // The record in force, and the replica that holds it.
+        let selected = match self.load()? {
+            Some(now) if now.metadata == head.metadata => now.preferred,
+            _ => return Err(StoreError::StaleHead),
+        };
         if !may_deliver(&head.metadata) {
             return Err(StoreError::DeliveryRefused);
         }
-        publish(
-            &mut self.storage,
-            head.preferred,
-            Metadata {
-                sequence: next_sequence(head)?,
-                delivery: Some(crc),
-                ..head.metadata
-            },
-        )
+        let metadata = Metadata {
+            sequence: next_sequence(head)?,
+            delivery: Some(crc),
+            ..head.metadata
+        };
+        let bytes = metadata.encode().map_err(StoreError::Format)?;
+        let first = selected.other();
+        put_replica(&mut self.storage, first, &bytes)?;
+        let _ = put_replica(&mut self.storage, selected, &bytes);
+        Ok(Head {
+            metadata,
+            preferred: first,
+        })
     }
 }
 
