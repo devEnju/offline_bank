@@ -58,7 +58,7 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 
 ### The download patch
 
-It lets the original run its whole online session and takes what the load put into the Bank object. Its edits: the start-up hook and its call, the kept archive (`0029f338`), the router call (`002a5a2c`), the version line (`002b49c4`), task 9's update and busy poll (`00361cfc`, `00361d0c`), and the update of task `0xC` (`00361be4`). Eight regions, five entry functions. It does not edit the first start, the show-message function (the original refuses HOME and sleep for its whole online session itself), the load, the save, the reward claim, the clock or the main menu.
+It lets the original run its online session and takes what the load put into the Bank object. The load is the one the original made for Pokémon HOME, which needs no game: none is chosen, read or saved. Its edits: the start-up hook and its call, the kept archive (`0029f338`), the router call (`002a5a2c`), the version line (`002b49c4`), task 9's update and busy poll (`00361cfc`, `00361d0c`), the update of task `0xC` (`00361be4`), and one branch in the game scan (`002ac564`). Nine regions, five entry functions. It does not edit the first start, the show-message function (the original refuses HOME and sleep for its whole online session itself), the load, the save, the reward claim, the clock or the main menu.
 
 **The original's online session**, as its router (`002a5580`) orders the tasks:
 
@@ -74,13 +74,18 @@ It lets the original run its whole online session and takes what the load put in
 | `0xC`, `0xD` | reward step and claim | `0x19`; with outcome `0x15`, cancelled, `0x13` |
 | `0x19`, 7 | boxes, save | |
 | `0x13` | leave without saving (`002aeb9c`): one request, `001d5c28(request, reply object, 0)`; it reads nothing the reward or box steps set | `0x14` |
+| `0x1C` | the load again, for Pokémon HOME: the same task with its mode byte `task + 0x41` set (factory `002a63a8`). After the reply it ends at once (`002af568`): no game check, no save of a game, no save of Bank's own | `0x1D` |
+| `0x1D`, `0x1B` | release (`002afe94`, the request of `0x13`), then the HOME screens | `0x13` |
 | `0x14` | cleanup, disconnect | start screen |
 
-The load is why a game has to be chosen: it writes into that game. Its set-up being the original's, the session has to be closed the original's way afterwards.
+The original takes the second load only when its scan found no usable game and the user chose Pokémon HOME: the scan then ends with outcome `0x17`, the router sets the manager's byte `+0x1C` (`002a56b8`), and task 9 is followed by `0x1C` instead of the menu (`002a576c`). The load's set-up being the original's, the session has to be closed the original's way afterwards.
 
 **What the patch changes** ([navigation.rs](../patches/bank-download/src/navigation.rs), tested against a transcription of the table above):
 
 - *After the scan, task 9 runs once before anything is contacted.* Its hook shows the loading panel and has the worker ask `BankFiles::open` whether a Bank of the offline patch is on the card. If one is, the result is `D0AD 2`. If none is, the task ends and the router answers 5, the original's connect, where the original would have gone from the scan. A Bank file whose creation was cut counts as none.
+- *The scan goes on without a game.* In its state `0x11` (`002ac514`) the scan looks at its eight availability bytes (`task + 0x38..0x3F`). If all are zero it selects state `0x18`, which ends the loading panel and asks about Pokémon HOME; the first button of that question runs `002aca44`: state `0x12`, and the byte `task + 0x44`, with which the scan ends with outcome `0x17` (`002ac904`). The edit turns the branch that stores state `0x18` (`002ac564`, `beq 002ac4c4`) into `beq 002aca50`, that code after its touch of the dialog. The question is not asked, and the loading panel stays up as it does when a game is found.
+- *After task 9 the load without a game follows*, whatever the scan found: where the original answers its menu, the router hook answers `0x1C`. The menu, the game selection and the checks of a game's last session are not entered.
+- *After that load the reward step follows*, where the original would release the session (`0x1D`) and show its HOME screens (`0x1B`). The release is made after the files are written, by `0x13`, which sends the same request; `0x1D`'s end would also take the loading panel down before the write (`002affa4`).
 - *Online, task 9 is the original's.* Both slots call the function they held. Before the original's first frame the update hook reads the reply byte above; with `0x35` it ends the task as failed, which the original answers with cleanup, and the result is `BAD 1`. The patch creates nothing on the server.
 - *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (side files first, the Bank file last, no rewards record), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
 - *After cleanup, task 9 runs again* if a result exists, and shows it with `Notice::done`, the migration's screen. Its set-up creates the shared UI that cleanup destroyed (`002aeb1c`).
@@ -91,7 +96,11 @@ Everything in the Bank object comes along: boxes, the transport box, the Pokéde
 
 | Question | Found |
 | --- | --- |
-| Is the Bank object filled when the reward step begins? | Yes. The load task's own reply listener (`002d11b0`, in its listener table at `00361f04`) checks the reply and restores it into the object at `[[task + 8] + 0xcc]`, before the task reports success. |
+| Is the Bank object filled when the reward step begins? | Yes. The load task's own reply listener (`002d11b0`, in its listener table at `00361f04`) checks the reply and restores it into the object at `[[task + 8] + 0xcc]`, before the task reports success. Both loads are that task. |
+| Is `0x1C` the load of `0x10`? | Yes. The factory builds both with the vtable `00361ec8` (update `002af460`, set-up `002afe38`) and sets `task + 0x41` to 1 for `0x1C` and to 0 for `0x10` (`002a6130`, `002a63a8`). In state 2 of the update the byte decides: 0 goes on to the game check (`002af808`), the game's save (`002af638`) and Bank's own save (`002af720`); 1 ends with outcome 4. With the byte set the set-up opens the loading panel itself. |
+| What does the session need between the load and its end? | One release. `0x1D` (`002afe94`) and `0x13` (`002aeb9c`) both make the one call `001d5c28(request, reply object, 0)`; the original's HOME path makes it twice, before and after its screens. `0x13`'s set-up (`002aed20`) opens the loading panel itself. |
+| Does the reward step need a game or the scene, which the session no longer has? | No. Its set-up (`002ad77c`) stores the shared UI and registers its listener, and its end (`002ad724`) touches the shared UI only. The patch's update reads the Bank object. |
+| Does anything after the scan read whether a game was found? | The router, for task 9 (`002a576c`). The other two reads of a byte `+0x1C` in the session's code (`002a8a50`, `002a9518`) are in the checks of a game's last session, which are not entered. |
 | Does the reward step's set-up contact the server? | No. `002ad77c` stores the shared UI and registers its listener. |
 | What does the original do for a cancelled reward step? | State 6 (`002ad6a8`) waits for the menu's closing animation and sets outcome `0x15`; the task's end (`002ad724`) makes the same wait. The patch sets the outcome; no menu was opened. |
 | What does leaving without saving need? | `002aeb9c`: a request object and the reply object every task holds. Its set-up shows the loading panel itself. |

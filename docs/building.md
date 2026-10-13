@@ -93,7 +93,7 @@ This is the form for every change of how the Bank is stored: the patches read on
 
 ### The download from the official server
 
-While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)).
+While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)). It needs no game: it takes the load the original made for Pokémon HOME, which reads and saves none.
 
 ```powershell
 ./scripts/Build-BankDownloadPatch.ps1

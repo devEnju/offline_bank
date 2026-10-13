@@ -1,12 +1,13 @@
 //! The hooks of the download patch, on Bank's main thread.
 //!
-//! The router hook asks the original and changes three of its answers
+//! The router hook asks the original and changes five of its answers
 //! (`navigation`). Task 9, "open Bank", is the patch's own twice and the
 //! original's in between: first it looks at the card before anything is
 //! contacted, at the end it shows the result as two numbers under the
-//! original's line about the HOME Menu, which stays. The reward step, task
-//! 0xc, is the patch's: it writes what the original loaded and ends as
-//! cancelled, which the original answers by leaving without saving.
+//! original's line about the HOME Menu, which stays. The load is the one
+//! the original made for Pokémon HOME, which needs no game. The reward
+//! step, task 0xc, is the patch's: it writes what the original loaded and
+//! ends as cancelled, which the original answers by leaving without saving.
 
 use crate::{
     download::{self, DONE, NO_BANK_ON_SERVER, PRESENT, REFUSED, WRITTEN},
@@ -364,8 +365,9 @@ pub unsafe extern "aapcs" fn bank_download_open_busy(raw: *mut u8) -> u32 {
     unsafe { open(raw, OPEN_BUSY, false) }
 }
 
-/// Replaces the update virtual of task 0xc, the reward step the original
-/// enters after a load; its constructor, init and end stay native. Nothing
+/// Replaces the update virtual of task 0xc, the reward step, which the
+/// router hook enters after the load; its constructor, init and end stay
+/// native, and they need neither a game nor the scene. Nothing
 /// is asked about rewards and none is taken. The Bank the original loaded
 /// is written, and the task ends with the original's outcome for "cancel",
 /// which the original router answers with leaving without saving (0x13):
