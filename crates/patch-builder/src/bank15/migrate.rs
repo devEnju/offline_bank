@@ -82,14 +82,11 @@ mod tests {
         for address in [0x0029f338, 0x001040a4, 0x002a5a2c, 0x001d6650] {
             assert!(at(address).is_some());
         }
-        // Loading, saving, rewards, Pokédex, the timestamp and the scene
+        // Loading, saving, rewards, the timestamp and the scene
         // set-up stay the original's, and so does the main menu.
         for address in [
             0x001d3bf4,
             offline::SCENE_UPDATE_SLOT,
-            0x0033d30c,
-            0x0033d34c,
-            0x003600cc,
             0x00361a08,
             0x00361be4,
             0x00361ed4,

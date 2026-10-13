@@ -152,8 +152,11 @@ try {
         }
         return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
     }
+    # A package for Bank says its version on its error and result screens.
+    # Of a draft, the offline package says so too.
     function Get-Package([string]$kind, [string]$title) {
-        & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") | Out-Host
+        $shown = if ($kind -eq 'transporter') { @{} } elseif ($Draft -and $kind -eq 'bank') { @{ Version = "$Version-draft" } } else { @{ Version = $Version } }
+        & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") @shown | Out-Host
         return Get-Verified $kind
     }
     $titles = [ordered]@{
@@ -257,7 +260,8 @@ try {
         $steps.Add('                        restore your backup and report both numbers.')
         $steps.Add("5. Install ${Version}: copy the luma folder of $name.zip to")
         $steps.Add('   the SD card. It replaces these files and updates Poke Transporter.')
-        $steps.Add('6. Start Pokemon Bank. Your boxes, Pokedex and Poke Miles are as before.')
+        $steps.Add('6. Start Pokemon Bank. Your boxes and Pokedex are as before. Poke Miles')
+        $steps.Add('   that were not redeemed start at 0.')
         $steps.Add('')
         $steps.Add('The conversion needs about 1.5 MB of free space on the SD card. If the')
         $steps.Add('power fails while it runs, start it again; the old Bank stays untouched')
@@ -293,19 +297,17 @@ try {
         $steps.Add('- Your Pokemon stay on the server as well; this makes a copy.')
         $steps.Add('- It only writes when no offline Bank is on the SD card. An offline')
         $steps.Add('  Bank you already have is never replaced or merged.')
-        $steps.Add('- Poke Miles are not fetched. The offline Bank starts with 0.')
-        $steps.Add('- You need what the original needs: an internet connection, your')
-        $steps.Add('  Nintendo Network ID on this console, and a compatible game with a')
-        $steps.Add('  Pokedex. As with any use of the original, the game you pick is saved')
-        $steps.Add('  once by Bank.')
+        $steps.Add('- Poke Miles come along as the server has them.')
+        $steps.Add('- You need an internet connection and your Nintendo Network ID on')
+        $steps.Add('  this console. No game is needed: none is chosen, read or saved.')
         $steps.Add('')
         $steps.Add('1. Back up the extra data (extdata) of Pokemon Bank and your game saves,')
         $steps.Add('   for example with Checkpoint.')
         $steps.Add('2. Copy the luma folder of this zip to the root of the SD card. It')
         $steps.Add('   replaces the two files of Pokemon Bank. The start screen then says')
         $steps.Add('   "Ver. 1.5-download".')
-        $steps.Add('3. Start Pokemon Bank and press START. It connects as the original does.')
-        $steps.Add('   Choose "Use Pokemon Bank" and pick a game. After the loading screens')
+        $steps.Add('3. Start Pokemon Bank and press START. It connects as the original does;')
+        $steps.Add('   there is no menu and nothing to choose. After the loading screens')
         $steps.Add('   two numbers appear under "Press HOME to return to the HOME Menu".')
         $steps.Add('   This patch never opens the Bank; the numbers are all it shows.')
         $steps.Add('     0000D0AD 00000001  Downloaded and written. Go on with step 4.')

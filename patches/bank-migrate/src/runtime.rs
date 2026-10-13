@@ -110,7 +110,7 @@ static STATE: State = State(UnsafeCell::new(Runtime {
     owner: 0,
     job: None,
     numbers: None,
-    notice: Notice::new(),
+    notice: Notice::new(PACKAGE),
 }));
 struct Guard;
 impl Guard {
@@ -253,6 +253,10 @@ pub unsafe extern "aapcs" fn bank_migrate_open(raw: *mut u8) -> u32 {
     state.notice.done(task, first, second)
 }
 
+/// The patch's name: behind "Ver. 1.5" on the start screen, and behind the
+/// version on the result screen.
+const PACKAGE: &[u8] = b"-migration";
+
 /// Replaces the start screen's call that writes its version line
 /// (002b49c4): the line says which patch runs.
 /// # Safety
@@ -264,5 +268,5 @@ pub unsafe extern "aapcs" fn bank_version_shown(
     pane: u32,
     message: u32,
 ) {
-    unsafe { ui::version(context, group, pane, message, b"-migration") }
+    unsafe { ui::version(context, group, pane, message, PACKAGE) }
 }

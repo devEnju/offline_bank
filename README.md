@@ -13,7 +13,7 @@ Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5*
 - All 100 boxes, with the original box, search, and group screens.
 - Transfers to and from X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, and Ultra Moon.
 - Starts straight at game selection; no main menu, no connection.
-- National Pokédex and adventure records, updated at Save and Quit.
+- National Pokédex and adventure records, taken over in the records screen as in the original.
 - Poké Miles earned locally at the original rate and redeemed through the original screens.
 - Saves are journaled: an interrupted save leaves either the old or the new state.
 
@@ -71,7 +71,7 @@ The choice lasts until Transporter is closed. More in [docs/transporter.md](docs
 
 ### Can I get my Pokémon from the official Pokémon Bank?
 
-While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and shows two numbers. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, it does not fetch Poké Miles, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip. This patch has not been tested against the official server yet; back up first.
+While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and shows two numbers. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip. This patch has not been tested against the official server yet; back up first.
 
 ### Why do I need a migration between two versions?
 

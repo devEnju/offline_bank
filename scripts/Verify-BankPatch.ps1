@@ -112,14 +112,14 @@ try {
     # The entry functions of each patch; the first is the entry of the ELF.
     # The last is the one every patch has: where the original's "show a
     # message" function goes first.
-    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_dex_save_request','bank_offline_dex_records_update','bank_offline_dex_records_finish','bank_message_shown','bank_version_shown')
+    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_message_shown','bank_version_shown')
     $exportNames=@{
         offline=$offlineNames
         migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
         download=@('bank_download_next','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
     }[$Patch]
-    $exportCount=@{offline=10;migrate=4;test=12;download=5}[$Patch]
+    $exportCount=@{offline=7;migrate=4;test=9;download=5}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
     $foreign=@{offline=@('bank_migrate_*','bank_download_*');migrate=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Patch]
@@ -195,7 +195,12 @@ try {
     )
     if ($Patch -eq 'download') {
         # The reward step's update writes the files and ends as cancelled.
-        $pointers+=,@(0x361be4,0x2ad1bc,'bank_download_save')
+        # The scan goes on without its Pokemon HOME question when it finds no
+        # game: beq 002ac4c4 becomes beq 002aca50, a whole instruction word.
+        $pointers+=@(
+            @(0x361be4,0x2ad1bc,'bank_download_save'),
+            @(0x2ac564,0x0affffd6L,0x0a000139L)
+        )
     } else {
         $pointers+=@(
             # First start, whole instruction words: a saved language is not
@@ -212,12 +217,9 @@ try {
             @(0x2ac648,0xe6ff1075L,0xe3a01000L)
         )
     }
-    # Only the offline patch: loading, saving, rewards and the Pokédex.
+    # Only the offline patch: loading, saving and rewards.
     if ($Patch -in 'offline','test') {
         $pointers+=@(
-            @(0x33d30c,0x2a7578,'bank_offline_dex_save_request'),
-            @(0x33d34c,0x2a71a8,'bank_offline_dex_records_finish'),
-            @(0x3600cc,0x26d8ec,'bank_offline_dex_records_update'),
             @(0x361a08,0x2a9750,'bank_offline_rewards'),
             @(0x361be4,0x2ad1bc,'bank_offline_rewards'),
             @(0x361ed4,0x2af460,'bank_offline_load'),
@@ -239,7 +241,7 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=27;migrate=16;test=29;download=8}[$Patch]
+    $regions=@{offline=24;migrate=16;test=26;download=9}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     [byte[]]$expected=[byte[]]::new($expandedSize)
     [Array]::Copy($original,0,$expected,0,$original.Length)

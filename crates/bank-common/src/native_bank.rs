@@ -6,7 +6,10 @@
 //! The original constructor must have run before this adapter is used.
 
 use core::{marker::PhantomData, ptr::NonNull};
-use offline_core::native_blob::{BlobError, NativeBlobView, BLOB_SIZE, MILES_OFFSET};
+use offline_core::{
+    native_blob::{BlobError, NativeBlobView, BLOB_SIZE, MILES_OFFSET, REWARD_DATE_OFFSET},
+    rewards::Moment,
+};
 
 pub const OBJECT_SIZE: usize = 0xBB530;
 pub const BODY_OFFSET: usize = 8;
@@ -135,6 +138,24 @@ impl<'a> NativeBank<'a> {
         }
     }
 
+    /// The reward date as native 001d5880 points at it; `None` without one.
+    pub fn reward_date(&self) -> Result<Option<Moment>, NativeBankError> {
+        Ok(self.snapshot()?.reward_date())
+    }
+
+    /// Writes the reward date field by field, as the original's reward guard
+    /// does (002ad1bc).
+    pub fn set_reward_date(&mut self, date: Moment) {
+        let bytes = date.to_native();
+        // SAFETY: the six bytes lie inside the exclusively borrowed body.
+        unsafe {
+            self.pointer
+                .as_ptr()
+                .add(BODY_OFFSET + REWARD_DATE_OFFSET)
+                .copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
+        }
+    }
+
     /// Restores exactly the native serializer's body. A rejected snapshot leaves
     /// the object untouched. Storage integrity/recovery must succeed first;
     /// layout validation alone is not a substitute for that transaction check.
@@ -241,6 +262,15 @@ mod tests {
         assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
         // Native accessors address this field as object + 0x178.
         assert_eq!(object[0x178 / 4], 0xffff_u32.to_le());
+
+        // The reward date is the six bytes before it, at object + 0x168.
+        let mut bank = unsafe { NativeBank::from_raw(object.as_mut_ptr().cast()) }.unwrap();
+        let date = Moment::from_native(&[0xea, 0x07, 10, 6, 18, 10]).unwrap();
+        bank.set_reward_date(date);
+        assert_eq!(bank.reward_date(), Ok(Some(date)));
+        assert_eq!(bank.miles(), Ok(0xffff));
+        expected[0x160..0x166].copy_from_slice(&date.to_native());
+        assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
     }
 
     #[test]

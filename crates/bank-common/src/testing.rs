@@ -5,8 +5,8 @@ extern crate std;
 use crate::bank_files::{BankFiles, FileName, Files, Loaded};
 use offline_core::{
     native_blob::BLOB_SIZE,
-    rewards::{Accounting, Date, Stored},
-    sections::{DEX, MILES, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
+    rewards::{Date, Record},
+    sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
     sidecar::Sidecar,
     transport, Fingerprint, GameIdentity, GameObservation, Storage,
 };
@@ -309,7 +309,6 @@ pub fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
     let mut bytes = vec![boxes; BLOB_SIZE];
     bytes[0x15C..0x15E].copy_from_slice(&2u16.to_le_bytes());
     bytes[0x15E..0x160].copy_from_slice(&100u16.to_le_bytes());
-    bytes[MILES].fill(0);
     bytes[DEX].fill(dex);
     for slot in 0..30 {
         let at = TRANSPORT_RECORDS.start + slot * RECORD_SIZE;
@@ -322,10 +321,11 @@ pub fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
 pub fn date(day: u8) -> Date {
     Date::new(2026, 10, day).unwrap()
 }
-pub fn stored(balance: u32, day: u8, count: u32) -> Stored {
-    Stored {
-        balance,
-        accounting: Some(Accounting::new(date(day), count, 0).unwrap()),
+/// A rewards record: a remainder and the day of a redemption.
+pub fn miles_record(fraction: u16, day: u8) -> Record {
+    Record {
+        fraction,
+        redeemed: Some(date(day)),
     }
 }
 /// Fills what the main thread fills: defaults for missing regions.

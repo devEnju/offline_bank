@@ -1,6 +1,6 @@
 //! Start-up hook for the reviewed Transporter image.
 //!
-//! Same method as the Bank patch (patches/bank/src/bootstrap.rs), which has
+//! Same method as the Bank patch (crates/bank-common/src/bootstrap.rs), which has
 //! run on a console: `transporter_bootstrap_startup` replaces the one BL to
 //! application init at 00103D9C, calls that original function first, then
 //! makes the payload's code pages executable. Failure exits the process

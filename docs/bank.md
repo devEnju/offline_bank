@@ -17,7 +17,6 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original redemption is kept. Server gifts and distributions are skipped. |
-| Pokédex and adventure records update when you visit the records screen. | They update at Save and Quit, with the original rules ([below](#pokédex-and-adventure-records)). |
 
 Not included: Pokémon HOME, purchases, event gifts, and import or export tools for save editors.
 
@@ -36,20 +35,21 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 
 ## Poké Miles
 
-**What you earn.** Each calendar day earns `Pokémon in the Bank at the last Save and Quit ÷ 30` Miles. The remainder is carried in thirtieths, so nothing is lost to rounding. This is the original rate, counted per calendar day instead of per hour.
+**What you earn.** One Pokémon in the Bank earns one Mile in 30 days, counted by the hour: every full hour adds `Pokémon in the boxes ÷ 720` Miles. The part below a whole Mile is carried, so nothing is lost to rounding, however often you open Bank. This is the original rate; the original dropped the remainder at every visit.
 
 - Only the 100 regular boxes count. The game's boxes and the transport box do not.
-- New Miles are added to the balance already stored. Changing how many Pokémon you keep only changes what later days earn.
-- There is one record for the whole Bank. Opening Y and then Ultra Sun on the same day does not earn twice.
-- 15 Pokémon earn 1 Mile every two days. 30 Pokémon saved before midnight earn 1 Mile when opened after midnight.
+- 30 Pokémon earn 1 Mile a day, 15 earn 1 Mile every two days, 3,000 earn 100 a day.
+- An hour counts when the clock passes a full hour: saved at 10:55 and opened at 11:05 is one hour.
+- The hours up to a Save and Quit are paid for the Pokémon that were in the boxes when the game was loaded. What you deposit or withdraw counts from that save on.
+- There is one balance for the whole Bank. Opening Y and then Ultra Sun does not earn twice.
 - The balance stops at the original limit of 65,535.
 
-**When it is saved.** Miles are shown when the selected game has loaded and become permanent at Save and Quit, in the same step as your boxes. If you exit without saving, nothing changes and the same days are credited next time. The first save of a new Bank only records the date and count; earning starts the next day.
+**When it is saved.** Miles are added when the selected game has loaded and again at Save and Quit, and become permanent there, in the same step as your boxes. If you exit without saving, nothing changes and the same hours are credited next time. A new Bank starts earning with its first Save and Quit.
 
-**The clock.** The accounting date only moves forward.
+**The clock.** The date of the last Save and Quit and the day of the last redemption only move forward.
 
-- Console date set back: saving still works, no Miles are earned, and the stored date is kept. Earning resumes once the clock passes that date again.
-- Console date set ahead: those days are paid once, because a console cannot tell a jump from a real absence. Back on the real date, nothing is earned until it catches up.
+- Console date set back: saving still works, no Miles are earned, and the stored dates are kept. Earning resumes once the clock passes the stored date again.
+- Console date set ahead: that time is paid once, because a console cannot tell a jump from a real absence. Back on the real date, nothing is earned until it catches up.
 
 **Redeeming.** Unchanged original behaviour:
 
@@ -58,24 +58,30 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - Battle Points: `Miles ÷ 10` go to the game and the remainder stays. Gen 6 and Gen 7.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, blocks a new claim.
 
-**When nothing is said.** The original talks about Miles whenever the balance is above zero. The patch stays silent in one case: you already saved today and fewer than 10 Miles are left. Then the boxes open directly.
+**When the dialog comes.** The original talks about Miles at every opening while the balance is above zero. The patch is quieter:
 
-| Opened | Balance | What appears |
+| Balance | Redeemed today | What appears |
 | --- | --- | --- |
-| Same day as the last Save and Quit | below 10 (for example 3 left after redeeming Battle Points) | Nothing. Also no notice about a present still waiting in a Gen 6 game, since nothing new could be sent. |
-| Same day as the last Save and Quit | 10 or more | The redemption choices, as in the original. |
-| A later day | below 10, grown or not (3 to 9, or still 3) | The original message, without choices. Again at each opening until you Save and Quit on that day; after that, nothing. |
-| A later day | 10 or more | The original message and the choices. |
-| Console date earlier than the last Save and Quit | below 10 | Nothing, as on the same day. |
+| 0 | | Nothing. The boxes open directly. |
+| any | yes | Nothing for the rest of the day, also when the balance passes 10 again. |
+| 1 to 9 | no | The original message, without choices, at the first opening of a day. After a Save and Quit on that day nothing more, until the balance reaches 10 or the day changes. |
+| 10 or more | no | The original message and the choices, at every opening until you redeem. |
+
+- "The first opening of a day" means that the last Save and Quit was on an earlier day. If you leave without saving, the message comes again at the next opening.
+- An offer you decline comes back at the next opening, with the Miles of the hours since.
+- The original's notice about a present still waiting in a Gen 6 game, or about a full gift list in a Gen 7 game, only comes together with an offer of 10 or more, where it stands in the way of a redemption. Without an offer it is not shown.
+- With the console date set back before a stored date, that date counts as today.
 
 The patch adds one safety check: after a claim, the balance and the gift in the game must match what was shown. If not, the balance is restored and the session ends with error `00000013` without saving.
 
 ## Pokédex and adventure records
 
-The patch calls the original import functions, so the rules are Bank's own. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
+As in the original, with one addition for games the Bank already knows. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
 
-- Saving with a game **replaces that version's slot** with the game's Pokédex and adventure records. The other seven slots are untouched.
-- If the slot belongs to a different trainer, the original confirmation appears. Accepting replaces the slot, declining keeps it.
+- A game's Pokédex and adventure records are taken over for the first time when you **open the records screen** with that game; saving alone does not do it. They **replace that version's slot**. The other seven slots are untouched.
+- Once a game is in its slot, **every Save and Quit with that game brings its Pokédex and records up to date**, without a visit to the records screen. This holds only for the same trainer.
+- If the slot belongs to a different trainer, opening the screen takes nothing over. Choose that game's entry there and the original confirmation appears. Accepting replaces the slot, declining keeps it.
+- What was taken over is stored with the next Save and Quit. If you leave without saving, it is not.
 
 The original import copies; it does not merge within a version.
 
@@ -89,15 +95,15 @@ Ten files inside SD extdata archive `0x00000C9B`, the archive Bank already owns.
 | `/journal.bin`, `/journal.alt.bin` | 192 bytes | One copy of the record that says which set of boxes is current and whether a save is in progress. |
 | `/dex.bin`, `/dex.alt.bin` | 29,888 bytes | One version of the Pokédex of all eight game versions and their trainer and adventure records. |
 | `/mover.bin`, `/mover.alt.bin` | 7,056 bytes | One version of the transport box: up to 30 Pokémon from Poké Transporter. |
-| `/rewards.bin`, `/rewards.alt.bin` | 80 bytes | One version of everything about Miles: balance, date, saved count, fraction. |
+| `/rewards.bin`, `/rewards.alt.bin` | 80 bytes | One version of what the original has no place for: the part of a Mile below one, and the day of the last redemption. The Miles balance and the date of the last Save and Quit are in `/bank.bin`, where the original keeps them. |
 
 **Why pairs.** If the power fails while the console writes a file, that file can become unreadable as a whole. So Bank never writes into a file that holds something it still needs: a save goes into the file of each pair that is not in use, and only when everything is written does that file become the current one. The two files of a pair take turns. `.alt` means "the alternate of the two", not "the older one"; half the time it holds your current data.
 
 - **They always belong to the same save.** After a power cut, Bank uses the versions of the smaller files that match whichever Bank save survived.
-- **A missing file is not an error.** No Pokédex files mean an empty Pokédex, no transport files an empty transport box, no rewards files zero Miles. The next save creates them.
+- **A missing file is not an error.** No Pokédex files mean an empty Pokédex, no transport files an empty transport box, no rewards files no carried part of a Mile and no redemption yet. The next save creates them.
 - **A file that a power cut left unreadable is replaced.** It is always the one that was being written, never the one in use. Bank goes on with the other file of the pair, and the next save deletes the unreadable one and writes it anew.
 - **A file of the wrong size is never touched.** Bank stops with error `3` and the size as second number. This is also what happens with a Bank that was last used with v0.2.1, whose `/bank.bin` is twice as large. Such a Bank is converted once, with the migration that ships with release v0.3.0; that release says how.
-- **A damaged Pokédex or Miles file in use does not stop Bank either.** The Pokédex then starts empty and the Miles at zero. Each game writes its part of the Pokédex and its records again at its next Save and Quit. A damaged transport box in use does stop Bank (error `9`), because it can hold Pokémon.
+- **A damaged Pokédex or rewards file in use does not stop Bank either.** The Pokédex then starts empty and the carried part of a Mile at zero; the balance is not in that file. Each game's part comes back when its records screen is opened and that session is saved. A damaged transport box in use does stop Bank (error `9`), because it can hold Pokémon.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
 - These files live inside console-managed, encrypted extdata. They are not loose files on the SD card, and Bank's own 128 KiB save is not where the boxes are.
@@ -175,13 +181,21 @@ The message only comes for a Save and Quit that was cut off. An error in a runni
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
-**After updating the patch.** A Save and Quit that was interrupted under another version of the patch is finished by that version only; any other shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
+**After updating the patch.** A Save and Quit that was interrupted is finished by the version it was made with, or by one that records a save in progress the same way; a version that records it differently shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
 
 ## Troubleshooting
 
 An error ends this run of Bank. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
 
-After A the original's line "Press HOME to return to the HOME Menu" appears with two numbers under it, `XXXXXXXX YYYYYYYY`, and it stays: nothing else reacts, because nothing can go on. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
+After A the original's line "Press HOME to return to the HOME Menu" appears with two lines under it, and it stays: nothing else reacts, because nothing can go on.
+
+```text
+Press HOME to return to the HOME Menu
+v0.4.0
+XXXXXXXX YYYYYYYY
+```
+
+The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
 
 | First number | Step |
 | --- | --- |
@@ -213,7 +227,7 @@ After A the original's line "Press HOME to return to the HOME Menu" appears with
 
 Deleting Bank's Extra Data in System Settings may not remove the files.
 
-**Reporting a problem.** Open an issue with the console model, Luma version, the release or package name, the games involved, and a photo of any error screen. On an error, keep the SD card as it is.
+**Reporting a problem.** Open an issue with the console model, Luma version, the games involved, and a photo of any error screen, or its last two lines as text: the version and the two numbers. On an error, keep the SD card as it is.
 
 ## Limits
 
@@ -221,5 +235,5 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 - **Backups.** The journal cannot repair a game save damaged mid-write, and cannot detect restoring a Bank backup and a game backup from different times. Always back up Bank's extdata and your games together.
 - **Power cuts.** A cut during Save and Quit can only damage the file being written, which Bank does not need and replaces. It cannot protect against damage to the SD card's own file table; that holds for every save on the console.
 - **Interrupted Save and Quit.** One case can lose Pokémon: see [If Save and Quit is interrupted](#if-save-and-quit-is-interrupted).
-- **Clock.** A console date set ahead is paid as if the days had passed.
+- **Clock.** A console date set ahead is paid as if the time had passed.
 - **Errors are final for a run of Bank.** After the message only the line about the HOME Menu follows, with the two numbers. Close Bank from the HOME Menu and start it again. A save that waits for its game is not an error: it leads back to the start screen ([above](#a-save-that-waits-for-its-game)).

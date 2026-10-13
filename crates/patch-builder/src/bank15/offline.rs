@@ -14,14 +14,11 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_save",
         "bank_offline_rewards",
         "bank_offline_timestamp",
-        "bank_offline_dex_save_request",
-        "bank_offline_dex_records_update",
-        "bank_offline_dex_records_finish",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
-    // Twenty-six edited words plus the linked bootstrap bytes.
-    regions: 27,
+    // Twenty-three edited words plus the linked bootstrap bytes.
+    regions: 24,
     menu_edits: &[],
     edits,
 };
@@ -49,9 +46,6 @@ pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<Chec
         save: payload.export("bank_offline_save")?,
         rewards: payload.export("bank_offline_rewards")?,
         timestamp: payload.export("bank_offline_timestamp")?,
-        dex_save_request: payload.export("bank_offline_dex_save_request")?,
-        dex_records_update: payload.export("bank_offline_dex_records_update")?,
-        dex_records_finish: payload.export("bank_offline_dex_records_finish")?,
         message: payload.export(MESSAGE_ENTRY)?,
         version: payload.export(VERSION_ENTRY)?,
     })
@@ -65,9 +59,6 @@ struct HookTargets {
     save: u32,
     rewards: u32,
     timestamp: u32,
-    dex_save_request: u32,
-    dex_records_update: u32,
-    dex_records_finish: u32,
     message: u32,
     version: u32,
 }
@@ -94,9 +85,6 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     // scene and the text window; only its server check is replaced.
     for (address, expected, target) in [
         (SCENE_UPDATE_SLOT, SCENE_UPDATE, NATIVE_FINISHED),
-        (0x0033d30c, 0x002a7578, targets.dex_save_request),
-        (0x0033d34c, 0x002a71a8, targets.dex_records_finish),
-        (0x003600cc, 0x0026d8ec, targets.dex_records_update),
         (0x00361a08, 0x002a9750, targets.rewards),
         (0x00361be4, 0x002ad1bc, targets.rewards),
         (OPEN_TASK[0].0, OPEN_TASK[0].1, targets.load),
@@ -122,9 +110,6 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
         save: 0x3fb400,
         rewards: 0x3fba00,
         timestamp: 0x3fbc00,
-        dex_save_request: 0x3fc400,
-        dex_records_update: 0x3fc600,
-        dex_records_finish: 0x3fc800,
         message: 0x3fca00,
         version: 0x3fcc00,
     })
@@ -146,9 +131,6 @@ mod tests {
             save: 0x3fb400,
             rewards: 0x3fba00,
             timestamp: 0x3fbc00,
-            dex_save_request: 0x3fc400,
-            dex_records_update: 0x3fc600,
-            dex_records_finish: 0x3fc800,
             message: 0x3fca00,
             version: 0x3fcc00,
         };
@@ -179,9 +161,6 @@ mod tests {
         }
         for (address, target) in [
             (0x361e84, 0x2af124),
-            (0x33d30c, targets.dex_save_request),
-            (0x33d34c, targets.dex_records_finish),
-            (0x3600cc, targets.dex_records_update),
             (0x361d0c, targets.load),
             (0x361ee4, targets.load),
             (0x361a08, targets.rewards),
