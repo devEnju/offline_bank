@@ -15,9 +15,9 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 # normal payload stays as it is.
 $source = @{
     'offline' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'bank'; Features = @() }
-    'migrate' = @{ Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Kind = 'bank-migrate'; Features = @() }
-    'download' = @{ Crate = 'bank-download-payload'; Linker = 'patches/bank-download/link/bank15-download.ld'; Kind = 'bank-download'; Features = @() }
-    'test' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'bank-test'; Features = @('test-build') }
+    'migrate' = @{ Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Kind = 'migration'; Features = @() }
+    'download' = @{ Crate = 'bank-download-payload'; Linker = 'patches/bank-download/link/bank15-download.ld'; Kind = 'download'; Features = @() }
+    'test' = @{ Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Kind = 'test'; Features = @('test-build') }
 }[$Patch]
 $linkerScript = Join-Path $projectRoot $source.Linker
 $outputDir = Join-Path $projectRoot "build/intermediate/$($source.Kind)"

@@ -1,6 +1,6 @@
 <#
-Independent check of the built package of one patch for Bank, in build/bank,
-build/bank-migrate, build/bank-download or build/bank-test. This script shares no code
+Independent check of the built package of one patch for Bank, in
+build/binary/bank, build/migration, build/download or build/test. This script shares no code
 with patch-builder: it parses the ELF and IPS itself, rebuilds the expected image
 from hardcoded reviewed addresses, and compares every byte. It reads only local
 build inputs and writes verification.json into the package folder.
@@ -36,10 +36,10 @@ function CString([byte[]]$bytes,[int]$offset) {
     Assert-Check ($end -ge $offset) 'Unterminated ELF string'
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
-$kind=@{offline='bank';migrate='bank-migrate';test='bank-test';download='bank-download'}[$Patch]
+$kind=@{offline='bank';migrate='migration';test='test';download='download'}[$Patch]
 $crate=@{offline='bank';migrate='bank-migrate';test='bank';download='bank-download'}[$Patch]
 if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$crate-payload.elf" }
-$packagePath="build/$kind"
+$packagePath=if($Patch -eq 'offline'){'build/binary/bank'}else{"build/$kind"}
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
     $packageName='unknown'

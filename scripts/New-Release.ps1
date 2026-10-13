@@ -34,7 +34,8 @@ if ($MigrateFrom) {
 if ($Download -and $Publish) { throw '-Publish finds the download zip of the earlier run by itself.' }
 $suffix = if ($Draft) { '-draft' } else { '' }
 $name = "offline_bank-$Version$suffix"
-$releaseRoot = Join-Path $projectRoot 'build/release'
+# A release lies in a folder of its own, named for its version.
+$releaseRoot = Join-Path $projectRoot "build/release/$Version$suffix"
 $zip = Join-Path $releaseRoot "$name.zip"
 $notesPath = Join-Path $releaseRoot "$name.md"
 # The migration zip carries the version it converts from.
@@ -129,12 +130,13 @@ try {
     Invoke-Checked 'formatting' { cargo +stable fmt --all -- --check }
 
     # 3. The patches, built from these sources and independently verified.
-    # Each build script replaces the package of its kind in build/<kind>,
+    # Each build script replaces the package of its kind in its folder
+    # (build/binary/bank and build/binary/transporter, build/<kind> for the others),
     # writes its name into PACKAGE.txt (Get-PackageId.ps1: the hash of its
     # compiled code and of the builder's profile with the edits of the
     # original), and verifies it.
     function Get-Verified([string]$kind) {
-        $directory = Join-Path $projectRoot "build/$kind"
+        $directory = Join-Path $projectRoot $(if ($kind -in 'bank', 'transporter') { "build/binary/$kind" } else { "build/$kind" })
         $id = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
         if ($id -ne (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) {
             throw "Package $kind is not the one of the current sources."
@@ -163,8 +165,8 @@ try {
         $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Package 'bank' 'Bank') }
         '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Package 'transporter' 'Transporter') }
     }
-    $migration = if ($MigrateFrom) { Get-Package 'bank-migrate' 'BankMigration' }
-    $downloaded = if ($Download) { Get-Package 'bank-download' 'BankDownload' }
+    $migration = if ($MigrateFrom) { Get-Package 'migration' 'BankMigration' }
+    $downloaded = if ($Download) { Get-Package 'download' 'BankDownload' }
 
     # 4. The zips, each laid out for the root of the SD card.
     $stage = Join-Path $releaseRoot $name
@@ -173,6 +175,7 @@ try {
     foreach ($path in @($stage, $zip, $notesPath, $migrationStage, $migrationZip, $downloadStage, $downloadZip) | Where-Object { $_ }) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse }
     }
+    New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
     $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
     $source = if ($Draft -and $dirty) { "$commit plus uncommitted changes" } else { $commit }
     $draftMark = if ($Draft) { ' (DRAFT, not a release)' } else { '' }

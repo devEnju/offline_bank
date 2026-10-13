@@ -15,11 +15,11 @@ No run is logged here one by one: the page does not say which check was made wit
 
 | Package | Built by | Folder |
 | --- | --- | --- |
-| Bank | `Build-BankPatch.ps1` | `build/bank/` |
-| Transporter | `Build-TransporterPatch.ps1` | `build/transporter/` |
-| Test package | `Build-BankTestPatches.ps1` | `build/bank-test/` |
-| Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/bank-migrate/` |
-| Download, while the official service runs | `Build-BankDownloadPatch.ps1` | `build/bank-download/` |
+| Bank | `Build-BankPatch.ps1` | `build/binary/bank/` |
+| Transporter | `Build-TransporterPatch.ps1` | `build/binary/transporter/` |
+| Test package | `Build-BankTestPatches.ps1` | `build/test/` |
+| Migration, when a release has one | `Build-BankMigrationPatch.ps1` | `build/migration/` |
+| Download, while the official service runs | `Build-BankDownloadPatch.ps1` | `build/download/` |
 
 Every package says what it is on its start screen: "Ver. 1.5-offline" for Bank and for Transporter, "Ver. 1.5-migration", "Ver. 1.5-download", "Ver. 1.5-test". What the test package does is in [building.md](building.md#test-builds-for-an-interrupted-save).
 
@@ -283,7 +283,7 @@ That a migration refuses a Bank with a Save and Quit in progress, and that a cut
 
 ## The download from the official server
 
-Package `build/bank-download/`. None of these runs has been made yet. It needs the live service, an internet connection and the console's Nintendo Network ID. No game is needed, and none is read or saved. Back up Bank's extdata first, and the games on the console, so that run D8 can compare them.
+Package `build/download/`. None of these runs has been made yet. It needs the live service, an internet connection and the console's Nintendo Network ID. No game is needed, and none is read or saved. Back up Bank's extdata first, and the games on the console, so that run D8 can compare them.
 
 | Run | Do | Must show |
 | --- | --- | --- |

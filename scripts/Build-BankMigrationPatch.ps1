@@ -1,5 +1,5 @@
 <#
-Builds the migration patch for Bank into build/bank-migrate and checks it
+Builds the migration patch for Bank into build/migration and checks it
 with Verify-BankPatch.ps1. The migration belongs to one step: it converts the
 Bank that v0.2.1 stored into the files of v0.3.0 and does nothing else; it
 never opens the Bank (docs/building.md). It is a crate of its own,
@@ -27,10 +27,10 @@ try {
     if ($extractions.Count -ne 1) { throw 'Extraction did not return one input record.' }
     $inputRecord = $extractions[0]
     & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Patch migrate -Version $Version | Out-Host
-    $elf = Join-Path $projectRoot 'build/intermediate/bank-migrate/bank-migrate-payload.elf'
+    $elf = Join-Path $projectRoot 'build/intermediate/migration/bank-migrate-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
-    $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank-migrate
-    $output = Join-Path $projectRoot 'build/bank-migrate'
+    $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind migration
+    $output = Join-Path $projectRoot 'build/migration'
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     & cargo +stable run --locked --offline -p patch-builder -- build-development migrate $inputRecord.code $inputRecord.exheader $elf $output | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Migration patch build failed: $LASTEXITCODE" }

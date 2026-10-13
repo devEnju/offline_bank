@@ -2,7 +2,7 @@
 param(
     [string]$InputPath = ''
 )
-# Independent check of the Transporter patch package in build/transporter. Shares no code with the
+# Independent check of the Transporter patch package in build/binary/transporter. Shares no code with the
 # builder: it applies code.ips itself and compares the result with the
 # original executable and exheader. Writes verification.json into the package.
 $ErrorActionPreference = 'Stop'
@@ -45,7 +45,7 @@ $original = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exefs/code.bin'))
 $originalHeader = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exheader.bin'))
 Assert-That ((Get-Sha256 $original) -eq $expectedCode) 'original code.bin hash'
 Assert-That ((Get-Sha256 $originalHeader) -eq $expectedExheader) 'original exheader.bin hash'
-$directory = Join-Path $projectRoot 'build/transporter'
+$directory = Join-Path $projectRoot 'build/binary/transporter'
 $Package = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
 Assert-That ($Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind transporter)) 'package is not the one of the current payload and profile'
 

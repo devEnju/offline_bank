@@ -1,5 +1,5 @@
 <#
-Builds the offline patch for Bank into build/bank and checks it with
+Builds the offline patch for Bank into build/binary/bank and checks it with
 Verify-BankPatch.ps1. The folder holds one package, the latest: an existing
 one is replaced. Its name (Get-PackageId.ps1) is in PACKAGE.txt.
 #>
@@ -28,7 +28,7 @@ try {
     $elf = Join-Path $projectRoot 'build/intermediate/bank/bank-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank
-    $output = Join-Path $projectRoot 'build/bank'
+    $output = Join-Path $projectRoot 'build/binary/bank'
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     & cargo +stable run --locked --offline -p patch-builder -- build-development offline $inputRecord.code $inputRecord.exheader $elf $output | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Development patch build failed: $LASTEXITCODE" }
