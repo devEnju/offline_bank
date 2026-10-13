@@ -180,7 +180,7 @@ The message only comes for a Save and Quit that was cut off. An error in a runni
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
-**After updating the patch.** A Save and Quit that was interrupted under another version of the patch is finished by that version only; any other shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
+**After updating the patch.** A Save and Quit that was interrupted is finished by the version it was made with, or by one that records a save in progress the same way; a version that records it differently shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
 
 ## Troubleshooting
 
