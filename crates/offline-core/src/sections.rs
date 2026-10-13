@@ -17,7 +17,7 @@
 //!
 //! Loading is a read into place; saving is the reverse. Nothing is converted.
 
-use crate::{checksum::Crc32, native_blob::BLOB_SIZE, sidecar::Kind};
+use crate::native_blob::BLOB_SIZE;
 use core::ops::Range;
 
 pub const TRANSPORT_SLOTS: usize = 30;
@@ -42,7 +42,7 @@ pub const MAIN_RANGES: [Range<usize>; 3] = [
 ];
 /// Body ranges kept in the Bank file, in order: the boxes and what is kept
 /// per box slot.
-const BANK_RANGES: [Range<usize>; 3] = [
+pub const BANK_RANGES: [Range<usize>; 3] = [
     BOXES_START..TRANSPORT_RECORDS.start,
     TRANSPORT_RECORDS.end..TRANSPORT_TAGS.start,
     SLOT_DATA_START..TAIL_START,
@@ -52,12 +52,6 @@ const TAIL_START: usize = 0xBB418;
 pub const MAIN_SIZE: usize =
     BOXES_START + (SLOT_DATA_START - TRANSPORT_TAGS.end) + (BLOB_SIZE - TAIL_START);
 pub const BANK_SIZE: usize = BLOB_SIZE - TRANSPORT_SIZE - MAIN_SIZE;
-
-/// The main side file: one payload of `MAIN_RANGES` per slot.
-pub const MAIN_FILE: Kind = Kind {
-    magic: *b"BKOFMAIN",
-    capacity: MAIN_SIZE as u32,
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SectionError {
@@ -72,16 +66,6 @@ fn sized(actual: usize, expected: usize) -> Result<(), SectionError> {
     } else {
         Err(SectionError::WrongSize { expected, actual })
     }
-}
-
-/// CRC of the Bank file payload, computed on the full body without moving it.
-pub fn bank_crc(body: &[u8]) -> Result<u32, SectionError> {
-    sized(body.len(), BLOB_SIZE)?;
-    let mut crc = Crc32::new();
-    for range in BANK_RANGES {
-        crc.update(&body[range]);
-    }
-    Ok(crc.finish())
 }
 
 /// Moves the Bank ranges together in place: afterwards `body[..BANK_SIZE]` is
@@ -311,9 +295,12 @@ mod tests {
             original[TRANSPORT_TAGS].to_vec(),
         );
         let mut work = original.clone();
-        let crc = bank_crc(&work).unwrap();
+        let bank: Vec<u8> = BANK_RANGES
+            .into_iter()
+            .flat_map(|range| original[range].to_vec())
+            .collect();
         compact(&mut work).unwrap();
-        assert_eq!(crate::crc32(&work[..BANK_SIZE]), crc);
+        assert!(work[..BANK_SIZE] == bank);
         validate_bank(&work[..BANK_SIZE]).unwrap();
         // The payload begins with the first box.
         assert!(work[..BOX_STRIDE] == original[BOXES_START..BOXES_START + BOX_STRIDE]);
@@ -355,7 +342,6 @@ mod tests {
             let mut short = vec![0; size];
             assert!(compact(&mut short).is_err());
             assert!(expand(&mut short).is_err());
-            assert!(bank_crc(&short).is_err());
             assert!(transport_count(&short).is_err());
             assert!(main_parts(&mut short).is_err());
         }

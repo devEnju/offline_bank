@@ -10,12 +10,7 @@ use core::{
     slice,
     sync::atomic::{AtomicU32, Ordering},
 };
-use offline_core::{
-    sections::TRANSPORT_SLOTS,
-    sidecar::{Sidecar, SLOTS},
-    transport::{self, KIND},
-    Storage,
-};
+use offline_core::{sections::TRANSPORT_SLOTS, transport, Storage, METADATA_SIZE};
 
 /// Transporter's `fs:USER` session handle.
 pub(crate) const FS_SESSION: *const u32 = 0x0031_1f80 as *const u32;
@@ -105,36 +100,52 @@ struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
 unsafe impl Sync for Stack {}
 static STACK: Stack = Stack(UnsafeCell::new([0; WORKER_STACK_SIZE]));
 
-/// The transport box in Bank's extdata, open for reading and writing: its
-/// two slots (`offline_core::sidecar`) are the files `/mover.bin` and
-/// `/mover.alt.bin`, addressed as one range. Bank keeps every slot in a file
-/// of its own, because the console leaves a file that was being written
-/// unreadable when the power fails.
+/// A pair of files in Bank's extdata, open for reading and writing and
+/// addressed as one range: the two journal records, or the two copies of
+/// the transport box. Bank keeps each in a file of its own, because the
+/// console leaves a file that was being written unreadable when the power
+/// fails.
 ///
-/// A file that is missing or cannot be opened makes every read of its slot
-/// fail, and so the check and the delivery refuse: Transporter neither
-/// creates nor replaces a file. Bank's next Save and Quit does.
+/// A file that is missing or cannot be opened makes every read of it fail,
+/// and so the check and the delivery refuse: Transporter neither creates
+/// nor replaces a file. Bank's next Save and Quit does.
 struct File {
-    handles: [Option<u32>; SLOTS],
-    written: [bool; SLOTS],
+    handles: [Option<u32>; 2],
+    written: [bool; 2],
+    /// Length of each of the two files.
+    len: u64,
+}
+
+/// Bank's files as the delivery rules reach them (`transport::Files`): one
+/// pair at a time, so that never more than two files are open.
+struct BankFiles;
+impl transport::Files for BankFiles {
+    type Storage = File;
+    fn journal(&mut self) -> Option<File> {
+        unsafe { File::open(JOURNAL_PATHS, METADATA_SIZE as u64) }
+    }
+    fn mover(&mut self) -> Option<File> {
+        unsafe { File::open(MOVER_PATHS, u64::from(transport::LEN)) }
+    }
 }
 impl File {
     /// `None` when Bank's extdata or both files do not exist, access is
-    /// refused, or a file is not exactly the size Bank creates.
-    unsafe fn open() -> Option<Self> {
+    /// refused, or a file is not exactly `len` bytes, the size Bank creates.
+    unsafe fn open(paths: [&[u8]; 2], len: u64) -> Option<Self> {
         // Whatever was opened is closed again if this ends early.
         let mut file = Self {
-            handles: [None; SLOTS],
-            written: [false; SLOTS],
+            handles: [None; 2],
+            written: [false; 2],
+            len,
         };
-        for (handle, path) in file.handles.iter_mut().zip(MOVER_PATHS) {
-            *handle = unsafe { Self::open_one(path) }.ok()?;
+        for (handle, path) in file.handles.iter_mut().zip(paths) {
+            *handle = unsafe { Self::open_one(path, len) }.ok()?;
         }
         file.handles.iter().any(Option::is_some).then_some(file)
     }
     /// `Ok(None)` for a file that is not there or cannot be opened, `Err`
     /// for one of another size: that is not a file of this layout.
-    unsafe fn open_one(path: &[u8]) -> Result<Option<u32>, ()> {
+    unsafe fn open_one(path: &[u8], len: u64) -> Result<Option<u32>, ()> {
         type Open = unsafe extern "aapcs" fn(
             *const u32,
             *mut u32,
@@ -175,17 +186,17 @@ impl File {
         }
         let size: Size = unsafe { transmute(FILE_SIZE) };
         let mut length = 0;
-        if unsafe { size(&handle, &mut length) } < 0 || length != KIND.slot_len() {
+        if unsafe { size(&handle, &mut length) } < 0 || length != len {
             unsafe { close(handle) };
             return Err(());
         }
         Ok(Some(handle))
     }
-    /// The slot file that holds `offset..offset + length`, and where in it.
+    /// The file that holds `offset..offset + length`, and where in it.
     fn locate(&self, offset: u64, length: usize) -> Result<(usize, u32, u64), ()> {
-        let index = (offset / KIND.slot_len()) as usize;
-        let within = offset % KIND.slot_len();
-        if index >= SLOTS || within + length as u64 > KIND.slot_len() {
+        let index = (offset / self.len) as usize;
+        let within = offset % self.len;
+        if index >= self.handles.len() || within + length as u64 > self.len {
             return Err(());
         }
         Ok((index, self.handles[index].ok_or(())?, within))
@@ -256,7 +267,7 @@ impl Storage for File {
     /// own box is never sent a write of any kind.
     fn sync(&mut self) -> Result<(), ()> {
         let dummy = [0u8; 1];
-        for index in 0..SLOTS {
+        for index in 0..self.handles.len() {
             if let (Some(handle), true) = (self.handles[index], self.written[index]) {
                 self.put(handle, 0, &dummy[..0], FLUSH_FLAGS)?;
                 self.written[index] = false;
@@ -298,15 +309,15 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
 /// the message to show, or 0 for none; the delivery answers 1 when it is
 /// written.
 unsafe fn work(job: u32, task: *const u8) -> u32 {
-    let file = unsafe { File::open() }.map(|file| Sidecar::new(file, KIND));
     if job == JOB_CHECK {
-        let slots = file.and_then(|mut file| file.slots().ok());
-        return refusal_message(slots.as_ref()).unwrap_or(0);
+        return transport::check(&mut BankFiles)
+            .err()
+            .map_or(0, refusal_message);
     }
-    let (Some(mut file), Some((records, tags))) = (file, unsafe { native_box(task) }) else {
+    let Some((records, tags)) = (unsafe { native_box(task) }) else {
         return 0;
     };
-    u32::from(transport::deliver(&mut file, records, tags).is_ok())
+    u32::from(transport::deliver(&mut BankFiles, records, tags).is_ok())
 }
 
 unsafe extern "aapcs" fn worker(_: u32) {

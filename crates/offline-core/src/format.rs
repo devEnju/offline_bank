@@ -1,10 +1,22 @@
 use crate::crc32;
 
-pub const SCHEMA_VERSION: u16 = 1;
-pub const SNAPSHOT_HEADER_SIZE: usize = 32;
-pub const METADATA_SIZE: usize = 192;
-const SNAPSHOT_MAGIC: &[u8; 8] = b"BKOFSNAP";
-const METADATA_MAGIC: &[u8; 8] = b"BKOFMETA";
+pub const SCHEMA_VERSION: u8 = 1;
+pub const METADATA_SIZE: usize = 140;
+const METADATA_MAGIC: &[u8; 3] = b"BKJ";
+/// Most Pokémon the transport box holds.
+const MOST_HELD: u8 = 30;
+/// The games a save can be with, in the order of their number in the record
+/// (1 to 8): X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon.
+const TITLES: [u64; 8] = [
+    0x0004_0000_0005_5d00,
+    0x0004_0000_0005_5e00,
+    0x0004_0000_0011_c400,
+    0x0004_0000_0011_c500,
+    0x0004_0000_0016_4800,
+    0x0004_0000_0017_5e00,
+    0x0004_0000_001b_5000,
+    0x0004_0000_001b_5100,
+];
 
 pub type Fingerprint = [u8; 32];
 
@@ -12,20 +24,18 @@ pub type Fingerprint = [u8; 32];
 pub enum FormatError {
     Truncated,
     BadMagic,
-    UnsupportedVersion(u16),
-    BadHeaderSize,
+    UnsupportedVersion(u8),
     BadChecksum,
     NonzeroReserved,
-    InvalidState,
     InvalidReference,
-    InvalidGeneration,
     InvalidSequence,
     InvalidGameIdentity,
     IndistinguishableGameStates,
-    PayloadTooLarge,
-    CapacityMismatch,
+    /// A Bank payload is exactly as long as its file.
+    PayloadSize,
 }
 
+/// One of the two copies every file exists in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
     A,
@@ -39,107 +49,61 @@ impl Slot {
             Self::B => Self::A,
         }
     }
-    pub(crate) fn index(self) -> u64 {
+    pub fn index(self) -> u64 {
         match self {
             Self::A => 0,
             Self::B => 1,
         }
     }
-    fn byte(self) -> u8 {
-        self.index() as u8
-    }
-    fn parse(byte: u8) -> Result<Self, FormatError> {
-        match byte {
-            0 => Ok(Self::A),
-            1 => Ok(Self::B),
-            _ => Err(FormatError::InvalidReference),
+    fn of(bit: u8) -> Self {
+        if bit & 1 == 0 {
+            Self::A
+        } else {
+            Self::B
         }
     }
 }
 
+/// One file of a save: which of its two copies, and that copy's checksum. A
+/// copy belongs to the save only if its bytes have this checksum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SnapshotHeader {
-    pub generation: u64,
-    pub payload_len: u32,
-    pub payload_crc32: u32,
-}
-
-impl SnapshotHeader {
-    pub fn encode(self) -> Result<[u8; SNAPSHOT_HEADER_SIZE], FormatError> {
-        if self.generation == 0 {
-            return Err(FormatError::InvalidGeneration);
-        }
-        let mut out = [0; SNAPSHOT_HEADER_SIZE];
-        out[..8].copy_from_slice(SNAPSHOT_MAGIC);
-        put16(&mut out, 8, SCHEMA_VERSION);
-        put16(&mut out, 10, SNAPSHOT_HEADER_SIZE as u16);
-        put32(&mut out, 12, self.payload_len);
-        put64(&mut out, 16, self.generation);
-        put32(&mut out, 24, self.payload_crc32);
-        let checksum = crc32(&out[..28]);
-        put32(&mut out, 28, checksum);
-        Ok(out)
-    }
-
-    pub fn decode(bytes: &[u8], capacity: u32) -> Result<Self, FormatError> {
-        if bytes.len() != SNAPSHOT_HEADER_SIZE {
-            return Err(FormatError::Truncated);
-        }
-        validate_prefix(bytes, SNAPSHOT_MAGIC, SNAPSHOT_HEADER_SIZE)?;
-        let header = Self {
-            generation: get64(bytes, 16),
-            payload_len: get32(bytes, 12),
-            payload_crc32: get32(bytes, 24),
-        };
-        if header.generation == 0 {
-            return Err(FormatError::InvalidGeneration);
-        }
-        if header.payload_len > capacity {
-            return Err(FormatError::PayloadTooLarge);
-        }
-        Ok(header)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SnapshotRef {
+pub struct Part {
     pub slot: Slot,
-    pub header: SnapshotHeader,
+    pub crc: u32,
 }
 
-impl SnapshotRef {
-    fn encode(self, out: &mut [u8]) -> Result<(), FormatError> {
-        if self.header.generation == 0 {
-            return Err(FormatError::InvalidGeneration);
-        }
-        out.fill(0);
-        out[0] = self.slot.byte();
-        put32(out, 4, self.header.payload_len);
-        put64(out, 8, self.header.generation);
-        put32(out, 16, self.header.payload_crc32);
-        Ok(())
-    }
+/// A save: the copy of each of the three files that belongs to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Save {
+    pub bank: Part,
+    pub main: Part,
+    pub mover: Part,
+    /// Pokémon in the transport box.
+    pub held: u8,
+}
 
-    fn decode(bytes: &[u8], capacity: u32) -> Result<Self, FormatError> {
-        if !zero(&bytes[1..4]) || !zero(&bytes[20..24]) {
-            return Err(FormatError::NonzeroReserved);
+impl Save {
+    /// Where the next save writes the transport box. Normally the copy that
+    /// is not in use. While a delivery waits, that copy holds the delivery,
+    /// which must outlast the save until it is current; the box in use is
+    /// empty then, and the new box goes over it.
+    pub fn next_mover(&self, delivery: bool) -> Slot {
+        if delivery {
+            self.mover.slot
+        } else {
+            self.mover.slot.other()
         }
-        let header = SnapshotHeader {
-            payload_len: get32(bytes, 4),
-            generation: get64(bytes, 8),
-            payload_crc32: get32(bytes, 16),
-        };
-        if header.generation == 0 {
-            return Err(FormatError::InvalidGeneration);
-        }
-        if header.payload_len > capacity {
-            return Err(FormatError::PayloadTooLarge);
-        }
-        Ok(Self {
-            slot: Slot::parse(bytes[0])?,
-            header,
-        })
     }
+}
+
+/// What a save has written beside the Bank file: the checksums of its main
+/// file and its transport box, and the Pokémon in that box. Their copies
+/// follow from the save before (`Save::next_mover`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sides {
+    pub main: u32,
+    pub mover: u32,
+    pub held: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,8 +117,8 @@ pub struct GameIdentity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PendingTransfer {
-    pub before: SnapshotRef,
-    pub after: SnapshotRef,
+    pub before: Save,
+    pub after: Save,
     pub game: GameIdentity,
     pub before_fingerprint: Fingerprint,
     pub after_fingerprint: Fingerprint,
@@ -162,15 +126,46 @@ pub struct PendingTransfer {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
-    Clean(SnapshotRef),
+    Clean(Save),
     Prepared(PendingTransfer),
 }
 
+impl Phase {
+    /// The save in force: the one before, while another is in progress.
+    pub fn current(&self) -> Save {
+        match self {
+            Self::Clean(current) => *current,
+            Self::Prepared(pending) => pending.before,
+        }
+    }
+}
+
+/// The journal record. Layout, little endian:
+///
+/// | Bytes | Field |
+/// | --- | --- |
+/// | 0..4 | `BKJ` and the version |
+/// | 4..8 | sequence |
+/// | 8 | bit 0 a save is in progress, bit 1 a delivery waits, bits 4..8 its game (1 to 8) |
+/// | 9 | copies: bits 0..3 the current save's bank, main, mover; bits 3..6 the same for the save in progress |
+/// | 10, 11 | Pokémon in the transport box: current save, save in progress |
+/// | 12..24 | checksums of bank, main, mover: current save |
+/// | 24..36 | the same: save in progress |
+/// | 36..40 | checksum of the waiting delivery |
+/// | 40..72 | identity of the save in progress (trainer name, ID, hash) |
+/// | 72..104 | fingerprint before |
+/// | 104..136 | fingerprint after |
+/// | 136..140 | CRC-32 of bytes 0..136 |
+///
+/// Without a save in progress everything that belongs to one is zero, and so
+/// is the delivery's checksum while none waits. Unused bits are zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Metadata {
-    pub sequence: u64,
-    pub capacity: u32,
+    pub sequence: u32,
     pub phase: Phase,
+    /// Checksum of a delivery from Transporter that waits in the transport
+    /// file's copy that is not in use.
+    pub delivery: Option<u32>,
 }
 
 impl Metadata {
@@ -178,100 +173,148 @@ impl Metadata {
         if self.sequence == 0 {
             return Err(FormatError::InvalidSequence);
         }
-        let too_large = match self.phase {
-            Phase::Clean(current) => current.header.payload_len > self.capacity,
-            Phase::Prepared(pending) => {
-                pending.before.header.payload_len > self.capacity
-                    || pending.after.header.payload_len > self.capacity
-            }
-        };
-        if too_large {
-            return Err(FormatError::PayloadTooLarge);
-        }
+        validate(&self.phase, self.delivery)?;
         let mut out = [0; METADATA_SIZE];
-        out[..8].copy_from_slice(METADATA_MAGIC);
-        put16(&mut out, 8, SCHEMA_VERSION);
-        put16(&mut out, 10, METADATA_SIZE as u16);
-        put64(&mut out, 16, self.sequence);
-        put32(&mut out, 184, self.capacity);
-        match self.phase {
-            Phase::Clean(current) => {
-                out[12] = 1;
-                current.encode(&mut out[24..48])?;
-            }
-            Phase::Prepared(pending) => {
-                validate_pending(pending)?;
-                out[12] = 2;
-                pending.before.encode(&mut out[24..48])?;
-                pending.after.encode(&mut out[48..72])?;
-                put64(&mut out, 72, pending.game.title_id);
-                out[80..112].copy_from_slice(&pending.game.save_identity);
-                out[112..144].copy_from_slice(&pending.before_fingerprint);
-                out[144..176].copy_from_slice(&pending.after_fingerprint);
-            }
+        out[..3].copy_from_slice(METADATA_MAGIC);
+        out[3] = SCHEMA_VERSION;
+        put32(&mut out, 4, self.sequence);
+        let current = self.phase.current();
+        out[9] = copies(&current);
+        out[10] = current.held;
+        put_crcs(&mut out, 12, &current);
+        if let Some(crc) = self.delivery {
+            out[8] |= 2;
+            put32(&mut out, 36, crc);
         }
-        let checksum = crc32(&out[..188]);
-        put32(&mut out, 188, checksum);
+        if let Phase::Prepared(pending) = self.phase {
+            out[8] |= 1 | game_number(pending.game.title_id)? << 4;
+            out[9] |= copies(&pending.after) << 3;
+            out[11] = pending.after.held;
+            put_crcs(&mut out, 24, &pending.after);
+            out[40..72].copy_from_slice(&pending.game.save_identity);
+            out[72..104].copy_from_slice(&pending.before_fingerprint);
+            out[104..136].copy_from_slice(&pending.after_fingerprint);
+        }
+        let checksum = crc32(&out[..136]);
+        put32(&mut out, 136, checksum);
         Ok(out)
     }
 
-    pub fn decode(bytes: &[u8], capacity: u32) -> Result<Self, FormatError> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, FormatError> {
         if bytes.len() != METADATA_SIZE {
             return Err(FormatError::Truncated);
         }
-        validate_prefix(bytes, METADATA_MAGIC, METADATA_SIZE)?;
-        if !zero(&bytes[13..16]) || !zero(&bytes[176..184]) {
-            return Err(FormatError::NonzeroReserved);
+        // Check integrity before trusting a version possibly damaged by a torn write.
+        if crc32(&bytes[..136]) != get32(bytes, 136) {
+            return Err(FormatError::BadChecksum);
         }
-        if get32(bytes, 184) != capacity {
-            return Err(FormatError::CapacityMismatch);
+        if &bytes[..3] != METADATA_MAGIC {
+            return Err(FormatError::BadMagic);
         }
-        let sequence = get64(bytes, 16);
+        if bytes[3] != SCHEMA_VERSION {
+            return Err(FormatError::UnsupportedVersion(bytes[3]));
+        }
+        let sequence = get32(bytes, 4);
         if sequence == 0 {
             return Err(FormatError::InvalidSequence);
         }
-        let current = SnapshotRef::decode(&bytes[24..48], capacity)?;
-        let phase = match bytes[12] {
-            1 => {
-                if !zero(&bytes[48..184]) {
-                    return Err(FormatError::NonzeroReserved);
-                }
-                Phase::Clean(current)
+        if bytes[8] & 0x0c != 0 || bytes[9] & 0xc0 != 0 {
+            return Err(FormatError::NonzeroReserved);
+        }
+        let current = save(bytes, bytes[9], bytes[10], 12);
+        let delivery = (bytes[8] & 2 != 0).then(|| get32(bytes, 36));
+        if delivery.is_none() && !zero(&bytes[36..40]) {
+            return Err(FormatError::NonzeroReserved);
+        }
+        let phase = if bytes[8] & 1 == 0 {
+            if bytes[8] >> 4 != 0 || bytes[9] >> 3 != 0 || bytes[11] != 0 {
+                return Err(FormatError::NonzeroReserved);
             }
-            2 => {
-                let pending = PendingTransfer {
-                    before: current,
-                    after: SnapshotRef::decode(&bytes[48..72], capacity)?,
-                    game: GameIdentity {
-                        title_id: get64(bytes, 72),
-                        save_identity: array32(&bytes[80..112]),
-                    },
-                    before_fingerprint: array32(&bytes[112..144]),
-                    after_fingerprint: array32(&bytes[144..176]),
-                };
-                validate_pending(pending)?;
-                Phase::Prepared(pending)
+            if !zero(&bytes[24..36]) || !zero(&bytes[40..136]) {
+                return Err(FormatError::NonzeroReserved);
             }
-            _ => return Err(FormatError::InvalidState),
+            Phase::Clean(current)
+        } else {
+            let title_id = *TITLES
+                .get(usize::from(bytes[8] >> 4).wrapping_sub(1))
+                .ok_or(FormatError::InvalidGameIdentity)?;
+            Phase::Prepared(PendingTransfer {
+                before: current,
+                after: save(bytes, bytes[9] >> 3, bytes[11], 24),
+                game: GameIdentity {
+                    title_id,
+                    save_identity: array32(&bytes[40..72]),
+                },
+                before_fingerprint: array32(&bytes[72..104]),
+                after_fingerprint: array32(&bytes[104..136]),
+            })
         };
+        validate(&phase, delivery)?;
         Ok(Self {
             sequence,
-            capacity,
             phase,
+            delivery,
         })
     }
 }
 
-fn validate_pending(p: PendingTransfer) -> Result<(), FormatError> {
-    if p.before.slot == p.after.slot
-        || p.before.header.generation.checked_add(1) != Some(p.after.header.generation)
+/// The number of a game in the record, 1 to 8.
+fn game_number(title_id: u64) -> Result<u8, FormatError> {
+    TITLES
+        .iter()
+        .position(|title| *title == title_id)
+        .map(|index| index as u8 + 1)
+        .ok_or(FormatError::InvalidGameIdentity)
+}
+
+fn copies(save: &Save) -> u8 {
+    save.bank.slot.index() as u8
+        | (save.main.slot.index() as u8) << 1
+        | (save.mover.slot.index() as u8) << 2
+}
+fn put_crcs(out: &mut [u8], at: usize, save: &Save) {
+    put32(out, at, save.bank.crc);
+    put32(out, at + 4, save.main.crc);
+    put32(out, at + 8, save.mover.crc);
+}
+fn save(bytes: &[u8], copies: u8, held: u8, at: usize) -> Save {
+    let part = |bit: u8, at: usize| Part {
+        slot: Slot::of(copies >> bit),
+        crc: get32(bytes, at),
+    };
+    Save {
+        bank: part(0, at),
+        main: part(1, at + 4),
+        mover: part(2, at + 8),
+        held,
+    }
+}
+
+/// What must hold between the saves of a record, whoever wrote it.
+fn validate(phase: &Phase, delivery: Option<u32>) -> Result<(), FormatError> {
+    let current = phase.current();
+    if current.held > MOST_HELD {
+        return Err(FormatError::InvalidReference);
+    }
+    // Transporter delivers only into an empty box.
+    if delivery.is_some() && current.held != 0 {
+        return Err(FormatError::InvalidReference);
+    }
+    let Phase::Prepared(pending) = phase else {
+        return Ok(());
+    };
+    let after = pending.after;
+    // A save never writes a copy that is in use; only an empty transport
+    // box is written over, to keep a delivery beside it.
+    if after.held > MOST_HELD
+        || after.bank.slot == current.bank.slot
+        || after.main.slot == current.main.slot
+        || after.mover.slot != current.next_mover(delivery.is_some())
     {
         return Err(FormatError::InvalidReference);
     }
-    if p.game.title_id == 0 {
-        return Err(FormatError::InvalidGameIdentity);
-    }
-    if p.before_fingerprint == p.after_fingerprint {
+    game_number(pending.game.title_id)?;
+    if pending.before_fingerprint == pending.after_fingerprint {
         return Err(FormatError::IndistinguishableGameStates);
     }
     Ok(())
@@ -321,23 +364,6 @@ pub fn decide_recovery(pending: &PendingTransfer, observed: GameObservation) -> 
     }
 }
 
-fn validate_prefix(bytes: &[u8], magic: &[u8; 8], size: usize) -> Result<(), FormatError> {
-    // Check integrity before trusting a version possibly damaged by a torn write.
-    if crc32(&bytes[..size - 4]) != get32(bytes, size - 4) {
-        return Err(FormatError::BadChecksum);
-    }
-    if &bytes[..8] != magic {
-        return Err(FormatError::BadMagic);
-    }
-    let version = get16(bytes, 8);
-    if version != SCHEMA_VERSION {
-        return Err(FormatError::UnsupportedVersion(version));
-    }
-    if get16(bytes, 10) as usize != size {
-        return Err(FormatError::BadHeaderSize);
-    }
-    Ok(())
-}
 pub(crate) fn zero(bytes: &[u8]) -> bool {
     bytes.iter().all(|&byte| byte == 0)
 }
@@ -346,30 +372,9 @@ fn array32(bytes: &[u8]) -> [u8; 32] {
     out.copy_from_slice(bytes);
     out
 }
-fn get16(bytes: &[u8], at: usize) -> u16 {
-    u16::from_le_bytes([bytes[at], bytes[at + 1]])
-}
 fn get32(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
 }
-fn get64(bytes: &[u8], at: usize) -> u64 {
-    u64::from_le_bytes([
-        bytes[at],
-        bytes[at + 1],
-        bytes[at + 2],
-        bytes[at + 3],
-        bytes[at + 4],
-        bytes[at + 5],
-        bytes[at + 6],
-        bytes[at + 7],
-    ])
-}
-fn put16(out: &mut [u8], at: usize, value: u16) {
-    out[at..at + 2].copy_from_slice(&value.to_le_bytes());
-}
 fn put32(out: &mut [u8], at: usize, value: u32) {
     out[at..at + 4].copy_from_slice(&value.to_le_bytes());
-}
-fn put64(out: &mut [u8], at: usize, value: u64) {
-    out[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }

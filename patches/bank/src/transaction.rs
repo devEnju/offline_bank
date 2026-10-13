@@ -221,7 +221,7 @@ pub fn match_pending_image(
 mod tests {
     extern crate std;
     use super::*;
-    use offline_core::{Slot, SnapshotHeader, SnapshotRef};
+    use offline_core::{Part, Save, Slot};
     const TITLE: u64 = 0x0004000000055d00;
     fn named(name: &str, id: u32) -> Trainer {
         let mut units = [0; NAME + 1];
@@ -235,25 +235,18 @@ mod tests {
     }
     /// A transaction made with `medium`.
     fn pending(medium: Medium) -> PendingTransfer {
-        let before = SnapshotRef {
-            slot: Slot::A,
-            header: SnapshotHeader {
-                generation: 1,
-                payload_len: 1,
-                payload_crc32: 1,
-            },
-        };
-        let after = SnapshotRef {
-            slot: Slot::B,
-            header: SnapshotHeader {
-                generation: 2,
-                payload_len: 1,
-                payload_crc32: 2,
-            },
+        let save = |slot, crc| {
+            let part = Part { slot, crc };
+            Save {
+                bank: part,
+                main: part,
+                mover: part,
+                held: 0,
+            }
         };
         PendingTransfer {
-            before,
-            after,
+            before: save(Slot::A, 1),
+            after: save(Slot::B, 2),
             game: identity(TITLE, [1; 32], [2; 32], medium, trainer()).unwrap(),
             before_fingerprint: [1; 32],
             after_fingerprint: [2; 32],

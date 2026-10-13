@@ -1,18 +1,18 @@
 //! The stored files and the order in which they are read and written.
 //!
-//! The Bank container carries the journal and decides which save is current.
-//! The Pokédex and transport box containers each hold two slots
-//! tagged with a Bank snapshot (`offline_core::sidecar`). A save writes every
-//! side container's spare slot first, then prepares the Bank journal; a load
-//! uses the slots whose tag matches the Bank's current snapshot. So all four
-//! always describe the same save, without a second journal.
+//! The Bank container carries the journal and the Bank file, and its journal
+//! decides which save is current. The main file and the transport box are a
+//! pair of copies each (`offline_core::pair`): the journal record names the
+//! copy of each that belongs to a save, and its checksum. A save writes the
+//! main file and the transport box into copies that are not in use first,
+//! then prepares the journal with the Bank file; a load reads the copies the
+//! record names. So all three always describe the same save.
 //!
 //! Every unit of a container is a file of its own (`UnitFile`): the two
-//! journal records, the two snapshot slots, and the two slots of each side
-//! container. An interrupted write can make the file it went to unreadable,
-//! and that file is then never one that holds anything still needed. The
-//! two files of a pair take turns; `.alt` names the alternate of the two, not
-//! an older copy.
+//! journal records and the two copies of each file. An interrupted write can
+//! make the file it went to unreadable, and that file is then never one that
+//! holds anything still needed. The two files of a pair take turns; `.alt`
+//! names the alternate of the two, not an older copy.
 //!
 //! This module is generic over storage so the whole sequence is host-tested.
 //! In memory the main thread only ever sees the one native body.
@@ -21,12 +21,13 @@ use crate::session::{self, BankSession};
 use offline_core::{
     moved::{self, Moved},
     native_blob::BLOB_SIZE,
+    pair::{Pair, PairError},
     sections::{
-        self, Identity, BANK_SIZE, HELD, MAIN_FILE, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE,
-        TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
+        self, Identity, BANK_SIZE, HELD, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE, TRANSPORT_RECORDS,
+        TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
-    sidecar::{matching, spare, Kind, Sidecar, SidecarError, Tag},
-    transport, Fingerprint, GameIdentity, GameObservation, Phase, RecoveryDecision, Storage,
+    transport, Fingerprint, GameIdentity, GameObservation, Part, Phase, RecoveryDecision, Sides,
+    Slot, Storage,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,10 +55,14 @@ impl UnitFile {
     }
 }
 
+/// Lengths of the files: a journal record, and one copy of the Bank file,
+/// the main file and the transport box. Each is its data and nothing else.
 pub const RECORD: u64 = offline_core::METADATA_SIZE as u64;
 pub const SNAPSHOT: u64 = session::BANK_LAYOUT.snapshot_len();
+pub const MAIN: u64 = MAIN_SIZE as u64;
+pub const MOVER: u64 = transport::LEN as u64;
 /// In the order of the container's layout: the journal records, then the
-/// snapshot slots.
+/// copies of the Bank file.
 static BANK_UNITS: [UnitFile; 4] = [
     UnitFile::new("/journal.bin", RECORD),
     UnitFile::new("/journal.alt.bin", RECORD),
@@ -65,12 +70,12 @@ static BANK_UNITS: [UnitFile; 4] = [
     UnitFile::new("/bank.alt.bin", SNAPSHOT),
 ];
 static MAIN_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/main.bin", MAIN_FILE.slot_len()),
-    UnitFile::new("/main.alt.bin", MAIN_FILE.slot_len()),
+    UnitFile::new("/main.bin", MAIN),
+    UnitFile::new("/main.alt.bin", MAIN),
 ];
 static TRANSPORT_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/mover.bin", transport::KIND.slot_len()),
-    UnitFile::new("/mover.alt.bin", transport::KIND.slot_len()),
+    UnitFile::new("/mover.bin", MOVER),
+    UnitFile::new("/mover.alt.bin", MOVER),
 ];
 
 impl FileName {
@@ -123,11 +128,12 @@ impl Files for ExtFiles {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Problem {
-    /// The slot for the current Bank snapshot is unreadable.
+    /// The copy that belongs to the current save is missing or is not what
+    /// the journal says it is.
     Damaged = 1,
-    /// A waiting delivery would be overwritten.
+    /// A delivery waits that could not be read: a save would drop it.
     Conflict = 3,
-    /// The staged body or prepared snapshot is not what was computed.
+    /// The staged body is not a native body.
     Layout = 4,
     /// The Bank file is not open or has an unresolved transfer.
     NotReady = 5,
@@ -157,16 +163,16 @@ pub struct Loaded {
 pub struct BankFiles<F: Files> {
     files: F,
     bank: Option<BankSession<F::Storage>>,
-    /// The delivery taken at the last load, as (slot, id).
-    adopted: Option<(usize, u32)>,
+    /// The delivery that waits was read at the last load and is the box shown.
+    taken: bool,
     /// Test builds: what the next save rehearses.
     #[cfg(feature = "test-build")]
     rehearsal: Rehearsal,
 }
 
-fn side<E>(file: FileName) -> impl Fn(SidecarError<E>) -> Error<E> {
+fn side<E>(file: FileName) -> impl Fn(PairError<E>) -> Error<E> {
     move |error| match error {
-        SidecarError::Io(error) => Error::Io(error),
+        PairError::Io(error) => Error::Io(error),
         _ => Error::Side(file, Problem::Damaged),
     }
 }
@@ -176,7 +182,7 @@ impl<F: Files> BankFiles<F> {
         Self {
             files,
             bank: None,
-            adopted: None,
+            taken: false,
             #[cfg(feature = "test-build")]
             rehearsal: Rehearsal::None,
         }
@@ -193,9 +199,9 @@ impl<F: Files> BankFiles<F> {
     pub fn is_open(&self) -> bool {
         self.bank.is_some()
     }
-    /// Releases the Bank file. Side files are never held open.
+    /// Releases the Bank file. The other files are never held open.
     pub fn close(&mut self) -> Option<F::Storage> {
-        self.adopted = None;
+        self.taken = false;
         self.bank.take().map(BankSession::into_storage)
     }
 
@@ -204,19 +210,21 @@ impl<F: Files> BankFiles<F> {
             .as_mut()
             .ok_or(Error::Side(FileName::Bank, Problem::NotReady))
     }
-    fn open_side(&mut self, file: FileName, kind: Kind) -> Outcome<Option<Sidecar<F::Storage>>, F> {
+    /// The two copies of the main file or of the transport box.
+    fn open_side(&mut self, file: FileName) -> Outcome<Option<Pair<F::Storage>>, F> {
+        let len = file.units()[0].len as u32;
         Ok(self
             .files
             .open(file)
             .map_err(Error::Io)?
-            .map(|storage| Sidecar::new(storage, kind)))
+            .map(|storage| Pair::new(storage, len)))
     }
-    fn ensure_side(&mut self, file: FileName, kind: Kind) -> Outcome<Sidecar<F::Storage>, F> {
-        match self.open_side(file, kind)? {
-            Some(sidecar) => Ok(sidecar),
-            None => Ok(Sidecar::new(
+    fn ensure_side(&mut self, file: FileName) -> Outcome<Pair<F::Storage>, F> {
+        match self.open_side(file)? {
+            Some(pair) => Ok(pair),
+            None => Ok(Pair::new(
                 self.files.create(file).map_err(Error::Io)?,
-                kind,
+                file.units()[0].len as u32,
             )),
         }
     }
@@ -244,97 +252,80 @@ impl<F: Files> BankFiles<F> {
         self.bank()?.phase().map_err(Error::Bank)
     }
 
-    /// Writes the side slots for `next` from the full body in `staging`, then
-    /// compacts `staging[..BANK_SIZE]` into the Bank payload.
-    fn write_sides(
-        &mut self,
-        staging: &mut [u8],
-        current: Option<Tag>,
-        generation: u64,
-    ) -> Outcome<Tag, F> {
-        if staging.len() != BLOB_SIZE {
-            return Err(Error::Side(FileName::Bank, Problem::Layout));
-        }
-        let layout = |_| Error::Side(FileName::Bank, Problem::Layout);
-        let next = Tag {
-            generation,
-            crc: sections::bank_crc(staging).map_err(layout)?,
-        };
-
-        // The main file and the transport box are needed: a slot of theirs
-        // that cannot be read is void only beside the one seen to be
-        // current, or while no Bank exists yet.
-        let mut main = self.ensure_side(FileName::Main, MAIN_FILE)?;
-        let slots = match current {
-            Some(current) => main.slots_beside(current).map_err(side(FileName::Main))?,
-            None => main.slots_or_void(),
+    /// Writes the main file and the transport box of the next save from the
+    /// full body in `staging`, into the copies `main` and `mover`, then
+    /// compacts `staging[..BANK_SIZE]` into the Bank payload. Returns what the
+    /// journal records of the two.
+    fn write_sides(&mut self, staging: &mut [u8], main: Slot, mover: Slot) -> Outcome<Sides, F> {
+        let layout = Error::Side(FileName::Bank, Problem::Layout);
+        let Ok(held) = sections::transport_count(staging) else {
+            return Err(layout);
         };
         let [header, middle, tail] = MAIN_RANGES;
-        main.write(
-            spare(&slots, current),
-            Some(next),
-            0,
-            0,
-            &[&staging[header], &staging[middle], &staging[tail]],
-        )
-        .map_err(side(FileName::Main))?;
-        drop(main);
-
-        let mut file = self.ensure_side(FileName::Transport, transport::KIND)?;
-        let slots = match current {
-            Some(current) => file
-                .slots_beside(current)
-                .map_err(side(FileName::Transport))?,
-            None => file.slots_or_void(),
-        };
-        let conflict = Error::Side(FileName::Transport, Problem::Conflict);
-        let (index, aux) = match current {
-            Some(current) => {
-                transport::on_save(&slots, current, self.adopted).map_err(|_| conflict)?
-            }
-            // A brand-new Bank: keep a delivery that arrived before it existed.
-            None => (
-                (0..slots.len())
-                    .find(|&index| !transport::is_delivery(&slots[index]))
-                    .ok_or(conflict)?,
-                0,
-            ),
-        };
-        let count = sections::transport_count(staging).map_err(layout)?;
-        file.write(
-            index,
-            Some(next),
-            aux,
-            count,
-            &[&staging[TRANSPORT_RECORDS], &staging[TRANSPORT_TAGS]],
-        )
-        .map_err(side(FileName::Transport))?;
+        let mut file = self.ensure_side(FileName::Main)?;
+        let main = file
+            .write(main, &[&staging[header], &staging[middle], &staging[tail]])
+            .map_err(side(FileName::Main))?;
         drop(file);
-
-        sections::compact(staging).map_err(layout)?;
-        Ok(next)
+        let mut file = self.ensure_side(FileName::Transport)?;
+        let mover = file
+            .write(
+                mover,
+                &[&staging[TRANSPORT_RECORDS], &staging[TRANSPORT_TAGS]],
+            )
+            .map_err(side(FileName::Transport))?;
+        drop(file);
+        if sections::compact(staging).is_err() {
+            return Err(layout);
+        }
+        Ok(Sides {
+            main,
+            mover,
+            held: held as u8,
+        })
     }
 
     /// Creates a new Bank from the full native body in `staging`. Afterwards
-    /// `staging` holds the compact Bank payload, not a body. A Bank file left
-    /// by a creation that was cut is finished in place; the store refuses
-    /// that for any file in which a Bank was ever current.
+    /// `staging` holds the compact Bank payload, not a body. Files left by a
+    /// creation that was cut are finished in place. Beside a Bank that
+    /// exists, or one that cannot be read, nothing is written.
     pub fn initialize(&mut self, staging: &mut [u8]) -> Outcome<(), F> {
-        if self.bank.is_some() {
+        if self.open()?.is_some() {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         }
-        self.adopted = None;
-        self.write_sides(staging, None, 1)?;
+        self.taken = false;
+        let sides = self.write_sides(staging, Slot::A, Slot::A)?;
         let payload = &staging[..BANK_SIZE];
         let session = match self.files.open(FileName::Bank).map_err(Error::Io)? {
-            Some(storage) => BankSession::reinitialize_bytes(storage, payload),
+            Some(storage) => BankSession::reinitialize_bytes(storage, payload, sides),
             None => {
                 let storage = self.files.create(FileName::Bank).map_err(Error::Io)?;
-                BankSession::initialize_bytes(storage, payload)
+                BankSession::initialize_bytes(storage, payload, sides)
             }
         };
         self.bank = Some(session.map_err(Error::Bank)?);
         Ok(())
+    }
+
+    /// Reads the copy of the transport box that `part` names. `false` when
+    /// it cannot be read and `dispensable` says that nothing is lost with it;
+    /// otherwise that is an error.
+    fn read_box(
+        &mut self,
+        part: Part,
+        dispensable: bool,
+        records: &mut [u8],
+        tags: &mut [u8],
+    ) -> Outcome<bool, F> {
+        let read = match self.open_side(FileName::Transport)? {
+            Some(mut file) => file.read(part, &mut [records, tags]),
+            None => Err(PairError::Checksum),
+        };
+        match read {
+            Ok(()) => Ok(true),
+            Err(_) if dispensable => Ok(false),
+            Err(error) => Err(side(FileName::Transport)(error)),
+        }
     }
 
     /// Assembles the current save in `staging` as one native body: one read
@@ -344,94 +335,54 @@ impl<F: Files> BankFiles<F> {
         if staging.len() != BLOB_SIZE {
             return Err(Error::Side(FileName::Bank, Problem::Layout));
         }
-        let tag = self.bank()?.read_bank(staging).map_err(Error::Bank)?;
+        let record = self.bank()?.record().map_err(Error::Bank)?;
+        let current = self.bank()?.read_bank(staging).map_err(Error::Bank)?;
         sections::expand(staging).map_err(|_| Error::Side(FileName::Bank, Problem::Layout))?;
-        let mut loaded = Loaded {
-            transport_missing: true,
-            delivered: 0,
-        };
-        self.adopted = None;
+        self.taken = false;
 
         // The main file holds what Bank cannot do without: the header with
-        // the format, the Miles and the flags, and the Pokédex. Its slot
+        // the format, the Miles and the flags, and the Pokédex. Its copy
         // for this save must be there and read.
-        let damaged = Error::Side(FileName::Main, Problem::Damaged);
-        let Some(mut file) = self.open_side(FileName::Main, MAIN_FILE)? else {
-            return Err(damaged);
-        };
-        let slots = file.slots_beside(tag).map_err(side(FileName::Main))?;
-        let found = matching(&slots, tag).and_then(|index| {
-            let slot = slots[index].filter(|slot| slot.len as usize == MAIN_SIZE);
-            slot.map(|slot| (index, slot))
-        });
-        let Some((index, slot)) = found else {
-            return Err(damaged);
+        let Some(mut file) = self.open_side(FileName::Main)? else {
+            return Err(Error::Side(FileName::Main, Problem::Damaged));
         };
         let layout = |_| Error::Side(FileName::Main, Problem::Layout);
         let mut parts = sections::main_parts(staging).map_err(layout)?;
-        file.read_parts(index, &slot, &mut parts)
+        file.read(current.main, &mut parts)
             .map_err(side(FileName::Main))?;
         drop(file);
         sections::validate_header(staging).map_err(layout)?;
 
-        if let Some(mut file) = self.open_side(FileName::Transport, transport::KIND)? {
-            let slots = file.slots_beside(tag).map_err(side(FileName::Transport))?;
-            let plan = transport::on_load(&slots, tag);
-            if let Some(index) = plan.source {
-                let slot = slots[index].filter(|slot| slot.len as usize == TRANSPORT_SIZE);
-                let slot = slot.ok_or(Error::Side(FileName::Transport, Problem::Damaged))?;
-                let (low, high) = staging.split_at_mut(TRANSPORT_TAGS.start);
-                let read = file.read_parts(
-                    index,
-                    &slot,
-                    &mut [
-                        &mut low[TRANSPORT_RECORDS],
-                        &mut high[..TRANSPORT_TAGS.len()],
-                    ],
-                );
-                match (read, plan.adopted) {
-                    (Ok(()), Some((id, count))) => {
-                        self.adopted = Some((index, id));
-                        loaded.delivered = count;
-                        loaded.transport_missing = false;
-                    }
-                    (Ok(()), None) => loaded.transport_missing = false,
-                    (Err(SidecarError::Io(error)), _) => return Err(Error::Io(error)),
-                    // A damaged delivery is left alone and not shown.
-                    (Err(_), Some(_)) => {
-                        low[TRANSPORT_RECORDS].fill(0);
-                        high[..TRANSPORT_TAGS.len()].fill(0);
-                    }
-                    (Err(_), None) => {
-                        return Err(Error::Side(FileName::Transport, Problem::Damaged))
-                    }
-                }
-            }
+        // The transport box: the save's own, or the delivery that waits
+        // beside it. A delivery that cannot be read is left alone and not
+        // shown, and an empty box that cannot be read is an empty box.
+        let load = transport::on_load(&record);
+        let (low, high) = staging.split_at_mut(TRANSPORT_TAGS.start);
+        let (records, tags) = (&mut low[TRANSPORT_RECORDS], &mut high[..TRANSPORT_SLOTS]);
+        let mut loaded = Loaded {
+            transport_missing: false,
+            delivered: 0,
+        };
+        if !self.read_box(
+            load.source,
+            load.delivery || current.held == 0,
+            records,
+            tags,
+        )? {
+            records.fill(0);
+            tags.fill(0);
+            loaded.transport_missing = true;
+        } else if load.delivery {
+            self.taken = true;
+            loaded.delivered = sections::occupied(records);
         }
         Ok(loaded)
     }
 
-    /// Removes transport slots that the save just published made obsolete: a
-    /// delivery it took and the previous copy of the box. This is the only
-    /// place slots are removed, and it belongs to Save and Quit; a load never
-    /// writes. Until it has run, Transporter sees two valid slots and waits.
-    pub fn tidy_transport(&mut self) -> Outcome<(), F> {
-        let tag = self.bank()?.tag().map_err(Error::Bank)?;
-        if let Some(mut file) = self.open_side(FileName::Transport, transport::KIND)? {
-            let slots = file.slots_beside(tag).map_err(side(FileName::Transport))?;
-            let plan = transport::on_load(&slots, tag);
-            for (index, void) in plan.void.into_iter().enumerate() {
-                if void {
-                    file.clear(index).map_err(side(FileName::Transport))?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Makes the next save durable up to the game write: side slots first,
-    /// then the Bank journal. `staging` holds the full native body and is
-    /// compacted. The native game writer MUST NOT run if this fails.
+    /// Makes the next save durable up to the game write: the main file and
+    /// the transport box first, then the journal with the Bank file.
+    /// `staging` holds the full native body and is compacted. The native game
+    /// writer MUST NOT run if this fails.
     pub fn prepare(
         &mut self,
         staging: &mut [u8],
@@ -439,7 +390,13 @@ impl<F: Files> BankFiles<F> {
         before: Fingerprint,
         after: Fingerprint,
     ) -> Outcome<(), F> {
-        let current = self.bank()?.tag().map_err(Error::Bank)?;
+        let current = self.bank()?.current().map_err(Error::Bank)?;
+        let delivery = self.bank()?.record().map_err(Error::Bank)?.delivery;
+        // The record that makes this save current says that nothing waits
+        // any more, so a delivery that was not shown is not saved over.
+        if delivery.is_some() && !self.taken {
+            return Err(Error::Side(FileName::Transport, Problem::Conflict));
+        }
         // Test builds: keep the record being written for a while, so that a
         // real power cut lands inside one of its writes.
         #[cfg(feature = "test-build")]
@@ -448,26 +405,26 @@ impl<F: Files> BankFiles<F> {
                 .tear_record(TEAR_RECORD_PASSES)
                 .map_err(Error::Bank)?;
         }
-        let next = self.write_sides(staging, Some(current), current.generation + 1)?;
-        // Test builds: the same for the spare snapshot slot.
+        let sides = self.write_sides(
+            staging,
+            current.main.slot.other(),
+            current.next_mover(delivery.is_some()),
+        )?;
+        // Test builds: the same for the spare copy of the Bank file.
         #[cfg(feature = "test-build")]
         if self.rehearsal == Rehearsal::TearBoxes {
             self.bank()?
                 .tear_boxes(&mut staging[..BANK_SIZE], TEAR_BOXES_PASSES)
                 .map_err(Error::Bank)?;
         }
-        let prepared = self
-            .bank()?
-            .prepare_bytes(&staging[..BANK_SIZE], game, before, after)
+        self.bank()?
+            .prepare_bytes(&staging[..BANK_SIZE], sides, game, before, after)
             .map_err(Error::Bank)?;
-        if prepared != next {
-            return Err(Error::Side(FileName::Bank, Problem::Layout));
-        }
         Ok(())
     }
 
     /// Resolves a prepared save from the game actually observed. Follow it
-    /// with `tidy_transport` and `read`.
+    /// with `read`.
     pub fn reconcile(&mut self, observed: GameObservation) -> Outcome<RecoveryDecision, F> {
         self.bank()?.reconcile_game(observed).map_err(Error::Bank)
     }
@@ -475,7 +432,7 @@ impl<F: Files> BankFiles<F> {
     /// What the prepared save moved between Bank and the game: everything
     /// the Bank held before it, in its boxes and in the transport box it
     /// showed, against everything it holds after it. `staging` is used for
-    /// one snapshot at a time and holds nothing of use afterwards; the two
+    /// one file at a time and holds nothing of use afterwards; the two
     /// lists are working room. Nothing is written.
     pub fn pending_moves(
         &mut self,
@@ -483,7 +440,8 @@ impl<F: Files> BankFiles<F> {
         before: &mut [Identity; HELD],
         after: &mut [Identity; HELD],
     ) -> Outcome<Moved, F> {
-        let Phase::Prepared(pending) = self.phase()? else {
+        let record = self.bank()?.record().map_err(Error::Bank)?;
+        let Phase::Prepared(pending) = record.phase else {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         };
         if staging.len() != BLOB_SIZE {
@@ -498,24 +456,21 @@ impl<F: Files> BankFiles<F> {
             counts[side] =
                 sections::box_identities(&staging[..BANK_SIZE], list, 0).map_err(layout)?;
         }
-        // The transport box: before, what a load showed (its own box, or a
+        // The transport box: before, what a load showed (its own box, or the
         // delivery it took); after, the box the save wrote.
-        if let Some(mut file) = self.open_side(FileName::Transport, transport::KIND)? {
-            let slots = file.slots().map_err(side(FileName::Transport))?;
-            let shown = transport::on_load(&slots, Tag::of(&pending.before)).source;
-            let written = matching(&slots, Tag::of(&pending.after));
-            let records = &mut staging[..TRANSPORT_SIZE];
-            for (index, list, count) in [(shown, &mut *before, 0), (written, &mut *after, 1)] {
-                let Some(index) = index else { continue };
-                let slot = slots[index].filter(|slot| slot.len as usize == TRANSPORT_SIZE);
-                let slot = slot.ok_or(Error::Side(FileName::Transport, Problem::Damaged))?;
-                file.read(index, &slot, records)
-                    .map_err(side(FileName::Transport))?;
-                counts[count] = sections::identities(
-                    &records[..TRANSPORT_SLOTS * RECORD_SIZE],
-                    list,
-                    counts[count],
-                );
+        let shown = transport::on_load(&record);
+        let (records, tags) = staging[..TRANSPORT_SIZE].split_at_mut(TRANSPORT_SLOTS * RECORD_SIZE);
+        for (part, empty, list, count) in [
+            (
+                shown.source,
+                !shown.delivery && pending.before.held == 0,
+                &mut *before,
+                0,
+            ),
+            (pending.after.mover, pending.after.held == 0, &mut *after, 1),
+        ] {
+            if self.read_box(part, empty, records, tags)? {
+                counts[count] = sections::identities(records, list, counts[count]);
             }
         }
         Ok(moved::moved(
@@ -524,11 +479,10 @@ impl<F: Files> BankFiles<F> {
         ))
     }
 
-    /// Resolves a prepared save toward the snapshot `decision` names, for a
+    /// Resolves a prepared save toward the side `decision` names, for a
     /// game whose save is neither of its two images (`moved::choose`). The
     /// journal's own rule is not loosened: this names the image the game is
-    /// taken to have been saved from. Follow it with `tidy_transport` and
-    /// `read`, as `reconcile`.
+    /// taken to have been saved from. Follow it with `read`, as `reconcile`.
     pub fn reconcile_as(&mut self, decision: RecoveryDecision) -> Outcome<RecoveryDecision, F> {
         let Phase::Prepared(pending) = self.phase()? else {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
@@ -552,7 +506,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::testing::*;
-    use offline_core::sections::{DEX, MILES, RECORD_SIZE, REWARD_DATE};
+    use offline_core::sections::{BANK_RANGES, DEX, MILES, REWARD_DATE};
     use std::{boxed::Box, collections::BTreeSet, format, vec, vec::Vec};
 
     /// Opens after a reboot, resolving a pending save from the observed game.
@@ -576,17 +530,19 @@ mod tests {
         assert_eq!(
             files,
             [
-                ("/journal.bin", 192),
-                ("/journal.alt.bin", 192),
-                ("/bank.bin", 729_832),
-                ("/bank.alt.bin", 729_832),
-                ("/main.bin", 30_532),
-                ("/main.alt.bin", 30_532),
-                ("/mover.bin", 7_056),
-                ("/mover.alt.bin", 7_056),
+                ("/journal.bin", 140),
+                ("/journal.alt.bin", 140),
+                ("/bank.bin", 729_800),
+                ("/bank.alt.bin", 729_800),
+                ("/main.bin", 30_466),
+                ("/main.alt.bin", 30_466),
+                ("/mover.bin", 6_990),
+                ("/mover.alt.bin", 6_990),
             ]
         );
-        assert_eq!(CONTAINERS.map(FileName::size), [1_460_048, 61_064, 14_112]);
+        assert_eq!(CONTAINERS.map(FileName::size), [1_459_880, 60_932, 13_980]);
+        // The three data files are the native body and nothing else.
+        assert_eq!((SNAPSHOT + MAIN + MOVER) as usize, BLOB_SIZE);
         let lengths: Vec<u64> = FileName::Bank.units().iter().map(|unit| unit.len).collect();
         assert_eq!(lengths, session::BANK_LAYOUT.units().map(|unit| unit.1));
     }
@@ -608,6 +564,27 @@ mod tests {
         let original = body(0x31, 0x44, 0);
         let disk = fresh(&original);
         assert_eq!(disk.0.borrow().files.len(), 3);
+        // Each file is its ranges of the body, unchanged and in order, with
+        // nothing before, between or behind them. The second copies are
+        // not written yet.
+        let stored = disk.0.borrow().files.clone();
+        let cut = |ranges: &[core::ops::Range<usize>]| -> Vec<u8> {
+            let parts = ranges.iter().map(|range| &original[range.clone()]);
+            parts.flatten().copied().collect()
+        };
+        for (file, skip, ranges) in [
+            (FileName::Bank, 2 * RECORD as usize, &BANK_RANGES[..]),
+            (FileName::Main, 0, &MAIN_RANGES[..]),
+            (
+                FileName::Transport,
+                0,
+                &[TRANSPORT_RECORDS, TRANSPORT_TAGS][..],
+            ),
+        ] {
+            let (first, second) = stored[&(file as u8)][skip..].split_at(cut(ranges).len());
+            assert!(first == cut(ranges), "{file:?}");
+            assert!(second.len() == first.len() && second.iter().all(|byte| *byte == 0));
+        }
         let (loaded_body, loaded) = load(&mut opened(&disk));
         assert!(loaded_body == original);
         assert_eq!(
@@ -648,11 +625,19 @@ mod tests {
 
     #[test]
     fn a_cut_at_every_write_of_a_save_leaves_one_consistent_save() {
-        every_cut_of_a_save(false, 0);
+        every_cut_of_a_save(false, 0, 0);
     }
     #[test]
     fn on_the_console_a_cut_at_every_write_of_a_save_leaves_one_consistent_save() {
-        every_cut_of_a_save(true, 0);
+        every_cut_of_a_save(true, 0, 0);
+    }
+    /// A save that takes a delivery writes its box over the empty one in
+    /// use, so that the delivery outlasts it: whole until the save counts.
+    #[test]
+    fn a_cut_at_every_write_of_a_save_that_takes_a_delivery_keeps_or_takes_it_whole() {
+        for console in [false, true] {
+            every_cut_of_a_save(console, 0, 6);
+        }
     }
     /// The test build's two rehearsals that write for a while: a cut at
     /// every one of their writes too leaves the old save.
@@ -661,14 +646,15 @@ mod tests {
     fn a_cut_at_every_write_of_a_rehearsed_save_leaves_one_consistent_save() {
         for rehearsal in [Rehearsal::TearRecord, Rehearsal::TearBoxes] {
             for console in [false, true] {
-                every_cut_of_a_save(console, rehearsal as u8);
+                every_cut_of_a_save(console, rehearsal as u8, 0);
             }
         }
     }
-    /// `rehearsal` is 0 for a save as in a release.
+    /// `rehearsal` is 0 for a save as in a release. With `delivered` not 0
+    /// the box of the old save is empty and that many Pokémon wait for it.
     #[cfg_attr(not(feature = "test-build"), allow(unused_variables))]
-    fn every_cut_of_a_save(console: bool, rehearsal: u8) {
-        let old = body(0x31, 0x44, 2);
+    fn every_cut_of_a_save(console: bool, rehearsal: u8, delivered: usize) {
+        let old = body(0x31, 0x44, if delivered == 0 { 2 } else { 0 });
         let new = body(0x52, 0x66, 1);
         // Establish a committed save that has all three pieces.
         let disk = fresh(&body(0, 0, 0));
@@ -679,6 +665,10 @@ mod tests {
             .unwrap();
         files.reconcile(observed([9; 32])).unwrap();
         load(&mut files);
+        drop(files);
+        if delivered != 0 {
+            deliver(&disk, delivered);
+        }
         let base = disk.reboot().like(console);
 
         // The next session changes Miles, boxes, Pokédex and box.
@@ -696,31 +686,32 @@ mod tests {
         let counting = base.cut_after(usize::MAX);
         save(&counting).unwrap();
         let total = counting.0.borrow().operations;
-        assert!(total > 15);
+        assert!(total > 10);
         // A rehearsal writes far more often than a save does.
         #[cfg(feature = "test-build")]
-        assert_eq!(total > 100, rehearsal != 0);
+        assert_eq!(total > 50, rehearsal != 0);
 
-        let old_state = old.clone();
+        // What Bank shows of the old save: its box, or the delivery.
+        let old_state = body(0x31, 0x44, if delivered == 0 { 2 } else { delivered });
         let new_state = new.clone();
         let third = body(0x73, 0x21, 1);
         let check = |disk: &Shared, game, expected: &Vec<u8>, context: &str| {
             let (bytes, loaded) = recovered(disk, game);
             assert!(bytes == *expected, "{context}: body differs");
             assert!(!loaded.transport_missing, "{context}");
+            let waiting = if game == BEFORE { delivered } else { 0 };
+            assert_eq!(loaded.delivered as usize, waiting, "{context}");
             // Whatever the cut left behind, the next save goes through.
             let mut files = BankFiles::new(disk.reboot());
             if let Phase::Prepared(_) = files.open().unwrap().unwrap() {
                 files.reconcile(observed(game)).unwrap();
             }
-            let _ = files.tidy_transport();
             load(&mut files);
             files
                 .prepare(&mut third.clone(), GAME, [5; 32], [6; 32])
                 .unwrap_or_else(|error| panic!("{context}: the next save: {error:?}"));
             files.reconcile(observed([6; 32])).unwrap();
-            files.tidy_transport().unwrap();
-            let (bytes, loaded) = load(&mut opened(&files.files_mut().reboot()));
+            let bytes = load(&mut opened(&files.files_mut().reboot())).0;
             assert!(bytes == third, "{context}: the next save differs");
         };
         for cut in 0..=total {
@@ -737,7 +728,6 @@ mod tests {
         let finish = |disk: &Shared| {
             let mut files = opened(disk);
             files.reconcile(observed(AFTER))?;
-            files.tidy_transport()?;
             let mut staging = vec![0; BLOB_SIZE];
             files.read(&mut staging).map(|_| ())
         };
@@ -809,7 +799,7 @@ mod tests {
     #[test]
     fn the_main_file_is_needed_and_never_replaced_by_defaults() {
         let disk = fresh(&body(0x31, 0x44, 0));
-        let damaged_slot = Err(Error::Side(FileName::Main, Problem::Damaged));
+        let refused = Err(Error::Side(FileName::Main, Problem::Damaged));
         // No main file at all.
         let missing = disk.copy();
         missing.0.borrow_mut().files.remove(&(FileName::Main as u8));
@@ -821,7 +811,7 @@ mod tests {
             .files
             .get_mut(&(FileName::Main as u8))
             .unwrap()[100] ^= 1;
-        // A main file from some other Bank matches no snapshot.
+        // A main file from some other Bank is not this save's.
         let foreign = disk.copy();
         let other = fresh(&body(0x77, 0x44, 0));
         let bytes = other.0.borrow().files[&(FileName::Main as u8)].clone();
@@ -837,7 +827,7 @@ mod tests {
         ] {
             let before = disk.0.borrow().files.clone();
             let mut files = opened(&disk);
-            assert_eq!(files.read(&mut vec![0; BLOB_SIZE]), damaged_slot, "{name}");
+            assert_eq!(files.read(&mut vec![0; BLOB_SIZE]), refused, "{name}");
             // Nothing was written, and nothing can be saved over it.
             assert!(disk.0.borrow().files == before, "{name}");
         }
@@ -849,14 +839,6 @@ mod tests {
             opened(&disk).read(&mut vec![0; BLOB_SIZE]),
             Err(Error::Side(FileName::Main, Problem::Layout))
         );
-    }
-
-    /// Whether Transporter's check lets a transfer begin.
-    fn transport_ok(disk: &Shared) -> bool {
-        visit(disk).is_some_and(|mut file| {
-            file.slots()
-                .is_ok_and(|slots| transport::may_deliver(&slots))
-        })
     }
 
     #[test]
@@ -883,17 +865,15 @@ mod tests {
         let (bytes, loaded) = recovered(&disk, BEFORE);
         assert_eq!(loaded.delivered, 12);
         assert!(bytes == body(0x31, 0x44, 12));
-        // Published: four remain, the delivery is gone, even after a cut
-        // between publication and cleanup.
+        // Published: four remain and the delivery is gone, with the one
+        // record that makes the save current, wherever that is cut.
         for (cut, console) in [0, 1, 2, 3, 4, usize::MAX]
             .into_iter()
             .flat_map(|cut| [(cut, false), (cut, true)])
         {
             let published = disk.like(console).cut_after(cut);
             let mut files = opened(&published);
-            let _ = files
-                .reconcile(observed(AFTER))
-                .and_then(|_| files.tidy_transport());
+            let _ = files.reconcile(observed(AFTER));
             let (bytes, loaded) = recovered(&published, AFTER);
             assert_eq!(loaded.delivered, 0, "cut {cut}");
             assert!(bytes == after, "cut {cut}");
@@ -931,8 +911,9 @@ mod tests {
             let disk = empty.cut_after(cut);
             assert_eq!(create(&disk, &original).is_ok(), cut == total, "cut {cut}");
             let disk = disk.reboot();
-            // Transporter may already find the transport files and deliver
-            // into them; those Pokémon have left their game.
+            // Once the first journal record is there the Bank exists, and
+            // Transporter may deliver into it; those Pokémon have left
+            // their game.
             let delivered = transport_ok(&disk) && try_deliver(&disk, 5).is_some();
             deliveries += usize::from(delivered);
             // The next start: no Bank yet means it is created now, with the
@@ -953,8 +934,11 @@ mod tests {
             assert!(bytes == with_box, "cut {cut}: body differs");
         }
         // Both happened: starts that had to finish the creation, and
-        // deliveries into a Bank that did not exist yet.
-        assert!(finished_later > 20 && deliveries > 0);
+        // deliveries into a Bank whose creation was cut at its very end.
+        assert!(
+            finished_later > 15 && deliveries > 0,
+            "{finished_later} {deliveries}"
+        );
     }
 
     /// An occupied record of its own identity; `id` must stay below 0x1000.
@@ -1004,7 +988,6 @@ mod tests {
             .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
         files.reconcile(observed([9; 32])).unwrap();
-        files.tidy_transport().unwrap();
         assert!(load(&mut files).0 == old);
         let base = disk.reboot();
 
@@ -1069,7 +1052,6 @@ mod tests {
                 "{name}"
             );
             assert_eq!(files.reconcile_as(decision), Ok(decision), "{name}");
-            files.tidy_transport().unwrap();
             let (bytes, loaded) = load(&mut files);
             let state = if decision == commit { &new } else { &old };
             assert!(bytes == *state, "{name}: body differs");
@@ -1092,7 +1074,6 @@ mod tests {
             .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
         files.reconcile(observed([9; 32])).unwrap();
-        files.tidy_transport().unwrap();
         let base = disk.reboot();
         let count = |disk: &Shared| {
             let mut files = BankFiles::new(disk.reboot());
@@ -1184,6 +1165,8 @@ mod tests {
             .prepare(&mut body(0x52, 0x44, 0), GAME, BEFORE, AFTER)
             .unwrap();
         files.reconcile(observed(AFTER)).unwrap();
+        drop(files);
+        let intact = disk.copy();
         // Both journal records are lost.
         disk.0
             .borrow_mut()
@@ -1191,12 +1174,22 @@ mod tests {
             .get_mut(&(FileName::Bank as u8))
             .unwrap()[..2 * offline_core::METADATA_SIZE]
             .fill(0);
-        let mut files = BankFiles::new(disk.reboot());
+        let lost = disk.reboot();
+        let before = lost.0.borrow().files.clone();
+        let mut files = BankFiles::new(lost.clone());
         assert!(matches!(files.open(), Err(Error::Bank(_))));
         assert!(matches!(
             files.initialize(&mut body(0, 0, 0)),
             Err(Error::Bank(_))
         ));
+        // Nothing was written beside it either.
+        assert!(lost.0.borrow().files == before);
+        // Nor is a Bank that is there ever created over.
+        let mut files = BankFiles::new(intact);
+        assert_eq!(
+            files.initialize(&mut body(0, 0, 0)),
+            Err(Error::Side(FileName::Bank, Problem::NotReady))
+        );
     }
 
     #[test]
@@ -1216,24 +1209,18 @@ mod tests {
         assert_eq!(loaded.delivered, 0);
         assert!(bytes == emptied);
 
-        // Until the save's clean-up has run, loads never remove the taken
-        // delivery themselves, and Transporter keeps waiting.
+        // While the save is in progress Transporter waits. The record that
+        // makes it current also says that nothing waits any more: the box
+        // is free at once, and loads show it empty.
         let disk = disk.reboot();
+        assert!(!transport_ok(&disk));
         let mut files = opened(&disk);
         files.reconcile(observed(AFTER)).unwrap();
         for _ in 0..3 {
             let (bytes, loaded) = load(&mut files);
             assert_eq!(loaded.delivered, 0);
             assert!(bytes == emptied);
-            assert!(!transport_ok(&disk));
         }
-        // The next completed save finishes the clean-up.
-        files
-            .prepare(&mut emptied.clone(), GAME, [3; 32], [4; 32])
-            .unwrap();
-        files.reconcile(observed([4; 32])).unwrap();
-        files.tidy_transport().unwrap();
-        assert!(load(&mut files).0 == emptied);
         assert!(transport_ok(&disk));
         deliver(&disk, 30);
         // The next session: the one before has closed its files.
@@ -1256,18 +1243,21 @@ mod tests {
             .prepare(&mut body(0x52, 0x44, 4), GAME, BEFORE, AFTER)
             .unwrap();
 
-        let untidy = rolled_back.copy();
-        opened(&untidy).reconcile(observed(AFTER)).unwrap();
+        drop(files);
+        let in_progress = rolled_back.copy();
+        let published = rolled_back.copy();
+        opened(&published).reconcile(observed(AFTER)).unwrap();
         opened(&rolled_back).reconcile(observed(BEFORE)).unwrap();
-
-        let tidy = untidy.copy();
-        opened(&tidy).tidy_transport().unwrap();
 
         for (name, disk, delivered, pokemon) in [
             ("delivery waiting", &waiting, 12, 12),
-            ("save rolled back, leftover slot", &rolled_back, 12, 12),
-            ("save published, delivery not yet removed", &untidy, 0, 4),
-            ("save published and cleaned up", &tidy, 0, 4),
+            (
+                "save rolled back, its box left behind",
+                &rolled_back,
+                12,
+                12,
+            ),
+            ("save published", &published, 0, 4),
         ] {
             let disk = disk.reboot();
             let before = disk.0.borrow().files.clone();
@@ -1279,44 +1269,160 @@ mod tests {
             assert_eq!(disk.0.borrow().operations, 0, "{name}: a load wrote");
             assert!(disk.0.borrow().files == before, "{name}: a file changed");
         }
-        // Only the published-and-cleaned-up file has room judged by Transporter,
-        // and it still holds four Pokémon, so even there it must wait.
-        for disk in [&waiting, &rolled_back, &untidy, &tidy] {
+        // In each of them Pokémon are in the way, or the save is not
+        // settled: Transporter waits.
+        for disk in [&waiting, &rolled_back, &in_progress, &published] {
             assert!(!transport_ok(disk));
         }
     }
 
     #[test]
-    fn a_delivery_made_before_the_bank_exists_is_kept() {
+    fn nothing_is_delivered_before_a_bank_exists() {
+        // Not even into files that a creation which was cut left behind.
         let disk = Shared::default();
-        disk.clone().create(FileName::Transport).unwrap();
-        deliver(&disk, 2);
+        assert!(try_deliver(&disk, 2).is_none());
+        drop(disk.clone().create(FileName::Transport).unwrap());
+        drop(disk.clone().create(FileName::Bank).unwrap());
+        assert!(!transport_ok(&disk));
+        assert!(try_deliver(&disk, 2).is_none());
         let mut files = BankFiles::new(disk.clone());
         assert_eq!(files.open(), Ok(None));
         files.initialize(&mut body(0x31, 0x44, 0)).unwrap();
         let (bytes, loaded) = load(&mut opened(&disk.reboot()));
-        assert_eq!(loaded.delivered, 2);
-        assert!(bytes == body(0x31, 0x44, 2));
+        assert_eq!(loaded.delivered, 0);
+        assert!(bytes == body(0x31, 0x44, 0));
+        // From then on there is a box to deliver into.
+        assert!(transport_ok(&disk));
     }
 
     #[test]
-    fn a_damaged_delivery_is_ignored_and_left_in_place() {
+    fn a_damaged_delivery_is_not_shown_and_not_saved_over() {
         let disk = fresh(&body(0x31, 0x44, 0));
         load(&mut opened(&disk));
-        deliver(&disk, 5);
-        let before = disk.0.borrow().files[&(FileName::Transport as u8)].clone();
-        let slot = transport::KIND.slot_len() as usize;
-        let untagged = if before[16..24] == [0; 8] { 0 } else { slot };
+        let delivery = deliver(&disk, 5);
+        let at = delivery.slot.index() as usize * TRANSPORT_SIZE;
         disk.0
             .borrow_mut()
             .files
             .get_mut(&(FileName::Transport as u8))
-            .unwrap()[untagged + 64 + 3] ^= 1;
-        let damaged = disk.0.borrow().files[&(FileName::Transport as u8)].clone();
-        let (bytes, loaded) = load(&mut opened(&disk));
+            .unwrap()[at + 3] ^= 1;
+        let damaged = disk.0.borrow().files.clone();
+        let mut files = opened(&disk);
+        let (bytes, loaded) = load(&mut files);
         assert_eq!((loaded.delivered, loaded.transport_missing), (0, true));
         assert!(bytes == body(0x31, 0x44, 0));
-        assert!(disk.0.borrow().files[&(FileName::Transport as u8)] == damaged);
+        // A save would say that nothing waits any more: it is refused, and
+        // the delivery stays where it is.
+        assert_eq!(
+            files.prepare(&mut body(0x52, 0x44, 0), GAME, BEFORE, AFTER),
+            Err(Error::Side(FileName::Transport, Problem::Conflict))
+        );
+        assert!(disk.0.borrow().files == damaged);
+        assert!(!transport_ok(&disk));
+    }
+
+    #[test]
+    fn a_transport_box_that_holds_pokemon_is_needed() {
+        let disk = fresh(&body(0x31, 0x44, 0));
+        let mut files = opened(&disk);
+        load(&mut files);
+        files
+            .prepare(&mut body(0x31, 0x44, 3), GAME, BEFORE, AFTER)
+            .unwrap();
+        files.reconcile(observed(AFTER)).unwrap();
+        let Phase::Clean(current) = files.phase().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(current.held, 3);
+        drop(files);
+        let missing = disk.copy();
+        missing
+            .0
+            .borrow_mut()
+            .files
+            .remove(&(FileName::Transport as u8));
+        let damaged = disk.copy();
+        damaged
+            .0
+            .borrow_mut()
+            .files
+            .get_mut(&(FileName::Transport as u8))
+            .unwrap()[current.mover.slot.index() as usize * TRANSPORT_SIZE + 9] ^= 1;
+        for (name, disk) in [("missing", missing), ("damaged", damaged)] {
+            let before = disk.0.borrow().files.clone();
+            assert_eq!(
+                opened(&disk).read(&mut vec![0; BLOB_SIZE]),
+                Err(Error::Side(FileName::Transport, Problem::Damaged)),
+                "{name}"
+            );
+            assert!(disk.0.borrow().files == before, "{name}");
+        }
+        // The other copy is not this save's: damage there changes nothing.
+        let spare = disk.copy();
+        spare
+            .0
+            .borrow_mut()
+            .files
+            .get_mut(&(FileName::Transport as u8))
+            .unwrap()[current.mover.slot.other().index() as usize * TRANSPORT_SIZE + 9] ^= 1;
+        assert!(load(&mut opened(&spare)).0 == body(0x31, 0x44, 3));
+    }
+
+    #[test]
+    fn a_cut_at_every_write_of_a_delivery_leaves_none_or_the_whole_one() {
+        every_cut_of_a_delivery(false);
+    }
+    #[test]
+    fn on_the_console_a_cut_at_every_write_of_a_delivery_leaves_none_or_the_whole_one() {
+        every_cut_of_a_delivery(true);
+    }
+    fn every_cut_of_a_delivery(console: bool) {
+        let base = fresh(&body(0x31, 0x44, 0)).like(console);
+        let counting = base.cut_after(usize::MAX);
+        deliver(&counting, 7);
+        // The records and the tags of the box and their sync, then each
+        // journal record and its sync.
+        let total = counting.0.borrow().operations;
+        assert_eq!(total, 7);
+        let mut whole = 0;
+        for cut in 0..=total {
+            let disk = base.cut_after(cut);
+            let done = try_deliver(&disk, 7).is_some();
+            assert_eq!(done, cut == total, "cut {cut}");
+            let disk = disk.reboot();
+            // Transporter's check is exactly where a delivery would refuse.
+            assert_eq!(
+                transport_ok(&disk),
+                try_deliver(&disk.copy(), 3).is_some(),
+                "cut {cut}"
+            );
+            // Bank shows no delivery or all of it, and writes nothing.
+            let (bytes, loaded) = load(&mut opened(&disk));
+            let shown = loaded.delivered as usize;
+            assert!(shown == 0 || shown == 7, "cut {cut}: {shown}");
+            assert!(!done || shown == 7, "cut {cut}");
+            assert!(bytes == body(0x31, 0x44, shown), "cut {cut}: body differs");
+            assert_eq!(disk.0.borrow().operations, 0, "cut {cut}: a load wrote");
+            whole += usize::from(shown == 7);
+            // Whatever the cut left, Bank's next save goes through, and
+            // after it Transporter delivers again.
+            let mut files = opened(&disk);
+            load(&mut files);
+            let emptied = body(0x52, 0x44, 0);
+            files
+                .prepare(&mut emptied.clone(), GAME, BEFORE, AFTER)
+                .unwrap_or_else(|error| panic!("cut {cut}: the next save: {error:?}"));
+            files.reconcile(observed(AFTER)).unwrap();
+            assert!(load(&mut files).0 == emptied, "cut {cut}");
+            drop(files);
+            deliver(&disk, 2);
+            let (bytes, loaded) = load(&mut opened(&disk.reboot()));
+            assert_eq!(loaded.delivered, 2, "cut {cut}");
+            assert!(bytes == body(0x52, 0x44, 2), "cut {cut}");
+        }
+        // The delivery exists from the first journal record on: once it
+        // is written, and on the console once it is synced.
+        assert_eq!(whole, if console { 3 } else { 4 });
     }
 
     /// What the end of a session does: the Bank file is given back and
@@ -1343,7 +1449,6 @@ mod tests {
                 .prepare(&mut next.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
             files.reconcile(observed(AFTER)).unwrap();
-            files.tidy_transport().unwrap();
             end_session(&mut files, &disk);
             expected = next;
         }
@@ -1423,7 +1528,6 @@ mod tests {
                 .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
                 .unwrap();
             files.reconcile(observed([9; 32])).unwrap();
-            files.tidy_transport().unwrap();
             assert!(load(&mut files).0 == old);
             files
                 .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
@@ -1449,7 +1553,6 @@ mod tests {
             // START with the game there, in the same run: its save decides.
             assert!(matches!(files.open(), Ok(Some(Phase::Prepared(_)))));
             files.reconcile(observed(game)).unwrap();
-            files.tidy_transport().unwrap();
             let (bytes, _) = load(&mut files);
             assert!(&bytes == kept);
             end_session(&mut files, &disk);

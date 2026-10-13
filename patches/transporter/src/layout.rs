@@ -8,8 +8,7 @@
 
 use offline_core::{
     sections::{RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
-    sidecar::{Slot, SLOTS},
-    transport,
+    transport::Refusal,
 };
 
 pub const TASK_MANAGER: usize = 0x8;
@@ -46,23 +45,17 @@ pub const MESSAGE_OPEN_BANK: u32 = 3;
 /// Pokémon Bank before using Poké Transporter."
 pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 
-/// The message that stops a session before it begins, for the two slots of
-/// Bank's transport box; `None` when a transfer may go ahead. Slots that are
-/// `None` could not be read at all: a file is missing, of another size or
-/// unreadable, or Bank's extdata is not there. Opening Bank shows or solves
-/// each of these, so the message carries no numbers of its own.
-pub fn refusal_message(slots: Option<&[Option<Slot>; SLOTS]>) -> Option<u32> {
-    let Some(slots) = slots else {
-        return Some(MESSAGE_OPEN_BANK);
-    };
-    if transport::may_deliver(slots) {
-        None
-    } else if slots.iter().flatten().any(|slot| slot.count != 0) {
+/// The message that stops a session before it begins, for what Bank's
+/// journal says (`transport::check`). Opening Bank shows or solves each
+/// reason, so the message carries no numbers of its own.
+pub fn refusal_message(refusal: Refusal) -> u32 {
+    match refusal {
         // Pokémon are in the way: in Bank's box, or in a waiting delivery.
-        Some(MESSAGE_BOX_NOT_EMPTY)
-    } else {
-        // Two valid empty slots: a Bank save was not finished.
-        Some(MESSAGE_OPEN_BANK)
+        Refusal::Occupied => MESSAGE_BOX_NOT_EMPTY,
+        // No Bank yet, a Bank save that was not finished, or a file that
+        // does not read: Bank before its first start, one not yet
+        // converted, or one whose next save replaces the file.
+        Refusal::NotReady => MESSAGE_OPEN_BANK,
     }
 }
 
@@ -73,12 +66,15 @@ pub const DELIVER_DONE: u32 = 1;
 pub const DELIVER_PENDING: u32 = 2;
 
 /// Stack of the worker thread, in the payload's own zero-initialised data.
-/// Its deepest call chain needs well under 1 KiB.
+/// The file work keeps one 512-byte read buffer and a few journal records on
+/// it, far less than this.
 pub const WORKER_STACK_SIZE: usize = 0x4000;
 
-/// Bank's extdata and the two files of the transport box inside it, one per
-/// slot of the box, in slot order.
+/// Bank's extdata and, inside it, the files Transporter reads and writes:
+/// the two journal records and the two copies of the transport box, each
+/// pair in Bank's order.
 pub const BANK_EXTDATA: u32 = 0x0000_0C9B;
+pub const JOURNAL_PATHS: [&[u8]; 2] = [b"/journal.bin\0", b"/journal.alt.bin\0"];
 pub const MOVER_PATHS: [&[u8]; 2] = [b"/mover.bin\0", b"/mover.alt.bin\0"];
 
 #[cfg(test)]
@@ -94,54 +90,23 @@ mod tests {
         assert_eq!(RECORDS_LEN + TRANSPORT_SLOTS, 6_990);
     }
 
-    fn slot(count: u32) -> Option<Slot> {
-        Some(Slot {
-            tag: None,
-            aux: 1,
-            count,
-            len: 0,
-            crc: 0,
-        })
-    }
-    fn message(slots: [Option<Slot>; SLOTS]) -> Option<u32> {
-        refusal_message(Some(&slots))
-    }
-
     #[test]
     fn the_check_tells_pokemon_in_the_way_from_a_bank_that_is_not_ready() {
-        assert_eq!(message([None, None]), None);
-        assert_eq!(message([slot(0), None]), None);
-        assert_eq!(message([None, slot(0)]), None);
         // The "remains in the Transport Box" message only when one does.
-        for slots in [
-            [slot(2), None],
-            [slot(0), slot(5)],
-            [slot(3), slot(0)],
-            [slot(1), slot(1)],
-        ] {
-            assert_eq!(message(slots), Some(MESSAGE_BOX_NOT_EMPTY));
-        }
-        // An unfinished Bank save, and files that are not there or do not
-        // read: Bank before its first start, or one not yet converted.
-        assert_eq!(message([slot(0), slot(0)]), Some(MESSAGE_OPEN_BANK));
-        assert_eq!(refusal_message(None), Some(MESSAGE_OPEN_BANK));
-        // A refusal is exactly where the delivery itself would refuse.
-        for slots in [
-            [None, None],
-            [slot(0), None],
-            [slot(2), None],
-            [slot(0), slot(0)],
-        ] {
-            assert_eq!(message(slots).is_none(), transport::may_deliver(&slots));
-        }
+        assert_eq!(refusal_message(Refusal::Occupied), MESSAGE_BOX_NOT_EMPTY);
+        assert_eq!(refusal_message(Refusal::NotReady), MESSAGE_OPEN_BANK);
         // The worker reports "go on" as 0, which no message may be.
         assert_eq!((MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY), (3, 5));
     }
 
     #[test]
     fn the_paths_are_the_ones_bank_uses_and_fit_the_name_limit() {
+        assert_eq!(
+            JOURNAL_PATHS,
+            [&b"/journal.bin\0"[..], b"/journal.alt.bin\0"]
+        );
         assert_eq!(MOVER_PATHS, [&b"/mover.bin\0"[..], b"/mover.alt.bin\0"]);
-        for path in MOVER_PATHS {
+        for path in JOURNAL_PATHS.into_iter().chain(MOVER_PATHS) {
             assert_eq!(path.last(), Some(&0));
             assert!(path.len() - 2 <= 16);
         }

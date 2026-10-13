@@ -11,8 +11,8 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Connect, disconnect | Nintendo's servers | Skipped; wireless can stay off |
 | Read the source game and convert the Pokémon | Transporter itself | Unchanged |
 | Legality check | Server | None. Whatever Transporter itself accepts is transferred (eggs, for example, are still refused). |
-| "Is Bank's transport box empty?" | Server, after a game was chosen | Reads `/mover.bin` and `/mover.alt.bin` in Bank's extdata, as soon as START is pressed on the title screen and before any game is looked for |
-| Store the Pokémon in Bank | Server | Writes one delivery into the one of those two files that Bank is not using |
+| "Is Bank's transport box empty?" | Server, after a game was chosen | Reads Bank's record of its files (`/journal.bin`, `/journal.alt.bin` in Bank's extdata), as soon as START is pressed on the title screen and before any game is looked for |
+| Store the Pokémon in Bank | Server | Writes one delivery into the file of the transport box that Bank is not using (`/mover.bin` or `/mover.alt.bin`), then notes in Bank's record that it waits |
 | Remove the Pokémon from the source game | Transporter itself | Unchanged |
 | A transfer interrupted by a power failure | Sorted out with the server at the next session, with the same copy of the game: neither lost nor doubled | Nothing is left pending. The Pokémon are never lost; after a power cut between the two writes they can be in Bank and still in the game. |
 | Source of a Gen 5 game | Cartridge | Cartridge and saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)) |
@@ -27,7 +27,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 **Nothing is converted by the patch.** The original Transporter builds a complete Bank transport box in memory and used to upload it. The patch writes that box, unchanged, into Bank's file. The next time you open Bank, the Pokémon are in the transport box, in the positions they had in Box 1 of the source game.
 
-**Order of the two writes.** The delivery is written, flushed, and read back first. Only then does the original remove the Pokémon from the source game. A power cut in between leaves the Pokémon in both places, never in neither. If the delivery cannot be written, the original failure message is shown and the game is not touched.
+**Order of the two writes.** The delivery is written, flushed, read back and noted in Bank's record first. Only then does the original remove the Pokémon from the source game. A power cut in between leaves the Pokémon in both places, never in neither. If the delivery cannot be written, the original failure message is shown and the game is not touched.
 
 **One save before the question.** Right after the chosen game is read, and before any notice or question, the original saves that game once. It stores a small note of its own there, which the server used to sort out an interrupted transfer; offline the note is empty and nothing reads it. No Pokémon data changes in that save, and it happens also if you then answer "No".
 
@@ -40,7 +40,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 The second message is the original's for a session the server asked to clean up; there is no cleanup to perform by hand. Every other message of the original comes where it always did, for the game that was chosen.
 
-Transporter never creates or deletes files and touches no Bank file other than `/mover.bin` and `/mover.alt.bin`; it only ever writes to the one of the two that Bank is not using. If that file is missing or unreadable, for example after a power cut, Transporter refuses; open Bank and Save and Quit once, which writes it anew.
+Transporter never creates or deletes files. Of Bank's files it touches four: it writes the file of the transport box that Bank is not using, and then the two files of Bank's record, to say that a delivery waits. Until the record says so, Bank sees no delivery, so a transfer that is cut off leaves none or the whole one. If one of the files it would write is missing or unreadable, for example after a power cut, Transporter refuses at START; open Bank and Save and Quit once, which writes it anew.
 
 **Bank and Transporter belong together.** A Bank that was last used with an earlier release may keep its transport box in another form. This Transporter then refuses, and the Transporter of that release refuses with a converted Bank. Update both, after converting the Bank with the migration that ships with the release that changed the files.
 

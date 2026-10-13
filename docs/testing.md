@@ -32,6 +32,7 @@ Every package says what it is on its start screen: "Ver. 1.5-offline" for Bank a
 | The rules for an interrupted save | [An interrupted Save and Quit](#an-interrupted-save-and-quit) |
 | Bank's screens and navigation, Poké Miles, or the Pokédex | The matching part of [Bank, feature by feature](#bank-feature-by-feature) |
 | The Transporter patch, or the transport box files | Run 3 of [Normal use](#normal-use), and the matching part of [Transporter, feature by feature](#transporter-feature-by-feature); the HOME rows of [Transfers](#transfers) in any case |
+| How Transporter hands a box over to Bank | [A power cut during a transfer](#a-power-cut-during-a-transfer) as well |
 | How or where files are stored, with a migration for it | [Updating from the version before](#updating-from-the-version-before) as well |
 | A migration patch | [Updating from the version before](#updating-from-the-version-before) |
 | The download patch | [The download from the official server](#the-download-from-the-official-server) |
@@ -167,7 +168,7 @@ All runs here use the test package. After START it shows the original's main men
 | Use Pokémon Bank (before) | Stops after the Bank has marked its save as in progress, before the game is written. Error `00007E57 00000001`. | As after a power cut at that point: mark set, the game has its old save. |
 | Use Pokémon Bank (after) | Stops after the game is written, before the mark is cleared. Error `00007E57 00000002`. | Mark set, the game has its new save. |
 | Use Pokémon Bank (record) | First writes the journal record 150 times, then saves normally. | A valid Bank at every instant. |
-| Use Pokémon Bank (boxes) | First writes the spare snapshot slot 30 times, then saves normally. | A valid Bank at every instant. |
+| Use Pokémon Bank (boxes) | First writes the file of the boxes that is not in use 30 times, then saves normally. | A valid Bank at every instant. |
 | Back | The original's: asks, then returns to the start screen. | |
 
 The two stops end Save and Quit at a fixed point with an error on purpose: "The server did not receive the data." Press A; the line about the HOME Menu follows with the numbers. Close Bank from the HOME Menu, do the "Then" step, and start Bank again. Where a run says "start Bank", choose the plain **Use Pokémon Bank** on the menu. Back on the game selection leads to the menu again, so another entry can be chosen without closing Bank. What Bank decides is explained in [bank.md](bank.md#if-save-and-quit-is-interrupted).
@@ -237,6 +238,20 @@ How to cut the power, best first: pull the SD card, if the model lets you reach 
 Step 3 shows that a cut damaged nothing that was still needed. Step 4 shows that the file the cut left behind is replaced by the next save.
 
 Pulling a card that is being written is at your own risk. Only Bank's own files are being written at that moment; the backup is what protects everything else.
+
+## A power cut during a transfer
+
+With the Transporter package and the normal Bank package, a Gen 5 game with Pokémon in Box 1, and Bank's transport box empty. Three to five times:
+
+| Step | Do | Must show |
+| --- | --- | --- |
+| 1 | Start Transporter, press START, choose the game, confirm the question | the screen that says the Pokémon are being moved |
+| 2 | Cut the power for real as soon as that screen is up | |
+| 3 | Start Bank and pick a game | Bank opens with its boxes as they were. The transport box is empty, or it holds every Pokémon of Box 1 in its position; never some of them |
+| 4 | Look at Box 1 in the game | With an empty transport box: every Pokémon is still there. With a full one: they are still there too, or gone |
+| 5 | In Bank, move what is in the transport box into a box, Save and Quit. Start Transporter and press START | the game list |
+
+Step 3 shows that Bank never sees a delivery that was not written whole. Step 4 is the one case in which Pokémon can be doubled ([transporter.md](transporter.md#limits)): the delivery was complete and the game was not yet saved without them. Step 5 shows that the file the cut left behind is replaced by Bank's save. Before step 5, START in Transporter may show one of its two refusals ([transporter.md](transporter.md#transfers-and-refusals)); both are right at that point.
 
 ## Updating from the version before
 

@@ -250,10 +250,6 @@ mod arm {
             ) {
                 return Err(WorkerError::operation(16, 0));
             }
-            // Remove transport slots the published save made obsolete. A
-            // failure here is retried by the next save and must not undo
-            // this one.
-            let _ = self.files.tidy_transport();
             let loaded = self.read_bank(staging)?;
             Ok(Reply::BankReady {
                 evidence,

@@ -1,53 +1,47 @@
 #![no_std]
 #![forbid(unsafe_code)]
-//! Local storage snapshots/journal plus bounded views of the reviewed native Bank blob.
+//! The journal and the stored files of the offline Bank, plus bounded views of
+//! the reviewed native Bank blob.
 //!
-//! The storage payload is opaque; `native_blob` exposes only verified layout fields. The runtime must supply a verified Bank codec, an empty
-//! Bank initializer, a filesystem adapter, and fingerprints of the complete game
+//! What is stored is opaque here; `native_blob` exposes only verified layout
+//! fields. The runtime must supply a verified Bank codec, an empty Bank
+//! initializer, a filesystem adapter, and fingerprints of the complete game
 //! save transaction. This crate neither patches Bank nor edits game saves.
 //!
-//! # Container format (version 1)
+//! # Stored format (version 1)
 //!
-//! All integers are little endian. A preallocated file contains two 192-byte
-//! metadata records, followed by two snapshot slots. Each snapshot slot contains
-//! a 32-byte header and `Layout::capacity()` payload bytes. Unused payload bytes
-//! are ignored. Capacity is a caller-supplied, version-pinned configuration.
+//! The Bank is the native body cut into three files (`sections`): the Bank
+//! file with the boxes, the main file, and the transport box. Each exists in
+//! two copies, and a copy is its data and nothing else. The journal ties them
+//! together: one 140-byte record, kept twice, that names the copy of each
+//! file that belongs to the current save and that copy's checksum, a save in
+//! progress with the same for it and with what identifies the game it is made
+//! with, and a delivery from Transporter that waits (`format::Metadata` has
+//! the layout). A copy belongs to a save only if its bytes have the checksum
+//! the record names. CRC is CRC-32/ISO-HDLC, intended to detect accidental
+//! damage, not malicious edits. Fingerprints are opaque 32-byte values; use a
+//! cryptographic digest of the complete relevant save.
 //!
-//! Snapshot header: magic `BKOFSNAP` at 0; u16 version at 8; u16 header size at 10;
-//! u32 payload length at 12; u64 generation at 16; u32 payload CRC at 24;
-//! u32 CRC of the preceding 28 header bytes at 28.
-//!
-//! Metadata: magic `BKOFMETA` at 0; u16 version at 8; u16 record size at 10;
-//! u8 state (1 clean, 2 prepared) at 12; reserved zero bytes 13..16;
-//! u64 sequence at 16; current snapshot reference at 24; next reference at 48;
-//! u64 game title ID at 72; 32-byte stable save identity at 80;
-//! 32-byte before fingerprint at 112; 32-byte after fingerprint at 144;
-//! reserved zero bytes 176..184; u32 slot capacity at 184; u32 CRC of bytes 0..188 at 188.
-//! A 24-byte snapshot reference stores slot at 0, three zero bytes, u32 length
-//! at 4, u64 generation at 8, u32 payload CRC at 16, four zero bytes.
-//! Clean metadata has all bytes 48..184 zero. CRC is CRC-32/ISO-HDLC, intended
-//! to detect accidental damage, not malicious edits. Fingerprints are opaque
-//! 32-byte values; use a cryptographic digest of the complete relevant save.
-//!
-//! The Bank runtime stores the Bank regions of the native body as the payload
-//! (`sections`). The Pokédex, transport box, and Miles record live in tagged
-//! two-slot side files that follow this journal (`sidecar`).
+//! `store` holds the journal and the two copies of the Bank file as one
+//! preallocated container: the two records, then the two copies. The main
+//! file and the transport box are a `pair` each. `transport` has the rules by
+//! which Transporter hands a box over.
 //!
 //! # Durable protocol
 //!
-//! A new snapshot is written only to the inactive slot and synchronized first.
-//! Metadata is then written to the older/alternate replica and synchronized,
-//! followed by its other replica and another synchronization. Both replicas have
-//! the same sequence. The highest valid sequence controls visibility; a newer
-//! snapshot by itself is never committed.
+//! New content is written only to the copy that is not in use and
+//! synchronized first. The record is then written to the replica that was not
+//! selected and synchronized, followed by the other replica and another
+//! synchronization. Both replicas have the same sequence. The highest valid
+//! sequence controls visibility; a newer copy by itself is never current.
 //!
 //! For a transfer: verify the game's before state, call `prepare_transfer`, and
 //! mutate the game ONLY after that call succeeds. Then read the game back and
-//! call `reconcile`. A matching before state aborts to the old snapshot; a
-//! matching after state commits the new one. Missing, different, or modified
-//! saves block recovery here; for a modified save, and for a missing one if
-//! the transfer moved Pokémon one way only, the runtime chooses the snapshot
-//! itself, from what the transfer moved (`moved`), and names that image to
+//! call `reconcile`. A matching before state keeps the save before; a
+//! matching after state makes the new one current. Missing, different, or
+//! modified saves block recovery here; for a modified save, and for a missing
+//! one if the transfer moved Pokémon one way only, the runtime chooses the
+//! save itself, from what the transfer moved (`moved`), and names that image to
 //! `reconcile`. Startup must reconcile prepared transactions before allowing
 //! any Bank or game edits.
 //!
@@ -67,9 +61,9 @@
 pub mod game_image;
 pub mod moved;
 pub mod native_blob;
+pub mod pair;
 pub mod rewards;
 pub mod sections;
-pub mod sidecar;
 pub mod transport;
 
 mod checksum;
@@ -79,9 +73,9 @@ mod store;
 
 pub use checksum::{crc32, Crc32};
 pub use format::{
-    decide_recovery, Fingerprint, FormatError, GameIdentity, GameObservation, Metadata,
-    PendingTransfer, Phase, RecoveryBlock, RecoveryDecision, Slot, SnapshotHeader, SnapshotRef,
-    METADATA_SIZE, SCHEMA_VERSION, SNAPSHOT_HEADER_SIZE,
+    decide_recovery, Fingerprint, FormatError, GameIdentity, GameObservation, Metadata, Part,
+    PendingTransfer, Phase, RecoveryBlock, RecoveryDecision, Save, Sides, Slot, METADATA_SIZE,
+    SCHEMA_VERSION,
 };
 pub use hash::{Sha256, Sha256Error};
-pub use store::{BankStore, Head, Layout, Reconciled, Storage, StoreError};
+pub use store::{may_deliver, BankStore, Head, Journal, Layout, Reconciled, Storage, StoreError};

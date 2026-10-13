@@ -443,15 +443,9 @@ impl Runtime {
         Ok(())
     }
     /// Fills a transport box no file supplied with what a new Bank has:
-    /// blank records.
-    fn fill_defaults(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
-        // A delivery is the complete box Transporter built and needs no fill.
-        let first = if loaded.transport_missing {
-            0
-        } else {
-            TRANSPORT_SLOTS
-        };
-        if first == TRANSPORT_SLOTS {
+    /// blank records. A box that was read is complete, a delivery too.
+    fn fill_defaults(&mut self, loaded: Loaded) -> Result<(), Fault> {
+        if !loaded.transport_missing {
             return Ok(());
         }
         let (record, tag) = self.blank.ok_or(Fault::NativeObject)?;
@@ -459,7 +453,7 @@ impl Runtime {
             .worker()?
             .staging_mut()
             .map_err(|_| Fault::StorageLoad)?;
-        for slot in first..TRANSPORT_SLOTS {
+        for slot in 0..TRANSPORT_SLOTS {
             let at = TRANSPORT_RECORDS.start + slot * RECORD_SIZE;
             staging[at..at + RECORD_SIZE].copy_from_slice(&record);
             staging[TRANSPORT_TAGS.start + slot] = tag;
@@ -468,7 +462,7 @@ impl Runtime {
     }
     /// Restores the assembled body into the native object.
     fn restore_bank(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
-        self.fill_defaults(task, loaded)?;
+        self.fill_defaults(loaded)?;
         let raw = task.bank_pointer()?;
         let expected = crate::dex::evidence(self.staged_body()?).map_err(|_| Fault::StorageLoad)?;
         if self.step == Step::SaveFinalize {

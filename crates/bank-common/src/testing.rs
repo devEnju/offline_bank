@@ -6,8 +6,8 @@ use crate::bank_files::{BankFiles, FileName, Files, Loaded};
 use offline_core::{
     native_blob::BLOB_SIZE,
     sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
-    sidecar::Sidecar,
-    transport, Fingerprint, GameIdentity, GameObservation, Storage,
+    transport::{self, Delivery},
+    Fingerprint, GameIdentity, GameObservation, Storage,
 };
 use std::{
     cell::RefCell,
@@ -41,6 +41,8 @@ pub struct Disk {
     pub operations: usize,
     /// Containers Bank's side holds open right now.
     pub open: usize,
+    /// Pairs of files the Transporter patch holds open right now.
+    pub visitors: usize,
 }
 #[derive(Clone, Default)]
 pub struct Shared(pub Rc<RefCell<Disk>>);
@@ -105,6 +107,7 @@ impl Shared {
             budget: None,
             operations: 0,
             open: 0,
+            visitors: 0,
         })))
     }
     /// A copy that behaves like the console, or like the simple card.
@@ -247,10 +250,27 @@ impl Files for Shared {
     }
 }
 
-/// What the Transporter patch has of the transport container: it reads
-/// and writes the files that are there and can neither create nor
-/// replace one.
-pub struct Visitor(pub Handle);
+/// What the Transporter patch has of a container of Bank's: it reads and
+/// writes the files that are there and can neither create nor replace
+/// one. It holds the files of one container at a time.
+pub struct Visitor(Handle);
+impl Visitor {
+    fn of(disk: &Shared, file: FileName) -> Option<Self> {
+        let handle = disk.clone().open(file).unwrap()?.visiting();
+        let mut state = disk.0.borrow_mut();
+        state.visitors += 1;
+        assert_eq!(
+            state.visitors, 1,
+            "Transporter holds two containers at once"
+        );
+        Some(Self(handle))
+    }
+}
+impl Drop for Visitor {
+    fn drop(&mut self) {
+        ((self.0).0).0.borrow_mut().visitors -= 1;
+    }
+}
 impl Storage for Visitor {
     type Error = ();
     fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
@@ -343,24 +363,35 @@ pub fn opened(disk: &Shared) -> BankFiles<Shared> {
     files.open().unwrap().unwrap();
     files
 }
-/// The transport container as the Transporter patch finds it.
-pub fn visit(disk: &Shared) -> Option<Sidecar<Visitor>> {
-    let storage = disk.clone().open(FileName::Transport).unwrap()?;
-    Some(Sidecar::new(Visitor(storage.visiting()), transport::KIND))
+/// Bank's files as the Transporter patch reaches them. Of the Bank
+/// container it touches the two journal records only.
+pub struct Visit(pub Shared);
+impl transport::Files for Visit {
+    type Storage = Visitor;
+    fn journal(&mut self) -> Option<Visitor> {
+        Visitor::of(&self.0, FileName::Bank)
+    }
+    fn mover(&mut self) -> Option<Visitor> {
+        Visitor::of(&self.0, FileName::Transport)
+    }
+}
+/// Transporter's check before a session: whether it may deliver now.
+pub fn transport_ok(disk: &Shared) -> bool {
+    transport::check(&mut Visit(disk.clone())).is_ok()
 }
 /// Delivers with the very function the Transporter patch runs. `None`
 /// when it refuses or cannot write.
-pub fn try_deliver(disk: &Shared, pokemon: usize) -> Option<u32> {
+pub fn try_deliver(disk: &Shared, pokemon: usize) -> Option<Delivery> {
     let source = body(0, 0, pokemon);
     let done = transport::deliver(
-        &mut visit(disk)?,
+        &mut Visit(disk.clone()),
         &source[TRANSPORT_RECORDS],
         &source[TRANSPORT_TAGS],
     )
     .ok()?;
     assert_eq!(done.count, pokemon as u32);
-    Some(done.id)
+    Some(done)
 }
-pub fn deliver(disk: &Shared, pokemon: usize) -> u32 {
+pub fn deliver(disk: &Shared, pokemon: usize) -> Delivery {
     try_deliver(disk, pokemon).expect("Transporter must be allowed to deliver")
 }

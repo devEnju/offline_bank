@@ -1,16 +1,16 @@
-//! The journaled Bank file: one validated payload per snapshot.
+//! The journal and the Bank file: one validated payload per save.
 //!
 //! The payload is the Bank regions of the native body (`offline_core::sections`).
 //! A load reads it once into a staging buffer and checks it on that pass. Any
 //! storage error poisons the session; close and reopen before retrying. A
 //! prepared transfer must be reconciled before any Bank data is displayed.
-//! The side files that follow this journal are handled by `bank_files`.
+//! The main file and the transport box, which the same journal record names,
+//! are read and written by `bank_files`.
 
 use offline_core::{
     sections::{self, SectionError, BANK_SIZE},
-    sidecar::Tag,
-    BankStore, Fingerprint, GameIdentity, GameObservation, Head, Layout, Phase, RecoveryDecision,
-    Storage, StoreError,
+    BankStore, Fingerprint, GameIdentity, GameObservation, Head, Layout, Metadata, Phase,
+    RecoveryDecision, Save, Sides, Storage, StoreError,
 };
 
 pub const BANK_LAYOUT: Layout = Layout::new(BANK_SIZE as u32);
@@ -37,8 +37,8 @@ impl<S: Storage> BankSession<S> {
     /// triggers initialization here; `never_held_a_bank` tells the caller
     /// when the file is an unfinished initialization. Prepared state is
     /// retained for recovery.
-    /// Only the journal and snapshot headers are read; `read_bank` verifies
-    /// the payload on its single pass.
+    /// Only the journal is read; `read_bank` verifies the payload on its
+    /// single pass.
     pub fn open_existing(storage: S) -> Result<Self, Error<S::Error>> {
         let mut store = BankStore::new(storage, BANK_LAYOUT);
         let head = store.inspect_quick().map_err(Error::Storage)?;
@@ -51,11 +51,19 @@ impl<S: Storage> BankSession<S> {
     }
 
     /// Initializes an exclusively created, zeroed file with a validated Bank
-    /// payload. This must never be a fallback after a failed existing load.
-    pub fn initialize_bytes(storage: S, payload: &[u8]) -> Result<Self, Error<S::Error>> {
+    /// payload. `sides` is what the caller wrote beside it, into the first
+    /// copy of each file. This must never be a fallback after a failed
+    /// existing load.
+    pub fn initialize_bytes(
+        storage: S,
+        payload: &[u8],
+        sides: Sides,
+    ) -> Result<Self, Error<S::Error>> {
         sections::validate_bank(payload).map_err(Error::Payload)?;
         let mut store = BankStore::new(storage, BANK_LAYOUT);
-        let head = store.initialize_new(payload).map_err(Error::Storage)?;
+        let head = store
+            .initialize_new(payload, sides)
+            .map_err(Error::Storage)?;
         Ok(Self {
             store,
             head,
@@ -66,12 +74,15 @@ impl<S: Storage> BankSession<S> {
 
     /// Finishes the initialization of an existing file that never held a
     /// Bank: zero-filled, or cut before its first journal record. Refused
-    /// by the store for any file that has a journal record or a later
-    /// snapshot.
-    pub fn reinitialize_bytes(storage: S, payload: &[u8]) -> Result<Self, Error<S::Error>> {
+    /// by the store for any file that has a journal record or a second copy.
+    pub fn reinitialize_bytes(
+        storage: S,
+        payload: &[u8],
+        sides: Sides,
+    ) -> Result<Self, Error<S::Error>> {
         sections::validate_bank(payload).map_err(Error::Payload)?;
         let mut store = BankStore::new(storage, BANK_LAYOUT);
-        let head = store.reinitialize(payload).map_err(Error::Storage)?;
+        let head = store.reinitialize(payload, sides).map_err(Error::Storage)?;
         Ok(Self {
             store,
             head,
@@ -88,19 +99,24 @@ impl<S: Storage> BankSession<S> {
         )
     }
 
-    /// The committed snapshot, when no transfer is pending.
-    pub fn tag(&self) -> Result<Tag, Error<S::Error>> {
+    /// The journal record in force.
+    pub fn record(&self) -> Result<Metadata, Error<S::Error>> {
         self.ensure_usable()?;
-        match self.head.phase() {
-            Phase::Clean(current) => Ok(Tag::of(&current)),
+        Ok(*self.head.metadata())
+    }
+
+    /// The current save, when no transfer is pending.
+    pub fn current(&self) -> Result<Save, Error<S::Error>> {
+        match self.record()?.phase {
+            Phase::Clean(current) => Ok(current),
             Phase::Prepared(_) => Err(Error::UnresolvedTransfer),
         }
     }
 
     /// Reads the payload into `scratch[..BANK_SIZE]` in one pass, checks its
-    /// CRC and layout, and returns the snapshot it belongs to.
-    pub fn read_bank(&mut self, scratch: &mut [u8]) -> Result<Tag, Error<S::Error>> {
-        let tag = self.tag()?;
+    /// CRC and layout, and returns the save it belongs to.
+    pub fn read_bank(&mut self, scratch: &mut [u8]) -> Result<Save, Error<S::Error>> {
+        let current = self.current()?;
         let Some(scratch) = scratch.get_mut(..BANK_SIZE) else {
             return Err(Error::ScratchTooSmall);
         };
@@ -111,7 +127,7 @@ impl<S: Storage> BankSession<S> {
             return Err(Error::Payload(error));
         }
         self.loaded = true;
-        Ok(tag)
+        Ok(current)
     }
 
     /// Reads one of the two payloads of a prepared transfer into
@@ -130,24 +146,26 @@ impl<S: Storage> BankSession<S> {
     /// Returns success only after the new payload and both prepare records are
     /// durable. The native game writer MUST NOT run if this returns an error.
     /// Fingerprints must describe the verified complete before/after game
-    /// write. Returns the tag of the prepared snapshot.
+    /// write. `sides` is what the caller wrote beside the payload, into the
+    /// copies the current save leaves free. Returns the prepared save.
     pub fn prepare_bytes(
         &mut self,
         payload: &[u8],
+        sides: Sides,
         game: GameIdentity,
         before: Fingerprint,
         after: Fingerprint,
-    ) -> Result<Tag, Error<S::Error>> {
+    ) -> Result<Save, Error<S::Error>> {
         self.ensure_loaded()?;
         sections::validate_bank(payload).map_err(Error::Payload)?;
         let result = self
             .store
-            .prepare_transfer(&self.head, payload, game, before, after);
+            .prepare_transfer(&self.head, payload, sides, game, before, after);
         self.head = self.storage_result(result)?;
         self.loaded = false;
         match self.head.phase() {
-            Phase::Prepared(pending) => Ok(Tag::of(&pending.after)),
-            Phase::Clean(current) => Ok(Tag::of(&current)),
+            Phase::Prepared(pending) => Ok(pending.after),
+            Phase::Clean(current) => Ok(current),
         }
     }
 
@@ -202,7 +220,7 @@ impl<S: Storage> BankSession<S> {
         }
     }
     fn ensure_loaded(&self) -> Result<(), Error<S::Error>> {
-        self.tag()?;
+        self.current()?;
         if self.loaded {
             Ok(())
         } else {
@@ -276,7 +294,7 @@ mod tests {
     fn storage(payload: &[u8]) -> Memory {
         let memory = Memory::with(vec![0; BANK_LAYOUT.file_len() as usize]);
         let mut store = BankStore::new(memory, BANK_LAYOUT);
-        store.initialize_new(payload).unwrap();
+        store.initialize_new(payload, Sides::default()).unwrap();
         store.into_inner()
     }
     const GAME: GameIdentity = GameIdentity {
@@ -287,7 +305,7 @@ mod tests {
     #[test]
     fn bank_file_has_the_documented_size() {
         assert_eq!(BANK_SIZE, 729_800);
-        assert_eq!(BANK_LAYOUT.file_len(), 1_460_048);
+        assert_eq!(BANK_LAYOUT.file_len(), 1_459_880);
     }
 
     #[test]
@@ -297,17 +315,17 @@ mod tests {
         let mut bytes = memory.bytes.clone();
         reads.set(0);
         let mut session = BankSession::open_existing(memory).unwrap();
-        // Opening touches only the journal and the 32-byte snapshot header.
-        assert!(reads.get() <= 4);
+        // Opening touches only the two journal records.
+        assert_eq!(reads.get(), 2);
         assert_eq!(payload_reads.get(), 0);
         let mut staging = vec![0; BANK_SIZE];
-        let tag = session.read_bank(&mut staging).unwrap();
+        let current = session.read_bank(&mut staging).unwrap();
         assert_eq!(payload_reads.get(), 1);
         assert_eq!(staging, payload(0x71));
-        assert_eq!(tag, session.tag().unwrap());
+        assert_eq!(current, session.current().unwrap());
 
         // A corrupted payload byte anywhere is caught by that one pass.
-        let at = BANK_LAYOUT.snapshot_offset(offline_core::Slot::A) as usize + 32;
+        let at = BANK_LAYOUT.snapshot_offset(offline_core::Slot::A) as usize;
         for offset in [0, 0x15C, BANK_SIZE / 2, BANK_SIZE - 1] {
             bytes[at + offset] ^= 0x10;
             let mut session = BankSession::open_existing(Memory::with(bytes.clone())).unwrap();
@@ -328,7 +346,7 @@ mod tests {
         let mut session = BankSession::open_existing(memory).unwrap();
         let mut staging = vec![0; BANK_SIZE];
         assert_eq!(
-            session.prepare_bytes(&payload(2), GAME, [1; 32], [2; 32]),
+            session.prepare_bytes(&payload(2), Sides::default(), GAME, [1; 32], [2; 32]),
             Err(Error::BankNotLoaded)
         );
         fail.set(true);
@@ -341,7 +359,7 @@ mod tests {
         assert_eq!(session.read_bank(&mut staging), Err(Error::Poisoned));
         assert_eq!(reads.get(), count);
         assert_eq!(
-            session.prepare_bytes(&payload(2), GAME, [1; 32], [2; 32]),
+            session.prepare_bytes(&payload(2), Sides::default(), GAME, [1; 32], [2; 32]),
             Err(Error::Poisoned)
         );
     }
@@ -355,7 +373,8 @@ mod tests {
             assert!(matches!(
                 BankSession::initialize_bytes(
                     Memory::with(vec![0; BANK_LAYOUT.file_len() as usize]),
-                    &vec![0; size]
+                    &vec![0; size],
+                    Sides::default()
                 ),
                 Err(Error::Payload(_))
             ));
@@ -368,10 +387,10 @@ mod tests {
         let mut staging = vec![0; BANK_SIZE];
         let before = session.read_bank(&mut staging).unwrap();
         let after = session
-            .prepare_bytes(&payload(2), GAME, [1; 32], [2; 32])
+            .prepare_bytes(&payload(2), Sides::default(), GAME, [1; 32], [2; 32])
             .unwrap();
-        assert_eq!(after.generation, before.generation + 1);
-        assert_eq!(after.crc, offline_core::crc32(&payload(2)));
+        assert_eq!(after.bank.slot, before.bank.slot.other());
+        assert_eq!(after.bank.crc, offline_core::crc32(&payload(2)));
         staging.fill(0xA9);
         assert_eq!(
             session.read_bank(&mut staging),
@@ -380,7 +399,7 @@ mod tests {
         assert!(staging.iter().all(|byte| *byte == 0xA9));
         let bytes = session.into_storage().bytes;
 
-        // Rolled back: the old tag and payload are current again.
+        // Rolled back: the old save and payload are current again.
         let mut rolled = BankSession::open_existing(Memory::with(bytes.clone())).unwrap();
         assert_eq!(
             rolled
@@ -394,7 +413,7 @@ mod tests {
         assert_eq!(rolled.read_bank(&mut staging), Ok(before));
         assert_eq!(staging, payload(1));
 
-        // Committed: the prepared tag and payload become current.
+        // Committed: the prepared save and payload become current.
         let mut committed = BankSession::open_existing(Memory::with(bytes)).unwrap();
         assert_eq!(
             committed

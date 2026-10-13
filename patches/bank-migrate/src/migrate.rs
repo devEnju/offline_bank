@@ -28,14 +28,13 @@
 
 use crate::previous::{self, bank_files as old};
 use bank_common::{
-    bank_files::{self, BankFiles, FileName, Files, UnitFile, RECORD, SNAPSHOT},
+    bank_files::{self, BankFiles, FileName, Files, UnitFile, MAIN, MOVER, RECORD, SNAPSHOT},
     session,
 };
 use offline_core::{
     crc32,
     native_blob::{BLOB_SIZE, FRACTION_OFFSET, REDEEMED_OFFSET},
-    sections::MAIN_FILE,
-    transport, Phase, Storage, StoreError,
+    Phase, Storage, StoreError,
 };
 
 /// First number of the result screen when nothing went wrong; the second
@@ -146,12 +145,12 @@ static TEMPORARY_BANK: [UnitFile; 4] = [
     UnitFile::new("/m3.tmp", SNAPSHOT),
 ];
 static TEMPORARY_MAIN: [UnitFile; 2] = [
-    UnitFile::new("/m4.tmp", MAIN_FILE.slot_len()),
-    UnitFile::new("/m5.tmp", MAIN_FILE.slot_len()),
+    UnitFile::new("/m4.tmp", MAIN),
+    UnitFile::new("/m5.tmp", MAIN),
 ];
 static TEMPORARY_TRANSPORT: [UnitFile; 2] = [
-    UnitFile::new("/m6.tmp", transport::KIND.slot_len()),
-    UnitFile::new("/m7.tmp", transport::KIND.slot_len()),
+    UnitFile::new("/m6.tmp", MOVER),
+    UnitFile::new("/m7.tmp", MOVER),
 ];
 static MARKER: [UnitFile; 1] = single("/migrate.ok", 16);
 

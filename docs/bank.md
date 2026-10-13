@@ -86,22 +86,22 @@ The original import copies; it does not merge within a version.
 
 ## Where the Bank is stored
 
-Eight files inside SD extdata archive `0x00000C9B`, the archive Bank already owns. They come in four pairs:
+Eight files inside SD extdata archive `0x00000C9B`, the archive Bank already owns. They come in four pairs. The first three are the data the original Bank kept on the server, cut into three pieces and otherwise unchanged; nothing is added to them.
 
 | Files | Size of each | Each holds |
 | --- | --- | --- |
-| `/bank.bin`, `/bank.alt.bin` | 729,832 bytes | One set of the 100 boxes: the Pokémon, each box's name, and what Bank keeps per slot. Nothing else. |
-| `/main.bin`, `/main.alt.bin` | 30,532 bytes | One version of everything else Bank needs: the group names, the Pokédex of all eight game versions with their trainer and adventure records, and everything about Miles (balance, the date of the last Save and Quit, the part of a Mile below one, the day of the last redemption). |
-| `/journal.bin`, `/journal.alt.bin` | 192 bytes | One copy of the record that says which set of boxes is current and whether a save is in progress. |
-| `/mover.bin`, `/mover.alt.bin` | 7,056 bytes | One version of the transport box: up to 30 Pokémon from Poké Transporter. |
+| `/bank.bin`, `/bank.alt.bin` | 729,800 bytes | One set of the 100 boxes: the Pokémon, each box's name, and what Bank keeps per slot. Nothing else. |
+| `/main.bin`, `/main.alt.bin` | 30,466 bytes | One version of everything else Bank needs: the group names, the Pokédex of all eight game versions with their trainer and adventure records, and everything about Miles (balance, the date of the last Save and Quit, the part of a Mile below one, the day of the last redemption). |
+| `/mover.bin`, `/mover.alt.bin` | 6,990 bytes | One version of the transport box: up to 30 Pokémon from Poké Transporter. |
+| `/journal.bin`, `/journal.alt.bin` | 140 bytes | One copy of the record that ties the others together: which file of each pair belongs to the current save, with a checksum of each; whether a save is in progress, and with which game; and whether Pokémon from Poké Transporter wait to be shown. |
 
 **Why pairs.** If the power fails while the console writes a file, that file can become unreadable as a whole. So Bank never writes into a file that holds something it still needs: a save goes into the file of each pair that is not in use, and only when everything is written does that file become the current one. The two files of a pair take turns. `.alt` means "the alternate of the two", not "the older one"; half the time it holds your current data.
 
-- **They always belong to the same save.** After a power cut, Bank uses the versions of the other files that match whichever set of boxes survived.
-- **Missing transport files are not an error.** They mean an empty transport box, and the next save creates them.
+- **They always belong to the same save.** One record names the file of each pair that belongs to it, and a file counts only if it has the checksum the record names. After a power cut, Bank goes on with the three files that record names.
+- **Missing transport files are not an error while the transport box is empty.** The next save creates them.
 - **A file that a power cut left unreadable is replaced.** It is always the one that was being written, never the one in use. Bank goes on with the other file of the pair, and the next save deletes the unreadable one and writes it anew.
 - **A file of the wrong size is never touched.** Bank stops with error `3` and the size as second number. This is also what happens with a Bank that was last used with an earlier release whose files have other sizes. Such a Bank is converted once, with the migration that ships with the release that changed the files; that release says how.
-- **A damaged file in use stops Bank** (error `9`). That holds for the boxes, for the main file and for the transport box alike: Bank never replaces what it cannot read with something empty. A power cut cannot cause it, since it only reaches the file being written.
+- **A damaged file in use stops Bank** (error `9`). That holds for the boxes, for the main file, and for the transport box while it holds Pokémon: Bank never replaces what it cannot read with something empty. Pokémon from Poké Transporter that wait and cannot be read are not shown, and Save and Quit is then refused (error `F`), so that nothing is saved over them. A power cut cannot cause it, since it only reaches the file being written.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
 - These files live inside console-managed, encrypted extdata. They are not loose files on the SD card, and Bank's own 128 KiB save is not where the boxes are.
@@ -206,7 +206,7 @@ After A the original's line "Press HOME to return to the HOME Menu" appears with
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
 | `77000000` | Bank's filesystem session changed between two opens. |
 | `79000000` | A file that is needed exists but cannot be opened. |
-| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 main, 2 transport. `pp`: 1 damaged or missing, 3 a waiting delivery would be overwritten, 4 not the format this version knows. |
+| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
 
 **Starting over with an empty Bank.** This deletes every Pokémon stored in the offline Bank.
