@@ -1,15 +1,19 @@
 //! Where each stored file's bytes live inside the native Bank body.
 //!
 //! The original code loads and saves one `0xBB518`-byte block. The patch keeps
-//! three regions of it in separate files and stores each exactly as the
-//! original bytes, in the original order:
+//! it in three files, by what the data is, and stores each range exactly as
+//! the original bytes, in the original order:
 //!
-//! | Region | Body range | File |
+//! | Body range | Content | File |
 //! | --- | --- | --- |
-//! | Transport box records | `AAF14..ACA44` (30 x `E8`) | transport |
-//! | Transport box format tags | `AD5FC..AD61A` (30 bytes) | transport |
-//! | Trainer records and Pokédex | `AD61C..B4A9C` | Pokédex |
-//! | Everything else | the four remaining ranges | Bank |
+//! | `0..17C` | Header: names, format, reward date, Miles, flags | main |
+//! | `17C..AAF14` | 100 boxes | bank |
+//! | `AAF14..ACA44` | Transport box records (30 x `E8`) | transport |
+//! | `ACA44..AD5FC` | Format tag per box slot | bank |
+//! | `AD5FC..AD61A` | Transport box format tags (30 bytes) | transport |
+//! | `AD61A..B4AA0` | Padding, trainer records, Pokédex, transfer counters | main |
+//! | `B4AA0..BB418` | One byte and one timestamp per box slot | bank |
+//! | `BB418..BB518` | Tail | main |
 //!
 //! Loading is a read into place; saving is the reverse. Nothing is converted.
 
@@ -29,22 +33,31 @@ pub const MILES: Range<usize> = 0x170..0x174;
 pub const REWARD_DATE: Range<usize> = 0x160..0x166;
 
 pub const TRANSPORT_SIZE: usize = TRANSPORT_SLOTS * RECORD_SIZE + TRANSPORT_SLOTS;
-pub const DEX_SIZE: usize = DEX.end - DEX.start;
-pub const BANK_SIZE: usize = BLOB_SIZE - TRANSPORT_SIZE - DEX_SIZE;
-
-/// The Pokédex side file: one `DEX` region per slot.
-pub const DEX_FILE: Kind = Kind {
-    magic: *b"BKOFDEX1",
-    capacity: DEX_SIZE as u32,
-};
-
-/// Body ranges kept in the Bank file, in order.
-const BANK_RANGES: [Range<usize>; 4] = [
-    0..TRANSPORT_RECORDS.start,
-    TRANSPORT_RECORDS.end..TRANSPORT_TAGS.start,
-    TRANSPORT_TAGS.end..DEX.start,
-    DEX.end..BLOB_SIZE,
+/// Body ranges kept in the main file, in order: everything Bank needs that
+/// is not a Pokémon slot.
+pub const MAIN_RANGES: [Range<usize>; 3] = [
+    0..BOXES_START,
+    TRANSPORT_TAGS.end..SLOT_DATA_START,
+    TAIL_START..BLOB_SIZE,
 ];
+/// Body ranges kept in the Bank file, in order: the boxes and what is kept
+/// per box slot.
+const BANK_RANGES: [Range<usize>; 3] = [
+    BOXES_START..TRANSPORT_RECORDS.start,
+    TRANSPORT_RECORDS.end..TRANSPORT_TAGS.start,
+    SLOT_DATA_START..TAIL_START,
+];
+const SLOT_DATA_START: usize = 0xB4AA0;
+const TAIL_START: usize = 0xBB418;
+pub const MAIN_SIZE: usize =
+    BOXES_START + (SLOT_DATA_START - TRANSPORT_TAGS.end) + (BLOB_SIZE - TAIL_START);
+pub const BANK_SIZE: usize = BLOB_SIZE - TRANSPORT_SIZE - MAIN_SIZE;
+
+/// The main side file: one payload of `MAIN_RANGES` per slot.
+pub const MAIN_FILE: Kind = Kind {
+    magic: *b"BKOFMAIN",
+    capacity: MAIN_SIZE as u32,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SectionError {
@@ -72,7 +85,7 @@ pub fn bank_crc(body: &[u8]) -> Result<u32, SectionError> {
 }
 
 /// Moves the Bank ranges together in place: afterwards `body[..BANK_SIZE]` is
-/// the Bank file payload. The side regions are overwritten, so copy them out
+/// the Bank file payload. The other ranges are overwritten, so copy them out
 /// first.
 pub fn compact(body: &mut [u8]) -> Result<(), SectionError> {
     sized(body.len(), BLOB_SIZE)?;
@@ -86,7 +99,7 @@ pub fn compact(body: &mut [u8]) -> Result<(), SectionError> {
 }
 
 /// Inverse of `compact`: spreads a payload in `body[..BANK_SIZE]` back to its
-/// native offsets. The side regions are zeroed and must be filled by the caller.
+/// native offsets. The other ranges are zeroed and must be filled by the caller.
 pub fn expand(body: &mut [u8]) -> Result<(), SectionError> {
     sized(body.len(), BLOB_SIZE)?;
     let mut at = BANK_SIZE;
@@ -96,15 +109,23 @@ pub fn expand(body: &mut [u8]) -> Result<(), SectionError> {
     }
     body[TRANSPORT_RECORDS].fill(0);
     body[TRANSPORT_TAGS].fill(0);
-    body[DEX].fill(0);
+    for range in MAIN_RANGES {
+        body[range].fill(0);
+    }
     Ok(())
 }
 
-/// Checks a Bank file payload: exact size, native format marker, 100 boxes.
-/// These fields keep their native offsets because the first range starts at 0.
+/// Checks a Bank file payload: its exact size. What it holds are Pokémon
+/// records and per-slot data, which carry no marker of their own.
 pub fn validate_bank(payload: &[u8]) -> Result<(), SectionError> {
-    sized(payload.len(), BANK_SIZE)?;
-    let word = |at: usize| u16::from_le_bytes([payload[at], payload[at + 1]]);
+    sized(payload.len(), BANK_SIZE)
+}
+
+/// Checks the header of an assembled body: native format marker, 100 boxes.
+/// The header is the first range of the main file.
+pub fn validate_header(body: &[u8]) -> Result<(), SectionError> {
+    sized(body.len(), BLOB_SIZE)?;
+    let word = |at: usize| u16::from_le_bytes([body[at], body[at + 1]]);
     if word(0x15C) != 2 {
         return Err(SectionError::UnsupportedFormat(word(0x15C)));
     }
@@ -112,6 +133,15 @@ pub fn validate_bank(payload: &[u8]) -> Result<(), SectionError> {
         return Err(SectionError::UnexpectedBoxCount(word(0x15E)));
     }
     Ok(())
+}
+
+/// The main ranges of `body` as separate slices, in order.
+pub fn main_parts(body: &mut [u8]) -> Result<[&mut [u8]; 3], SectionError> {
+    sized(body.len(), BLOB_SIZE)?;
+    let [first, second, third] = MAIN_RANGES;
+    let (head, rest) = body.split_at_mut(second.start);
+    let (middle, tail) = rest.split_at_mut(third.start - second.start);
+    Ok([&mut head[first], &mut middle[..second.len()], tail])
 }
 
 // Position of each plaintext block inside a stored record, per shuffle value.
@@ -172,8 +202,8 @@ pub fn stored_identity(record: &[u8; RECORD_SIZE]) -> Option<Identity> {
     ])
 }
 
-/// The 100 boxes in a body or a Bank file payload: 30 records each, then
-/// the box's name and index.
+/// The 100 boxes: 30 records each, then the box's name and index. They
+/// begin at `BOXES_START` in a body and at 0 in a Bank file payload.
 pub const BOXES: usize = 100;
 pub const BOX_SLOTS: usize = 30;
 const BOXES_START: usize = 0x17C;
@@ -203,7 +233,7 @@ pub fn box_identities(
 ) -> Result<usize, SectionError> {
     sized(payload.len(), BANK_SIZE)?;
     for index in 0..BOXES {
-        let at = BOXES_START + index * BOX_STRIDE;
+        let at = index * BOX_STRIDE;
         count = identities(&payload[at..at + BOX_SLOTS * RECORD_SIZE], out, count);
     }
     Ok(count)
@@ -247,27 +277,36 @@ mod tests {
         assert_eq!(TRANSPORT_RECORDS.len(), 30 * 0xE8);
         assert_eq!(TRANSPORT_TAGS.len(), 30);
         assert_eq!(
-            (DEX_SIZE, TRANSPORT_SIZE, BANK_SIZE),
-            (29_824, 6_990, 730_442)
+            (MAIN_SIZE, TRANSPORT_SIZE, BANK_SIZE),
+            (30_466, 6_990, 729_800)
         );
         let mut covered = vec![0u8; BLOB_SIZE];
         for range in BANK_RANGES
             .into_iter()
-            .chain([TRANSPORT_RECORDS, TRANSPORT_TAGS, DEX])
+            .chain(MAIN_RANGES)
+            .chain([TRANSPORT_RECORDS, TRANSPORT_TAGS])
         {
             for mark in &mut covered[range] {
                 *mark += 1;
             }
         }
         assert!(covered.iter().all(|count| *count == 1));
-        assert!(MILES.end <= BANK_RANGES[0].end);
+        // The Miles state and the Pokédex are in the main file.
+        const { assert!(REWARD_DATE.end <= MAIN_RANGES[0].end) };
+        const { assert!(MILES.end <= MAIN_RANGES[0].end) };
+        const { assert!(MAIN_RANGES[1].start <= DEX.start) };
+        const { assert!(DEX.end <= MAIN_RANGES[1].end) };
+        assert_eq!(MAIN_RANGES[1].start, crate::native_blob::FRACTION_OFFSET);
     }
 
     #[test]
     fn split_and_join_return_every_byte() {
         let original = body();
-        let (dex, records, tags) = (
-            original[DEX].to_vec(),
+        let main: Vec<Vec<u8>> = MAIN_RANGES
+            .into_iter()
+            .map(|range| original[range].to_vec())
+            .collect();
+        let (records, tags) = (
             original[TRANSPORT_RECORDS].to_vec(),
             original[TRANSPORT_TAGS].to_vec(),
         );
@@ -276,33 +315,49 @@ mod tests {
         compact(&mut work).unwrap();
         assert_eq!(crate::crc32(&work[..BANK_SIZE]), crc);
         validate_bank(&work[..BANK_SIZE]).unwrap();
+        // The payload begins with the first box.
+        assert!(work[..BOX_STRIDE] == original[BOXES_START..BOXES_START + BOX_STRIDE]);
         // Stale bytes after the payload must not survive the round trip.
         work[BANK_SIZE..].fill(0xEE);
         expand(&mut work).unwrap();
-        assert!(work[DEX].iter().all(|byte| *byte == 0));
-        work[DEX].copy_from_slice(&dex);
+        for range in MAIN_RANGES {
+            assert!(work[range].iter().all(|byte| *byte == 0));
+        }
+        for (part, bytes) in main_parts(&mut work).unwrap().into_iter().zip(&main) {
+            part.copy_from_slice(bytes);
+        }
         work[TRANSPORT_RECORDS].copy_from_slice(&records);
         work[TRANSPORT_TAGS].copy_from_slice(&tags);
         assert!(work == original);
     }
 
     #[test]
-    fn bank_payload_is_checked_and_sizes_are_exact() {
+    fn payload_and_header_are_checked_and_sizes_are_exact() {
         let mut work = body();
-        compact(&mut work).unwrap();
-        assert!(validate_bank(&work[..BANK_SIZE - 1]).is_err());
-        assert!(validate_bank(&work).is_err());
+        validate_header(&work).unwrap();
+        assert!(validate_header(&work[..BLOB_SIZE - 1]).is_err());
         work[0x15C] = 9;
         assert_eq!(
-            validate_bank(&work[..BANK_SIZE]),
+            validate_header(&work),
             Err(SectionError::UnsupportedFormat(9))
         );
+        work[0x15C] = 2;
+        work[0x15E] = 99;
+        assert_eq!(
+            validate_header(&work),
+            Err(SectionError::UnexpectedBoxCount(99))
+        );
+        compact(&mut work).unwrap();
+        validate_bank(&work[..BANK_SIZE]).unwrap();
+        assert!(validate_bank(&work[..BANK_SIZE - 1]).is_err());
+        assert!(validate_bank(&work).is_err());
         for size in [0, BANK_SIZE, BLOB_SIZE - 1, BLOB_SIZE + 1] {
             let mut short = vec![0; size];
             assert!(compact(&mut short).is_err());
             assert!(expand(&mut short).is_err());
             assert!(bank_crc(&short).is_err());
             assert!(transport_count(&short).is_err());
+            assert!(main_parts(&mut short).is_err());
         }
     }
 
@@ -433,7 +488,8 @@ mod tests {
         let mut expected = Vec::new();
         for (index, slot) in [(0, 0), (0, 29), (57, 13), (99, 0), (99, 29)] {
             let key = (index * 64 + slot) as u32 | 0x7000_0000;
-            let at = BOXES_START + index * BOX_STRIDE + slot * RECORD_SIZE;
+            // In the payload the boxes begin at 0.
+            let at = index * BOX_STRIDE + slot * RECORD_SIZE;
             work[at..at + RECORD_SIZE].copy_from_slice(&pokemon(key, 133, (key ^ 5, 77, 88), 0));
             expected.push([key, key ^ 5, 88 << 16 | 77]);
         }

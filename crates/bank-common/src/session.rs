@@ -270,8 +270,6 @@ mod tests {
     }
     fn payload(marker: u8) -> Vec<u8> {
         let mut bytes = vec![0; BANK_SIZE];
-        bytes[0x15C..0x15E].copy_from_slice(&2u16.to_le_bytes());
-        bytes[0x15E..0x160].copy_from_slice(&100u16.to_le_bytes());
         bytes[BANK_SIZE - 1] = marker;
         bytes
     }
@@ -288,8 +286,8 @@ mod tests {
 
     #[test]
     fn bank_file_has_the_documented_size() {
-        assert_eq!(BANK_SIZE, 730_442);
-        assert_eq!(BANK_LAYOUT.file_len(), 1_461_332);
+        assert_eq!(BANK_SIZE, 729_800);
+        assert_eq!(BANK_LAYOUT.file_len(), 1_460_048);
     }
 
     #[test]
@@ -349,16 +347,10 @@ mod tests {
     }
 
     #[test]
-    fn checked_container_with_bad_payload_layout_is_refused() {
-        let mut invalid = payload(1);
-        invalid[0x15C] = 99;
-        let mut session = BankSession::open_existing(storage(&invalid)).unwrap();
-        assert!(matches!(
-            session.read_bank(&mut vec![0; BANK_SIZE]),
-            Err(Error::Payload(_))
-        ));
-        assert_eq!(session.phase(), Err(Error::Poisoned));
-        // Full native bodies and other sizes are not Bank payloads.
+    fn a_payload_of_another_size_is_refused() {
+        // Full native bodies and other sizes are not Bank payloads. What a
+        // payload holds, boxes and per-slot data, has no marker to check;
+        // the format is in the header, which the main file holds.
         for size in [BANK_SIZE - 1, offline_core::native_blob::BLOB_SIZE] {
             assert!(matches!(
                 BankSession::initialize_bytes(

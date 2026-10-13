@@ -523,7 +523,7 @@ mod arm {
         WorkerError::operation(fault, error.diagnostic())
     }
     /// Second number for side-file problems: `7A00ffpp`, with `ff` the file
-    /// (0 Bank, 1 Pokédex, 2 transport) and `pp` the
+    /// (0 Bank, 1 main, 2 transport) and `pp` the
     /// `bank_files::Problem`.
     fn files_error(error: bank_files::Error<fs::Error>, fault: u32) -> WorkerError {
         match error {

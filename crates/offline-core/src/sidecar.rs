@@ -192,25 +192,24 @@ impl<S: Storage> Sidecar<S> {
         Ok(())
     }
 
-    /// Like `read` for a payload stored as two consecutive parts.
-    pub fn read_split(
+    /// Like `read` for a payload stored as consecutive parts.
+    pub fn read_parts(
         &mut self,
         index: usize,
         slot: &Slot,
-        first: &mut [u8],
-        second: &mut [u8],
+        parts: &mut [&mut [u8]],
     ) -> Result<(), SidecarError<S::Error>> {
-        if first.len() + second.len() != slot.len as usize {
+        let total: usize = parts.iter().map(|part| part.len()).sum();
+        if total != slot.len as usize {
             return Err(SidecarError::WrongLength);
         }
-        let at = self.offset(index) + HEADER_SIZE as u64;
-        self.storage.read(at, first).map_err(SidecarError::Io)?;
-        self.storage
-            .read(at + first.len() as u64, second)
-            .map_err(SidecarError::Io)?;
+        let mut at = self.offset(index) + HEADER_SIZE as u64;
         let mut crc = crate::checksum::Crc32::new();
-        crc.update(first);
-        crc.update(second);
+        for part in parts.iter_mut() {
+            self.storage.read(at, part).map_err(SidecarError::Io)?;
+            crc.update(part);
+            at += part.len() as u64;
+        }
         if crc.finish() != slot.crc {
             return Err(SidecarError::Checksum);
         }
@@ -411,7 +410,7 @@ mod tests {
         file.read(1, &written, &mut out).unwrap();
         assert_eq!(&out, b"abcdefg");
         let (mut first, mut second) = ([0; 3], [0; 4]);
-        file.read_split(1, &written, &mut first, &mut second)
+        file.read_parts(1, &written, &mut [&mut first, &mut second])
             .unwrap();
         assert_eq!((&first, &second), (b"abc", b"defg"));
         assert_eq!(

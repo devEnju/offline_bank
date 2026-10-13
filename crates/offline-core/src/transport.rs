@@ -255,7 +255,7 @@ mod tests {
         let load = on_load(&slots, T1);
         assert_eq!((load.source, load.adopted), (Some(0), Some((1, 3))));
         let (mut first, mut second) = (vec![0; records.len()], vec![0; tags.len()]);
-        file.read_split(0, &slots[0].unwrap(), &mut first, &mut second)
+        file.read_parts(0, &slots[0].unwrap(), &mut [&mut first, &mut second])
             .unwrap();
         assert!(first == records && second == tags);
         // A second delivery has to wait for Bank.

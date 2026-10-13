@@ -34,7 +34,7 @@ use bank_common::{
 use offline_core::{
     crc32,
     native_blob::{BLOB_SIZE, FRACTION_OFFSET, REDEEMED_OFFSET},
-    sections::DEX_FILE,
+    sections::MAIN_FILE,
     transport, Phase, Storage, StoreError,
 };
 
@@ -127,7 +127,7 @@ const fn single(path: &'static str, len: u64) -> [UnitFile; 1] {
 }
 /// The current containers in the order they are put in place: the Bank
 /// last, because its journal is what makes a Bank exist.
-const ORDER: [FileName; 3] = [FileName::Dex, FileName::Transport, FileName::Bank];
+const ORDER: [FileName; 3] = [FileName::Main, FileName::Transport, FileName::Bank];
 /// The previous release's containers.
 const PREVIOUS: [old::FileName; 4] = [
     old::FileName::Dex,
@@ -145,9 +145,9 @@ static TEMPORARY_BANK: [UnitFile; 4] = [
     UnitFile::new("/m2.tmp", SNAPSHOT),
     UnitFile::new("/m3.tmp", SNAPSHOT),
 ];
-static TEMPORARY_DEX: [UnitFile; 2] = [
-    UnitFile::new("/m4.tmp", DEX_FILE.slot_len()),
-    UnitFile::new("/m5.tmp", DEX_FILE.slot_len()),
+static TEMPORARY_MAIN: [UnitFile; 2] = [
+    UnitFile::new("/m4.tmp", MAIN_FILE.slot_len()),
+    UnitFile::new("/m5.tmp", MAIN_FILE.slot_len()),
 ];
 static TEMPORARY_TRANSPORT: [UnitFile; 2] = [
     UnitFile::new("/m6.tmp", transport::KIND.slot_len()),
@@ -158,7 +158,7 @@ static MARKER: [UnitFile; 1] = single("/migrate.ok", 16);
 fn temporary(file: FileName) -> &'static [UnitFile] {
     match file {
         FileName::Bank => &TEMPORARY_BANK,
-        FileName::Dex => &TEMPORARY_DEX,
+        FileName::Main => &TEMPORARY_MAIN,
         FileName::Transport => &TEMPORARY_TRANSPORT,
     }
 }
@@ -315,7 +315,7 @@ fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
     };
     let loaded = bank.read(body).map_err(unwritten(write))?;
     drop(bank);
-    if loaded.dex_missing || loaded.transport_missing || crc32(body) != converted {
+    if loaded.transport_missing || crc32(body) != converted {
         return Err(Stopped::Failed(write, Cause::Mismatch));
     }
     card.remove(&MARKER).map_err(io(write))?;
@@ -737,7 +737,7 @@ mod tests {
         };
         let mut staging = vec![0; BLOB_SIZE];
         let loaded = bank.read(&mut staging).unwrap();
-        assert!(!loaded.dex_missing && !loaded.transport_missing);
+        assert!(!loaded.transport_missing);
         Some(staging)
     }
     fn convert(card: &Sd) -> Result<Done, Stopped<()>> {

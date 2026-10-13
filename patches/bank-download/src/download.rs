@@ -53,7 +53,7 @@ mod tests {
         assert_eq!(write(disk.clone(), &mut loaded.clone()), Ok(true));
         let (bytes, read) = load(&mut opened(&disk.reboot()));
         assert!(bytes == loaded);
-        assert!(!read.dex_missing && !read.transport_missing);
+        assert!(!read.transport_missing);
 
         // A Bank is there now: found, and never written over.
         assert_eq!(present(disk.reboot()), Ok(true));

@@ -90,18 +90,18 @@ Eight files inside SD extdata archive `0x00000C9B`, the archive Bank already own
 
 | Files | Size of each | Each holds |
 | --- | --- | --- |
-| `/bank.bin`, `/bank.alt.bin` | 730,474 bytes | One set of the 100 boxes with their names, groups, and per-slot data, and everything about Miles: balance, the date of the last Save and Quit, the part of a Mile below one, the day of the last redemption. |
+| `/bank.bin`, `/bank.alt.bin` | 729,832 bytes | One set of the 100 boxes: the Pokémon, each box's name, and what Bank keeps per slot. Nothing else. |
+| `/main.bin`, `/main.alt.bin` | 30,532 bytes | One version of everything else Bank needs: the group names, the Pokédex of all eight game versions with their trainer and adventure records, and everything about Miles (balance, the date of the last Save and Quit, the part of a Mile below one, the day of the last redemption). |
 | `/journal.bin`, `/journal.alt.bin` | 192 bytes | One copy of the record that says which set of boxes is current and whether a save is in progress. |
-| `/dex.bin`, `/dex.alt.bin` | 29,888 bytes | One version of the Pokédex of all eight game versions and their trainer and adventure records. |
 | `/mover.bin`, `/mover.alt.bin` | 7,056 bytes | One version of the transport box: up to 30 Pokémon from Poké Transporter. |
 
 **Why pairs.** If the power fails while the console writes a file, that file can become unreadable as a whole. So Bank never writes into a file that holds something it still needs: a save goes into the file of each pair that is not in use, and only when everything is written does that file become the current one. The two files of a pair take turns. `.alt` means "the alternate of the two", not "the older one"; half the time it holds your current data.
 
-- **They always belong to the same save.** After a power cut, Bank uses the versions of the smaller files that match whichever Bank save survived.
-- **A missing file is not an error.** No Pokédex files mean an empty Pokédex, no transport files an empty transport box. The next save creates them.
+- **They always belong to the same save.** After a power cut, Bank uses the versions of the other files that match whichever set of boxes survived.
+- **Missing transport files are not an error.** They mean an empty transport box, and the next save creates them.
 - **A file that a power cut left unreadable is replaced.** It is always the one that was being written, never the one in use. Bank goes on with the other file of the pair, and the next save deletes the unreadable one and writes it anew.
 - **A file of the wrong size is never touched.** Bank stops with error `3` and the size as second number. This is also what happens with a Bank that was last used with an earlier release whose files have other sizes. Such a Bank is converted once, with the migration that ships with the release that changed the files; that release says how.
-- **A damaged Pokédex file in use does not stop Bank either.** The Pokédex then starts empty. Each game's part comes back when its records screen is opened and that session is saved. A damaged transport box in use does stop Bank (error `9`), because it can hold Pokémon.
+- **A damaged file in use stops Bank** (error `9`). That holds for the boxes, for the main file and for the transport box alike: Bank never replaces what it cannot read with something empty. A power cut cannot cause it, since it only reaches the file being written.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
 - These files live inside console-managed, encrypted extdata. They are not loose files on the SD card, and Bank's own 128 KiB save is not where the boxes are.
@@ -206,7 +206,7 @@ After A the original's line "Press HOME to return to the HOME Menu" appears with
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
 | `77000000` | Bank's filesystem session changed between two opens. |
 | `79000000` | A file that is needed exists but cannot be opened. |
-| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 Pokédex, 2 transport. `pp`: 1 damaged, 3 a waiting delivery would be overwritten. |
+| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 main, 2 transport. `pp`: 1 damaged or missing, 3 a waiting delivery would be overwritten, 4 not the format this version knows. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
 
 **Starting over with an empty Bank.** This deletes every Pokémon stored in the offline Bank.

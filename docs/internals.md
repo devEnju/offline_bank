@@ -279,12 +279,12 @@ Pokémon records are encrypted with the LCG `seed * 0x41C64E6D + 0x6073`; the ch
 
 ### Files
 
-All files are in SD extdata archive `0x00000C9B` (created by the original with room for 10 directories and 100 files). The body is cut at fixed offsets and each piece is stored unchanged, in body order ([sections.rs](../crates/offline-core/src/sections.rs)). There are three containers; each is a range of fixed layout:
+All files are in SD extdata archive `0x00000C9B` (created by the original with room for 10 directories and 100 files). The body is cut at fixed offsets by what the data is, and each piece is stored unchanged, in body order ([sections.rs](../crates/offline-core/src/sections.rs)): the Bank container holds the Pokémon of the 100 boxes and what is kept per box slot, the transport container the transport box, and the main container everything else Bank needs. Every byte of the body is in exactly one of them. Each container is a range of fixed layout:
 
 | Container | Length | Body ranges of one payload |
 | --- | --- | --- |
-| Bank | 1,461,332 | `0..AAF14`, `ACA44..AD5FC`, `AD61A..AD61C`, `B4A9C..BB518` (730,442 bytes) |
-| Pokédex | 59,776 | `AD61C..B4A9C` (29,824 bytes) |
+| Bank | 1,460,048 | `17C..AAF14` (the boxes), `ACA44..AD5FC` (format tags), `B4AA0..BB418` (per-slot bytes and timestamps): 729,800 bytes |
+| Main | 61,064 | `0..17C` (header), `AD61A..B4AA0` (padding, records, Pokédex, transfer counters), `BB418..BB518` (tail): 30,466 bytes |
 | Transport box | 14,112 | `AAF14..ACA44` then `AD5FC..AD61A` (6,990 bytes) |
 
 **Every unit of a container is a file of its own** ([bank_files.rs](../crates/bank-common/src/bank_files.rs), `FileName::units`), in the order of the container's layout:
@@ -292,8 +292,8 @@ All files are in SD extdata archive `0x00000C9B` (created by the original with r
 | Container | Files | Unit |
 | --- | --- | --- |
 | Bank | `/journal.bin`, `/journal.alt.bin` (192 each) | journal record A, B |
-| | `/bank.bin`, `/bank.alt.bin` (730,474 each) | snapshot slot A, B |
-| Pokédex | `/dex.bin`, `/dex.alt.bin` (29,888 each) | slot 0, 1 |
+| | `/bank.bin`, `/bank.alt.bin` (729,832 each) | snapshot slot A, B |
+| Main | `/main.bin`, `/main.alt.bin` (30,532 each) | slot 0, 1 |
 | Transport box | `/mover.bin`, `/mover.alt.bin` (7,056 each) | slot 0, 1 |
 
 The reason is how the console writes extdata. Each file is its own container with check values over blocks of its contents; new data is written in place before the check values are updated. A write that the power interrupts leaves the blocks it touched failing their check: reads return a result of the corrupted-data class (`D900458B` was seen), not bad bytes. Units that share a file share blocks at their edges, so in one file a write to the spare slot could take the slot in use with it, and did. With one file per unit, only the unit being written can be lost, and by the order of a save that unit never holds anything still needed.
@@ -310,13 +310,13 @@ The reason is how the console writes extdata. Each file is its own container wit
 - A container counts as missing only when none of its files exists.
 - **One archive handle and one open file per container.** A container opens its archive once and has at most one unit file open, the one being read or written; opening a container only looks at each unit file (there, right size, opens) and closes it again. Leaving a unit flushes it first if it holds writes, so nothing depends on a write staying unflushed, and a flush that fails then is reported by that operation and by the next `sync`. The reason is a limit of the console: with every unit file open under an archive handle of its own, two containers of four units came to eight files and eight archive handles, and creating a file failed with an out-of-resource result (`D860466C`); five and five had worked. Which of the two ran out is not known. Bank holds its Bank container and one other at a time, the migration one source and one destination: two and two, what a Bank of one file per container used. The PC tests count it: the file layer's simulated card counts archive handles and files, the Bank tests' and the migration's count open containers and allow two.
 - `Storage::recreate` deletes one unit file, which leaves it absent. The store and the side files ask for it when writing, syncing or reading back a unit fails, and then write once more; they only ever write units that are not in use.
-- An unreadable journal record counts as a damaged one. An unreadable side slot is void where that is certain: for the Pokédex always (it never blocks the Bank), for the transport box only beside a slot that is seen to belong to the current snapshot (`Sidecar::slots_beside`), and never for Transporter, which uses the strict `Sidecar::slots`.
+- An unreadable journal record counts as a damaged one. An unreadable side slot is void only where that is certain: beside a slot that is seen to belong to the current snapshot (`Sidecar::slots_beside`), and never for Transporter, which uses the strict `Sidecar::slots`.
 
 File names in 3DS extdata are limited to 16 characters without the leading slash; a longer name fails at creation with `E0E046C7`. `UnitFile::new` refuses longer names at compile time.
 
 **Rule for new features:** add a new container with tagged slots, each slot a file of its own. Never change the size or layout of an existing file. A build that does not know a file ignores it; its saves advance the Bank snapshot, so the unknown file's slots stop matching and a later build treats them as "no data yet".
 
-**The Bank of the previous release** has ten files: the four above without the Miles state in the body, and a rewards container (`/rewards.bin`, `/rewards.alt.bin`) with the remainder and the redeemed day in a 16-byte record. The offline patch does not read a Bank in that form. It is converted by the migration patch ([migrate.rs](../patches/bank-migrate/src/migrate.rs), [building.md](building.md#the-migration-from-the-previous-release)), which holds that release's storage code as a frozen copy ([previous/](../patches/bank-migrate/src/previous/)) and reads the old files with it, read-only.
+**The Bank of the previous release** has ten files in another cut: `/bank.bin` with the header and everything but the Pokédex and the transport box, a Pokédex container (`/dex.bin`, `/dex.alt.bin`), the transport box, and a rewards container (`/rewards.bin`, `/rewards.alt.bin`) with the remainder and the redeemed day in a 16-byte record. The offline patch does not read a Bank in that form. It is converted by the migration patch ([migrate.rs](../patches/bank-migrate/src/migrate.rs), [building.md](building.md#the-migration-from-the-previous-release)), which holds that release's storage code as a frozen copy ([previous/](../patches/bank-migrate/src/previous/)) and reads the old files with it, read-only.
 
 - *Stage.* The old Bank is loaded as that release loads it and must be at rest: a save in progress is refused, and so is a Bank without a Pokédex or a transport box for its current save, which that release fills from the running Bank and writes at its next Save and Quit. A delivery that waits is taken into the transport box, as a load takes it. The record goes into its two places in the assembled body. That body is written as a new Bank under temporary names (`/m0.tmp` to `/m7.tmp`) through `BankFiles::initialize`, loaded back, and must be the same body; only then the marker `/migrate.ok` is created.
 - *Finish.* With the marker the old files are removed, the final files are written from the temporary ones (journal records last) and compared, the marker is removed, then the temporary files.
@@ -329,16 +329,16 @@ Without the marker a start begins again from the untouched old files; with it, f
 
 - A new snapshot goes to the inactive slot and is synced and read back; metadata is written to one replica, synced, then the other.
 - A save: verify the game's before-image, `prepare_transfer`, write the game, `reconcile`, read the game back. A before-image keeps the old snapshot, an after-image commits the new one. Right after its own write (`Job::Finalize`) the worker does not wait for the complete read to commit: the 16-byte secure pair in the game's file must be the pair of the image it prepared, which is new with every prepared image, and the game's commit replaces the file whole. The complete fingerprint is checked after the commit; a difference is fault `11` with the new snapshot current. The store blocks on anything else; the worker then chooses the snapshot itself ([below](#an-interrupted-save)).
-- A load checks the journal and the 32-byte header, then reads the payload once and checks its CRC on that pass.
+- A load checks the journal and the 32-byte header, then reads the payload once and checks its CRC on that pass. The payload holds no marker of its own; the format is in the header, which the main file holds.
 - A new Bank writes the side files first, then creates the four Bank files zero-filled, writes the first snapshot, and publishes the first journal record last. A start that finds Bank files without any valid journal record, with at least one record still empty (zero or absent) and with no snapshot other than a first one, treats it as "no Bank yet" and finishes the creation in place (`BankStore::reinitialize`, which discards the four units and begins again). No Bank that was ever current can be in that state: it has a journal record, and after its first save a second snapshot. Two unreadable records are never taken for it; that is fault `5`. A delivery Transporter made in between is kept and shown.
 
 ### Side files
 
-[sidecar.rs](../crates/offline-core/src/sidecar.rs). The Pokédex and transport containers each hold two slots at `index * slot_len`, where `slot_len = 64 + capacity rounded up to 4`; each slot is a file (above). Slot header, little endian:
+[sidecar.rs](../crates/offline-core/src/sidecar.rs). The main and transport containers each hold two slots at `index * slot_len`, where `slot_len = 64 + capacity rounded up to 4`; each slot is a file (above). Slot header, little endian:
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 8 | Magic: `BKOFDEX1`, `BKOFTRN1` |
+| 0 | 8 | Magic: `BKOFMAIN`, `BKOFTRN1` |
 | 8 | 2+2 | Version 1, header size 64 |
 | 12 | 4 | Payload length |
 | 16 | 8 | Tag: generation of the Bank snapshot (0 = no tag) |
@@ -351,11 +351,11 @@ Without the marker a start begins again from the untouched old files; with it, f
 
 The payload follows at +64. An all-zero or damaged header is a void slot. Writing voids the header first, then writes payload and header, each synced.
 
-**Keeping the files in step** ([bank_files.rs](../crates/bank-common/src/bank_files.rs)). A save writes every side file's spare slot, tagged with the snapshot about to be written (generation + 1, CRC of the new Bank payload), and only then prepares the Bank journal. A load uses the slot whose tag equals the current snapshot. A rolled-back save leaves the old slots matching; a committed one makes the new slots match. Missing side files load as defaults, and so does a Pokédex file without a readable matching slot; only the transport box is an error then.
+**Keeping the files in step** ([bank_files.rs](../crates/bank-common/src/bank_files.rs)). A save writes every side file's spare slot, tagged with the snapshot about to be written (generation + 1, CRC of the new Bank payload), and only then prepares the Bank journal. A load uses the slot whose tag equals the current snapshot. A rolled-back save leaves the old slots matching; a committed one makes the new slots match. The main file is needed: without a readable slot for the current snapshot the load is an error (`7A000101`), and so is a header in it that is not format 2 with 100 boxes (`7A000104`). No transport files at all load as an empty box; a transport box without a readable matching slot is an error. With two slots a file in use is never the one being written, so neither can come from a power cut.
 
 ### The Miles state in the body
 
-Everything about Miles is stored with the Bank body, in the Bank file ([rewards.rs](../crates/offline-core/src/rewards.rs), [native_blob.rs](../crates/offline-core/src/native_blob.rs)):
+Everything about Miles is stored with the Bank body, in the main file ([rewards.rs](../crates/offline-core/src/rewards.rs), [native_blob.rs](../crates/offline-core/src/native_blob.rs)):
 
 | Body offset | Size | In the original | In the patch |
 | --- | --- | --- | --- |

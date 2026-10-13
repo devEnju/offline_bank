@@ -22,8 +22,8 @@ use offline_core::{
     moved::{self, Moved},
     native_blob::BLOB_SIZE,
     sections::{
-        self, Identity, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, HELD, RECORD_SIZE, TRANSPORT_RECORDS,
-        TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
+        self, Identity, BANK_SIZE, HELD, MAIN_FILE, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE,
+        TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
     sidecar::{matching, spare, Kind, Sidecar, SidecarError, Tag},
     transport, Fingerprint, GameIdentity, GameObservation, Phase, RecoveryDecision, Storage,
@@ -33,7 +33,7 @@ use offline_core::{
 #[repr(u8)]
 pub enum FileName {
     Bank = 0,
-    Dex = 1,
+    Main = 1,
     Transport = 2,
 }
 /// One file in SD extdata archive `0x00000C9B`: its path and its exact
@@ -64,9 +64,9 @@ static BANK_UNITS: [UnitFile; 4] = [
     UnitFile::new("/bank.bin", SNAPSHOT),
     UnitFile::new("/bank.alt.bin", SNAPSHOT),
 ];
-static DEX_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/dex.bin", DEX_FILE.slot_len()),
-    UnitFile::new("/dex.alt.bin", DEX_FILE.slot_len()),
+static MAIN_UNITS: [UnitFile; 2] = [
+    UnitFile::new("/main.bin", MAIN_FILE.slot_len()),
+    UnitFile::new("/main.alt.bin", MAIN_FILE.slot_len()),
 ];
 static TRANSPORT_UNITS: [UnitFile; 2] = [
     UnitFile::new("/mover.bin", transport::KIND.slot_len()),
@@ -78,7 +78,7 @@ impl FileName {
     pub fn units(self) -> &'static [UnitFile] {
         match self {
             Self::Bank => &BANK_UNITS,
-            Self::Dex => &DEX_UNITS,
+            Self::Main => &MAIN_UNITS,
             Self::Transport => &TRANSPORT_UNITS,
         }
     }
@@ -147,10 +147,6 @@ use crate::rehearsal::{Rehearsal, TEAR_BOXES_PASSES, TEAR_RECORD_PASSES};
 /// What a load found beside the Bank regions now in the staging buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loaded {
-    /// No Pokédex for this save (no file, a damaged one, or one of another
-    /// save): the staging region is zero and must be filled with the native
-    /// defaults by the main thread.
-    pub dex_missing: bool,
     /// No transport box: every slot must be filled with the blank record.
     pub transport_missing: bool,
     /// Nonzero when a Transporter delivery became the box: its Pokémon count.
@@ -265,17 +261,25 @@ impl<F: Files> BankFiles<F> {
             crc: sections::bank_crc(staging).map_err(layout)?,
         };
 
-        // The Pokédex never blocks the Bank, so a slot of its file that
-        // cannot be read is void whichever one it is.
-        let mut dex = self.ensure_side(FileName::Dex, DEX_FILE)?;
-        let slots = dex.slots_or_void();
-        dex.write(spare(&slots, current), Some(next), 0, 0, &[&staging[DEX]])
-            .map_err(side(FileName::Dex))?;
-        drop(dex);
+        // The main file and the transport box are needed: a slot of theirs
+        // that cannot be read is void only beside the one seen to be
+        // current, or while no Bank exists yet.
+        let mut main = self.ensure_side(FileName::Main, MAIN_FILE)?;
+        let slots = match current {
+            Some(current) => main.slots_beside(current).map_err(side(FileName::Main))?,
+            None => main.slots_or_void(),
+        };
+        let [header, middle, tail] = MAIN_RANGES;
+        main.write(
+            spare(&slots, current),
+            Some(next),
+            0,
+            0,
+            &[&staging[header], &staging[middle], &staging[tail]],
+        )
+        .map_err(side(FileName::Main))?;
+        drop(main);
 
-        // The transport box can hold Pokémon: a slot that cannot be read
-        // is void only beside the one seen to be current, or while no Bank
-        // exists yet.
         let mut file = self.ensure_side(FileName::Transport, transport::KIND)?;
         let slots = match current {
             Some(current) => file
@@ -343,29 +347,32 @@ impl<F: Files> BankFiles<F> {
         let tag = self.bank()?.read_bank(staging).map_err(Error::Bank)?;
         sections::expand(staging).map_err(|_| Error::Side(FileName::Bank, Problem::Layout))?;
         let mut loaded = Loaded {
-            dex_missing: true,
             transport_missing: true,
             delivered: 0,
         };
         self.adopted = None;
 
-        // A Pokédex that is damaged or belongs to another save never blocks
-        // the Bank: it starts empty, as without the file, and each game
-        // writes its part again at its next Save and Quit.
-        if let Some(mut file) = self.open_side(FileName::Dex, DEX_FILE)? {
-            let slots = file.slots_or_void();
-            let found = matching(&slots, tag).and_then(|index| {
-                let slot = slots[index].filter(|slot| slot.len as usize == DEX_SIZE);
-                slot.map(|slot| (index, slot))
-            });
-            if let Some((index, slot)) = found {
-                match file.read(index, &slot, &mut staging[DEX]) {
-                    Ok(()) => loaded.dex_missing = false,
-                    Err(SidecarError::Io(error)) => return Err(Error::Io(error)),
-                    Err(_) => staging[DEX].fill(0),
-                }
-            }
-        }
+        // The main file holds what Bank cannot do without: the header with
+        // the format, the Miles and the flags, and the Pokédex. Its slot
+        // for this save must be there and read.
+        let damaged = Error::Side(FileName::Main, Problem::Damaged);
+        let Some(mut file) = self.open_side(FileName::Main, MAIN_FILE)? else {
+            return Err(damaged);
+        };
+        let slots = file.slots_beside(tag).map_err(side(FileName::Main))?;
+        let found = matching(&slots, tag).and_then(|index| {
+            let slot = slots[index].filter(|slot| slot.len as usize == MAIN_SIZE);
+            slot.map(|slot| (index, slot))
+        });
+        let Some((index, slot)) = found else {
+            return Err(damaged);
+        };
+        let layout = |_| Error::Side(FileName::Main, Problem::Layout);
+        let mut parts = sections::main_parts(staging).map_err(layout)?;
+        file.read_parts(index, &slot, &mut parts)
+            .map_err(side(FileName::Main))?;
+        drop(file);
+        sections::validate_header(staging).map_err(layout)?;
 
         if let Some(mut file) = self.open_side(FileName::Transport, transport::KIND)? {
             let slots = file.slots_beside(tag).map_err(side(FileName::Transport))?;
@@ -374,11 +381,13 @@ impl<F: Files> BankFiles<F> {
                 let slot = slots[index].filter(|slot| slot.len as usize == TRANSPORT_SIZE);
                 let slot = slot.ok_or(Error::Side(FileName::Transport, Problem::Damaged))?;
                 let (low, high) = staging.split_at_mut(TRANSPORT_TAGS.start);
-                let read = file.read_split(
+                let read = file.read_parts(
                     index,
                     &slot,
-                    &mut low[TRANSPORT_RECORDS],
-                    &mut high[..TRANSPORT_TAGS.len()],
+                    &mut [
+                        &mut low[TRANSPORT_RECORDS],
+                        &mut high[..TRANSPORT_TAGS.len()],
+                    ],
                 );
                 match (read, plan.adopted) {
                     (Ok(()), Some((id, count))) => {
@@ -543,7 +552,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::testing::*;
-    use offline_core::sections::{MILES, RECORD_SIZE, REWARD_DATE};
+    use offline_core::sections::{DEX, MILES, RECORD_SIZE, REWARD_DATE};
     use std::{boxed::Box, collections::BTreeSet, format, vec, vec::Vec};
 
     /// Opens after a reboot, resolving a pending save from the observed game.
@@ -555,7 +564,7 @@ mod tests {
         load(&mut files)
     }
 
-    const CONTAINERS: [FileName; 3] = [FileName::Bank, FileName::Dex, FileName::Transport];
+    const CONTAINERS: [FileName; 3] = [FileName::Bank, FileName::Main, FileName::Transport];
 
     #[test]
     fn file_names_and_sizes_are_fixed() {
@@ -569,17 +578,15 @@ mod tests {
             [
                 ("/journal.bin", 192),
                 ("/journal.alt.bin", 192),
-                ("/bank.bin", 730_474),
-                ("/bank.alt.bin", 730_474),
-                ("/dex.bin", 29_888),
-                ("/dex.alt.bin", 29_888),
+                ("/bank.bin", 729_832),
+                ("/bank.alt.bin", 729_832),
+                ("/main.bin", 30_532),
+                ("/main.alt.bin", 30_532),
                 ("/mover.bin", 7_056),
                 ("/mover.alt.bin", 7_056),
             ]
         );
-        // The containers are the ranges the earlier single files were, so
-        // that those can be cut into these files as they are.
-        assert_eq!(CONTAINERS.map(FileName::size), [1_461_332, 59_776, 14_112]);
+        assert_eq!(CONTAINERS.map(FileName::size), [1_460_048, 61_064, 14_112]);
         let lengths: Vec<u64> = FileName::Bank.units().iter().map(|unit| unit.len).collect();
         assert_eq!(lengths, session::BANK_LAYOUT.units().map(|unit| unit.1));
     }
@@ -606,7 +613,6 @@ mod tests {
         assert_eq!(
             loaded,
             Loaded {
-                dex_missing: false,
                 transport_missing: false,
                 delivered: 0,
             }
@@ -701,10 +707,7 @@ mod tests {
         let check = |disk: &Shared, game, expected: &Vec<u8>, context: &str| {
             let (bytes, loaded) = recovered(disk, game);
             assert!(bytes == *expected, "{context}: body differs");
-            assert!(
-                !loaded.dex_missing && !loaded.transport_missing,
-                "{context}"
-            );
+            assert!(!loaded.transport_missing, "{context}");
             // Whatever the cut left behind, the next save goes through.
             let mut files = BankFiles::new(disk.reboot());
             if let Phase::Prepared(_) = files.open().unwrap().unwrap() {
@@ -771,25 +774,25 @@ mod tests {
     }
 
     #[test]
-    fn missing_side_files_load_as_empty_and_are_created_by_the_next_save() {
+    fn a_missing_transport_file_loads_as_empty_and_is_created_by_the_next_save() {
         let original = body(0x31, 0x44, 0);
         let disk = fresh(&original);
-        for file in [FileName::Dex, FileName::Transport] {
-            disk.0.borrow_mut().files.remove(&(file as u8));
-        }
+        disk.0
+            .borrow_mut()
+            .files
+            .remove(&(FileName::Transport as u8));
         let mut files = opened(&disk);
         let mut staging = vec![0xEE; BLOB_SIZE];
         let loaded = files.read(&mut staging).unwrap();
         assert_eq!(
             loaded,
             Loaded {
-                dex_missing: true,
                 transport_missing: true,
                 delivered: 0,
             }
         );
-        // Missing regions are zero for the main thread to fill with defaults.
-        assert!(staging[DEX].iter().all(|byte| *byte == 0));
+        // The box is zero for the main thread to fill with blank records.
+        assert!(staging[TRANSPORT_RECORDS].iter().all(|byte| *byte == 0));
         assert_eq!(
             staging[..TRANSPORT_RECORDS.start],
             original[..TRANSPORT_RECORDS.start]
@@ -804,43 +807,48 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_pokedex_never_blocks_the_bank() {
+    fn the_main_file_is_needed_and_never_replaced_by_defaults() {
         let disk = fresh(&body(0x31, 0x44, 0));
-        let whole = load(&mut opened(&disk)).0;
+        let damaged_slot = Err(Error::Side(FileName::Main, Problem::Damaged));
+        // No main file at all.
+        let missing = disk.copy();
+        missing.0.borrow_mut().files.remove(&(FileName::Main as u8));
+        // Its payload damaged.
         let damaged = disk.copy();
         damaged
             .0
             .borrow_mut()
             .files
-            .get_mut(&(FileName::Dex as u8))
+            .get_mut(&(FileName::Main as u8))
             .unwrap()[100] ^= 1;
-        // A Pokédex file from some other Bank matches no snapshot.
+        // A main file from some other Bank matches no snapshot.
         let foreign = disk.copy();
         let other = fresh(&body(0x77, 0x44, 0));
-        let bytes = other.0.borrow().files[&(FileName::Dex as u8)].clone();
+        let bytes = other.0.borrow().files[&(FileName::Main as u8)].clone();
         foreign
             .0
             .borrow_mut()
             .files
-            .insert(FileName::Dex as u8, bytes);
-        for (name, disk) in [("damaged", damaged), ("foreign", foreign)] {
-            // The Bank loads with everything else as saved and no Pokédex.
+            .insert(FileName::Main as u8, bytes);
+        for (name, disk) in [
+            ("missing", missing),
+            ("damaged", damaged),
+            ("foreign", foreign),
+        ] {
+            let before = disk.0.borrow().files.clone();
             let mut files = opened(&disk);
-            let (bytes, loaded) = load(&mut files);
-            assert!(loaded.dex_missing && !loaded.transport_missing, "{name}");
-            let mut expected = whole.clone();
-            expected[DEX].fill(0);
-            assert!(bytes == expected, "{name}: body differs");
-            // The next save writes a Pokédex again.
-            let next = body(0x52, 0x66, 0);
-            files
-                .prepare(&mut next.clone(), GAME, BEFORE, AFTER)
-                .unwrap();
-            files.reconcile(observed(AFTER)).unwrap();
-            let (bytes, loaded) = load(&mut opened(&disk.reboot()));
-            assert!(!loaded.dex_missing, "{name}");
-            assert!(bytes == next, "{name}: body differs after a save");
+            assert_eq!(files.read(&mut vec![0; BLOB_SIZE]), damaged_slot, "{name}");
+            // Nothing was written, and nothing can be saved over it.
+            assert!(disk.0.borrow().files == before, "{name}");
         }
+        // A header that is not the format the patch knows.
+        let mut other_format = body(0x31, 0x44, 0);
+        other_format[0x15C] = 9;
+        let disk = fresh(&other_format);
+        assert_eq!(
+            opened(&disk).read(&mut vec![0; BLOB_SIZE]),
+            Err(Error::Side(FileName::Main, Problem::Layout))
+        );
     }
 
     /// Whether Transporter's check lets a transfer begin.
@@ -935,10 +943,7 @@ mod tests {
             finished_later += usize::from(created);
             let expected = if created { &second } else { &original };
             let (bytes, loaded) = load(&mut opened(&disk.reboot()));
-            assert!(
-                !loaded.dex_missing && !loaded.transport_missing,
-                "cut {cut}"
-            );
+            assert!(!loaded.transport_missing, "cut {cut}");
             let shown = if delivered { 5 } else { 0 };
             assert_eq!(loaded.delivered, shown, "cut {cut}");
             let mut with_box = expected.clone();
@@ -1068,7 +1073,7 @@ mod tests {
             let (bytes, loaded) = load(&mut files);
             let state = if decision == commit { &new } else { &old };
             assert!(bytes == *state, "{name}: body differs");
-            assert!(!loaded.dex_missing && !loaded.transport_missing, "{name}");
+            assert!(!loaded.transport_missing, "{name}");
             // It stays settled, and the transport box is free again.
             let (again, _) = load(&mut opened(&files.files_mut().reboot()));
             assert!(again == *state, "{name}: after a restart");

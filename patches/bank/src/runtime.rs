@@ -25,7 +25,7 @@ use core::{
 use offline_core::{
     native_blob::NativeBlobView,
     rewards::{self, Currency, Dialog, Entry, Moment, Receipt, RewardError},
-    sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
+    sections::{RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
     Phase, RecoveryDecision,
 };
 
@@ -442,8 +442,8 @@ impl Runtime {
         self.blank = Some((record, body[TRANSPORT_TAGS.start]));
         Ok(())
     }
-    /// Fills regions no file supplied with what a new Bank has: the live
-    /// Pokédex defaults and blank transport records.
+    /// Fills a transport box no file supplied with what a new Bank has:
+    /// blank records.
     fn fill_defaults(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
         // A delivery is the complete box Transporter built and needs no fill.
         let first = if loaded.transport_missing {
@@ -451,20 +451,14 @@ impl Runtime {
         } else {
             TRANSPORT_SLOTS
         };
-        if !loaded.dex_missing && first == TRANSPORT_SLOTS {
+        if first == TRANSPORT_SLOTS {
             return Ok(());
         }
         let (record, tag) = self.blank.ok_or(Fault::NativeObject)?;
-        let bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
-            .map_err(|_| Fault::NativeObject)?;
-        let live = bank.snapshot().map_err(|_| Fault::NativeObject)?.as_bytes();
         let staging = self
             .worker()?
             .staging_mut()
             .map_err(|_| Fault::StorageLoad)?;
-        if loaded.dex_missing {
-            staging[DEX].copy_from_slice(&live[DEX]);
-        }
         for slot in first..TRANSPORT_SLOTS {
             let at = TRANSPORT_RECORDS.start + slot * RECORD_SIZE;
             staging[at..at + RECORD_SIZE].copy_from_slice(&record);
