@@ -278,10 +278,12 @@ impl<S: Storage> Journal<S> {
 
     /// Publishes a delivery whose bytes, with the checksum `crc`, are durable
     /// in the transport file's copy that is not in use. The delivery exists
-    /// from the moment the first replica is durable, and so that is what
-    /// this answers for: an error means that there is no delivery. If the
-    /// second replica cannot be written, the journal is as after a power
-    /// cut between the two, and Bank's next save writes it.
+    /// from the moment the first replica is durable, and that is what this
+    /// answers for. If the second replica cannot be written, the journal is
+    /// as after a power cut between the two, and Bank's next save writes
+    /// it. An error means that the first replica was not written and read
+    /// back; only if its read-back alone fails can a delivery be there
+    /// all the same, which leaves the Pokémon in the game as well.
     pub fn announce(&mut self, head: &Head, crc: u32) -> Result<Head, StoreError<S::Error>> {
         // The record in force, and the replica that holds it.
         let selected = match self.load()? {

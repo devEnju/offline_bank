@@ -14,7 +14,7 @@
 
 pub mod migrate;
 pub mod navigation;
-pub mod previous;
+mod previous;
 
 #[cfg(target_arch = "arm")]
 pub mod runtime;

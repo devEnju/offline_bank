@@ -5,6 +5,10 @@
 //! They are here so that the migration reads the previous release's files
 //! with the code that wrote them, whatever the shared crates become. Nothing
 //! outside this crate uses them, and they go when the migration goes.
+//!
+//! The migration itself only reads with them. What writes is kept as that
+//! release has it, for the tests, which make a Bank of that release with it.
+#![allow(dead_code, unused_imports, clippy::enum_variant_names)]
 
 pub mod bank_files;
 pub mod rewards;

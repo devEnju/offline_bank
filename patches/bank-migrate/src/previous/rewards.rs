@@ -5,8 +5,34 @@
 //! last redemption at 8 (u16 year, u8 month, u8 day; all zero: never
 //! redeemed). Bytes 0..4 and 6..8 are not read; 12..16 are zero.
 
-use offline_core::rewards::Date;
-pub use offline_core::rewards::Record;
+/// What the record holds, as that release reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Record {
+    /// Pokémon-hours not yet a whole Mile.
+    pub fraction: u16,
+    /// The day of the last redemption: year, month, day.
+    pub redeemed: Option<(u16, u8, u8)>,
+}
+impl Record {
+    /// A Bank without a rewards file: no remainder, never redeemed.
+    pub const NONE: Self = Self {
+        fraction: 0,
+        redeemed: None,
+    };
+}
+
+/// A calendar day as that release accepts one: years 1..=16383.
+fn date(year: u16, month: u8, day: u8) -> Option<(u16, u8, u8)> {
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => return None,
+    };
+    let valid = (1..=0x3fff).contains(&year) && (1..=days).contains(&day);
+    valid.then_some((year, month, day))
+}
 
 pub const FILE: super::sidecar::Kind = super::sidecar::Kind {
     magic: *b"BKOFRWD1",
@@ -17,10 +43,10 @@ pub const RECORD_SIZE: usize = 16;
 pub fn encode(record: Record) -> [u8; RECORD_SIZE] {
     let mut out = [0; RECORD_SIZE];
     out[4..6].copy_from_slice(&record.fraction.to_le_bytes());
-    if let Some(day) = record.redeemed {
-        out[8..10].copy_from_slice(&day.year().to_le_bytes());
-        out[10] = day.month();
-        out[11] = day.day();
+    if let Some((year, month, day)) = record.redeemed {
+        out[8..10].copy_from_slice(&year.to_le_bytes());
+        out[10] = month;
+        out[11] = day;
     }
     out
 }
@@ -34,7 +60,7 @@ pub fn decode(bytes: &[u8]) -> Option<Record> {
         None
     } else {
         let year = u16::from_le_bytes([bytes[8], bytes[9]]);
-        Some(Date::new(year, bytes[10], bytes[11]).ok()?)
+        Some(date(year, bytes[10], bytes[11])?)
     };
     Some(Record {
         fraction: u16::from_le_bytes([bytes[4], bytes[5]]),

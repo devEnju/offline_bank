@@ -624,7 +624,8 @@ impl Runtime {
         // initialization. Native defaults/translated names stay on UI.
         let defaults: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x002a_e8b0usize) };
         unsafe { defaults(task.raw()) };
-        // A fresh Bank has no Miles record until its first save.
+        // A fresh Bank has no reward date yet: Miles are counted from its
+        // first save.
         self.stage_bank(task)?;
         self.submit(task, Step::Initialize, Job::Initialize)
     }

@@ -219,6 +219,32 @@ mod kind_tests {
         }
         // What a record of the patch can name and no game has: nothing,
         // Bank itself, and a neighbour of a game's title.
+        // The journal names the game of a save in progress by the same
+        // number, 1 to 8, and knows the same eight titles.
+        for id in 1..=8u8 {
+            let part = |slot| offline_core::Part { slot, crc: 0 };
+            let save = |slot| offline_core::Save {
+                bank: part(slot),
+                main: part(slot),
+                mover: part(slot),
+                held: 0,
+            };
+            let record = offline_core::Metadata {
+                sequence: 1,
+                phase: offline_core::Phase::Prepared(offline_core::PendingTransfer {
+                    before: save(offline_core::Slot::A),
+                    after: save(offline_core::Slot::B),
+                    game: offline_core::GameIdentity {
+                        title_id: GameKind::try_from(id).unwrap().title_id(),
+                        save_identity: [0; 32],
+                    },
+                    before_fingerprint: [1; 32],
+                    after_fingerprint: [2; 32],
+                }),
+                delivery: None,
+            };
+            assert_eq!(record.encode().unwrap()[8] >> 4, id);
+        }
         for title in [
             0,
             0x0004_0000_000c_9b00,

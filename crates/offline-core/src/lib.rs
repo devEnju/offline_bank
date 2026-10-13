@@ -29,11 +29,14 @@
 //!
 //! # Durable protocol
 //!
-//! New content is written only to the copy that is not in use and
-//! synchronized first. The record is then written to the replica that was not
-//! selected and synchronized, followed by the other replica and another
-//! synchronization. Both replicas have the same sequence. The highest valid
-//! sequence controls visibility; a newer copy by itself is never current.
+//! New content is written only to a copy that holds nothing still needed and
+//! synchronized first: the copy that is not in use, or, for a save beside a
+//! waiting delivery, the empty transport box in use (`transport`). The
+//! record is then written to the replica that was not selected and
+//! synchronized, followed by the other replica and another synchronization.
+//! A completed publication leaves both replicas with the same sequence. The
+//! highest valid sequence controls visibility; a newer copy by itself is
+//! never current.
 //!
 //! For a transfer: verify the game's before state, call `prepare_transfer`, and
 //! mutate the game ONLY after that call succeeds. Then read the game back and

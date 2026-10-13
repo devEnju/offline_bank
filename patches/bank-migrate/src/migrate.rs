@@ -304,6 +304,20 @@ fn unwritten<E>(step: Step) -> impl Fn(bank_files::Error<E>) -> Stopped<E> {
     }
 }
 
+/// Puts what the previous release kept in its rewards record where the
+/// current one keeps it: in the body, the day as u16 year, month, day (no
+/// day: zeros), the remainder as a u16.
+fn into_body(body: &mut [u8], record: previous::rewards::Record) {
+    let mut redeemed = [0; 4];
+    if let Some((year, month, day)) = record.redeemed {
+        redeemed[..2].copy_from_slice(&year.to_le_bytes());
+        redeemed[2] = month;
+        redeemed[3] = day;
+    }
+    body[REDEEMED_OFFSET..REDEEMED_OFFSET + 4].copy_from_slice(&redeemed);
+    body[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&record.fraction.to_le_bytes());
+}
+
 /// Reads the old Bank into one native body, writes that body as a new Bank
 /// under temporary names, and marks it complete. The old files are only read.
 fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
@@ -327,9 +341,7 @@ fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
         return Err(Stopped::Unsettled);
     }
     // What it kept beside the body now lives in the body.
-    let (redeemed, fraction) = loaded.rewards.to_fields();
-    body[REDEEMED_OFFSET..REDEEMED_OFFSET + 4].copy_from_slice(&redeemed);
-    body[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&fraction);
+    into_body(body, loaded.rewards);
     let converted = crc32(body);
 
     for file in ORDER {
@@ -461,10 +473,8 @@ mod tests {
     extern crate std;
     use super::*;
     use bank_common::testing::body;
-    use offline_core::{
-        rewards::{Date, Record},
-        sections::{TRANSPORT_RECORDS, TRANSPORT_TAGS},
-    };
+    use offline_core::sections::{TRANSPORT_RECORDS, TRANSPORT_TAGS};
+    use previous::rewards::Record;
     use std::{
         cell::RefCell,
         collections::{BTreeMap, BTreeSet},
@@ -727,15 +737,13 @@ mod tests {
     };
     fn kept() -> Record {
         Record {
-            redeemed: Some(Date::new(2026, 10, 6).unwrap()),
+            redeemed: Some((2026, 10, 6)),
             ..RECORD_KEPT
         }
     }
     /// `body` with the record where the current release keeps it.
     fn with_record(mut body: Vec<u8>, record: Record) -> Vec<u8> {
-        let (redeemed, fraction) = record.to_fields();
-        body[REDEEMED_OFFSET..REDEEMED_OFFSET + 4].copy_from_slice(&redeemed);
-        body[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&fraction);
+        into_body(&mut body, record);
         body
     }
     /// A Bank of the previous release on `card`, created and never saved.
@@ -808,6 +816,14 @@ mod tests {
             assert!(only_the_new_files(&card));
             assert!(card.0.borrow().unreadable.is_empty());
             assert!(current(&card).unwrap() == body);
+            // The current release reads the record of that Bank there.
+            let view = offline_core::native_blob::NativeBlobView::parse_layout(&body).unwrap();
+            let day = offline_core::rewards::Date::new(2026, 10, 6).unwrap();
+            let now = offline_core::rewards::Record {
+                fraction: 321,
+                redeemed: Some(day),
+            };
+            assert_eq!(view.rewards(), now);
             // A second run finds nothing to do and changes nothing.
             let files = card.files();
             assert_eq!(convert(&card), Ok(Done::AlreadyNew));

@@ -597,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn miles_balance_and_reward_date_are_stored_in_the_bank_file() {
+    fn miles_balance_and_reward_date_are_stored_in_the_main_file() {
         let date = [0xea, 0x07, 10, 6, 18, 10];
         let mut with_balance = body(0x31, 0x44, 0);
         with_balance[MILES].copy_from_slice(&999u32.to_le_bytes());
