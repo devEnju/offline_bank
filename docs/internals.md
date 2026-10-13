@@ -85,7 +85,7 @@ The load is why a game has to be chosen: it writes into that game. Its set-up be
 - *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (the main file and the transport box first, the Bank file and the journal last), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
 - *After cleanup, task 9 runs again* if a result exists, and shows it with `Notice::done`, the migration's screen. Its set-up creates the shared UI that cleanup destroyed (`002aeb1c`).
 
-Everything in the Bank object comes along: boxes, the transport box, the Pokédex part, and the Miles balance with its reward date, which are fields of the object. The two places the patch uses beside them come as the server had them: the padding at `AD61A` as the remainder, and the pass count at `174`, which is not a date and so reads as "never redeemed".
+Everything in the Bank object comes along: boxes, the transport box, the Pokédex part, and the Miles balance with its reward date, which are fields of the object. The two places the patch uses beside them do not come from the server, which has its pass count at `174` and whatever its padding holds at `AD61A`: `download::write` sets both to what a new Bank has, no remainder and never redeemed.
 
 **What was checked in the original's code**, since no run against the server has been made:
 
@@ -374,6 +374,16 @@ Everything about Miles is stored with the Bank body, in the main file ([rewards.
 | `AD61A` | 2 | Padding between the transport box's tags and the records | Remainder in Pokémon-hours. A save writes 0..719; a larger number is paid out at the next load like any other |
 
 The original has one reader and one writer of `174`, the accessors `002ba524` and `002ba53c`, both called from claim state `0x1B` only (`002aac1c`, `002aac3c`): it stores the session's count there when that has grown, and then sets the flag at `179`. Both calls lie behind `cmn r0, #1; beq 002aac54` at `002aac04`, which skips them while the session reports no count. The reward hook presents the count as -1 for every call of the claim task ([Rewards](#rewards)), so the original never reaches the field. The builder and the verify script check those two words. Nothing in the original refers to the two bytes at `AD61A`; its initializer does not write them.
+
+**Starting values.** Every way a Bank comes into being sets both fields explicitly:
+
+| A Bank that is | `174` | `AD61A` |
+| --- | --- | --- |
+| created by the offline patch (`create_bank`) | zero: never redeemed | zero |
+| downloaded from the server (`download::write`) | zero, not the server's count | zero, not the server's padding |
+| converted from the previous release | the day from its rewards record, or zero | the remainder from that record |
+
+A value at `174` that is not a calendar day reads as "never redeemed", so no content of the field can stop Bank.
 
 ### An interrupted save
 

@@ -625,7 +625,12 @@ impl Runtime {
         let defaults: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x002a_e8b0usize) };
         unsafe { defaults(task.raw()) };
         // A fresh Bank has no reward date yet: Miles are counted from its
-        // first save.
+        // first save. The two places of the patch's own Miles state start
+        // empty too, whatever the new object holds there: the original
+        // does not set the padding the remainder is kept in.
+        unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+            .map_err(|_| Fault::NativeObject)?
+            .set_rewards(offline_core::rewards::Record::NONE);
         self.stage_bank(task)?;
         self.submit(task, Step::Initialize, Job::Initialize)
     }
