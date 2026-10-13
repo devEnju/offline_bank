@@ -3,8 +3,9 @@
 //! Version 0.2.1 kept each container in one file: `/bank.bin`,
 //! `/dex.bin`, `/transport.bin`, `/rewards.bin`. Every unit of a container is
 //! a file of its own now (`bank_files`), and the containers themselves are
-//! byte for byte what they were, so converting is cutting the four files at
-//! their unit boundaries. Three of the new files have the names of old ones,
+//! byte for byte what they were, so converting is cutting the first three at
+//! their unit boundaries; the Miles record in the fourth is left where it is
+//! and not carried over. Three of the new files have the names of old ones,
 //! which is why the new files are first written under temporary names.
 //!
 //! Only this patch knows the earlier files, and it does nothing else: it
@@ -31,8 +32,7 @@ use bank_common::{
     session,
 };
 use offline_core::{
-    crc32, native_blob::BLOB_SIZE, rewards, sections::DEX_FILE, transport, Phase, Storage,
-    StoreError,
+    crc32, native_blob::BLOB_SIZE, sections::DEX_FILE, transport, Phase, Storage, StoreError,
 };
 
 /// First number of the result screen when nothing went wrong; the second
@@ -119,16 +119,10 @@ const fn single(path: &'static str, len: u64) -> [UnitFile; 1] {
 }
 /// The containers in the order they are converted: the Bank last, because
 /// its journal is what makes a Bank exist.
-const ORDER: [FileName; 4] = [
-    FileName::Dex,
-    FileName::Rewards,
-    FileName::Transport,
-    FileName::Bank,
-];
+const ORDER: [FileName; 3] = [FileName::Dex, FileName::Transport, FileName::Bank];
 static OLD_BANK: [UnitFile; 1] = single("/bank.bin", session::BANK_LAYOUT.file_len());
 static OLD_DEX: [UnitFile; 1] = single("/dex.bin", DEX_FILE.file_len());
 static OLD_TRANSPORT: [UnitFile; 1] = single("/transport.bin", transport::KIND.file_len());
-static OLD_REWARDS: [UnitFile; 1] = single("/rewards.bin", rewards::FILE.file_len());
 static TEMPORARY_BANK: [UnitFile; 4] = [
     UnitFile::new("/m0.tmp", RECORD),
     UnitFile::new("/m1.tmp", RECORD),
@@ -143,10 +137,6 @@ static TEMPORARY_TRANSPORT: [UnitFile; 2] = [
     UnitFile::new("/m6.tmp", transport::KIND.slot_len()),
     UnitFile::new("/m7.tmp", transport::KIND.slot_len()),
 ];
-static TEMPORARY_REWARDS: [UnitFile; 2] = [
-    UnitFile::new("/m8.tmp", rewards::FILE.slot_len()),
-    UnitFile::new("/m9.tmp", rewards::FILE.slot_len()),
-];
 static MARKER: [UnitFile; 1] = single("/migrate.ok", 16);
 
 fn old(file: FileName) -> &'static [UnitFile] {
@@ -154,7 +144,6 @@ fn old(file: FileName) -> &'static [UnitFile] {
         FileName::Bank => &OLD_BANK,
         FileName::Dex => &OLD_DEX,
         FileName::Transport => &OLD_TRANSPORT,
-        FileName::Rewards => &OLD_REWARDS,
     }
 }
 fn temporary(file: FileName) -> &'static [UnitFile] {
@@ -162,7 +151,6 @@ fn temporary(file: FileName) -> &'static [UnitFile] {
         FileName::Bank => &TEMPORARY_BANK,
         FileName::Dex => &TEMPORARY_DEX,
         FileName::Transport => &TEMPORARY_TRANSPORT,
-        FileName::Rewards => &TEMPORARY_REWARDS,
     }
 }
 
@@ -424,7 +412,7 @@ mod tests {
     extern crate std;
     use super::*;
     use bank_common::testing::{
-        body, deliver, fresh, load, miles_record, observed, opened, Shared, AFTER, BEFORE, GAME,
+        body, deliver, fresh, load, observed, opened, Shared, AFTER, BEFORE, GAME,
     };
     use offline_core::GameObservation;
     use std::{
@@ -690,12 +678,7 @@ mod tests {
         out
     }
 
-    const CONTAINERS: [FileName; 4] = [
-        FileName::Bank,
-        FileName::Dex,
-        FileName::Transport,
-        FileName::Rewards,
-    ];
+    const CONTAINERS: [FileName; 3] = [FileName::Bank, FileName::Dex, FileName::Transport];
 
     /// The four files an earlier version left for the Bank on `disk`: each
     /// container as one file.
@@ -738,7 +721,7 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut saved.clone(), miles_record(7, 1), GAME, BEFORE, AFTER)
+            .prepare(&mut saved.clone(), GAME, BEFORE, AFTER)
             .unwrap();
         files.reconcile(observed(AFTER)).unwrap();
         files.tidy_transport().unwrap();
@@ -755,7 +738,6 @@ mod tests {
                 ("/bank.bin", 1_461_332),
                 ("/dex.bin", 59_776),
                 ("/transport.bin", 14_112),
-                ("/rewards.bin", 160),
             ]
         );
         for file in CONTAINERS {
@@ -781,7 +763,7 @@ mod tests {
         // And those bytes are the Bank: boxes, Pokédex, Miles, the delivery.
         let (bytes, loaded) = load(&mut opened(&disk));
         assert!(bytes == shown);
-        assert_eq!((loaded.delivered, loaded.rewards), (4, miles_record(7, 1)));
+        assert_eq!(loaded.delivered, 4);
     }
 
     #[test]
@@ -791,7 +773,7 @@ mod tests {
             let whole = old_card(&disk, console).restarted(Some(usize::MAX));
             assert_eq!(convert(&whole), Ok(Done::Converted));
             let total = whole.0.borrow().operations;
-            assert!(total > 60);
+            assert!(total > 45);
             let mut resumed = 0;
             for cut in 0..total {
                 let card = old_card(&disk, console).restarted(Some(cut));
@@ -837,13 +819,7 @@ mod tests {
         let mut files = opened(&pending);
         load(&mut files);
         files
-            .prepare(
-                &mut body(0x11, 0x22, 4),
-                miles_record(8, 2),
-                GAME,
-                [5; 32],
-                [6; 32],
-            )
+            .prepare(&mut body(0x11, 0x22, 4), GAME, [5; 32], [6; 32])
             .unwrap();
         let card = old_card(&pending, false);
         let before = card.files();
@@ -953,13 +929,7 @@ mod tests {
             // The next Save and Quit writes into the spare files.
             let saved = body(0x77, 0x66, 4);
             files
-                .prepare(
-                    &mut saved.clone(),
-                    miles_record(9, 2),
-                    GAME,
-                    [5; 32],
-                    [6; 32],
-                )
+                .prepare(&mut saved.clone(), GAME, [5; 32], [6; 32])
                 .unwrap();
             files
                 .reconcile(GameObservation::Present {
@@ -971,8 +941,8 @@ mod tests {
             drop(files);
             let mut files = BankFiles::new(Final(card.restarted(None)));
             assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
-            let loaded = files.read(&mut staging).unwrap();
-            assert_eq!(loaded.rewards, miles_record(9, 2));
+            files.read(&mut staging).unwrap();
+            assert!(staging == saved);
             return;
         }
         panic!("one set of boxes is always spare");

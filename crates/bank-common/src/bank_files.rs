@@ -1,7 +1,7 @@
 //! The stored files and the order in which they are read and written.
 //!
 //! The Bank container carries the journal and decides which save is current.
-//! The Pokédex, transport box, and rewards containers each hold two slots
+//! The Pokédex and transport box containers each hold two slots
 //! tagged with a Bank snapshot (`offline_core::sidecar`). A save writes every
 //! side container's spare slot first, then prepares the Bank journal; a load
 //! uses the slots whose tag matches the Bank's current snapshot. So all four
@@ -21,7 +21,6 @@ use crate::session::{self, BankSession};
 use offline_core::{
     moved::{self, Moved},
     native_blob::BLOB_SIZE,
-    rewards::{self, Record},
     sections::{
         self, Identity, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, HELD, RECORD_SIZE, TRANSPORT_RECORDS,
         TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
@@ -36,7 +35,6 @@ pub enum FileName {
     Bank = 0,
     Dex = 1,
     Transport = 2,
-    Rewards = 3,
 }
 /// One file in SD extdata archive `0x00000C9B`: its path and its exact
 /// allocation. A file of another size is an error and is never replaced.
@@ -74,10 +72,6 @@ static TRANSPORT_UNITS: [UnitFile; 2] = [
     UnitFile::new("/mover.bin", transport::KIND.slot_len()),
     UnitFile::new("/mover.alt.bin", transport::KIND.slot_len()),
 ];
-static REWARDS_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/rewards.bin", rewards::FILE.slot_len()),
-    UnitFile::new("/rewards.alt.bin", rewards::FILE.slot_len()),
-];
 
 impl FileName {
     /// The files of the container, in the order of its layout.
@@ -86,7 +80,6 @@ impl FileName {
             Self::Bank => &BANK_UNITS,
             Self::Dex => &DEX_UNITS,
             Self::Transport => &TRANSPORT_UNITS,
-            Self::Rewards => &REWARDS_UNITS,
         }
     }
     /// Length of the container: all its units.
@@ -154,7 +147,6 @@ use crate::rehearsal::{Rehearsal, TEAR_BOXES_PASSES, TEAR_RECORD_PASSES};
 /// What a load found beside the Bank regions now in the staging buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loaded {
-    pub rewards: Record,
     /// No Pokédex for this save (no file, a damaged one, or one of another
     /// save): the staging region is zero and must be filled with the native
     /// defaults by the main thread.
@@ -263,7 +255,6 @@ impl<F: Files> BankFiles<F> {
         staging: &mut [u8],
         current: Option<Tag>,
         generation: u64,
-        stored: Record,
     ) -> Outcome<Tag, F> {
         if staging.len() != BLOB_SIZE {
             return Err(Error::Side(FileName::Bank, Problem::Layout));
@@ -274,25 +265,13 @@ impl<F: Files> BankFiles<F> {
             crc: sections::bank_crc(staging).map_err(layout)?,
         };
 
-        // The Pokédex and the Miles record never block the Bank, so a slot
-        // of theirs that cannot be read is void whichever one it is.
+        // The Pokédex never blocks the Bank, so a slot of its file that
+        // cannot be read is void whichever one it is.
         let mut dex = self.ensure_side(FileName::Dex, DEX_FILE)?;
         let slots = dex.slots_or_void();
         dex.write(spare(&slots, current), Some(next), 0, 0, &[&staging[DEX]])
             .map_err(side(FileName::Dex))?;
         drop(dex);
-
-        let mut file = self.ensure_side(FileName::Rewards, rewards::FILE)?;
-        let slots = file.slots_or_void();
-        file.write(
-            spare(&slots, current),
-            Some(next),
-            0,
-            0,
-            &[&stored.encode()],
-        )
-        .map_err(side(FileName::Rewards))?;
-        drop(file);
 
         // The transport box can hold Pokémon: a slot that cannot be read
         // is void only beside the one seen to be current, or while no Bank
@@ -341,7 +320,7 @@ impl<F: Files> BankFiles<F> {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         }
         self.adopted = None;
-        self.write_sides(staging, None, 1, Record::NONE)?;
+        self.write_sides(staging, None, 1)?;
         let payload = &staging[..BANK_SIZE];
         let session = match self.files.open(FileName::Bank).map_err(Error::Io)? {
             Some(storage) => BankSession::reinitialize_bytes(storage, payload),
@@ -364,7 +343,6 @@ impl<F: Files> BankFiles<F> {
         let tag = self.bank()?.read_bank(staging).map_err(Error::Bank)?;
         sections::expand(staging).map_err(|_| Error::Side(FileName::Bank, Problem::Layout))?;
         let mut loaded = Loaded {
-            rewards: Record::NONE,
             dex_missing: true,
             transport_missing: true,
             delivered: 0,
@@ -385,22 +363,6 @@ impl<F: Files> BankFiles<F> {
                     Ok(()) => loaded.dex_missing = false,
                     Err(SidecarError::Io(error)) => return Err(Error::Io(error)),
                     Err(_) => staging[DEX].fill(0),
-                }
-            }
-        }
-
-        // A missing or unreadable Miles record never blocks the Bank.
-        if let Some(mut file) = self.open_side(FileName::Rewards, rewards::FILE)? {
-            let slots = file.slots_or_void();
-            if let Some(index) = matching(&slots, tag) {
-                let slot = slots[index].filter(|slot| slot.len as usize == rewards::RECORD_SIZE);
-                let mut bytes = [0; rewards::RECORD_SIZE];
-                if let Some(slot) = slot {
-                    match file.read(index, &slot, &mut bytes) {
-                        Ok(()) => loaded.rewards = Record::decode(&bytes).unwrap_or(Record::NONE),
-                        Err(SidecarError::Io(error)) => return Err(Error::Io(error)),
-                        Err(_) => {}
-                    }
                 }
             }
         }
@@ -464,7 +426,6 @@ impl<F: Files> BankFiles<F> {
     pub fn prepare(
         &mut self,
         staging: &mut [u8],
-        stored: Record,
         game: GameIdentity,
         before: Fingerprint,
         after: Fingerprint,
@@ -478,7 +439,7 @@ impl<F: Files> BankFiles<F> {
                 .tear_record(TEAR_RECORD_PASSES)
                 .map_err(Error::Bank)?;
         }
-        let next = self.write_sides(staging, Some(current), current.generation + 1, stored)?;
+        let next = self.write_sides(staging, Some(current), current.generation + 1)?;
         // Test builds: the same for the spare snapshot slot.
         #[cfg(feature = "test-build")]
         if self.rehearsal == Rehearsal::TearBoxes {
@@ -594,12 +555,7 @@ mod tests {
         load(&mut files)
     }
 
-    const CONTAINERS: [FileName; 4] = [
-        FileName::Bank,
-        FileName::Dex,
-        FileName::Transport,
-        FileName::Rewards,
-    ];
+    const CONTAINERS: [FileName; 3] = [FileName::Bank, FileName::Dex, FileName::Transport];
 
     #[test]
     fn file_names_and_sizes_are_fixed() {
@@ -619,16 +575,11 @@ mod tests {
                 ("/dex.alt.bin", 29_888),
                 ("/mover.bin", 7_056),
                 ("/mover.alt.bin", 7_056),
-                ("/rewards.bin", 80),
-                ("/rewards.alt.bin", 80),
             ]
         );
         // The containers are the ranges the earlier single files were, so
         // that those can be cut into these files as they are.
-        assert_eq!(
-            CONTAINERS.map(FileName::size),
-            [1_461_332, 59_776, 14_112, 160]
-        );
+        assert_eq!(CONTAINERS.map(FileName::size), [1_461_332, 59_776, 14_112]);
         let lengths: Vec<u64> = FileName::Bank.units().iter().map(|unit| unit.len).collect();
         assert_eq!(lengths, session::BANK_LAYOUT.units().map(|unit| unit.1));
     }
@@ -646,16 +597,15 @@ mod tests {
     }
 
     #[test]
-    fn new_bank_writes_four_containers_and_loads_back_every_byte() {
+    fn new_bank_writes_three_containers_and_loads_back_every_byte() {
         let original = body(0x31, 0x44, 0);
         let disk = fresh(&original);
-        assert_eq!(disk.0.borrow().files.len(), 4);
+        assert_eq!(disk.0.borrow().files.len(), 3);
         let (loaded_body, loaded) = load(&mut opened(&disk));
         assert!(loaded_body == original);
         assert_eq!(
             loaded,
             Loaded {
-                rewards: Record::NONE,
                 dex_missing: false,
                 transport_missing: false,
                 delivered: 0,
@@ -671,32 +621,23 @@ mod tests {
         with_balance[REWARD_DATE].copy_from_slice(&date);
         let disk = fresh(&with_balance);
         let mut files = opened(&disk);
-        let (mut staging, loaded) = load(&mut files);
-        // A new Bank keeps the native fields and has no record beside them.
+        let mut staging = load(&mut files).0;
+        // A new Bank keeps the native fields as its body has them.
         assert_eq!(&staging[MILES], &999u32.to_le_bytes());
         assert_eq!(&staging[REWARD_DATE], &date);
-        assert_eq!(loaded.rewards, Record::NONE);
 
         staging[MILES].copy_from_slice(&777u32.to_le_bytes());
         staging[REWARD_DATE.start + 3] = 7;
-        files
-            .prepare(&mut staging, miles_record(321, 6), GAME, BEFORE, AFTER)
-            .unwrap();
+        files.prepare(&mut staging, GAME, BEFORE, AFTER).unwrap();
         // A save that is undone leaves the balance and the date of before.
-        let (before, loaded) = recovered(&disk, BEFORE);
+        let before = recovered(&disk, BEFORE).0;
         assert_eq!(&before[MILES], &999u32.to_le_bytes());
-        assert_eq!(
-            (before[REWARD_DATE.start + 3], loaded.rewards),
-            (6, Record::NONE)
-        );
-        // A save that is committed has those of the save, with its record.
+        assert_eq!(before[REWARD_DATE.start + 3], 6);
+        // A save that is committed has those of the save.
         files.reconcile(observed(AFTER)).unwrap();
-        let (after, loaded) = load(&mut files);
+        let after = load(&mut files).0;
         assert_eq!(&after[MILES], &777u32.to_le_bytes());
-        assert_eq!(
-            (after[REWARD_DATE.start + 3], loaded.rewards),
-            (7, miles_record(321, 6))
-        );
+        assert_eq!(after[REWARD_DATE.start + 3], 7);
     }
 
     #[test]
@@ -723,20 +664,18 @@ mod tests {
     fn every_cut_of_a_save(console: bool, rehearsal: u8) {
         let old = body(0x31, 0x44, 2);
         let new = body(0x52, 0x66, 1);
-        let committed = miles_record(7, 1);
-        // Establish a committed save that has all four pieces.
+        // Establish a committed save that has all three pieces.
         let disk = fresh(&body(0, 0, 0));
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut old.clone(), committed, GAME, [8; 32], [9; 32])
+            .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
         files.reconcile(observed([9; 32])).unwrap();
         load(&mut files);
         let base = disk.reboot().like(console);
 
         // The next session changes Miles, boxes, Pokédex and box.
-        let next = miles_record(250, 4);
         let save = |disk: &Shared| {
             let mut files = opened(disk);
             load(&mut files);
@@ -746,23 +685,22 @@ mod tests {
                 4 => Rehearsal::TearBoxes,
                 _ => Rehearsal::None,
             });
-            files.prepare(&mut new.clone(), next, GAME, BEFORE, AFTER)
+            files.prepare(&mut new.clone(), GAME, BEFORE, AFTER)
         };
         let counting = base.cut_after(usize::MAX);
         save(&counting).unwrap();
         let total = counting.0.borrow().operations;
-        assert!(total > 20);
+        assert!(total > 15);
         // A rehearsal writes far more often than a save does.
         #[cfg(feature = "test-build")]
         assert_eq!(total > 100, rehearsal != 0);
 
-        let old_state = (old.clone(), committed);
-        let new_state = (new.clone(), next);
+        let old_state = old.clone();
+        let new_state = new.clone();
         let third = body(0x73, 0x21, 1);
-        let check = |disk: &Shared, game, expected: &(Vec<u8>, Record), context: &str| {
+        let check = |disk: &Shared, game, expected: &Vec<u8>, context: &str| {
             let (bytes, loaded) = recovered(disk, game);
-            assert!(bytes == expected.0, "{context}: body differs");
-            assert_eq!(loaded.rewards, expected.1, "{context}");
+            assert!(bytes == *expected, "{context}: body differs");
             assert!(
                 !loaded.dex_missing && !loaded.transport_missing,
                 "{context}"
@@ -775,19 +713,12 @@ mod tests {
             let _ = files.tidy_transport();
             load(&mut files);
             files
-                .prepare(
-                    &mut third.clone(),
-                    miles_record(9, 9),
-                    GAME,
-                    [5; 32],
-                    [6; 32],
-                )
+                .prepare(&mut third.clone(), GAME, [5; 32], [6; 32])
                 .unwrap_or_else(|error| panic!("{context}: the next save: {error:?}"));
             files.reconcile(observed([6; 32])).unwrap();
             files.tidy_transport().unwrap();
             let (bytes, loaded) = load(&mut opened(&files.files_mut().reboot()));
             assert!(bytes == third, "{context}: the next save differs");
-            assert_eq!(loaded.rewards, miles_record(9, 9), "{context}");
         };
         for cut in 0..=total {
             let disk = base.cut_after(cut);
@@ -827,15 +758,13 @@ mod tests {
         let disk = fresh(&body(0x31, 0, 0));
         let mut files = opened(&disk);
         load(&mut files);
-        files
-            .prepare(&mut y.clone(), Record::NONE, GAME, BEFORE, AFTER)
-            .unwrap();
+        files.prepare(&mut y.clone(), GAME, BEFORE, AFTER).unwrap();
         files.reconcile(observed(AFTER)).unwrap();
         assert!(load(&mut files).0 == y);
         // A live import alone publishes nothing.
         assert!(load(&mut opened(&disk.reboot())).0 == y);
         files
-            .prepare(&mut both.clone(), Record::NONE, GAME, [3; 32], [4; 32])
+            .prepare(&mut both.clone(), GAME, [3; 32], [4; 32])
             .unwrap();
         assert!(recovered(&disk, [3; 32]).0 == y);
         assert!(recovered(&disk, [4; 32]).0 == both);
@@ -845,7 +774,7 @@ mod tests {
     fn missing_side_files_load_as_empty_and_are_created_by_the_next_save() {
         let original = body(0x31, 0x44, 0);
         let disk = fresh(&original);
-        for file in [FileName::Dex, FileName::Transport, FileName::Rewards] {
+        for file in [FileName::Dex, FileName::Transport] {
             disk.0.borrow_mut().files.remove(&(file as u8));
         }
         let mut files = opened(&disk);
@@ -854,7 +783,6 @@ mod tests {
         assert_eq!(
             loaded,
             Loaded {
-                rewards: Record::NONE,
                 dex_missing: true,
                 transport_missing: true,
                 delivered: 0,
@@ -867,23 +795,16 @@ mod tests {
             original[..TRANSPORT_RECORDS.start]
         );
         files
-            .prepare(
-                &mut original.clone(),
-                miles_record(5, 6),
-                GAME,
-                BEFORE,
-                AFTER,
-            )
+            .prepare(&mut original.clone(), GAME, BEFORE, AFTER)
             .unwrap();
         files.reconcile(observed(AFTER)).unwrap();
-        let (bytes, loaded) = load(&mut files);
+        let bytes = load(&mut files).0;
         assert!(bytes == original);
-        assert_eq!(loaded.rewards, miles_record(5, 6));
-        assert_eq!(disk.0.borrow().files.len(), 4);
+        assert_eq!(disk.0.borrow().files.len(), 3);
     }
 
     #[test]
-    fn a_damaged_pokedex_or_miles_record_never_blocks_the_bank() {
+    fn a_damaged_pokedex_never_blocks_the_bank() {
         let disk = fresh(&body(0x31, 0x44, 0));
         let whole = load(&mut opened(&disk)).0;
         let damaged = disk.copy();
@@ -913,21 +834,13 @@ mod tests {
             // The next save writes a Pokédex again.
             let next = body(0x52, 0x66, 0);
             files
-                .prepare(&mut next.clone(), Record::NONE, GAME, BEFORE, AFTER)
+                .prepare(&mut next.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
             files.reconcile(observed(AFTER)).unwrap();
             let (bytes, loaded) = load(&mut opened(&disk.reboot()));
             assert!(!loaded.dex_missing, "{name}");
             assert!(bytes == next, "{name}: body differs after a save");
         }
-        let rewards = disk.copy();
-        rewards
-            .0
-            .borrow_mut()
-            .files
-            .get_mut(&(FileName::Rewards as u8))
-            .unwrap()[70] ^= 1;
-        assert_eq!(load(&mut opened(&rewards)).1.rewards, Record::NONE);
     }
 
     /// Whether Transporter's check lets a transfer begin.
@@ -956,7 +869,7 @@ mod tests {
         // Eight are moved into boxes, four stay in the transport box.
         let after = body(0x52, 0x44, 4);
         files
-            .prepare(&mut after.clone(), Record::NONE, GAME, BEFORE, AFTER)
+            .prepare(&mut after.clone(), GAME, BEFORE, AFTER)
             .unwrap();
         // Rolled back: the delivery is whole again.
         let (bytes, loaded) = recovered(&disk, BEFORE);
@@ -1002,7 +915,7 @@ mod tests {
         let counting = empty.cut_after(usize::MAX);
         assert_eq!(create(&counting, &original), Ok(true));
         let total = counting.0.borrow().operations;
-        assert!(total > 20);
+        assert!(total > 15);
 
         let mut finished_later = 0;
         let mut deliveries = 0;
@@ -1083,7 +996,7 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut old.clone(), miles_record(7, 1), GAME, [8; 32], [9; 32])
+            .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
         files.reconcile(observed([9; 32])).unwrap();
         files.tidy_transport().unwrap();
@@ -1127,7 +1040,7 @@ mod tests {
             let mut files = opened(&prepared);
             load(&mut files);
             files
-                .prepare(&mut new.clone(), miles_record(9, 2), GAME, BEFORE, AFTER)
+                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
             let operations = prepared.0.borrow().operations;
 
@@ -1153,13 +1066,8 @@ mod tests {
             assert_eq!(files.reconcile_as(decision), Ok(decision), "{name}");
             files.tidy_transport().unwrap();
             let (bytes, loaded) = load(&mut files);
-            let (state, rewards) = if decision == commit {
-                (&new, miles_record(9, 2))
-            } else {
-                (&old, miles_record(7, 1))
-            };
+            let state = if decision == commit { &new } else { &old };
             assert!(bytes == *state, "{name}: body differs");
-            assert_eq!(loaded.rewards, rewards, "{name}");
             assert!(!loaded.dex_missing && !loaded.transport_missing, "{name}");
             // It stays settled, and the transport box is free again.
             let (again, _) = load(&mut opened(&files.files_mut().reboot()));
@@ -1176,7 +1084,7 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut old.clone(), Record::NONE, GAME, [8; 32], [9; 32])
+            .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
         files.reconcile(observed([9; 32])).unwrap();
         files.tidy_transport().unwrap();
@@ -1218,7 +1126,7 @@ mod tests {
             2,
         );
         files
-            .prepare(&mut moved_in.clone(), Record::NONE, GAME, BEFORE, AFTER)
+            .prepare(&mut moved_in.clone(), GAME, BEFORE, AFTER)
             .unwrap();
         assert_eq!(count(&delivered), (0, 0));
 
@@ -1231,7 +1139,7 @@ mod tests {
         let at = 0x17C + 9 * 0x1B56;
         with_deposit[at..at + RECORD_SIZE].copy_from_slice(&pokemon(7));
         files
-            .prepare(&mut with_deposit, Record::NONE, GAME, BEFORE, AFTER)
+            .prepare(&mut with_deposit, GAME, BEFORE, AFTER)
             .unwrap();
         assert_eq!(count(&delivered), (1, 0));
 
@@ -1242,7 +1150,6 @@ mod tests {
         files
             .prepare(
                 &mut bank(0x52, &[(0, 0, pokemon(1))], 0),
-                Record::NONE,
                 GAME,
                 BEFORE,
                 AFTER,
@@ -1269,7 +1176,7 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut body(0x52, 0x44, 0), Record::NONE, GAME, BEFORE, AFTER)
+            .prepare(&mut body(0x52, 0x44, 0), GAME, BEFORE, AFTER)
             .unwrap();
         files.reconcile(observed(AFTER)).unwrap();
         // Both journal records are lost.
@@ -1297,7 +1204,7 @@ mod tests {
         // All three are moved out before saving.
         let emptied = body(0x52, 0x44, 0);
         files
-            .prepare(&mut emptied.clone(), Record::NONE, GAME, BEFORE, AFTER)
+            .prepare(&mut emptied.clone(), GAME, BEFORE, AFTER)
             .unwrap();
         // Power is lost right after the game was saved, before any cleanup.
         let (bytes, loaded) = recovered(&disk, AFTER);
@@ -1317,7 +1224,7 @@ mod tests {
         }
         // The next completed save finishes the clean-up.
         files
-            .prepare(&mut emptied.clone(), Record::NONE, GAME, [3; 32], [4; 32])
+            .prepare(&mut emptied.clone(), GAME, [3; 32], [4; 32])
             .unwrap();
         files.reconcile(observed([4; 32])).unwrap();
         files.tidy_transport().unwrap();
@@ -1341,7 +1248,7 @@ mod tests {
         let mut files = opened(&rolled_back);
         load(&mut files);
         files
-            .prepare(&mut body(0x52, 0x44, 4), Record::NONE, GAME, BEFORE, AFTER)
+            .prepare(&mut body(0x52, 0x44, 4), GAME, BEFORE, AFTER)
             .unwrap();
 
         let untidy = rolled_back.copy();
@@ -1422,24 +1329,22 @@ mod tests {
         let disk = fresh(&first);
         // One worker for the whole run: the same object opens every session.
         let mut files = BankFiles::new(disk.clone());
-        let mut expected = (first, Record::NONE);
-        for (next, rewards) in [(second, miles_record(7, 1)), (third, miles_record(9, 2))] {
+        let mut expected = first;
+        for next in [second, third] {
             assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
-            let (bytes, loaded) = load(&mut files);
-            assert!(bytes == expected.0);
-            assert_eq!(loaded.rewards, expected.1);
+            let bytes = load(&mut files).0;
+            assert!(bytes == expected);
             files
-                .prepare(&mut next.clone(), rewards, GAME, BEFORE, AFTER)
+                .prepare(&mut next.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
             files.reconcile(observed(AFTER)).unwrap();
             files.tidy_transport().unwrap();
             end_session(&mut files, &disk);
-            expected = (next, rewards);
+            expected = next;
         }
         assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
-        let (bytes, loaded) = load(&mut files);
-        assert!(bytes == expected.0);
-        assert_eq!(loaded.rewards, expected.1);
+        let bytes = load(&mut files).0;
+        assert!(bytes == expected);
         // A session that only looks is closed the same way.
         end_session(&mut files, &disk);
         assert!(!files.is_open());
@@ -1453,13 +1358,7 @@ mod tests {
         let mut files = opened(&counting);
         load(&mut files);
         files
-            .prepare(
-                &mut body(0x52, 0x66, 0),
-                miles_record(7, 1),
-                GAME,
-                BEFORE,
-                AFTER,
-            )
+            .prepare(&mut body(0x52, 0x66, 0), GAME, BEFORE, AFTER)
             .unwrap();
         let total = counting.0.borrow().operations;
         drop(files);
@@ -1469,13 +1368,7 @@ mod tests {
             let failed = files.open().is_err()
                 || files.read(&mut vec![0; BLOB_SIZE]).is_err()
                 || files
-                    .prepare(
-                        &mut body(0x52, 0x66, 0),
-                        miles_record(7, 1),
-                        GAME,
-                        BEFORE,
-                        AFTER,
-                    )
+                    .prepare(&mut body(0x52, 0x66, 0), GAME, BEFORE, AFTER)
                     .is_err();
             assert!(failed, "cut {cut}");
             end_session(&mut files, &disk);
@@ -1491,7 +1384,7 @@ mod tests {
             let mut files = opened(&disk);
             load(&mut files);
             files
-                .prepare(&mut new.clone(), miles_record(7, 1), GAME, BEFORE, AFTER)
+                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
             // The session ends before the game answered.
             end_session(&mut files, &disk);
@@ -1504,7 +1397,7 @@ mod tests {
             let mut first = opened(&restarted);
             load(&mut first);
             first
-                .prepare(&mut new.clone(), miles_record(7, 1), GAME, BEFORE, AFTER)
+                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
             drop(first);
             assert!(recovered(&restarted, game).0 == bytes);
@@ -1522,13 +1415,13 @@ mod tests {
             files.open().unwrap();
             load(&mut files);
             files
-                .prepare(&mut old.clone(), miles_record(7, 1), GAME, [8; 32], [9; 32])
+                .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
                 .unwrap();
             files.reconcile(observed([9; 32])).unwrap();
             files.tidy_transport().unwrap();
             assert!(load(&mut files).0 == old);
             files
-                .prepare(&mut new.clone(), miles_record(9, 2), GAME, BEFORE, AFTER)
+                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
             end_session(&mut files, &disk);
 

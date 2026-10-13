@@ -26,7 +26,7 @@ pub fn present<F: Files>(files: F) -> Outcome<bool, F> {
 }
 
 /// Writes the native Bank body in `staging` as a new Bank: every side file
-/// first, the Bank file last, without a rewards record. `false`, with nothing
+/// first, the Bank file last. `false`, with nothing
 /// written, if a Bank is on the card after all: one is never replaced.
 pub fn write<F: Files>(files: F, staging: &mut [u8]) -> Outcome<bool, F> {
     let mut files = BankFiles::new(files);
@@ -42,7 +42,6 @@ mod tests {
     extern crate std;
     use super::*;
     use bank_common::testing::*;
-    use offline_core::rewards::Record;
     use std::format;
 
     #[test]
@@ -54,8 +53,6 @@ mod tests {
         assert_eq!(write(disk.clone(), &mut loaded.clone()), Ok(true));
         let (bytes, read) = load(&mut opened(&disk.reboot()));
         assert!(bytes == loaded);
-        // The Miles are in the body; no rewards record comes with it.
-        assert_eq!(read.rewards, Record::NONE);
         assert!(!read.dex_missing && !read.transport_missing);
 
         // A Bank is there now: found, and never written over.

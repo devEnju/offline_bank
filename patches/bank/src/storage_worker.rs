@@ -6,7 +6,7 @@ use crate::{
     transaction::Trainer,
 };
 use bank_common::bank_files::Loaded;
-use offline_core::{rewards::Record, Fingerprint, Phase, RecoveryDecision};
+use offline_core::{Fingerprint, Phase, RecoveryDecision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameEvidence {
@@ -43,8 +43,6 @@ pub enum Job {
         baseline: GameEvidence,
         /// Whose game it is, read when the game was loaded.
         trainer: Trainer,
-        /// The Miles state that must commit with this save.
-        rewards: Record,
     },
     Finalize {
         game: GameIoDescriptor,
@@ -418,7 +416,6 @@ mod arm {
                     prepared,
                     baseline,
                     trainer,
-                    rewards,
                 } => {
                     if game.kind != prepared.kind
                         || game.kind.title_id() != baseline.title
@@ -493,7 +490,7 @@ mod arm {
                     self.files.rehearse(rehearsal::chosen());
                     // Side files first, then the Bank journal.
                     self.files
-                        .prepare(staging, rewards, identity, images.before, images.after)
+                        .prepare(staging, identity, images.before, images.after)
                         .map_err(|e| files_error(e, 15))?;
                     // No game write is allowed until this post-barrier check ends.
                     let unchanged = inspect(game)?;
@@ -526,7 +523,7 @@ mod arm {
         WorkerError::operation(fault, error.diagnostic())
     }
     /// Second number for side-file problems: `7A00ffpp`, with `ff` the file
-    /// (0 Bank, 1 Pokédex, 2 transport, 3 rewards) and `pp` the
+    /// (0 Bank, 1 Pokédex, 2 transport) and `pp` the
     /// `bank_files::Problem`.
     fn files_error(error: bank_files::Error<fs::Error>, fault: u32) -> WorkerError {
         match error {

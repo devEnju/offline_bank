@@ -5,7 +5,6 @@ extern crate std;
 use crate::bank_files::{BankFiles, FileName, Files, Loaded};
 use offline_core::{
     native_blob::BLOB_SIZE,
-    rewards::{Date, Record},
     sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
     sidecar::Sidecar,
     transport, Fingerprint, GameIdentity, GameObservation, Storage,
@@ -317,16 +316,6 @@ pub fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
         bytes[TRANSPORT_TAGS.start + slot] = if slot < pokemon { 2 } else { 0 };
     }
     bytes
-}
-pub fn date(day: u8) -> Date {
-    Date::new(2026, 10, day).unwrap()
-}
-/// A rewards record: a remainder and the day of a redemption.
-pub fn miles_record(fraction: u16, day: u8) -> Record {
-    Record {
-        fraction,
-        redeemed: Some(date(day)),
-    }
 }
 /// Fills what the main thread fills: defaults for missing regions.
 pub fn load(files: &mut BankFiles<Shared>) -> (Vec<u8>, Loaded) {

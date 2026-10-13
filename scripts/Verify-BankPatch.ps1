@@ -238,6 +238,10 @@ try {
     }
     $regions=@{offline=24;migrate=16;test=26;download=8}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
+    # Claim state 0x1b reaches the Bank field at 174 only behind this test of
+    # the session's count (cmn r0, #1; beq 002aac54). The patch keeps the
+    # day of the last redemption in that field.
+    Assert-Check ((U32 $original 0x1aac04) -eq 0xe3700001L -and (U32 $original 0x1aac08) -eq 0x0a000011L) 'Claim state 0x1b count test 002aac04'
     [byte[]]$expected=[byte[]]::new($expandedSize)
     [Array]::Copy($original,0,$expected,0,$original.Length)
     [byte[]]$allowed=[byte[]]::new($original.Length)

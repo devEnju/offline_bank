@@ -82,10 +82,10 @@ The load is why a game has to be chosen: it writes into that game. Its set-up be
 
 - *After the scan, task 9 runs once before anything is contacted.* Its hook shows the loading panel and has the worker ask `BankFiles::open` whether a Bank of the offline patch is on the card. If one is, the result is `D0AD 2`. If none is, the task ends and the router answers 5, the original's connect, where the original would have gone from the scan. A Bank file whose creation was cut counts as none.
 - *Online, task 9 is the original's.* Both slots call the function they held. Before the original's first frame the update hook reads the reply byte above; with `0x35` it ends the task as failed, which the original answers with cleanup, and the result is `BAD 1`. The patch creates nothing on the server.
-- *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (side files first, the Bank file last, no rewards record), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
+- *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (side files first, the Bank file last), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
 - *After cleanup, task 9 runs again* if a result exists, and shows it with `Notice::done`, the migration's screen. Its set-up creates the shared UI that cleanup destroyed (`002aeb1c`).
 
-Everything in the Bank object comes along: boxes, the transport box, the Pokédex part, and the Miles balance with its reward date, which are fields of the object. The rewards file starts empty: no carried remainder and no redemption yet.
+Everything in the Bank object comes along: boxes, the transport box, the Pokédex part, and the Miles balance with its reward date, which are fields of the object. The two places the patch uses beside them come as the server had them: the padding at `AD61A` as the remainder, and the pass count at `174`, which is not a date and so reads as "never redeemed".
 
 **What was checked in the original's code**, since no run against the server has been made:
 
@@ -236,7 +236,7 @@ Save manager (0x100 bytes): selected kind at `+c8`; per kind `k` (1..8 = X, Y, O
 
 - Count: `001d5ec0(bank + 0xbb520)`, 100 boxes × 30 slots. Balance: `001d588c` / `001d59fc` on `bank + 0xbb528`.
 - Native accrual in guard state 0 and claim state `0x1b` is `count × (1/30) × hours × (1/24)`. The hook sets the stored reward date to the session date first, so native accrual is zero; the patch's own accounting has put the earnings into the balance when task `0x10` finished.
-- **Accounting** ([rewards.rs](../crates/offline-core/src/rewards.rs)) is the same step with the remainder kept, on the same fields. 720 Pokémon-hours are one Mile. When task `0x10` finishes, `begin_rewards` takes the reward date (`bank + 0x168`, six bytes: u16 year, month, day, hour, minute; `001d5880` points at it), the balance and the count from the restored object and adds `count × clock hours` since that date to the remainder of the rewards record; the whole Miles go into the balance (`rewards::enter`). At Save and Quit `settle_rewards` adds the hours since the load at the count of the load and writes the balance and the date into the object before it is staged (`rewards::settle`); the remainder and the day of a redemption go into the rewards record. Clock hours are the full hours crossed between two moments, so no part of an hour is dropped at a save. The date written is the later of the stored one and now, and the redeemed day the later of the stored one and today: neither goes back. An object without a valid date earns nothing until its first save.
+- **Accounting** ([rewards.rs](../crates/offline-core/src/rewards.rs)) is the same step with the remainder kept, on the same fields. 720 Pokémon-hours are one Mile. When task `0x10` finishes, `begin_rewards` takes the reward date (`bank + 0x168`, six bytes: u16 year, month, day, hour, minute; `001d5880` points at it), the balance and the count from the restored object and adds `count × clock hours` since that date to the remainder kept in the object; the whole Miles go into the balance (`rewards::enter`). At Save and Quit `settle_rewards` adds the hours since the load at the count of the load and writes the balance and the date into the object before it is staged (`rewards::settle`); the remainder and the day of a redemption go into their two places in the object ([The Miles state in the body](#the-miles-state-in-the-body)). Clock hours are the full hours crossed between two moments, so no part of an hour is dropped at a save. The date written is the later of the stored one and now, and the redeemed day the later of the stored one and today: neither goes back. An object without a valid date earns nothing until its first save.
 - The claim hook starts task `0xD` at state `0x1b` with `+4c = 1`, `+50 = 0`, and session `+38 = -1`, which skips service queries and distributions. Allowed states: `0`, `7..0xd`, `0x16`, `0x1b..0x22`.
 - The allowed states are a guard, not a path a user can reach. From `0x1b` with `+4c = 1` and session `+38 = -1`, the claim task goes to `0x22` (total 0) or `0x16`, then through `7`..`0xd`, `0x1c`, `0x1e`..`0x22`; state `0xa` becomes `0xb` in the choice listener `002d144c`. States outside the list are set only by the server-reply listener `002ab17c`, by the dialog listener `002d0c4c` from state `0x1a`, and by the branches of states `0` and `0x1b` that those two fields rule out. The guard task has eight states, all allowed.
 - What is said (`rewards::dialog`, from the redeemed day, the day of the reward date as loaded, and the balance): nothing without a balance or after a redemption today; an offer for 10 or more; for 1 to 9 the message, unless the last save was today. For nothing, the hook sets the claim to state `0x22` (`002ab124`, the original's end for a total of 0), after ending the loading panel as the original's state `0x1b` does before it looks at the total (`002aac80`). The guard goes to state 4 (`002ad658`, outcome 5, no notice 7 / `0x51` about a present in the game or a full gift list) unless there is an offer: its notices stand in the way of a redemption only. Otherwise claim state `0x1b` shows message `0xE` for any total above 0 and state `0x16` message `0xF` below 10 or the choice `0x10` from 10 on. A verified redemption (below) sets the redeemed day at the next save.
@@ -268,6 +268,7 @@ The Bank object of the original is `0xBB530` bytes; its serialized body is `obje
 | --- | --- |
 | `15C`, `15E` | Format `2`, box count `100` |
 | `160`, `170` | Reward date (year u16, month, day, hour, minute); whole Miles (u32, capped at 65,535) |
+| `174` | In the original the server's pass count as last seen; in the patch the day of the last redemption |
 | `17C` | 100 boxes, stride `1B56`: 30 records of `E8` bytes, then a `24`-byte name and a u16 index |
 | `AAF14`, `AD5FC` | 30 transport-box records and their 30 format tags |
 | `ACA44`, `B4AA0`, `B5658` | Per-slot format tag, flag byte, and 8-byte timestamp; they move with the Pokémon |
@@ -278,14 +279,13 @@ Pokémon records are encrypted with the LCG `seed * 0x41C64E6D + 0x6073`; the ch
 
 ### Files
 
-All files are in SD extdata archive `0x00000C9B` (created by the original with room for 10 directories and 100 files). The body is cut at fixed offsets and each piece is stored unchanged, in body order ([sections.rs](../crates/offline-core/src/sections.rs)). There are four containers; each is a range of fixed layout:
+All files are in SD extdata archive `0x00000C9B` (created by the original with room for 10 directories and 100 files). The body is cut at fixed offsets and each piece is stored unchanged, in body order ([sections.rs](../crates/offline-core/src/sections.rs)). There are three containers; each is a range of fixed layout:
 
 | Container | Length | Body ranges of one payload |
 | --- | --- | --- |
 | Bank | 1,461,332 | `0..AAF14`, `ACA44..AD5FC`, `AD61A..AD61C`, `B4A9C..BB518` (730,442 bytes) |
 | Pokédex | 59,776 | `AD61C..B4A9C` (29,824 bytes) |
 | Transport box | 14,112 | `AAF14..ACA44` then `AD5FC..AD61A` (6,990 bytes) |
-| Rewards | 160 | none; a 16-byte record |
 
 **Every unit of a container is a file of its own** ([bank_files.rs](../crates/bank-common/src/bank_files.rs), `FileName::units`), in the order of the container's layout:
 
@@ -295,7 +295,6 @@ All files are in SD extdata archive `0x00000C9B` (created by the original with r
 | | `/bank.bin`, `/bank.alt.bin` (730,474 each) | snapshot slot A, B |
 | Pokédex | `/dex.bin`, `/dex.alt.bin` (29,888 each) | slot 0, 1 |
 | Transport box | `/mover.bin`, `/mover.alt.bin` (7,056 each) | slot 0, 1 |
-| Rewards | `/rewards.bin`, `/rewards.alt.bin` (80 each) | slot 0, 1 |
 
 The reason is how the console writes extdata. Each file is its own container with check values over blocks of its contents; new data is written in place before the check values are updated. A write that the power interrupts leaves the blocks it touched failing their check: reads return a result of the corrupted-data class (`D900458B` was seen), not bad bytes. Units that share a file share blocks at their edges, so in one file a write to the spare slot could take the slot in use with it, and did. With one file per unit, only the unit being written can be lost, and by the order of a save that unit never holds anything still needed.
 
@@ -311,13 +310,13 @@ The reason is how the console writes extdata. Each file is its own container wit
 - A container counts as missing only when none of its files exists.
 - **One archive handle and one open file per container.** A container opens its archive once and has at most one unit file open, the one being read or written; opening a container only looks at each unit file (there, right size, opens) and closes it again. Leaving a unit flushes it first if it holds writes, so nothing depends on a write staying unflushed, and a flush that fails then is reported by that operation and by the next `sync`. The reason is a limit of the console: with every unit file open under an archive handle of its own, two containers of four units came to eight files and eight archive handles, and creating a file failed with an out-of-resource result (`D860466C`); five and five had worked. Which of the two ran out is not known. Bank holds its Bank container and one other at a time, the migration one source and one destination: two and two, what a Bank of one file per container used. The PC tests count it: the file layer's simulated card counts archive handles and files, the Bank tests' and the migration's count open containers and allow two.
 - `Storage::recreate` deletes one unit file, which leaves it absent. The store and the side files ask for it when writing, syncing or reading back a unit fails, and then write once more; they only ever write units that are not in use.
-- An unreadable journal record counts as a damaged one. An unreadable side slot is void where that is certain: for the Pokédex and rewards always (they never block the Bank), for the transport box only beside a slot that is seen to belong to the current snapshot (`Sidecar::slots_beside`), and never for Transporter, which uses the strict `Sidecar::slots`.
+- An unreadable journal record counts as a damaged one. An unreadable side slot is void where that is certain: for the Pokédex always (it never blocks the Bank), for the transport box only beside a slot that is seen to belong to the current snapshot (`Sidecar::slots_beside`), and never for Transporter, which uses the strict `Sidecar::slots`.
 
 File names in 3DS extdata are limited to 16 characters without the leading slash; a longer name fails at creation with `E0E046C7`. `UnitFile::new` refuses longer names at compile time.
 
 **Rule for new features:** add a new container with tagged slots, each slot a file of its own. Never change the size or layout of an existing file. A build that does not know a file ignores it; its saves advance the Bank snapshot, so the unknown file's slots stop matching and a later build treats them as "no data yet".
 
-**The Bank of v0.2.1** kept each container in one file (`/bank.bin`, `/dex.bin`, `/transport.bin`, `/rewards.bin`) with exactly the container layout above. The offline patch does not read them: their `/bank.bin`, `/dex.bin` and `/rewards.bin` have another size than the files of those names now, which is a hard error. They are converted by the migration patch ([migrate.rs](../patches/bank-migrate/src/migrate.rs), [building.md](building.md#the-migration-from-v021)), which cuts the four files at the unit boundaries. It first loads the old Bank with the code the offline patch loads a Bank with (`BankFiles` over the old files, read-only); a Bank that does not load, or has a save in progress, is refused and nothing is changed. Then it copies every unit that can be read into a temporary file of its own (`/m0.tmp` to `/m9.tmp`) and reads it back. A unit that cannot be read is left out: since the Bank loaded, it is one the Bank does not need, such as the spare snapshot or a spare side slot that an interrupted save of v0.2.1 left damaged, and the offline patch treats a missing spare as empty and writes it at the next save. It loads the Bank again from the temporary files and requires the same journal state, the same findings beside the boxes and the same assembled body; only then it creates the marker `/migrate.ok`. With the marker it removes the old files, writes the final files from the temporary ones (journal records last) and compares, removes the marker, then the temporary files. Without the marker a start begins again from the untouched old files; with it, from the temporary ones. Its result is two numbers: `0000600D` with 1 (converted), 2 (already in the new files) or 0 (no Bank); `00000BAD 00000007` for a save in progress; `00000BA1` to `00000BA4` for a failed step (reading the old files, writing the temporary ones, removing the old ones, writing the new ones) with the console's code, or 1 for a copy that does not compare, 2 for a missing file, 5 for files that do not load as a Bank.
+**The Bank of v0.2.1** kept each container in one file (`/bank.bin`, `/dex.bin`, `/transport.bin`, `/rewards.bin`) with exactly the container layout above. The offline patch does not read them: their `/bank.bin` and `/dex.bin` have another size than the files of those names now, which is a hard error. They are converted by the migration patch ([migrate.rs](../patches/bank-migrate/src/migrate.rs), [building.md](building.md#the-migration-from-v021)), which cuts the first three at the unit boundaries; the Miles record of that version is left where it is and not carried over. It first loads the old Bank with the code the offline patch loads a Bank with (`BankFiles` over the old files, read-only); a Bank that does not load, or has a save in progress, is refused and nothing is changed. Then it copies every unit that can be read into a temporary file of its own (`/m0.tmp` to `/m9.tmp`) and reads it back. A unit that cannot be read is left out: since the Bank loaded, it is one the Bank does not need, such as the spare snapshot or a spare side slot that an interrupted save of v0.2.1 left damaged, and the offline patch treats a missing spare as empty and writes it at the next save. It loads the Bank again from the temporary files and requires the same journal state, the same findings beside the boxes and the same assembled body; only then it creates the marker `/migrate.ok`. With the marker it removes the old files, writes the final files from the temporary ones (journal records last) and compares, removes the marker, then the temporary files. Without the marker a start begins again from the untouched old files; with it, from the temporary ones. Its result is two numbers: `0000600D` with 1 (converted), 2 (already in the new files) or 0 (no Bank); `00000BAD 00000007` for a save in progress; `00000BA1` to `00000BA4` for a failed step (reading the old files, writing the temporary ones, removing the old ones, writing the new ones) with the console's code, or 1 for a copy that does not compare, 2 for a missing file, 5 for files that do not load as a Bank.
 
 ### Bank file
 
@@ -330,11 +329,11 @@ File names in 3DS extdata are limited to 16 characters without the leading slash
 
 ### Side files
 
-[sidecar.rs](../crates/offline-core/src/sidecar.rs). The Pokédex, transport and rewards containers each hold two slots at `index * slot_len`, where `slot_len = 64 + capacity rounded up to 4`; each slot is a file (above). Slot header, little endian:
+[sidecar.rs](../crates/offline-core/src/sidecar.rs). The Pokédex and transport containers each hold two slots at `index * slot_len`, where `slot_len = 64 + capacity rounded up to 4`; each slot is a file (above). Slot header, little endian:
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 8 | Magic: `BKOFDEX1`, `BKOFTRN1`, `BKOFRWD1` |
+| 0 | 8 | Magic: `BKOFDEX1`, `BKOFTRN1` |
 | 8 | 2+2 | Version 1, header size 64 |
 | 12 | 4 | Payload length |
 | 16 | 8 | Tag: generation of the Bank snapshot (0 = no tag) |
@@ -347,19 +346,20 @@ File names in 3DS extdata are limited to 16 characters without the leading slash
 
 The payload follows at +64. An all-zero or damaged header is a void slot. Writing voids the header first, then writes payload and header, each synced.
 
-**Keeping the files in step** ([bank_files.rs](../crates/bank-common/src/bank_files.rs)). A save writes every side file's spare slot, tagged with the snapshot about to be written (generation + 1, CRC of the new Bank payload), and only then prepares the Bank journal. A load uses the slot whose tag equals the current snapshot. A rolled-back save leaves the old slots matching; a committed one makes the new slots match. Missing side files load as defaults, and so do a Pokédex file and a rewards file without a readable matching slot; only the transport box is an error then.
+**Keeping the files in step** ([bank_files.rs](../crates/bank-common/src/bank_files.rs)). A save writes every side file's spare slot, tagged with the snapshot about to be written (generation + 1, CRC of the new Bank payload), and only then prepares the Bank journal. A load uses the slot whose tag equals the current snapshot. A rolled-back save leaves the old slots matching; a committed one makes the new slots match. Missing side files load as defaults, and so does a Pokédex file without a readable matching slot; only the transport box is an error then.
 
-**Rewards record** (16 bytes, [rewards.rs](../crates/offline-core/src/rewards.rs)): what the native body has no field for.
+### The Miles state in the body
 
-| Offset | Size | Field |
-| --- | --- | --- |
-| 0 | 4 | Not read, written as zero |
-| 4 | 2 | Remainder in Pokémon-hours. A save writes 0..719; a larger number is paid out at the next load like any other |
-| 6 | 2 | Not read, written as zero |
-| 8 | 4 | Day of the last redemption (u16 year, month, day); all zero: never redeemed |
-| 12 | 4 | Zero |
+Everything about Miles is stored with the Bank body, in the Bank file ([rewards.rs](../crates/offline-core/src/rewards.rs), [native_blob.rs](../crates/offline-core/src/native_blob.rs)):
 
-The Miles balance and the reward date are fields of the Bank body ([Native body](#native-body)) and are stored with it.
+| Body offset | Size | In the original | In the patch |
+| --- | --- | --- | --- |
+| `160` | 6 | Date and time up to which Miles were counted | Date and time of the last Save and Quit, from where hours are counted |
+| `170` | 4 | Miles balance | The same |
+| `174` | 4 | The server's pass count, last seen | Day of the last redemption: u16 year, month, day. Anything that is not a date is "never redeemed" |
+| `AD61A` | 2 | Padding between the transport box's tags and the records | Remainder in Pokémon-hours. A save writes 0..719; a larger number is paid out at the next load like any other |
+
+The original has one reader and one writer of `174`, the accessors `002ba524` and `002ba53c`, both called from claim state `0x1B` only (`002aac1c`, `002aac3c`): it stores the session's count there when that has grown, and then sets the flag at `179`. Both calls lie behind `cmn r0, #1; beq 002aac54` at `002aac04`, which skips them while the session reports no count. The reward hook presents the count as -1 for every call of the claim task ([Rewards](#rewards)), so the original never reaches the field. The builder and the verify script check those two words. Nothing in the original refers to the two bytes at `AD61A`; its initializer does not write them.
 
 ### An interrupted save
 

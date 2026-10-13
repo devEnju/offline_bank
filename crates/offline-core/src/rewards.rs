@@ -3,8 +3,9 @@
 //! One stored Pokémon earns one Mile in 30 days, counted by the hour:
 //! `count * clock hours / 720`, with the remainder carried in Pokémon-hours.
 //! The whole-Miles balance and the date of the last save are the native
-//! fields of the Bank body; the rewards file holds the remainder and the day
-//! of the last redemption. Neither date ever moves back, so an earlier clock
+//! fields of the Bank body. The remainder and the day of the last redemption
+//! are kept in two places of that body the original never reaches offline
+//! (`native_blob`). Neither date ever moves back, so an earlier clock
 //! earns nothing and never blocks a save. Native evidence is in
 //! docs/internals.md.
 
@@ -26,7 +27,6 @@ pub const GEN7_BP_KIND: u8 = 3;
 pub enum RewardError {
     InvalidDate,
     InvalidCount,
-    InvalidRecord,
     BelowThreshold,
     UnsupportedCurrency,
     BalanceMismatch,
@@ -133,18 +133,9 @@ impl Moment {
     }
 }
 
-/// The rewards side file. Its 16-byte payload holds what the native body has
-/// no field for: the remainder in Pokémon-hours as a u16 at 4, and the day of
-/// the last redemption at 8 (u16 year, u8 month, u8 day; all zero: never
-/// redeemed). Bytes 0..4 and 6..8 are not read and written as zero; 12..16
-/// are zero.
-pub const FILE: crate::sidecar::Kind = crate::sidecar::Kind {
-    magic: *b"BKOFRWD1",
-    capacity: RECORD_SIZE as u32,
-};
-pub const RECORD_SIZE: usize = 16;
-
-/// What the rewards file stores beside the Bank body.
+/// What the patch keeps for the Miles beside the native balance and date: the
+/// remainder and the day of the last redemption. Both live in the Bank body
+/// (`native_blob::FRACTION_OFFSET`, `REDEEMED_OFFSET`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {
     /// Pokémon-hours not yet a whole Mile. A save writes less than `UNIT`; a
@@ -154,37 +145,33 @@ pub struct Record {
     pub redeemed: Option<Date>,
 }
 impl Record {
-    /// A Bank without a rewards file: no remainder, never redeemed.
+    /// A new Bank: no remainder, never redeemed.
     pub const NONE: Self = Self {
         fraction: 0,
         redeemed: None,
     };
 
-    pub fn encode(self) -> [u8; RECORD_SIZE] {
-        let mut out = [0; RECORD_SIZE];
-        out[4..6].copy_from_slice(&self.fraction.to_le_bytes());
-        if let Some(day) = self.redeemed {
-            out[8..10].copy_from_slice(&day.year.to_le_bytes());
-            out[10] = day.month;
-            out[11] = day.day;
+    /// The two fields as the body holds them: the day as u16 year, month,
+    /// day, and the remainder as a u16. Anything that is not a date is "never
+    /// redeemed": a new Bank has zeros there, and a Bank from the server the
+    /// count the original kept in that place.
+    pub fn from_fields(redeemed: [u8; 4], fraction: [u8; 2]) -> Self {
+        let year = u16::from_le_bytes([redeemed[0], redeemed[1]]);
+        Self {
+            fraction: u16::from_le_bytes(fraction),
+            redeemed: Date::new(year, redeemed[2], redeemed[3]).ok(),
         }
-        out
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, RewardError> {
-        if bytes.len() != RECORD_SIZE || bytes[12..] != [0; 4] {
-            return Err(RewardError::InvalidRecord);
+    /// Inverse of `from_fields`; no day is four zero bytes.
+    pub fn to_fields(self) -> ([u8; 4], [u8; 2]) {
+        let mut redeemed = [0; 4];
+        if let Some(day) = self.redeemed {
+            redeemed[..2].copy_from_slice(&day.year.to_le_bytes());
+            redeemed[2] = day.month;
+            redeemed[3] = day.day;
         }
-        let redeemed = if bytes[8..12] == [0; 4] {
-            None
-        } else {
-            let year = u16::from_le_bytes([bytes[8], bytes[9]]);
-            Some(Date::new(year, bytes[10], bytes[11]).map_err(|_| RewardError::InvalidRecord)?)
-        };
-        Ok(Self {
-            fraction: u16::from_le_bytes([bytes[4], bytes[5]]),
-            redeemed,
-        })
+        (redeemed, self.fraction.to_le_bytes())
     }
 }
 
@@ -265,7 +252,7 @@ pub fn enter(
 }
 
 /// What one Save and Quit must persist together: the balance and the date in
-/// the Bank body, the record in the rewards file.
+/// the Bank body, and the record in its two places there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settlement {
     pub balance: u32,
@@ -656,58 +643,33 @@ mod tests {
     }
 
     #[test]
-    fn stored_record_layout_is_explicit_and_round_trips() {
+    fn the_two_fields_of_the_record_are_explicit_and_round_trip() {
         let kept = Record {
             fraction: 719,
             redeemed: Some(date(2026, 10, 6)),
         };
-        let bytes = kept.encode();
-        assert_eq!(
-            bytes,
-            [0, 0, 0, 0, 0xcf, 0x02, 0, 0, 0xea, 0x07, 10, 6, 0, 0, 0, 0]
-        );
-        assert_eq!(Record::decode(&bytes), Ok(kept));
-        assert_eq!(Record::NONE.encode(), [0; 16]);
-        assert_eq!(Record::decode(&[0; 16]), Ok(Record::NONE));
+        let fields = kept.to_fields();
+        assert_eq!(fields, ([0xea, 0x07, 10, 6], [0xcf, 0x02]));
+        assert_eq!(Record::from_fields(fields.0, fields.1), kept);
+        assert_eq!(Record::NONE.to_fields(), ([0; 4], [0; 2]));
+        assert_eq!(Record::from_fields([0; 4], [0; 2]), Record::NONE);
         // A remainder without a redemption is a record too.
-        assert_eq!(
-            Record::decode(&record(5, None).encode()),
-            Ok(record(5, None))
-        );
-        assert_eq!(FILE.file_len(), 160);
-        for (at, value) in [(9, 0x40), (10, 13), (11, 32), (12, 1), (15, 1)] {
-            let mut damaged = bytes;
-            damaged[at] = value;
-            assert_eq!(
-                Record::decode(&damaged),
-                Err(RewardError::InvalidRecord),
-                "byte {at}"
-            );
+        let (day, rest) = record(5, None).to_fields();
+        assert_eq!(Record::from_fields(day, rest), record(5, None));
+        // What is not a date is no redemption: the count the original kept
+        // in that place, as a Bank from the server brings it, or damage.
+        for not_a_date in [
+            [2, 0, 0, 0],
+            [0xff; 4],
+            [0xea, 0x07, 13, 6],
+            [0xea, 0x07, 10, 32],
+        ] {
+            assert_eq!(Record::from_fields(not_a_date, [7, 0]), record(7, None));
         }
-        assert!(Record::decode(&bytes[..15]).is_err());
-        // Bytes that are not read do not matter.
-        let mut filled = bytes;
-        filled[..4].fill(0xff);
-        filled[6..8].fill(0xff);
-        assert_eq!(Record::decode(&filled), Ok(kept));
-    }
-
-    #[test]
-    fn a_record_of_the_released_version_is_read_as_it_is() {
-        // Balance 0x1234, state 1, 29 thirtieths, count 2,999, 2026-10-06.
-        let released = [
-            0x34, 0x12, 0, 0, 1, 29, 0xb7, 0x0b, 0xea, 0x07, 10, 6, 0, 0, 0, 0,
-        ];
-        let kept = Record::decode(&released).unwrap();
-        assert_eq!(kept, record(1 + 29 * 256, Some(6)));
-        // Its two bytes pay ten Miles once; its date is the redeemed day.
-        let entry = enter(kept, Some(at(6, 12, 0)), 0, 0, at(6, 12, 30)).unwrap();
+        // A remainder above one Mile is paid out at the next load.
+        let large = Record::from_fields([0; 4], 7425u16.to_le_bytes());
+        let entry = enter(large, Some(at(6, 12, 0)), 0, 0, at(6, 12, 30)).unwrap();
         assert_eq!((entry.balance(), entry.fraction), (10, 225));
-        assert_eq!(entry.dialog(entry.balance()), Dialog::Silent);
-        let saved = settle(&entry, entry.balance(), at(6, 12, 40), false);
-        assert_eq!(saved.record, record(225, Some(6)));
-        // A Bank that was never saved by it has zeros there.
-        assert_eq!(Record::decode(&[0; 16]), Ok(Record::NONE));
     }
 
     #[test]

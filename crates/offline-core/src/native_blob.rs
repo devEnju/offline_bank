@@ -25,6 +25,13 @@ pub const MILES_OFFSET: usize = 0x170;
 /// The reward date, six bytes at object `+168` (native 001d5880): the date
 /// and time up to which Miles are counted.
 pub const REWARD_DATE_OFFSET: usize = 0x160;
+/// The day of the last redemption, four bytes at object `+17C`. The original
+/// keeps the server's pass count there (002ba524, 002ba53c) and reaches it
+/// only while the session reports a count, which never happens offline.
+pub const REDEEMED_OFFSET: usize = 0x174;
+/// The remainder below one Mile, two bytes of padding between the transport
+/// box's format tags and the trainer records that the original never touches.
+pub const FRACTION_OFFSET: usize = 0xAD61A;
 const FORMAT_OFFSET: usize = 0x15C;
 const BOX_COUNT_OFFSET: usize = 0x15E;
 
@@ -83,6 +90,18 @@ impl<'a> NativeBlobView<'a> {
         let at = REWARD_DATE_OFFSET;
         crate::rewards::Moment::from_native(
             self.data[at..at + crate::rewards::Moment::NATIVE_SIZE]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    /// What the patch keeps for the Miles beside the balance and the date.
+    pub fn rewards(self) -> crate::rewards::Record {
+        crate::rewards::Record::from_fields(
+            self.data[REDEEMED_OFFSET..REDEEMED_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+            self.data[FRACTION_OFFSET..FRACTION_OFFSET + 2]
                 .try_into()
                 .unwrap(),
         )
@@ -328,6 +347,8 @@ mod tests {
         assert_eq!(NativeBlobView::parse_layout(&data).unwrap().miles(), 0xffff);
         const { assert!(MILES_OFFSET + 4 <= BOXES_OFFSET) };
         const { assert!(REWARD_DATE_OFFSET + crate::rewards::Moment::NATIVE_SIZE <= MILES_OFFSET) };
+        const { assert!(MILES_OFFSET + 4 == REDEEMED_OFFSET) };
+        const { assert!(FRACTION_OFFSET == EXTRA_SLOT_FORMAT_OFFSET + 30) };
         assert_eq!(
             NativeBlobView::parse_layout(&data).unwrap().reward_date(),
             None

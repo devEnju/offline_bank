@@ -24,7 +24,7 @@ use core::{
 };
 use offline_core::{
     native_blob::NativeBlobView,
-    rewards::{self, Currency, Dialog, Entry, Moment, Receipt, Record, RewardError},
+    rewards::{self, Currency, Dialog, Entry, Moment, Receipt, RewardError},
     sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
     Phase, RecoveryDecision,
 };
@@ -110,13 +110,14 @@ struct Runtime {
 #[derive(Clone, Copy)]
 struct RewardSession {
     entry: Option<Entry>,
-    settlement: Option<Record>,
+    /// Save and Quit has written the Miles state into the Bank body.
+    settled: bool,
     claimed: bool,
 }
 impl RewardSession {
     const NONE: Self = Self {
         entry: None,
-        settlement: None,
+        settled: false,
         claimed: false,
     };
 }
@@ -507,28 +508,29 @@ impl Runtime {
         Ok(())
     }
     /// Starts the session's provisional reward state from what was loaded:
-    /// the balance and the reward date of the Bank body, the Pokémon in its
-    /// boxes, and the record beside it. The hours since that date are paid
-    /// into the native balance, where the original reward screens read it.
-    fn begin_rewards(&mut self, task: Task, record: Record) -> Result<(), Fault> {
+    /// the balance, the reward date and the record of the Bank body, and the
+    /// Pokémon in its boxes. The hours since that date are paid into the
+    /// native balance, where the original reward screens read it.
+    fn begin_rewards(&mut self, task: Task) -> Result<(), Fault> {
         let count = bank_count(task)?;
         let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
         let stored = bank.reward_date().map_err(|_| Fault::NativeObject)?;
         let balance = bank.miles().map_err(|_| Fault::NativeObject)?;
+        let record = bank.rewards().map_err(|_| Fault::NativeObject)?;
         let entry =
             rewards::enter(record, stored, balance, count, clock()?).map_err(reward_fault)?;
         bank.set_miles(entry.balance());
         self.rewards = RewardSession {
             entry: Some(entry),
-            settlement: None,
+            settled: false,
             claimed: false,
         };
         Ok(())
     }
     /// Reads the clock again at Save and Quit and fixes the Miles state that
-    /// must be written with this save's Pokémon changes: the balance and the
-    /// reward date in the Bank body, the record for the rewards file.
+    /// must be written with this save's Pokémon changes: the balance, the
+    /// reward date and the record, all in the Bank body.
     fn settle_rewards(&mut self, task: Task) -> Result<(), Fault> {
         let entry = self.rewards.entry.ok_or(Fault::RewardState)?;
         let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
@@ -537,7 +539,8 @@ impl Runtime {
         let settlement = rewards::settle(&entry, balance, clock()?, self.rewards.claimed);
         bank.set_miles(settlement.balance);
         bank.set_reward_date(settlement.date);
-        self.rewards.settlement = Some(settlement.record);
+        bank.set_rewards(settlement.record);
+        self.rewards.settled = true;
         Ok(())
     }
     fn probe_claim(&mut self, task: Task) -> Result<ClaimProbe, Fault> {
@@ -837,7 +840,7 @@ impl Runtime {
                 self.trainer = Some(Trainer::of_game(&name, id, gen7));
                 self.pending = false;
                 capture_counts(task)?;
-                self.begin_rewards(task, loaded.rewards)?;
+                self.begin_rewards(task)?;
                 Ok(self.complete(task))
             }
             _ => Err(Fault::StorageInvalid),
@@ -903,7 +906,9 @@ impl Runtime {
                     .map_err(|_| Fault::GamePrepare)?
                     .freeze()
                     .map_err(|_| Fault::GamePrepare)?;
-                let rewards = self.rewards.settlement.ok_or(Fault::RewardState)?;
+                if !self.rewards.settled {
+                    return Err(Fault::RewardState);
+                }
                 let trainer = self.trainer.ok_or(Fault::GameRead)?;
                 self.stage_bank(task)?;
                 // Conservative until Finalize succeeds: failed preparation may
@@ -917,7 +922,6 @@ impl Runtime {
                         prepared,
                         baseline: original,
                         trainer,
-                        rewards,
                     },
                 )?;
                 Ok(false)
@@ -942,7 +946,7 @@ impl Runtime {
                 self.restore_bank(task, loaded)?;
                 self.baseline = Some(evidence);
                 self.pending = false;
-                self.begin_rewards(task, loaded.rewards)?;
+                self.begin_rewards(task)?;
                 Ok(self.complete(task))
             }
             _ => Err(Fault::JournalRecovery),

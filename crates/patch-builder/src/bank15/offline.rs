@@ -32,11 +32,24 @@ pub const SCENE_UPDATE: u32 = 0x002af034;
 pub const NATIVE_FINISHED: u32 = 0x002af124;
 pub const NATIVE_FINISHED_BODY: [u32; 2] = [0xe3a00001, 0xe12fff1e];
 
+/// Claim state 0x1b reads and writes the Bank field at body offset 174 only
+/// behind this test of the session's count: `cmn r0, #1; beq 002aac54`. The
+/// reward hook presents the count as -1, so the original never reaches the
+/// field, and the patch keeps the day of the last redemption in it.
+pub const COUNT_UNAVAILABLE: u32 = 0x002aac04;
+pub const COUNT_UNAVAILABLE_BODY: [u32; 2] = [0xe3700001, 0x0a000011];
+
 pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
     for (index, word) in NATIVE_FINISHED_BODY.into_iter().enumerate() {
         let offset = (NATIVE_FINISHED - CODE_BASE) as usize + index * 4;
         if crate::le32(code, offset)? != word {
             return crate::fail("native finished stub 002af124 is not the reviewed code");
+        }
+    }
+    for (index, word) in COUNT_UNAVAILABLE_BODY.into_iter().enumerate() {
+        let offset = (COUNT_UNAVAILABLE - CODE_BASE) as usize + index * 4;
+        if crate::le32(code, offset)? != word {
+            return crate::fail("claim state 0x1b at 002aac04 is not the reviewed code");
         }
     }
     native_hook_edits(HookTargets {

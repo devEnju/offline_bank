@@ -7,8 +7,11 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 use offline_core::{
-    native_blob::{BlobError, NativeBlobView, BLOB_SIZE, MILES_OFFSET, REWARD_DATE_OFFSET},
-    rewards::Moment,
+    native_blob::{
+        BlobError, NativeBlobView, BLOB_SIZE, FRACTION_OFFSET, MILES_OFFSET, REDEEMED_OFFSET,
+        REWARD_DATE_OFFSET,
+    },
+    rewards::{Moment, Record},
 };
 
 pub const OBJECT_SIZE: usize = 0xBB530;
@@ -156,6 +159,24 @@ impl<'a> NativeBank<'a> {
         }
     }
 
+    /// The remainder and the day of the last redemption, kept in the body.
+    pub fn rewards(&self) -> Result<Record, NativeBankError> {
+        Ok(self.snapshot()?.rewards())
+    }
+
+    /// Writes the record into its two places of the body.
+    pub fn set_rewards(&mut self, record: Record) {
+        let (redeemed, fraction) = record.to_fields();
+        // SAFETY: both ranges lie inside the exclusively borrowed body.
+        unsafe {
+            let body = self.pointer.as_ptr().add(BODY_OFFSET);
+            body.add(REDEEMED_OFFSET)
+                .copy_from_nonoverlapping(redeemed.as_ptr(), redeemed.len());
+            body.add(FRACTION_OFFSET)
+                .copy_from_nonoverlapping(fraction.as_ptr(), fraction.len());
+        }
+    }
+
     /// Restores exactly the native serializer's body. A rejected snapshot leaves
     /// the object untouched. Storage integrity/recovery must succeed first;
     /// layout validation alone is not a substitute for that transaction check.
@@ -271,6 +292,20 @@ mod tests {
         assert_eq!(bank.miles(), Ok(0xffff));
         expected[0x160..0x166].copy_from_slice(&date.to_native());
         assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
+
+        // The record: the day in the four bytes after the balance, the
+        // remainder in the two bytes after the transport box's tags.
+        let record = Record {
+            fraction: 719,
+            redeemed: Some(date.day()),
+        };
+        bank.set_rewards(record);
+        assert_eq!(bank.rewards(), Ok(record));
+        expected[0x174..0x178].copy_from_slice(&[0xea, 0x07, 10, 6]);
+        expected[0xAD61A..0xAD61C].copy_from_slice(&[0xcf, 0x02]);
+        assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
+        bank.set_rewards(Record::NONE);
+        assert_eq!(bank.rewards(), Ok(Record::NONE));
     }
 
     #[test]

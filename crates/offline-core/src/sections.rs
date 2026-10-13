@@ -22,7 +22,8 @@ pub const TRANSPORT_RECORDS: Range<usize> = 0xAAF14..0xACA44;
 pub const TRANSPORT_TAGS: Range<usize> = 0xAD5FC..0xAD61A;
 pub const DEX: Range<usize> = 0xAD61C..0xB4A9C;
 /// The native whole-Miles field. The Bank file stores it as the body has it;
-/// the remainder below one Mile lives in the rewards file.
+/// the remainder below one Mile and the day of the last redemption are in
+/// the body as well (`native_blob`).
 pub const MILES: Range<usize> = 0x170..0x174;
 /// The native reward date: the date and time up to which Miles are counted.
 pub const REWARD_DATE: Range<usize> = 0x160..0x166;
