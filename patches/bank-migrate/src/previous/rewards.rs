@@ -3,7 +3,9 @@
 //!
 //! 16 bytes: the remainder in Pokémon-hours as a u16 at 4, and the day of the
 //! last redemption at 8 (u16 year, u8 month, u8 day; all zero: never
-//! redeemed). Bytes 0..4 and 6..8 are not read; 12..16 are zero.
+//! redeemed). Bytes 0..4 are a Miles balance to add to the body's: zero as
+//! this release writes them, the balance itself as v0.3.1 did, which wrote
+//! zero into the body. Bytes 6..8 are not read; 12..16 are zero.
 
 /// What the record holds, as that release reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,6 +21,21 @@ impl Record {
         fraction: 0,
         redeemed: None,
     };
+}
+
+/// Most Miles a balance holds.
+const MILES_CAP: u32 = 65_535;
+
+/// The Miles balance for the body when the record beside it holds one in
+/// its first four bytes: the sum of the two, up to the cap. `None` for a
+/// record that holds none there, which leaves the body as it is.
+pub fn balance_beside(body: u32, record: &[u8; RECORD_SIZE]) -> Option<u32> {
+    let beside = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
+    (beside != 0).then(|| {
+        body.min(MILES_CAP)
+            .saturating_add(beside.min(MILES_CAP))
+            .min(MILES_CAP)
+    })
 }
 
 /// A calendar day as that release accepts one: years 1..=16383.

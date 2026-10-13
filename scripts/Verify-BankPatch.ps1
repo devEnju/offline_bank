@@ -195,7 +195,12 @@ try {
     )
     if ($Patch -eq 'download') {
         # The reward step's update writes the files and ends as cancelled.
-        $pointers+=,@(0x361be4,0x2ad1bc,'bank_download_save')
+        # The scan goes on without its Pokemon HOME question when it finds no
+        # game: beq 002ac4c4 becomes beq 002aca50, a whole instruction word.
+        $pointers+=@(
+            @(0x361be4,0x2ad1bc,'bank_download_save'),
+            @(0x2ac564,0x0affffd6L,0x0a000139L)
+        )
     } else {
         $pointers+=@(
             # First start, whole instruction words: a saved language is not
@@ -236,7 +241,7 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=24;migrate=16;test=26;download=8}[$Patch]
+    $regions=@{offline=24;migrate=16;test=26;download=9}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     # Claim state 0x1b reaches the Bank field at 174 only behind this test of
     # the session's count (cmn r0, #1; beq 002aac54). The patch keeps the

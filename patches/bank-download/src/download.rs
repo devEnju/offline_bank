@@ -29,8 +29,8 @@ pub fn present<F: Files>(files: F) -> Outcome<bool, F> {
     Ok(BankFiles::new(files).open()?.is_some())
 }
 
-/// Writes the native Bank body in `staging` as a new Bank: every side file
-/// first, the Bank file last. `false`, with nothing
+/// Writes the native Bank body in `staging` as a new Bank: the main file
+/// and the transport box first, the Bank file last. `false`, with nothing
 /// written, if a Bank is on the card after all: one is never replaced.
 ///
 /// The two places in which the offline patch keeps its Miles state are not

@@ -164,17 +164,22 @@ unsafe extern "aapcs" {
 
 /// The screen a patch ends on when nothing can go on (`ui::stop`): one
 /// dialog with the two numbers, and after A the original's line "Press HOME
-/// to return to the HOME Menu" with the numbers under it; or that line
-/// alone, for numbers that are a result and no error. It stays, as the
+/// to return to the HOME Menu" with the version and package and the numbers
+/// under it; or that line alone, for numbers that are a result and no error. It stays, as the
 /// original's own message with that line does (task 0, 002a9204, message
 /// 0x1C): its task shows it without a wait and never ends.
 pub struct Notice {
     shown: bool,
+    label: crate::numbers::Label,
 }
 impl Notice {
-    #[allow(clippy::new_without_default)]
-    pub const fn new() -> Self {
-        Self { shown: false }
+    /// `suffix` is the package's own, as "-test"; the offline patch has
+    /// none.
+    pub const fn new(suffix: &[u8]) -> Self {
+        Self {
+            shown: false,
+            label: crate::numbers::Label::of(suffix),
+        }
     }
     /// One frame of the task's update after an error. The result is the
     /// update's own: 0, as nothing ends this screen but closing Bank. Only a
@@ -204,7 +209,7 @@ impl Notice {
             task.end_busy();
             // Loading may still be animating; end its sound before the dialog.
             let _ = unsafe { crate::ui::stop_loading(ui) };
-            unsafe { crate::ui::stop(ui, reason, first, second) }
+            unsafe { crate::ui::stop(ui, reason, &self.label, first, second) }
         };
         self.shown = shown.is_ok();
         match shown {

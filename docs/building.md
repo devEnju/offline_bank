@@ -30,7 +30,9 @@ build/bank/           code.ips, exheader.bin, manifest.json, report.md, verifica
 build/transporter/    the same
 ```
 
-A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source gives the same name and any change to the patch gives a new one. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way: the test package into `build/bank-test/`, the migration into `build/bank-migrate/`, the download into `build/bank-download/` (all below).
+**The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). The version is given to the build: every build script for Bank takes `-Version v1.2.3` (or `v1.2.3-draft`) and compiles it into the payload, and `New-Release.ps1` passes its own, with `-draft` for the offline package of a draft. A package built without it says `dev`. The version is part of the compiled code, so it is part of the package's name too.
+
+A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way: the test package into `build/bank-test/`, the migration into `build/bank-migrate/`, the download into `build/bank-download/` (all below).
 
 ## Verify
 
@@ -93,7 +95,7 @@ This is the form for every change of how the Bank is stored: the patches read on
 
 ### The download from the official server
 
-While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)).
+While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)). It needs no game: it takes the load the original made for Pokémon HOME, which reads and saves none.
 
 ```powershell
 ./scripts/Build-BankDownloadPatch.ps1

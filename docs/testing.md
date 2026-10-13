@@ -63,7 +63,8 @@ With the normal Bank package. What each feature is meant to do is in [bank.md](b
 | Move Pokémon both ways, rename a box, Save and Quit, restart. | Everything persisted in Bank and in the game. No missing or duplicate Pokémon. |
 | Press HOME and close the lid right after leaving the start screen, while the Bank loads after selecting a game, and during Save and Quit. | Nothing happens while a loading screen is shown. On the start screen, game selection, in the boxes, and on an error screen both work as usual. |
 | No usable game present. | The original "no game" notice once, then the start screen. |
-| An error (the test package, [below](#an-interrupted-save-and-quit)): "The server did not receive the data." with the arrow and without numbers. Press A. | The line "Press HOME to return to the HOME Menu" with the two numbers on its third line. A, B and START do nothing. HOME opens the HOME Menu, the lid puts the console to sleep, and Bank can be closed from the HOME Menu. |
+| The same error with the console set to Japanese, Korean or Chinese. | The second and third line read the same as in English: the letters, digits, `.` and `-` are all there. |
+| An error (the test package, [below](#an-interrupted-save-and-quit)): "The server did not receive the data." with the arrow and without numbers. Press A. | The line "Press HOME to return to the HOME Menu", under it the version with "-test" behind it ("dev-test" for a package built without a version), and the two numbers on the third line. A, B and START do nothing. HOME opens the HOME Menu, the lid puts the console to sleep, and Bank can be closed from the HOME Menu. |
 | The same with Bank started from a running game (run 4): press HOME on the error's first screen, before A. | The HOME Menu appears. |
 | A console on which Bank's extdata cannot be created for lack of space on the SD card: press HOME on the original's message about it. | The HOME Menu appears. |
 
@@ -88,6 +89,7 @@ A new Bank starts counting with its first Save and Quit. `N` is the number of Po
 | 10 or more, Gen 6: Miles one day, Battle Points another. | Miles: balance 0. BP: `Miles ÷ 10` to the game, remainder kept. The gift waits in the game after Save and Quit. |
 | 10 or more, Gen 7. | Miles refused by the original message; BP arrives in the gift list. |
 | Redeem, then leave without saving. | Balance as before the claim; no gift in the game; the dialog again at the next opening. |
+| A Bank last used with v0.3.1, with Miles in it: convert it with the migration, install this version, open, pick a game. | The balance it had, plus the Miles of the hours since its last Save and Quit. After a Save and Quit and a restart the same balance, not twice. |
 | Set the date back a day, open, Save and Quit. | Save works. No Miles, no dialog. After returning to the real date, none earned twice. |
 
 ### Pokédex
@@ -96,6 +98,9 @@ A new Bank starts counting with its first Save and Quit. `N` is the number of Po
 | --- | --- |
 | Open Y, open the records screen, Save and Quit. Do the same with Ultra Sun. | A species known only to Y and one known only to Ultra Sun both show in the National Pokédex. |
 | Open a game whose Pokédex the Bank does not have, do not open the records screen, Save and Quit. | That game's Pokédex and records are not taken over. |
+| A game the Bank has taken over before: see a new species in the game, open Bank with it, do not open the records screen, Save and Quit, start Bank again. | The new species shows in the National Pokédex, and the game's records are the current ones. |
+| The same, but leave without saving. | Not taken over. |
+| Another save of the same version with another trainer, without opening the records screen: Save and Quit. | That version's entries and records stay the first trainer's. |
 | Open such a game, open the records screen, leave without saving. | Not taken over. |
 | Same version, different trainer (for example two Omega Ruby saves): open the records screen and choose that game's entry. | The original replacement prompt. Accept: that version's entries and records become the new save's. Decline: unchanged. Either way stored only by Save and Quit. |
 
@@ -263,7 +268,7 @@ Start from a console whose Bank was last used with the old version, and from a b
 | --- | --- | --- | --- |
 | 16 | new Bank | start Bank, before converting | the error message, then the line about the HOME Menu with `00000003` and the size of the file it refused as second number; nothing changed |
 | 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
-| 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with `0000600D 00000001` on its third line, and nothing before it. Close Bank from the HOME Menu |
+| 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with the version and "-migration" on its second line and `0000600D 00000001` on its third, and nothing before it. Close Bank from the HOME Menu |
 | 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |
 | 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
 | 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
@@ -294,19 +299,21 @@ That a migration refuses a Bank with a Save and Quit in progress, and that a cut
 
 ## The download from the official server
 
-Package `build/bank-download/`. None of these runs has been made yet. It needs the live service, an internet connection, the console's Nintendo Network ID and a game with a Pokédex. Back up Bank's extdata and that game first: the original saves the game once when it loads the Bank.
+Package `build/bank-download/`. None of these runs has been made yet. It needs the live service, an internet connection and the console's Nintendo Network ID. No game is needed, and none is read or saved. Back up Bank's extdata first, and the games on the console, so that run D8 can compare them.
 
 | Run | Do | Must show |
 | --- | --- | --- |
 | D1 | Start screen | "Ver. 1.5-download" |
-| D2 | START, with an offline Bank on the card | after a loading screen `0000D0AD 00000002` under the line about the HOME Menu; nothing is contacted |
-| D3 | Move the offline Bank's files off the card (keep them). START, "Use Pokémon Bank", pick a game | the original connects and loads; no reward dialog, no boxes; then `0000D0AD 00000001` |
+| D2 | START, with an offline Bank on the card | after a loading screen the line about the HOME Menu, the version with "-download" on its second line and `0000D0AD 00000002` on its third; nothing is contacted |
+| D3 | Move the offline Bank's files off the card (keep them). With a game on the console: START | the original connects and loads; no main menu, no game selection, no reward dialog, no boxes; then `0000D0AD 00000001` |
 | D4 | START again | `0000D0AD 00000002` |
 | D5 | Install the offline Bank and start it | the boxes, the transport box and the Poké Miles as they are on the server |
 | D6 | Install the original Bank without a patch and use it online | it opens as always: nothing is locked, and the boxes on the server are unchanged |
 | D7 | The download again, wireless off, no Bank on the card: START | the original's message about the connection, then its start screen; nothing written |
+| D8 | After D3, compare the games' saves with the backup | unchanged, byte for byte |
+| D9 | On a console without any game the original can use (no cartridge, none installed), no Bank on the card: START | no question about Pokémon HOME; the original connects and loads as in D3; then `0000D0AD 00000001` |
 
-D6 shows that the session was closed on the server; it is the run that matters most. If the original says the server is locked, wait as it asks and note it.
+D6 shows that the session was closed on the server; it is the run that matters most. The load used here does not write Bank's own save, so D6 also shows that the original copes with that. If the original says the server is locked, wait as it asks and note it.
 
 ## If something else shows
 

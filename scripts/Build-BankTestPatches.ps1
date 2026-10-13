@@ -10,7 +10,9 @@ build/intermediate/bank is not touched.
 [CmdletBinding()]
 param(
     [string]$CiaPath = 'input/Bank-v1.5-update.cia',
-    [string]$CtrtoolPath = 'tools/ctrtool.exe'
+    [string]$CtrtoolPath = 'tools/ctrtool.exe',
+    # The version the package says it is; without one, "dev" (docs/building.md).
+    [string]$Version = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -26,7 +28,7 @@ try {
     $inputRecord = $extractions[0]
     $relative = 'build/bank-test'
     $output = Join-Path $projectRoot $relative
-    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Patch test | Out-Host
+    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Patch test -Version $Version | Out-Host
     $elf = Join-Path $projectRoot 'build/intermediate/bank-test/bank-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }

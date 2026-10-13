@@ -84,12 +84,8 @@ pub enum NativeGameError {
     Busy,
     InvalidPhase,
     MissingArchive,
-    InvalidSecureFlags { first: u8, second: u8 },
-    SecureValueMismatch,
-    NativeResult { operation: GameOperation, code: u32 },
     NativeStatus(u32),
     Validation { status: u32, detail: u32 },
-    Storage(bank_common::fs::Error),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,12 +94,6 @@ pub struct SecureValues {
     pub current: u64,
     /// Metadata value retained from before native preparation.
     pub previous: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GameOperation {
-    ReadSecureValue,
-    WriteSecureValue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,13 +301,11 @@ mod frozen_tests {
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::{
-        FrozenBlock, GameIoDescriptor, GameKind, GameOperation, NativeGameError, NativePoll,
-        PlatformSecureValue, PreparedImage, SecureValues, MAX_PREPARED_BLOCKS,
+        FrozenBlock, GameIoDescriptor, GameKind, NativeGameError, NativePoll, PreparedImage,
+        SecureValues, MAX_PREPARED_BLOCKS,
     };
-    use bank_common::fs::GameMainReader;
     use core::{marker::PhantomData, mem::transmute, ptr::NonNull};
     use offline_core::game_image::Overlay;
-    use offline_core::Storage;
 
     pub const OBJECT_SIZE: usize = 0xb49d0;
     const GAME_VTABLE: u32 = 0x0036_2f88;
@@ -391,9 +379,6 @@ mod arm {
                 exclusive: PhantomData,
                 thread: PhantomData,
             })
-        }
-        pub fn kind(&self) -> GameKind {
-            self.kind
         }
         pub fn secure_values(&self) -> SecureValues {
             // The constructor's graph lifetime covers the separately allocated
@@ -539,9 +524,6 @@ mod arm {
             this.mounted_archive()?;
             Ok(this)
         }
-        pub fn kind(&self) -> GameKind {
-            self.kind
-        }
         fn check_idle(&self) -> Result<(), NativeGameError> {
             // Constructor00233840 does not initialize writer+1c, and load mode3
             // never uses it. Only initialized job/worker fields and native
@@ -598,80 +580,6 @@ mod arm {
                 session,
                 archive,
                 metadata_offset,
-            })
-        }
-        pub fn open_main(&self) -> Result<GameMainReader<'_>, NativeGameError> {
-            let (session, archive) = self.mounted_archive()?;
-            unsafe { GameMainReader::open(session, archive) }.map_err(NativeGameError::Storage)
-        }
-        /// Reads current/previous values from the actual main file. The final
-        /// native metadata block serializes object+8, so these are its first16
-        /// bytes. This never substitutes values from the edited live object.
-        pub fn file_secure_values(
-            &self,
-            source: &mut GameMainReader<'_>,
-        ) -> Result<SecureValues, NativeGameError> {
-            if self.phase == Phase::Running {
-                return Err(NativeGameError::Busy);
-            }
-            let mut offset = 0u64;
-            for index in 0..self.kind.data_block_count() {
-                let length = unsafe { block_length(self.game, index) }?;
-                offset = offset
-                    .checked_add((u64::from(length) + 511) & !511)
-                    .ok_or(NativeGameError::BlockOutsideFile)?;
-            }
-            if unsafe { block_length(self.game, self.kind.data_block_count()) }? != 0x1e8
-                || offset
-                    .checked_add(0x1e8)
-                    .is_none_or(|end| end > source.len())
-            {
-                return Err(NativeGameError::BlockOutsideFile);
-            }
-            let mut bytes = [0; 16];
-            source
-                .read(offset, &mut bytes)
-                .map_err(NativeGameError::Storage)?;
-            let mut first = [0; 8];
-            let mut second = [0; 8];
-            first.copy_from_slice(&bytes[..8]);
-            second.copy_from_slice(&bytes[8..]);
-            Ok(SecureValues {
-                current: u64::from_le_bytes(first),
-                previous: u64::from_le_bytes(second),
-            })
-        }
-        pub fn read_platform_secure_value(&self) -> Result<PlatformSecureValue, NativeGameError> {
-            let (session, archive) = self.mounted_archive()?;
-            type Get =
-                unsafe extern "aapcs" fn(*const u32, *mut u8, *mut u8, *mut u64, u64, u32) -> i32;
-            let get: Get = unsafe { transmute(0x0016_578cusize) };
-            let mut first = 0;
-            let mut second = 0;
-            let mut value = 0;
-            let code = unsafe {
-                get(
-                    &session,
-                    &mut first,
-                    &mut second,
-                    &mut value,
-                    archive,
-                    0x1000,
-                )
-            };
-            if code < 0 {
-                return Err(NativeGameError::NativeResult {
-                    operation: GameOperation::ReadSecureValue,
-                    code: code as u32,
-                });
-            }
-            if first > 1 || second > 1 {
-                return Err(NativeGameError::InvalidSecureFlags { first, second });
-            }
-            Ok(PlatformSecureValue {
-                value_present: first != 0,
-                gamecard: second != 0,
-                value,
             })
         }
         /// Advances native save metadata and regenerates all checksums/signatures.
@@ -755,47 +663,6 @@ mod arm {
             } else {
                 Err(NativeGameError::NativeStatus(status))
             }
-        }
-        /// Completes only a pending forward secure-value transition.
-        ///
-        /// # Safety
-        /// The selected title and the entire actual main file must have matched
-        /// the trusted pending journal's AFTER fingerprint immediately before
-        /// this call. `verified` must be read from that same authenticated file
-        /// via file_secure_values, not from edited live object bytes. No archive,
-        /// media, file, or platform secure value may change concurrently.
-        pub unsafe fn finish_secure_value(
-            &mut self,
-            verified: SecureValues,
-        ) -> Result<(), NativeGameError> {
-            if self.phase == Phase::Running {
-                return Err(NativeGameError::Busy);
-            }
-            let observed = self.read_platform_secure_value()?;
-            if observed.matches_native_rule(verified.current) {
-                return Ok(());
-            }
-            if observed.value != verified.previous || verified.current == verified.previous {
-                return Err(NativeGameError::SecureValueMismatch);
-            }
-            let (session, archive) = self.mounted_archive()?;
-            type Set = unsafe extern "aapcs" fn(*const u32, u64, u32, u64, u8) -> i32;
-            let set: Set = unsafe { transmute(0x0012_146cusize) };
-            let code = unsafe { set(&session, archive, 0x1000, verified.current, 0) };
-            if code < 0 {
-                return Err(NativeGameError::NativeResult {
-                    operation: GameOperation::WriteSecureValue,
-                    code: code as u32,
-                });
-            }
-            let after = self.read_platform_secure_value()?;
-            if after.value_present != observed.value_present
-                || after.gamecard != observed.gamecard
-                || !after.matches_native_rule(verified.current)
-            {
-                return Err(NativeGameError::SecureValueMismatch);
-            }
-            Ok(())
         }
     }
     impl GameIoDescriptor {
@@ -937,4 +804,4 @@ mod arm {
 }
 
 #[cfg(target_arch = "arm")]
-pub use arm::{NativeGameSession, NativePreparedGame, PreparedBlocks, OBJECT_SIZE};
+pub use arm::NativeGameSession;

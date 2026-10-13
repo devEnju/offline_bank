@@ -1,25 +1,36 @@
 //! Task routing after native 002a5580 has chosen its destination.
 //!
-//! The session is the original's from the first to the last task: game
-//! scan (3), connect and sign-in (5, 8, 0xf), open Bank (9), main menu (4),
-//! game selection and scene (0xa, 0xb), the checks of the last session
-//! (0x11, 0x12, 0x17), load (0x10), the reward step (0xc), leaving without
-//! saving (0x13), cleanup (0x14). The patch changes three answers:
+//! The session is the original's: game scan (3), connect and sign-in (5, 8,
+//! 0xf), open Bank (9), the load the original made for Pokémon HOME (0x1c),
+//! which reads and saves no game, the reward step (0xc), leaving without
+//! saving (0x13), cleanup (0x14). The patch changes five answers:
 //!
 //! - After the game scan task 9 runs once before anything is contacted, to
 //!   look for a Bank on the card (`Stage::Looking`).
-//! - When it found none, the original's connect follows (`Stage::Found`
+//! - When it found none, the original's connect follows (`Stage::NoneFound`
 //!   says the look is over and nothing was there).
+//! - After task 9 has opened the Bank online, the HOME load follows, also
+//!   where the original would show its main menu: no game is chosen. The
+//!   original goes there itself when its scan found no game (002a576c).
+//! - After that load the reward step follows, where the original would
+//!   release the session (0x1d) and show its HOME screens (0x1b).
 //! - After cleanup, once a result exists, task 9 runs again to show it.
 //!
 //! The reward step's update is the patch's own. It ends with the original's
 //! outcome for "cancel", 0x15, which the original router answers with 0x13
-//! itself (002a57f4).
+//! itself (002a57f4): the same release the original's 0x1d makes.
 
 pub const SCAN: u32 = 3;
 pub const CONNECT: u32 = 5;
 pub const OPEN: u32 = 9;
+pub const MENU: u32 = 4;
+/// The reward step, whose update writes the files.
+pub const WRITE: u32 = 0xc;
 pub const CLEANUP: u32 = 0x14;
+/// The load without a game (factory 002a63a8: the load's task with its
+/// mode byte set), and the release the original follows it with.
+pub const HOME_LOAD: u32 = 0x1c;
+pub const HOME_RELEASE: u32 = 0x1d;
 
 /// The outcome of the original's reward step when the user cancels, for
 /// which the original router answers "leave without saving".
@@ -45,6 +56,11 @@ pub fn destination(current: u32, native: u32, stage: Stage) -> u32 {
         // found nothing it can go on with; only the first is changed.
         (SCAN, Stage::Looking) if native == CONNECT => OPEN,
         (OPEN, Stage::NoneFound) => CONNECT,
+        // Opened online: the original answers its menu, or this load
+        // itself when its scan found no game.
+        (OPEN, Stage::Online) if native == MENU => HOME_LOAD,
+        // Loaded: the files are written before the session is released.
+        (HOME_LOAD, Stage::Online) if native == HOME_RELEASE => WRITE,
         (CLEANUP, Stage::Decided) => OPEN,
         _ => native,
     }
@@ -61,7 +77,9 @@ pub fn next_stage(current: u32, stage: Stage) -> Stage {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
+    use std::vec::Vec;
 
     /// The original router, as far as this patch's session reaches
     /// (002a5624..002a5934). `home` is the manager's flag `+0x1c`, set when
@@ -96,6 +114,9 @@ mod tests {
             (0xc, 6 | 0xc) | (0xd, 5) => 0x19,
             (0xc | 0xd | 0x19, 0x15) => 0x13,
             (0x19, 4) => 7,
+            (0x1c, 4) => 0x1d,
+            (0x1d, 4) => 0x1b,
+            (0x1b, _) => 0x13,
             (0x14 | 0x15, _) => 2,
             _ => CLEANUP,
         }
@@ -115,52 +136,78 @@ mod tests {
     }
 
     #[test]
-    fn online_every_answer_is_the_originals() {
+    fn online_every_answer_but_two_is_the_originals() {
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for home in [false, true] {
                     let native = original(current, outcome, home);
-                    assert_eq!(destination(current, native, Stage::Online), native);
+                    let expected = match (current, native) {
+                        (OPEN, MENU) => HOME_LOAD,
+                        (HOME_LOAD, HOME_RELEASE) => WRITE,
+                        _ => native,
+                    };
+                    assert_eq!(destination(current, native, Stage::Online), expected);
                     assert_eq!(next_stage(current, Stage::Online), Stage::Online);
                 }
             }
         }
     }
 
-    #[test]
-    fn the_session_runs_from_sign_in_to_leaving_without_saving() {
+    /// The tasks of a session after the look at the card. `failed` is a
+    /// task that ends with the original's outcome for a failure, 3; every
+    /// other ends without trouble, the reward step as cancelled.
+    fn session(home: bool, failed: Option<u32>) -> Vec<u32> {
         let mut current = OPEN;
         let mut stage = Stage::NoneFound;
-        let mut seen = [0u32; 16];
-        let mut count = 0;
-        // The outcome each task of a session without trouble ends with; the
-        // reward step ends as cancelled.
+        let mut seen = Vec::new();
         loop {
             let outcome = match current {
-                4 => 0xc,
-                0xa => 5,
-                0xb => 0xa,
-                0xc => CANCELLED,
+                task if Some(task) == failed => 3,
+                WRITE => CANCELLED,
                 _ => 4,
             };
-            let native = original(current, outcome, false);
+            let native = original(current, outcome, home);
             let next = destination(current, native, stage);
             stage = next_stage(current, stage);
-            seen[count] = next;
-            count += 1;
+            seen.push(next);
             if next == CLEANUP {
-                break;
+                return seen;
             }
             current = next;
         }
-        assert_eq!(
-            seen[..count],
-            [CONNECT, 8, 0xf, OPEN, 4, 0xa, 0xb, 0x11, 0x10, 0xc, 0x13, CLEANUP]
-        );
-        // The box screen, the reward claim and saving are never reached.
-        assert!(seen[..count]
-            .iter()
-            .all(|task| ![0xd, 0x19, 7].contains(task)));
+    }
+
+    #[test]
+    fn the_session_loads_without_a_game_and_leaves_without_saving() {
+        // The same whether the scan found a game or not.
+        for home in [false, true] {
+            let seen = session(home, None);
+            assert_eq!(
+                seen,
+                [CONNECT, 8, 0xf, OPEN, HOME_LOAD, WRITE, 0x13, CLEANUP]
+            );
+            // Never the menu, the game selection and its scene, the checks
+            // of a game's last session, the load that saves a game, the
+            // HOME screens, the box screen, the reward claim or saving.
+            let never = [
+                MENU, 0xa, 0xb, 0x10, 0x11, 0x12, 0x17, 0x1b, 0x1d, 0xd, 0x19, 7,
+            ];
+            assert!(seen.iter().all(|task| !never.contains(task)));
+        }
+    }
+
+    #[test]
+    fn a_task_that_fails_ends_the_session_as_the_original_ends_it() {
+        for home in [false, true] {
+            // A load that failed wrote nothing: the reward step is not
+            // reached.
+            assert_eq!(
+                session(home, Some(HOME_LOAD)),
+                [CONNECT, 8, 0xf, OPEN, HOME_LOAD, CLEANUP]
+            );
+            assert_eq!(session(home, Some(OPEN))[3..], [OPEN, CLEANUP]);
+            assert_eq!(session(home, Some(8)), [CONNECT, 8, CLEANUP]);
+        }
     }
 
     #[test]

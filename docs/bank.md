@@ -76,9 +76,10 @@ The patch adds one safety check: after a claim, the balance and the gift in the 
 
 ## Pokédex and adventure records
 
-Unchanged from the original. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
+As in the original, with one addition for games the Bank already knows. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
 
-- A game's Pokédex and adventure records are taken over when you **open the records screen** with that game; saving alone does not do it. They **replace that version's slot**. The other seven slots are untouched.
+- A game's Pokédex and adventure records are taken over for the first time when you **open the records screen** with that game; saving alone does not do it. They **replace that version's slot**. The other seven slots are untouched.
+- Once a game is in its slot, **every Save and Quit with that game brings its Pokédex and records up to date**, without a visit to the records screen. This holds only for the same trainer.
 - If the slot belongs to a different trainer, opening the screen takes nothing over. Choose that game's entry there and the original confirmation appears. Accepting replaces the slot, declining keeps it.
 - What was taken over is stored with the next Save and Quit. If you leave without saving, it is not.
 
@@ -179,13 +180,21 @@ The message only comes for a Save and Quit that was cut off. An error in a runni
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
-**After updating the patch.** A Save and Quit that was interrupted under another version of the patch is finished by that version only; any other shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
+**After updating the patch.** A Save and Quit that was interrupted is finished by the version it was made with, or by one that records a save in progress the same way; a version that records it differently shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
 
 ## Troubleshooting
 
 An error ends this run of Bank. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
 
-After A the original's line "Press HOME to return to the HOME Menu" appears with two numbers under it, `XXXXXXXX YYYYYYYY`, and it stays: nothing else reacts, because nothing can go on. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
+After A the original's line "Press HOME to return to the HOME Menu" appears with two lines under it, and it stays: nothing else reacts, because nothing can go on.
+
+```text
+Press HOME to return to the HOME Menu
+v0.4.0
+XXXXXXXX YYYYYYYY
+```
+
+The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
 
 | First number | Step |
 | --- | --- |
@@ -217,7 +226,7 @@ After A the original's line "Press HOME to return to the HOME Menu" appears with
 
 Deleting Bank's Extra Data in System Settings may not remove the files.
 
-**Reporting a problem.** Open an issue with the console model, Luma version, the release or package name, the games involved, and a photo of any error screen. On an error, keep the SD card as it is.
+**Reporting a problem.** Open an issue with the console model, Luma version, the games involved, and a photo of any error screen, or its last two lines as text: the version and the two numbers. On an error, keep the SD card as it is.
 
 ## Limits
 

@@ -1,12 +1,14 @@
 //! What a patch does to a message of the original for its last screen: the
-//! cut after its first part, the line of two numbers, and the page that
+//! cut after its first part, the line of two numbers with the line above it
+//! that says which version and package shows them, and the page that
 //! follows.
 //!
 //! A message is the original's own text in UTF-16 units. A line feed ends a
 //! line; a control code is the unit `0x10`, the number of units that follow,
 //! then the code and its arguments; the code `0xBE01` ends a page (wait for a
 //! button, then clear). The dialog holds three lines, and the numbers are
-//! always its third: only a first part of one or two lines gets them.
+//! always its third: only a first part of one or two lines gets them. The
+//! label is the second line, where the first part leaves it free.
 
 /// A control code in the original's texts.
 const CONTROL: u16 = 0x10;
@@ -17,6 +19,63 @@ const LINE_FEED: u16 = 0x0a;
 pub const LEN: usize = 17;
 /// The dialog's last line.
 const LINE: usize = 3;
+
+/// The version this package was built as: the release script names it
+/// (`OFFLINE_BANK_VERSION`, docs/building.md). A package built without one
+/// is nobody's release.
+pub const VERSION: &[u8] = match option_env!("OFFLINE_BANK_VERSION") {
+    Some(version) => version.as_bytes(),
+    None => b"dev",
+};
+
+/// The line above the numbers: the version and, behind it, the package's
+/// own suffix, as in "v1.2.3-test". For whoever reports the numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Label {
+    units: [u16; Self::ROOM],
+    len: usize,
+}
+impl Label {
+    pub const ROOM: usize = 31;
+
+    /// `None` for a text that is too long or holds anything but ASCII
+    /// letters, digits, `.` and `-`: those are in the dialog's font in
+    /// every language, as the numbers and the version line are.
+    pub const fn new(version: &[u8], suffix: &[u8]) -> Option<Self> {
+        let len = version.len() + suffix.len();
+        if version.is_empty() || len > Self::ROOM {
+            return None;
+        }
+        let mut units = [0; Self::ROOM];
+        let mut at = 0;
+        while at < len {
+            let byte = if at < version.len() {
+                version[at]
+            } else {
+                suffix[at - version.len()]
+            };
+            if !(byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-') {
+                return None;
+            }
+            units[at] = byte as u16;
+            at += 1;
+        }
+        Some(Self { units, len })
+    }
+
+    /// The label of this build for the package with `suffix`. A version
+    /// that is no label does not build.
+    pub const fn of(suffix: &[u8]) -> Self {
+        match Self::new(VERSION, suffix) {
+            Some(label) => label,
+            None => panic!("OFFLINE_BANK_VERSION with this suffix is not a label"),
+        }
+    }
+
+    pub fn units(&self) -> &[u16] {
+        &self.units[..self.len]
+    }
+}
 
 /// The line of numbers: both as eight hexadecimal digits.
 pub fn line(first: u32, second: u32) -> [u16; LEN] {
@@ -72,11 +131,13 @@ pub fn cut(text: &[u16]) -> usize {
 }
 
 /// Ends the message in `text[..len]` after its first part (`cut`) and puts
-/// the numbers on the third line there. `text` is the whole room of the
-/// string, and the unit after the message stays free for its end mark.
-/// Answers the new length, or `None` with the message untouched: its first
-/// page has three lines already, or the room is too small.
-pub fn put(text: &mut [u16], len: usize, first: u32, second: u32) -> Option<usize> {
+/// the numbers on the third line there, with `label` on the second if the
+/// first part is one line. `text` is the whole room of the string, and the
+/// unit after the message stays free for its end mark. Without room for
+/// the label the numbers go alone. Answers the new length, or `None` with
+/// the message untouched: its first page has three lines already, or the
+/// room is too small for the numbers.
+pub fn put(text: &mut [u16], len: usize, label: &[u16], first: u32, second: u32) -> Option<usize> {
     if len > text.len() {
         return None;
     }
@@ -89,12 +150,21 @@ pub fn put(text: &mut [u16], len: usize, first: u32, second: u32) -> Option<usiz
         return None;
     }
     let feeds = LINE - lines;
-    let new_len = end + feeds + LEN;
+    // Only a free line between takes the label.
+    let label = if feeds == 2 { label } else { &[] };
+    let new_len = end + feeds + label.len() + LEN;
     if new_len >= text.len() {
-        return None;
+        return if label.is_empty() {
+            None
+        } else {
+            put(text, len, &[], first, second)
+        };
     }
-    text[end..end + feeds].fill(LINE_FEED);
-    text[end + feeds..new_len].copy_from_slice(&line(first, second));
+    let numbers = new_len - LEN;
+    text[end] = LINE_FEED;
+    text[end + 1..end + 1 + label.len()].copy_from_slice(label);
+    text[numbers - 1] = LINE_FEED;
+    text[numbers..new_len].copy_from_slice(&line(first, second));
     Some(new_len)
 }
 
@@ -143,7 +213,7 @@ mod tests {
     fn put_in(text: &[u16], room: usize) -> Option<Vec<u16>> {
         let mut buffer = vec![0xffff; room];
         buffer[..text.len()].copy_from_slice(text);
-        let len = put(&mut buffer, text.len(), 3, 0x7a00_0201)?;
+        let len = put(&mut buffer, text.len(), &[], 3, 0x7a00_0201)?;
         assert!(len < room);
         // Nothing behind the new end was needed for it.
         Some(buffer[..len].to_vec())
@@ -195,6 +265,75 @@ mod tests {
     }
 
     #[test]
+    fn the_label_is_the_version_with_the_packages_suffix() {
+        let text = |label: Label| String::from_utf16(label.units()).unwrap();
+        assert_eq!(text(Label::new(b"v0.4.0", b"").unwrap()), "v0.4.0");
+        assert_eq!(
+            text(Label::new(b"v0.4.0", b"-test").unwrap()),
+            "v0.4.0-test"
+        );
+        assert_eq!(
+            text(Label::new(b"v10.20.30-draft", b"").unwrap()),
+            "v10.20.30-draft"
+        );
+        assert_eq!(
+            text(Label::new(b"dev", b"-migration").unwrap()),
+            "dev-migration"
+        );
+        // This build's own: the version it was given, or "dev".
+        assert_eq!(
+            text(Label::of(b"-download")),
+            std::format!("{}-download", String::from_utf8(VERSION.to_vec()).unwrap())
+        );
+        // Nothing else is a label: only what every language's font has,
+        // on one line, and never without a version.
+        for (version, suffix) in [
+            (&b"v0.4.0 "[..], &b""[..]),
+            (b"v0.4.0", b"\n"),
+            (b"v0.4.0", b"_test"),
+            (b"v0.4.0\x10", b""),
+            (b"\xc3\xa9", b""),
+            (b"", b"-test"),
+            (&[b'1'; Label::ROOM + 1], b""),
+            (&[b'1'; Label::ROOM], b"-"),
+        ] {
+            assert_eq!(Label::new(version, suffix), None);
+        }
+        assert!(Label::new(&[b'1'; Label::ROOM], b"").is_some());
+    }
+
+    #[test]
+    fn the_label_is_the_second_line_where_that_line_is_free() {
+        let label: Vec<u16> = "v0.4.0-test".encode_utf16().collect();
+        let with = |text: &[u16], room: usize| {
+            let mut buffer = vec![0xffff; room];
+            buffer[..text.len()].copy_from_slice(text);
+            let len = put(&mut buffer, text.len(), &label, 3, 0x7a00_0201)?;
+            assert!(len < room);
+            Some(buffer[..len].to_vec())
+        };
+        // The line about the HOME Menu is one line in every language.
+        let out = with(&message(&[1]), 64).unwrap();
+        assert_eq!(
+            first_page(&out),
+            ["text", "v0.4.0-test", "00000003 7A000201"]
+        );
+        // A first part of two lines has no line for it: the numbers alone,
+        // where they always are.
+        let out = with(&message(&[2, 3]), 96).unwrap();
+        assert_eq!(first_page(&out), ["text", "text", "00000003 7A000201"]);
+        // Without room for both, the numbers alone; without room for
+        // them, nothing.
+        let text = message(&[1]);
+        let plain = put_in(&text, 64).unwrap();
+        let full = plain.len() + label.len();
+        assert_eq!(with(&text, full + 1).unwrap().len(), full);
+        assert_eq!(with(&text, full).unwrap(), plain);
+        assert_eq!(with(&text, plain.len() + 1).unwrap(), plain);
+        assert_eq!(with(&text, plain.len()), None);
+    }
+
+    #[test]
     fn a_first_page_of_three_lines_is_left_alone() {
         assert_eq!(put_in(&message(&[3, 3]), 128), None);
         assert_eq!(put_in(&message(&[4, 1]), 128), None);
@@ -208,9 +347,9 @@ mod tests {
         assert!(put_in(&text, needed + 1).is_some());
         let mut buffer = vec![0xffff; needed];
         buffer[..text.len()].copy_from_slice(&text);
-        assert_eq!(put(&mut buffer, text.len(), 1, 2), None);
+        assert_eq!(put(&mut buffer, text.len(), &[], 1, 2), None);
         assert_eq!(buffer[..text.len()], text);
-        assert_eq!(put(&mut [0; 4], 5, 1, 2), None);
+        assert_eq!(put(&mut [0; 4], 5, &[], 1, 2), None);
     }
 
     /// The pages of a message, each without the line feed a later page
@@ -264,7 +403,8 @@ mod tests {
         // The HOME line is one line: the numbers go two lines under it.
         let mut home = [0xffff; 64];
         home[..4].copy_from_slice(&message(&[1]));
-        let home_len = put(&mut home, 4, 3, 0x7a00_0201).unwrap();
+        let label = Label::new(b"v1.2.3", b"-test").unwrap();
+        let home_len = put(&mut home, 4, label.units(), 3, 0x7a00_0201).unwrap();
         // Bank's failure message, cut after its first page.
         let reason = message(&[2, 3]);
         let mut buffer = vec![0xffff; 128];
@@ -275,7 +415,7 @@ mod tests {
             .iter()
             .map(|page| String::from_utf16(page).unwrap())
             .collect();
-        assert_eq!(all, ["text\ntext", "text\n\n00000003 7A000201"]);
+        assert_eq!(all, ["text\ntext", "text\nv1.2.3-test\n00000003 7A000201"]);
     }
 
     #[test]

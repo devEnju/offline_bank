@@ -23,7 +23,8 @@ use super::{
     native_blob::BLOB_SIZE,
     rewards::{self, Record},
     sections::{
-        self, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_TAGS,
+        self, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, MILES, TRANSPORT_RECORDS, TRANSPORT_SIZE,
+        TRANSPORT_TAGS,
     },
     sidecar::{matching, spare, Kind, Sidecar, SidecarError, Tag},
     transport, Fingerprint, GameIdentity, GameObservation, Phase, RecoveryDecision, Storage,
@@ -349,7 +350,19 @@ impl<F: Files> BankFiles<F> {
                 let mut bytes = [0; rewards::RECORD_SIZE];
                 if let Some(slot) = slot {
                     match file.read(index, &slot, &mut bytes) {
-                        Ok(()) => loaded.rewards = rewards::decode(&bytes).unwrap_or(Record::NONE),
+                        Ok(()) => {
+                            loaded.rewards = rewards::decode(&bytes).unwrap_or(Record::NONE);
+                            // The balance v0.3.1 kept in this record.
+                            let body = u32::from_le_bytes([
+                                staging[MILES.start],
+                                staging[MILES.start + 1],
+                                staging[MILES.start + 2],
+                                staging[MILES.start + 3],
+                            ]);
+                            if let Some(balance) = rewards::balance_beside(body, &bytes) {
+                                staging[MILES].copy_from_slice(&balance.to_le_bytes());
+                            }
+                        }
                         Err(SidecarError::Io(error)) => return Err(Error::Io(error)),
                         Err(_) => {}
                     }

@@ -957,6 +957,51 @@ mod tests {
     }
 
     #[test]
+    fn a_balance_that_v0_3_1_kept_in_its_record_comes_along() {
+        // v0.3.1 wrote zero into the body and the balance into the first
+        // four bytes of its record; the release after it reads both.
+        let card = Sd::default();
+        created(&card, &body(0x31, 0x44, 0));
+        let mut saved = body(0x52, 0x66, 3);
+        saved[0x170..0x174].fill(0);
+        let mut bank = prepared(&card, &saved, kept());
+        bank.reconcile(previous::GameObservation::Present {
+            game: GAME,
+            fingerprint: [2; 32],
+        })
+        .unwrap();
+        bank.tidy_transport().unwrap();
+        drop(bank);
+        let mut earlier = previous::rewards::encode(kept());
+        earlier[..4].copy_from_slice(&1234u32.to_le_bytes());
+        let mut file = previous::sidecar::Sidecar::new(
+            card.clone()
+                .open(old::FileName::Rewards.units())
+                .unwrap()
+                .unwrap(),
+            previous::rewards::FILE,
+        );
+        let slots = file.slots().unwrap();
+        // The slot of the current save: the later of the two.
+        let generation = |index: &usize| {
+            let tag = slots[*index].and_then(|slot| slot.tag);
+            tag.map(|tag| tag.generation)
+        };
+        let index = (0..slots.len()).max_by_key(generation).unwrap();
+        let slot = slots[index].unwrap();
+        file.write(index, slot.tag, slot.aux, slot.count, &[&earlier])
+            .unwrap();
+        drop(file);
+        let card = card.restarted(None);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        let mut expected = with_record(saved, kept());
+        expected[0x170..0x174].copy_from_slice(&1234u32.to_le_bytes());
+        assert!(current(&card).unwrap() == expected);
+        // A record of that release itself adds nothing.
+        assert_eq!(previous::rewards::balance_beside(7, &[0; 16]), None);
+    }
+
+    #[test]
     fn a_bank_without_rewards_files_is_converted_as_that_release_reads_it() {
         let (card, body) = used(false);
         for unit in old::FileName::Rewards.units() {

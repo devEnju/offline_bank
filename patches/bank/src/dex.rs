@@ -4,8 +4,14 @@
 //! (task update 0026d8ec), and that screen runs unchanged. This module reloads
 //! the original's caches after a body restore, reads the selected game's
 //! trainer through native 0026de9c, and digests the regions for the save and
-//! restore checks. No function in this module changes the Bank's Pokédex,
-//! writes a game file or writes the offline Bank store.
+//! restore checks.
+//!
+//! One thing is the patch's own: at Save and Quit a game whose version
+//! slot already holds the same trainer brings its records and Pokédex along
+//! (`refresh`), with the two calls the records screen makes for that case.
+//! A game the Bank does not know, or one of another trainer, is taken over
+//! in the records screen only, as in the original. No function in this
+//! module writes a game file or the offline Bank store.
 
 use offline_core::{crc32, native_blob::BLOB_SIZE};
 
@@ -54,6 +60,24 @@ pub fn evidence(body: &[u8]) -> Result<Evidence, DexError> {
         dex_crc32: crc32(&body[DEX_OFFSET..DEX_OFFSET + DEX_SIZE]),
         family_crc32: families,
     })
+}
+
+/// What a game's version slot in the Bank holds, for the selected game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    /// No game of this version was ever taken over.
+    Empty,
+    /// The selected game's own trainer.
+    Same,
+    /// Another trainer's game of this version.
+    Other,
+}
+
+/// Whether Save and Quit takes the selected game's records and Pokédex
+/// over by itself: only into a slot that is this trainer's already. An
+/// empty slot and another trainer's are the records screen's to decide.
+pub fn refreshed_by_a_save(slot: Slot) -> bool {
+    slot == Slot::Same
 }
 
 #[cfg(target_arch = "arm")]
@@ -136,6 +160,92 @@ mod native {
         fn raw(&mut self) -> *mut u8 {
             self.words.as_mut_ptr().cast()
         }
+        /// The version of the selected game, 0 to 7.
+        fn family(&mut self) -> u32 {
+            u32::from(unsafe { self.raw().add(0x4C).read() })
+        }
+        /// What the Bank's slot of that version holds: the original's own
+        /// two questions, "is it there" (001e1e58) and "is it this
+        /// trainer" (002cb7b8), as its records screen asks them.
+        unsafe fn slot(&mut self) -> Slot {
+            let records = unsafe { word(self.raw(), 0x48) } as *mut u8;
+            let exists: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
+                unsafe { transmute(0x001E_1E58usize) };
+            let matches: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8, u32, u32) -> u32 =
+                unsafe { transmute(0x002C_B7B8usize) };
+            let family = self.family();
+            if unsafe { exists(records, family) } == 0 {
+                return Slot::Empty;
+            }
+            let same = unsafe {
+                matches(
+                    records,
+                    family,
+                    self.raw().add(0x4E),
+                    word(self.raw(), 0x68),
+                    word(self.raw(), 0x6C),
+                )
+            };
+            if same != 0 {
+                Slot::Same
+            } else {
+                Slot::Other
+            }
+        }
+        /// The records screen's import for the same trainer: the nine
+        /// record words (001e1ba8) and the Pokédex (001e1b94).
+        unsafe fn import(&mut self) {
+            let records = unsafe { word(self.raw(), 0x48) } as *mut u8;
+            let family = self.family();
+            let copy_records: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) =
+                unsafe { transmute(0x001E_1BA8usize) };
+            let copy_dex: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) =
+                unsafe { transmute(0x001E_1B94usize) };
+            unsafe {
+                copy_records(records, family, self.raw().add(0x70));
+                copy_dex(records, family, word(self.raw(), 0x40) as *mut u8);
+            }
+        }
+    }
+
+    fn digest(bank: *mut u8) -> Result<Evidence, DexError> {
+        let view = unsafe { NativeBank::from_raw(bank) }.map_err(|_| DexError::NativeObject)?;
+        evidence(
+            view.snapshot()
+                .map_err(|_| DexError::NativeObject)?
+                .as_bytes(),
+        )
+    }
+
+    /// At Save and Quit, before the Bank is staged: takes the selected
+    /// game's records and Pokédex into its version slot if that slot is
+    /// this trainer's already (`refreshed_by_a_save`). `Ok(false)` when
+    /// nothing was taken, also when the game could not be asked: then the
+    /// save goes on with the Pokédex as it is. An error only if the import
+    /// changed anything but that one version, which must stop the save.
+    ///
+    /// # Safety
+    /// Main UI thread only, after the native Save-and-Quit confirmation.
+    /// manager and bank must be the selected session's exclusively
+    /// accessible native objects, with no outstanding game/storage worker
+    /// access.
+    pub unsafe fn refresh(manager: *mut u8, bank: *mut u8) -> Result<bool, DexError> {
+        let Ok(mut selected) = (unsafe { Selection::capture(manager, bank) }) else {
+            return Ok(false);
+        };
+        if !refreshed_by_a_save(unsafe { selected.slot() }) {
+            return Ok(false);
+        }
+        let family = selected.family() as usize;
+        let before = digest(bank)?;
+        unsafe { selected.import() };
+        let after = digest(bank)?;
+        for index in 0..8 {
+            if index != family && before.family_crc32[index] != after.family_crc32[index] {
+                return Err(DexError::NativeObject);
+            }
+        }
+        Ok(true)
     }
 
     /// Reloads all eight native family objects and invalidates aggregate caches.
@@ -187,6 +297,15 @@ mod tests {
         body[0x15C..0x15E].copy_from_slice(&2u16.to_le_bytes());
         body[0x15E..0x160].copy_from_slice(&100u16.to_le_bytes());
         body
+    }
+
+    #[test]
+    fn a_save_refreshes_only_a_slot_that_is_this_trainers_already() {
+        assert!(refreshed_by_a_save(Slot::Same));
+        // A game the Bank does not know, and another trainer's: the records
+        // screen decides, as in the original.
+        assert!(!refreshed_by_a_save(Slot::Empty));
+        assert!(!refreshed_by_a_save(Slot::Other));
     }
 
     #[test]

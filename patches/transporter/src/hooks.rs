@@ -1,7 +1,8 @@
 //! The entry points called from the patched original code, the worker thread
 //! that does the file work, and the file adapter over Transporter's own SDK
 //! wrappers. The original task calls an entry every frame until it answers;
-//! the main thread never waits for a file operation.
+//! the main thread waits for a file operation only if no worker thread can be
+//! created, and the job then runs on it.
 
 use crate::{layout::*, navigation};
 use core::{
