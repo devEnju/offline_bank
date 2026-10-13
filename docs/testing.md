@@ -88,6 +88,7 @@ A new Bank starts counting with its first Save and Quit. `N` is the number of Po
 | 10 or more, Gen 6: Miles one day, Battle Points another. | Miles: balance 0. BP: `Miles ÷ 10` to the game, remainder kept. The gift waits in the game after Save and Quit. |
 | 10 or more, Gen 7. | Miles refused by the original message; BP arrives in the gift list. |
 | Redeem, then leave without saving. | Balance as before the claim; no gift in the game; the dialog again at the next opening. |
+| A Bank last used with v0.3.1, with Miles in it: install this version, open, pick a game. | The balance it had, plus the Miles of the hours since its last Save and Quit. After a Save and Quit and a restart the same balance, not twice. |
 | Set the date back a day, open, Save and Quit. | Save works. No Miles, no dialog. After returning to the real date, none earned twice. |
 
 ### Pokédex
@@ -96,6 +97,9 @@ A new Bank starts counting with its first Save and Quit. `N` is the number of Po
 | --- | --- |
 | Open Y, open the records screen, Save and Quit. Do the same with Ultra Sun. | A species known only to Y and one known only to Ultra Sun both show in the National Pokédex. |
 | Open a game whose Pokédex the Bank does not have, do not open the records screen, Save and Quit. | That game's Pokédex and records are not taken over. |
+| A game the Bank has taken over before: see a new species in the game, open Bank with it, do not open the records screen, Save and Quit, start Bank again. | The new species shows in the National Pokédex, and the game's records are the current ones. |
+| The same, but leave without saving. | Not taken over. |
+| Another save of the same version with another trainer, without opening the records screen: Save and Quit. | That version's entries and records stay the first trainer's. |
 | Open such a game, open the records screen, leave without saving. | Not taken over. |
 | Same version, different trainer (for example two Omega Ruby saves): open the records screen and choose that game's entry. | The original replacement prompt. Accept: that version's entries and records become the new save's. Decline: unchanged. Either way stored only by Save and Quit. |
 

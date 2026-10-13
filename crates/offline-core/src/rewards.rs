@@ -136,8 +136,10 @@ impl Moment {
 /// The rewards side file. Its 16-byte payload holds what the native body has
 /// no field for: the remainder in Pokémon-hours as a u16 at 4, and the day of
 /// the last redemption at 8 (u16 year, u8 month, u8 day; all zero: never
-/// redeemed). Bytes 0..4 and 6..8 are not read and written as zero; 12..16
-/// are zero.
+/// redeemed). Bytes 0..4 are written as zero; v0.3.1 kept the Miles balance
+/// there and zero in the body, so a load adds what they hold to the body's
+/// balance (`balance_beside`). Bytes 6..8 are not read and written as zero;
+/// 12..16 are zero.
 pub const FILE: crate::sidecar::Kind = crate::sidecar::Kind {
     magic: *b"BKOFRWD1",
     capacity: RECORD_SIZE as u32,
@@ -186,6 +188,21 @@ impl Record {
             redeemed,
         })
     }
+}
+
+/// The Miles balance for the body when the rewards record beside it holds
+/// one in its first four bytes: the sum of the two, up to the cap. `None`
+/// for a record that holds none there, which leaves the body as it is. This
+/// release has the balance in the body and writes zero into the record;
+/// v0.3.1 had it in the record and zero in the body. The save after such a
+/// load writes the sum into the body and zero beside it.
+pub fn balance_beside(body: u32, record: &[u8; RECORD_SIZE]) -> Option<u32> {
+    let beside = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
+    (beside != 0).then(|| {
+        body.min(MILES_CAP)
+            .saturating_add(beside.min(MILES_CAP))
+            .min(MILES_CAP)
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

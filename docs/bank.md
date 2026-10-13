@@ -76,9 +76,10 @@ The patch adds one safety check: after a claim, the balance and the gift in the 
 
 ## Pokédex and adventure records
 
-Unchanged from the original. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
+As in the original, with one addition for games the Bank already knows. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
 
-- A game's Pokédex and adventure records are taken over when you **open the records screen** with that game; saving alone does not do it. They **replace that version's slot**. The other seven slots are untouched.
+- A game's Pokédex and adventure records are taken over for the first time when you **open the records screen** with that game; saving alone does not do it. They **replace that version's slot**. The other seven slots are untouched.
+- Once a game is in its slot, **every Save and Quit with that game brings its Pokédex and records up to date**, without a visit to the records screen. This holds only for the same trainer.
 - If the slot belongs to a different trainer, opening the screen takes nothing over. Choose that game's entry there and the original confirmation appears. Accepting replaces the slot, declining keeps it.
 - What was taken over is stored with the next Save and Quit. If you leave without saving, it is not.
 

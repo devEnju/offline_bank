@@ -905,6 +905,10 @@ impl Runtime {
                     .map_err(|_| Fault::GamePrepare)?;
                 let rewards = self.rewards.settlement.ok_or(Fault::RewardState)?;
                 let trainer = self.trainer.ok_or(Fault::GameRead)?;
+                // A game the Bank knows already, with the same trainer,
+                // brings its records and Pokédex along with the save.
+                unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
+                    .map_err(|_| Fault::NativeObject)?;
                 self.stage_bank(task)?;
                 // Conservative until Finalize succeeds: failed preparation may
                 // already have published a durable pending journal replica.

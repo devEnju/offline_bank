@@ -23,8 +23,8 @@ use offline_core::{
     native_blob::BLOB_SIZE,
     rewards::{self, Record},
     sections::{
-        self, Identity, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, HELD, RECORD_SIZE, TRANSPORT_RECORDS,
-        TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
+        self, Identity, BANK_SIZE, DEX, DEX_FILE, DEX_SIZE, HELD, MILES, RECORD_SIZE,
+        TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
     sidecar::{matching, spare, Kind, Sidecar, SidecarError, Tag},
     transport, Fingerprint, GameIdentity, GameObservation, Phase, RecoveryDecision, Storage,
@@ -397,7 +397,19 @@ impl<F: Files> BankFiles<F> {
                 let mut bytes = [0; rewards::RECORD_SIZE];
                 if let Some(slot) = slot {
                     match file.read(index, &slot, &mut bytes) {
-                        Ok(()) => loaded.rewards = Record::decode(&bytes).unwrap_or(Record::NONE),
+                        Ok(()) => {
+                            loaded.rewards = Record::decode(&bytes).unwrap_or(Record::NONE);
+                            // The balance v0.3.1 kept in this record.
+                            let body = u32::from_le_bytes([
+                                staging[MILES.start],
+                                staging[MILES.start + 1],
+                                staging[MILES.start + 2],
+                                staging[MILES.start + 3],
+                            ]);
+                            if let Some(balance) = rewards::balance_beside(body, &bytes) {
+                                staging[MILES].copy_from_slice(&balance.to_le_bytes());
+                            }
+                        }
                         Err(SidecarError::Io(error)) => return Err(Error::Io(error)),
                         Err(_) => {}
                     }
@@ -582,7 +594,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::testing::*;
-    use offline_core::sections::{MILES, RECORD_SIZE, REWARD_DATE};
+    use offline_core::sections::REWARD_DATE;
     use std::{boxed::Box, collections::BTreeSet, format, vec, vec::Vec};
 
     /// Opens after a reboot, resolving a pending save from the observed game.
@@ -661,6 +673,69 @@ mod tests {
                 delivered: 0,
             }
         );
+    }
+
+    #[test]
+    fn the_balance_a_record_of_v0_3_1_holds_is_added_once() {
+        // v0.3.1: zero in the body, the balance in the record with its
+        // flag, remainder, count and date.
+        let mut earlier = [0u8; rewards::RECORD_SIZE];
+        earlier[..4].copy_from_slice(&1234u32.to_le_bytes());
+        earlier[4..12].copy_from_slice(&[1, 29, 0x34, 0x02, 0xea, 0x07, 10, 6]);
+        let disk = fresh(&body(0x31, 0x44, 0));
+        let mut files = opened(&disk);
+        let mut staging = load(&mut files).0;
+        staging[MILES].fill(0);
+        files
+            .prepare(&mut staging, Record::NONE, GAME, BEFORE, AFTER)
+            .unwrap();
+        files.reconcile(observed(AFTER)).unwrap();
+        drop(files);
+        let mut file = Sidecar::new(
+            disk.clone().open(FileName::Rewards).unwrap().unwrap(),
+            rewards::FILE,
+        );
+        let slots = file.slots().unwrap();
+        // The slot of the current save: the later of the two.
+        let generation = |index: &usize| {
+            let tag = slots[*index].and_then(|slot| slot.tag);
+            tag.map(|tag| tag.generation)
+        };
+        let index = (0..slots.len()).max_by_key(generation).unwrap();
+        let slot = slots[index].unwrap();
+        file.write(index, slot.tag, slot.aux, slot.count, &[&earlier])
+            .unwrap();
+        drop(file);
+
+        let disk = disk.reboot();
+        let mut files = opened(&disk);
+        let mut staging = load(&mut files).0;
+        assert_eq!(&staging[MILES], &1234u32.to_le_bytes());
+        // Loading wrote nothing: the next load says the same.
+        assert_eq!(
+            &load(&mut opened(&disk.reboot())).0[MILES],
+            &1234u32.to_le_bytes()
+        );
+        // The save writes the balance into the body and zero beside it,
+        // so it is not added again.
+        staging[MILES].copy_from_slice(&1300u32.to_le_bytes());
+        files
+            .prepare(&mut staging, miles_record(5, 6), GAME, [3; 32], [4; 32])
+            .unwrap();
+        files.reconcile(observed([4; 32])).unwrap();
+        assert_eq!(&load(&mut files).0[MILES], &1300u32.to_le_bytes());
+        assert_eq!(
+            &load(&mut opened(&disk.reboot())).0[MILES],
+            &1300u32.to_le_bytes()
+        );
+        assert_eq!(rewards::balance_beside(0, &earlier), Some(1234));
+        // A record of this release adds nothing and changes nothing.
+        assert_eq!(rewards::balance_beside(7, &[0; 16]), None);
+        let mut full = [0u8; 16];
+        full[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(rewards::balance_beside(60_000, &earlier), Some(61_234));
+        assert_eq!(rewards::balance_beside(65_000, &earlier), Some(65_535));
+        assert_eq!(rewards::balance_beside(u32::MAX, &full), Some(65_535));
     }
 
     #[test]

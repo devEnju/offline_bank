@@ -253,7 +253,7 @@ Save manager (0x100 bytes): selected kind at `+c8`; per kind `k` (1..8 = X, Y, O
 
 ### Pokédex
 
-The records screen is the original's; nothing of it is edited. Its task (init `0026de9c`, update `0026d8ec`) is the only place where a game's Pokédex and records get into the Bank: `002b8e00` stores the trainer's identity, `001e1ba8` copies nine record words, `001e1b94` copies the game's Pokédex into its version region and marks it valid, and no other function calls these three.
+The records screen is the original's; nothing of it is edited. Its task (init `0026de9c`, update `0026d8ec`) is the only place where the original takes a game's Pokédex and records into the Bank: `002b8e00` stores the trainer's identity, `001e1ba8` copies nine record words, `001e1b94` copies the game's Pokédex into its version region and marks it valid, and no other function calls these three.
 
 | The records screen is opened and the game's version slot | Import |
 | --- | --- |
@@ -263,7 +263,9 @@ The records screen is the original's; nothing of it is edited. Its task (init `0
 
 State 0 imports only while the byte its caller passes is 0 (`[[task + 0x18]]`); the box screen's value was not traced. The import changes the Bank body in memory. The next Save and Quit stores it; without one it is gone, because the next opening restores the body from the files.
 
-What the patch does here ([dex.rs](../patches/bank/src/dex.rs)): after every body restore it reloads the eight version caches, which lie outside the body, and has the totals built anew (`002b9a3c`, `002b9b90`); it reads the selected game's trainer through `0026de9c` for the record of a save in progress (`dex::trainer`); and it compares a digest of the eight version regions between the body a save staged and the body restored after it (`dex::evidence`).
+**A save refreshes a slot that is this trainer's already** (`dex::refresh`, the one thing here that is the patch's own). At Save and Quit, after the game's check and before the Bank is staged, the hook has `0026de9c` collect the selected game's data as the records screen does, asks the original's two questions about its version slot, and for the second row of the table makes that row's two calls, `001e1ba8` and `001e1b94`. An empty slot and another trainer's are left to the records screen. The import copies; it does not merge. It changes the body in memory before it is staged, so a save that is undone leaves the slot as it was. If the game cannot be asked, nothing is taken and the save goes on; if the import changed any other version's region (a digest of the eight before and after), the save stops with fault `2`.
+
+What the patch does here beside that ([dex.rs](../patches/bank/src/dex.rs)): after every body restore it reloads the eight version caches, which lie outside the body, and has the totals built anew (`002b9a3c`, `002b9b90`); it reads the selected game's trainer through `0026de9c` for the record of a save in progress (`dex::trainer`); and it compares a digest of the eight version regions between the body a save staged and the body restored after it (`dex::evidence`).
 
 ## Storage
 
@@ -362,7 +364,7 @@ The payload follows at +64. An all-zero or damaged header is a void slot. Writin
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 4 | Not read, written as zero |
+| 0 | 4 | Written as zero. v0.3.1 kept the Miles balance here and zero in the body: a load adds what this field holds to the body's balance, up to 65,535 (`rewards::balance_beside`), and the save that follows writes the sum into the body and zero here |
 | 4 | 2 | Remainder in Pokémon-hours. A save writes 0..719; a larger number is paid out at the next load like any other |
 | 6 | 2 | Not read, written as zero |
 | 8 | 4 | Day of the last redemption (u16 year, month, day); all zero: never redeemed |
