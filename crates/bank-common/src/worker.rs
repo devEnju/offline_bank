@@ -191,6 +191,11 @@ mod arm {
     const STACK_SIZE: usize = 0x8000;
     const GUARD_SIZE: usize = 64;
     const GUARD_BYTE: u8 = 0xa7;
+    /// One below the main thread (`0x30` in Bank's exheader), on the same
+    /// core, so the worker runs while the main thread waits for the next
+    /// frame. Above it, every checksum or comparison held off the main
+    /// thread, and with it frames and the loading sound.
+    const WORKER_PRIORITY: u32 = 0x31;
     #[repr(C, align(8))]
     struct Stack([u8; STACK_SIZE]);
     #[repr(C)]
@@ -440,7 +445,7 @@ mod arm {
                 entry as *const () as usize,
                 &context,
                 stack.add(STACK_SIZE),
-                31,
+                WORKER_PRIORITY,
                 -2,
                 0,
             )
