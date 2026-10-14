@@ -465,13 +465,13 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 
 | Where | Role |
 | --- | --- |
-| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), entry table and assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
+| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), entry table and assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
 | [crates/offline-core/](../crates/offline-core/src/) | `transport::deliver` and the side-file format, shared with Bank. |
 | [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. The profile with every edit and its original word is [transporter15.rs](../crates/patch-builder/src/transporter15.rs). |
 
 ### Edits to the original
 
-32 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with nineteen entry branches, in this order: check, deliver, router, slot, cartridge id, cartridge read, cartridge write, list next, select, title scan, language chosen, language order, language buttons, language back, title begin, title end, list ready, message, version. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One edit, at `0013AEE4`, does not branch to an entry but to the layout check beside the start-up hook (see [Placement](#placement-1)).
+34 instruction words, each checked against its original value by the builder, plus the start-up hook. The payload starts with twenty-one entry branches, in this order: check, deliver, router, slot, cartridge id, cartridge read, cartridge write, list next, select, title scan, language chosen, language order, language buttons, language back, title begin, title end, list ready, message, version, shiny build, shiny gender. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One edit, at `0013AEE4`, does not branch to an entry but to the layout check beside the start-up hook (see [Placement](#placement-1)).
 
 | Address | Purpose | Replacement |
 | --- | --- | --- |
@@ -501,6 +501,8 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 | `0013AEE4` | Building a layout: the layout binary on its way to `Layout::Build` | Layout check: the same, and the payload adjusts the language screen's layout first |
 | `0024A150` | Transfer, sub-state 0: create the upload request | Deliver entry, which goes on by its result |
 | `0024A3C0` | Transfer: `mov r0, #0xa`, the one place that selects the commit request (sub-state `0xA`) | `mov r0, #0xe`: the final save comes next |
+| `0024F6B0` | Gen 1 conversion: the call of the Pokémon constructor (`bl 0019CD3C`) | Shiny-build entry: may ask for a shiny, then the call ([below](#shiny-gen-1-pokémon)) |
+| `0024F8E0` | Gen 1 conversion: start of the gender from the Attack DV (`ldrb r1, [r4, #0x1b]`) | Shiny-gender entry: keeps the constructor's gender, or the instruction |
 
 The offline flow follows zaksabeast's Transporter-Offline-Patch. Unlike that patch, the transfer ends with the original final save and success message.
 
@@ -559,6 +561,22 @@ At the next session three server steps used the note. Step `0xA` (`00248814`) as
 The Gen 5 reader (`002455D0`, sub-state 4) runs 14 local checks (table `002AFFE0`) and a conversion on every slot whose per-slot result code (`[info + 0x48 + 4 * slot]`) is zero. The server sent `0x14` for empty slots, which skips them. Without it, empty slots fail the checks, set the "removed" flags at `info + 0x1C0`, and raise a false dialog. The slot entry answers `0x14` for a slot that holds no species ([gen5.rs](../patches/transporter/src/gen5.rs)). The Gen 1/2 reader skips empty slots itself.
 
 The species has to be decrypted; the stored header does not tell. A box record is 136 bytes: personality value, flags (u16 at 4), checksum (u16 at 6), then four 32-byte blocks, XORed word by word with the LCG stream seeded by the checksum and stored in the order `((personality >> 13) & 31) % 24`. The games store empty slots in two forms: a slot that was cleared has personality value 0 and checksum 0; a slot that was set up and never used has personality value 0 and checksum 4, because a blank record carries the genderless flag (byte `0x40`).
+
+### Shiny Gen 1 Pokémon
+
+Transporter 1.2 (January to September 2017) tested the wrong DV for a shiny Gen 1 Pokémon and kept the constructor's random gender. The patch brings back the Pokémon that only that rule made shiny ([legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs)):
+
+| Rule | Attack | Defense | Speed | Special |
+| --- | --- | --- | --- | --- |
+| The original's (`0024F5B8`) | bit 1 set | 10 | 10 | 10 |
+| Transporter 1.2's | 10 | bit 1 set | 10 | 10 |
+
+The patch applies it where 1.2's rule holds and the original's does not: DV bytes `+0x1B`/`+0x1C` of the source record `A2 AA`, `A3 AA`, `A6 AA`, `A7 AA`, `AB AA`, `AE AA`, `AF AA`. All four DVs 10 (`AA AA`) is shiny by both and stays the original's. Of 65,536 combinations, 15 are shiny instead of 8; every other Pokémon converts as before.
+
+- **Where.** The Gen 1 converter `0024F428`, which has one caller, holds the 33-byte source record in `r4` throughout. The Gen 2 converter (`0024E48C`) and Gen 5 are not touched. Both entries are pure and look only at the record, so a conversion during the game search is harmless.
+- **Shiny.** At the constructor call (`0024F6B0`) the construction parameters are at `sp + 0x18`; their word at `+0x0C` is the shiny mode (1 never, 2 shiny; stored at `0024F610`). The entry sets 2; the constructor makes the shiny personality value as for any other shiny.
+- **Gender.** The constructor (through `0012F8BC`) draws a gender for the species (`random(252) + 1` against the ratio code), and fixed-sex and genderless species get theirs. For the ratio codes `0x1F`, `0x3F`, `0x7F`, `0xBF` the original then replaces it with one from the Attack DV (`0024F8E0`..`0024F90C`): female up to Attack 1, 3, 7 and 11. Since every shiny of the original's rule has Attack 2 or more, no shiny of a species with code `0x1F` (one female in eight) can be female. For these Pokémon the entry continues at `0024F910`, behind that code, for all four codes, and the drawn gender stays: for code `0x1F`, female in 30 of 252 draws. Nothing else is drawn.
+- **Met date.** Unchanged: the converter writes the console's date (`0024F6FC`), and the rule does not depend on it.
 
 ### Refusal dialogs
 

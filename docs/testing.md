@@ -125,6 +125,21 @@ With the normal Bank and Transporter packages. What each feature is meant to do 
 | Press HOME together with A when confirming a game, and when confirming the question. | Nothing happens. |
 | After Back on the game list, after "Could not find a game", and after a transfer: press HOME on the title screen. | The HOME Menu opens. |
 
+### The Gen 1 conversion
+
+A Red, Blue, Green or Yellow Virtual Console save, with these Pokémon in Box 1, their DVs set with a save editor (Attack, Defense, Speed, Special):
+
+| Pokémon in Box 1 | Expected in Bank's transport box |
+| --- | --- |
+| Eevee, 10 / 2 / 10 / 10 | Shiny. Male or female. |
+| Eevee, 10 / 10 / 10 / 10, and Eevee, 2 / 10 / 10 / 10 | Shiny, male. |
+| Eevee, 10 / 2 / 10 / 11 | Not shiny. Male. |
+| Nidoran and Magnemite, 10 / 2 / 10 / 10 | Shiny. Nidoran female/male, Magnemite genderless. |
+| A full Box 1 of Eevees, 10 / 15 / 10 / 10 | All shiny. About one in eight is female. |
+| Gold, Silver or Crystal: Eevee, 10 / 2 / 10 / 10 | Not shiny, as in the game itself. |
+
+In every case the met date is the console's date of the transfer, and the Pokémon can be withdrawn into a Gen 7 game.
+
 ### Refusals
 
 | Do this | Expected |

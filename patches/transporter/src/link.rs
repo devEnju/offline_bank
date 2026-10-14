@@ -18,6 +18,9 @@ mod linked {
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
         transporter_layout_built, transporter_title_language, transporter_vc_listed,
     };
+    use transporter_payload::legacy_shiny::{
+        transporter_shiny_build, transporter_shiny_keeps_gender,
+    };
 
     // Keeps the start-up hook in the link; the builder installs its call.
     #[used]
@@ -51,6 +54,8 @@ mod linked {
         "b transporter_list_ready_stub",
         "b transporter_message_stub",
         "b {version}",
+        "b transporter_shiny_build_stub",
+        "b transporter_shiny_gender_stub",
         next = sym transporter_next,
         version = sym transporter_version,
         cart_read = sym transporter_cart_read,
@@ -258,6 +263,42 @@ mod linked {
         list_ready = sym transporter_list_ready,
         deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,
+    );
+
+    // The Gen 1 converter (0024F428), the Easter egg in legacy_shiny.rs.
+    // r4 is the source record at both sites.
+    core::arch::global_asm!(
+        ".section .text.transporter_shiny_stubs,\"ax\",%progbits",
+        ".arm",
+        // 0024F6B0 (was: bl 0019CD3C, the Pokémon constructor; r2 = the
+        // construction parameters). The entry may ask for a shiny; then the
+        // constructor with every register as it came, lr included, so that
+        // it returns to 0024F6B4.
+        "transporter_shiny_build_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "mov r1, r2",
+        "mov r0, r4",
+        "bl {shiny_build}",
+        "pop {{r0-r3, r12, lr}}",
+        "ldr r12, =0x0019cd3c",
+        "bx r12",
+        // 0024F8E0 (was: ldrb r1, [r4, #0x1b], the start of the gender
+        // from the Attack DV; r0 = its threshold). lr and the flags are not
+        // live here. Kept gender: on at 0024F910, behind the gender code.
+        // Else the instruction, and back to 0024F8E4.
+        "transporter_shiny_gender_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "mov r0, r4",
+        "bl {shiny_keeps_gender}",
+        "movs r12, r0",
+        "pop {{r0-r3, r12, lr}}",
+        "ldrne r12, =0x0024f910",
+        "bxne r12",
+        "ldrb r1, [r4, #0x1b]",
+        "bx lr",
+        ".ltorg",
+        shiny_build = sym transporter_shiny_build,
+        shiny_keeps_gender = sym transporter_shiny_keeps_gender,
     );
 
     // Byte-wise memory routines, kept from the builds that had to fit 3.6 KB:

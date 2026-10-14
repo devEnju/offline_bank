@@ -9,7 +9,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Step | Original Transporter | Patched |
 | --- | --- | --- |
 | Connect, disconnect | Nintendo's servers | Skipped; wireless can stay off |
-| Read the source game and convert the Pokémon | Transporter itself | Unchanged |
+| Read the source game and convert the Pokémon | Transporter itself | Unchanged, apart from a small Easter egg in the Gen 1 Virtual Console games |
 | Legality check | Server | None. Whatever Transporter itself accepts is transferred (eggs, for example, are still refused). |
 | "Is Bank's transport box empty?" | Server, after a game was chosen | Reads Bank's record of its files (`/journal.bin`, `/journal.alt.bin` in Bank's extdata), as soon as START is pressed on the title screen and before any game is looked for |
 | Store the Pokémon in Bank | Server | Writes one delivery into the file of the transport box that Bank is not using (`/mover.bin` or `/mover.alt.bin`), then notes in Bank's record that it waits |
@@ -25,7 +25,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 ## Transfers and refusals
 
-**Nothing is converted by the patch.** The original Transporter builds a complete Bank transport box in memory and used to upload it. The patch writes that box, unchanged, into Bank's file. The next time you open Bank, the Pokémon are in the transport box, in the positions they had in Box 1 of the source game.
+**The patch converts nothing itself.** The original Transporter builds a complete Bank transport box in memory and used to upload it. The patch writes that box, unchanged, into Bank's file. The next time you open Bank, the Pokémon are in the transport box, in the positions they had in Box 1 of the source game.
 
 **Order of the two writes.** The delivery is written, flushed, read back and noted in Bank's record first. Only then does the original remove the Pokémon from the source game. A power cut in between leaves the Pokémon in both places, never in neither. If the delivery cannot be written, the original failure message is shown and the game is not touched.
 

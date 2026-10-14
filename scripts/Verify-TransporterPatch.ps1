@@ -18,7 +18,7 @@ $dataSize = 0x3D3FC
 $bssSize = 0x3A4A8
 $originalAppInit = 0x00104644
 $startupCall = 0x00103D9C
-$entryCount = 19
+$entryCount = 21
 
 function Get-Sha256([byte[]]$bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -51,7 +51,7 @@ Assert-That ($Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind
 
 # Whole-word edits: address -> expected new word, or a branch form checked
 # separately. Plain hashtable: an ordered dictionary would treat these integer
-# keys as positions. Entry words are the first nineteen words of the payload.
+# keys as positions. Entry words are the first twenty-one words of the payload.
 $allowed = @{
     0x00103D9C = 'bl:0028D1AC'
     0x00242EF8 = 'bl:00364008'; 0x002445EC = 'bl:00364040'
@@ -73,6 +73,7 @@ $allowed = @{
     0x0024BA44 = 'bl:00364038'; 0x0024BA74 = 'bl:0036403C'
     0x0024A150 = 'b:00364004'
     0x0024A3C0 = 0xE3A0000E
+    0x0024F6B0 = 'bl:0036404C'; 0x0024F8E0 = 'bl:00364050'
 }
 
 $ips = [IO.File]::ReadAllBytes((Join-Path $directory 'code.ips'))
@@ -213,7 +214,7 @@ $report = [ordered]@{
         'start-up hook replaces only zero bytes and calls the original application init first',
         'original read-only data and data unchanged',
         'former zero-initialised data written as zero; every added byte written',
-        'payload starts with nineteen distinct branches into its own code pages',
+        'payload starts with twenty-one distinct branches into its own code pages',
         'only exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image',
         'manifest hashes match'
     )
