@@ -16,6 +16,8 @@ pub const MILES_CAP: u32 = 65_535;
 pub const UNIT: u32 = 720;
 /// 100 regular boxes of 30 slots; transfer slots and game boxes do not count.
 pub const MAX_STORED: u32 = 3_000;
+/// The welcome gift, set by the original's reward task (002a9bf4).
+pub const WELCOME_MILES: u32 = 100;
 /// Native claim state 0x16 offers redemption only above nine Miles.
 pub const REDEEM_THRESHOLD: u32 = 10;
 /// Native Gen 7 gift store 001d58b0 counts 48 slots.
@@ -288,6 +290,12 @@ pub fn settle(entry: &Entry, balance: u32, now: Moment, redeemed: bool) -> Settl
         },
         earned: step.earned,
     }
+}
+
+/// The balance after the welcome gift. The original sets the balance to the
+/// gift; here the gift is added to what the Bank holds, up to the limit.
+pub fn welcome(balance: u32) -> u32 {
+    (balance.min(MILES_CAP) + WELCOME_MILES).min(MILES_CAP)
 }
 
 /// What the reward screens say after a game was loaded.
@@ -679,6 +687,15 @@ mod tests {
             Err(RewardError::InvalidCount)
         );
         assert!(enter(Record::NONE, None, 0, MAX_STORED, at(6, 0, 0)).is_ok());
+    }
+
+    #[test]
+    fn the_welcome_gift_is_added_up_to_the_limit() {
+        assert_eq!(welcome(0), 100);
+        assert_eq!(welcome(42), 142);
+        assert_eq!(welcome(MILES_CAP - 35), MILES_CAP);
+        assert_eq!(welcome(MILES_CAP), MILES_CAP);
+        assert_eq!(welcome(u32::MAX), MILES_CAP);
     }
 
     #[test]

@@ -14,7 +14,7 @@ Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5*
 - Transfers to and from X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, and Ultra Moon.
 - Starts straight at game selection; no main menu, no connection.
 - National Pokédex and adventure records, taken over in the records screen as in the original.
-- Poké Miles earned locally at the original rate and redeemed through the original screens.
+- Poké Miles earned locally at the original rate and redeemed through the original screens, with the original welcome gift of 100 Miles.
 - Saves are journaled: an interrupted save leaves either the old or the new state.
 
 Details: [docs/bank.md](docs/bank.md).

@@ -141,6 +141,11 @@ impl<'a> NativeBank<'a> {
         }
     }
 
+    /// Whether the welcome gift was given, as native 002ba590 reads it.
+    pub fn first_present(&self) -> Result<bool, NativeBankError> {
+        Ok(self.snapshot()?.first_present())
+    }
+
     /// The reward date as native 001d5880 points at it; `None` without one.
     pub fn reward_date(&self) -> Result<Option<Moment>, NativeBankError> {
         Ok(self.snapshot()?.reward_date())
@@ -306,6 +311,31 @@ mod tests {
         assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
         bank.set_rewards(Record::NONE);
         assert_eq!(bank.rewards(), Ok(Record::NONE));
+    }
+
+    #[test]
+    fn the_welcome_flag_is_the_byte_native_002ba590_reads() {
+        let mut object = object_fixture();
+        let bytes = object.as_mut_ptr().cast::<u8>();
+        {
+            // SAFETY: exclusive borrowing of the initialized aligned fixture.
+            let mut bank = unsafe { NativeBank::from_raw(bytes) }.unwrap();
+            bank.restore(&body_fixture(0)).unwrap();
+            assert_eq!(bank.first_present(), Ok(false));
+        }
+        // The native getter reads the byte at object + 0x180.
+        assert_eq!(
+            BODY_OFFSET + offline_core::native_blob::FIRST_PRESENT_OFFSET,
+            0x180
+        );
+        // SAFETY: the byte lies inside the fixture; no view is alive.
+        unsafe { bytes.add(0x180).write(1) };
+        // SAFETY: as above.
+        let bank = unsafe { NativeBank::from_raw(bytes) }.unwrap();
+        assert_eq!(bank.first_present(), Ok(true));
+        let mut expected = body_fixture(0);
+        expected[0x178] = 1;
+        assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
     }
 
     #[test]

@@ -22,6 +22,10 @@ pub const REWARD_DATE_OFFSET: usize = 0x160;
 /// keeps the server's pass count there (002ba524, 002ba53c) and reaches it
 /// only while the session reports a count, which never happens offline.
 pub const REDEEMED_OFFSET: usize = 0x174;
+/// Whether the welcome gift was given, one byte at object `+180` (getter
+/// 002ba590, setter 002ba59c). The original's reward task sets it before it
+/// shows the welcome (002a9888).
+pub const FIRST_PRESENT_OFFSET: usize = 0x178;
 /// The remainder below one Mile, two bytes of padding between the transport
 /// box's format tags and the trainer records that the original never touches.
 pub const FRACTION_OFFSET: usize = 0xAD61A;
@@ -74,6 +78,11 @@ impl<'a> NativeBlobView<'a> {
                 .try_into()
                 .unwrap(),
         )
+    }
+
+    /// Whether the welcome gift was given; a new Bank holds 0.
+    pub fn first_present(self) -> bool {
+        self.data[FIRST_PRESENT_OFFSET] != 0
     }
 
     /// What the patch keeps for the Miles beside the balance and the date.

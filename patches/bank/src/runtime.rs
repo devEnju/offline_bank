@@ -115,13 +115,26 @@ struct RewardSession {
     /// Save and Quit has written the Miles state into the Bank body.
     settled: bool,
     claimed: bool,
+    welcome: Welcome,
 }
 impl RewardSession {
     const NONE: Self = Self {
         entry: None,
         settled: false,
         claimed: false,
+        welcome: Welcome::None,
     };
+}
+/// The original's welcome gift in this session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Welcome {
+    /// The Bank was loaded with the gift already given, or this is the
+    /// test build, which passes every reward screen silently.
+    None,
+    /// The loaded Bank has not had it: the original's reward task gives it.
+    Pending,
+    /// Given in this session, on top of the balance.
+    Credited,
 }
 /// State of the native claim task immediately before its redemption step.
 #[derive(Clone, Copy)]
@@ -511,10 +524,16 @@ impl Runtime {
         let entry =
             rewards::enter(record, stored, balance, count, clock()?).map_err(reward_fault)?;
         bank.set_miles(entry.balance());
+        let given = bank.first_present().map_err(|_| Fault::NativeObject)?;
         self.rewards = RewardSession {
             entry: Some(entry),
             settled: false,
             claimed: false,
+            welcome: if given || cfg!(feature = "test-build") {
+                Welcome::None
+            } else {
+                Welcome::Pending
+            },
         };
         Ok(())
     }
@@ -531,6 +550,37 @@ impl Runtime {
         bank.set_reward_date(settlement.date);
         bank.set_rewards(settlement.record);
         self.rewards.settled = true;
+        Ok(())
+    }
+    /// The welcome gift, around the original's call. In state 5 the original
+    /// sets the balance to 100 once message 4 is answered; the balance before
+    /// is returned, and `welcome_after` adds the gift to it instead. Before
+    /// the choice (state 6) the quote is the whole balance, as the ordinary
+    /// way's state 0x15 leaves it.
+    fn welcome_before(&mut self, task: Task) -> Result<Option<u32>, Fault> {
+        let step = unsafe { read_word(task.raw(), 0x10) };
+        if !matches!(step, 5 | 6) {
+            return Ok(None);
+        }
+        let balance = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+            .and_then(|bank| bank.miles())
+            .map_err(|_| Fault::NativeObject)?;
+        if step == 6 {
+            unsafe { write_word(task.raw(), 0x50, balance) };
+            return Ok(None);
+        }
+        Ok(Some(balance))
+    }
+    /// After state 5: still waiting for the answer to message 4, or the gift
+    /// was given and is added to the balance it found.
+    fn welcome_after(&mut self, task: Task, before: u32) -> Result<(), Fault> {
+        if unsafe { read_word(task.raw(), 0x10) } == 5 {
+            return Ok(());
+        }
+        let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+            .map_err(|_| Fault::NativeObject)?;
+        bank.set_miles(rewards::welcome(before));
+        self.rewards.welcome = Welcome::Credited;
         Ok(())
     }
     fn probe_claim(&mut self, task: Task) -> Result<ClaimProbe, Fault> {
@@ -1115,10 +1165,11 @@ fn freeze_accrual_date(task: Task) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Retains native pending-gift guards and balance redemption while skipping
-/// service requests, historical distributions, first-use gifts, and the native
-/// hourly accrual. The displayed balance already holds the session's local
-/// earnings; each completed redemption is checked against its game receipt.
+/// Retains native pending-gift guards, the welcome gift and balance
+/// redemption while skipping service requests, historical distributions and
+/// the native hourly accrual. The displayed balance already holds the
+/// session's local earnings; each completed redemption is checked against its
+/// game receipt.
 /// # Safety
 /// The verified task C/D update vtables supply their live initialized objects
 /// on the main thread after the selected game and Bank passed the load hook.
@@ -1138,22 +1189,35 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
     let setup = (|| -> Result<*mut u8, Fault> {
         let session = task.pointer(0x28)?;
         let step = unsafe { read_word(raw, 0x10) };
+        // The welcome's own states: 5 gives the gift, 4 and 6 lead from it to
+        // the choice of state 7.
+        let welcome = state.rewards.welcome;
+        let on_welcome = match step {
+            5 => welcome == Welcome::Pending,
+            4 | 6 => welcome == Welcome::Credited,
+            _ => false,
+        };
         // Only the verified local subgraphs are permitted. Task C protects
         // existing Gen6 pending gifts and full Gen7 gift storage.
         if state.baseline.is_none()
             || state.pending
             || (is_guard && step > 7)
-            || (!is_guard && !matches!(step, 0 | 7..=0xd | 0x16 | 0x1b..=0x22))
+            || (!is_guard && !(matches!(step, 0 | 7..=0xd | 0x16 | 0x1b..=0x22) || on_welcome))
         {
             return Err(Fault::RewardState);
         }
         if step == 0 || (!is_guard && step == 0x1b) {
             freeze_accrual_date(task)?;
+            // A Bank that has not had the welcome gift: the original's state
+            // 0 reads its flag and gives it (message 4, then state 5).
+            let welcome = step == 0 && welcome == Welcome::Pending;
             if !is_guard {
                 unsafe {
                     write_word(raw, 0x4c, 1); // disables remote re-query
                     write_word(raw, 0x50, 0); // no server-awarded points
-                    write_word(raw, 0x10, 0x1b);
+                    if !welcome {
+                        write_word(raw, 0x10, 0x1b);
+                    }
                 }
             }
             // Nothing to say: both tasks go to states of their own that end
@@ -1168,6 +1232,10 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             // way whatever there is to get, and claims nothing.
             let dialog = if cfg!(feature = "test-build") {
                 Dialog::Silent
+            } else if welcome {
+                // The guard's notices stand before the gift as before any
+                // redemption, whatever the balance.
+                Dialog::Offer
             } else {
                 entry.dialog(balance)
             };
@@ -1200,6 +1268,13 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             unsafe { transmute(0x002a_d1bcusize) };
         return unsafe { original(raw) };
     }
+    let before_gift = match state.welcome_before(task) {
+        Ok(balance) => balance,
+        Err(fault) => {
+            state.fault = fault;
+            return state.report_failure(task);
+        }
+    };
     // Redemption happens only inside native state 0xb, after its dialog fade.
     let probe = if unsafe { read_word(raw, 0x10) } == 0xb {
         match state.probe_claim(task) {
@@ -1219,6 +1294,12 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
     let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(0x002a_9750usize) };
     let result = unsafe { original(raw) };
     unsafe { write_word(session, 0x38, remote_count) };
+    if let Some(balance) = before_gift {
+        if let Err(fault) = state.welcome_after(task, balance) {
+            state.fault = fault;
+            return state.report_failure(task);
+        }
+    }
     if let Some(probe) = probe {
         let step = unsafe { read_word(raw, 0x10) };
         if let Err(fault) = state.check_claim(task, probe, step) {

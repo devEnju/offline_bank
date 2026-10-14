@@ -92,6 +92,19 @@ A new Bank starts counting with its first Save and Quit. `N` is the number of Po
 | A Bank last used with v0.3.1, with Miles in it: convert it with the migration, install this version, open, pick a game. | The balance it had, plus the Miles of the hours since its last Save and Quit. After a Save and Quit and a restart the same balance, not twice. |
 | Set the date back a day, open, Save and Quit. | Save works. No Miles, no dialog. After returning to the real date, none earned twice. |
 
+The welcome gift. A Bank that has not had it: a new one, or one last saved with an earlier version.
+
+| Do this | Expected |
+| --- | --- |
+| New Bank, select a Gen 6 game. | The original's messages: the welcome present, the 100 Miles, how to receive them, then the choices. Keep them in Bank, Save and Quit: 100 Miles. At the next opening no welcome. |
+| As above, then leave without saving and open again. | The welcome again, with 100 Miles, not 200. |
+| A Bank with 35 Miles, last saved with the previous version. | The welcome, then the choices quote 135 plus the Miles of the hours since its last save. BP: a tenth goes to the game, the rest stays. |
+| The same Bank, ordinary Miles redeemed today with the previous version. | The welcome comes anyway. |
+| Gen 7, choose Miles, then Save and Quit. | The original refuses the Miles. At the next opening no welcome; the Miles are offered as BP. |
+| A Gen 6 game with a gift still waiting in it, or a Gen 7 game with a full gift list. | The original's notice first. Go on to the boxes, Save and Quit: no welcome, Miles as usual. The welcome comes at the next opening of a game that can take a gift. |
+| A Bank downloaded from the official server. | No welcome. |
+| The console test build. | No welcome. |
+
 ### Pokédex
 
 | Do this | Expected |

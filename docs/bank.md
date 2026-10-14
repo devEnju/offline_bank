@@ -16,7 +16,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
 | HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
-| Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original redemption is kept. Server gifts and distributions are skipped. |
+| Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original welcome gift and redemption are kept. Server gifts and distributions are skipped. |
 
 Not included: Pokémon HOME, purchases, event gifts, and import or export tools for save editors.
 
@@ -44,6 +44,13 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - There is one balance for the whole Bank. Opening Y and then Ultra Sun does not earn twice.
 - The balance stops at the original limit of 65,535.
 
+**The welcome gift.** Once per Bank, the original's welcome gives 100 Miles: its three messages after the game is loaded, then the choices as for any redemption.
+
+- It comes after the first game selection of a Bank that has not had it. A Bank downloaded from the official server had it there.
+- It becomes permanent with the next Save and Quit, together with the Miles. If you leave without saving, it comes again at the next opening, again with 100, never twice.
+- A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, comes first with the original's notice. If you go on to the boxes, the welcome waits for the next opening of a game that can take a gift.
+- It comes also on a day you have already redeemed. The balance stops at 65,535 as always.
+
 **When it is saved.** Miles are added when the selected game has loaded and again at Save and Quit, and become permanent there, in the same step as your boxes. If you exit without saving, nothing changes and the same hours are credited next time. A new Bank starts earning with its first Save and Quit.
 
 **The clock.** The date of the last Save and Quit and the day of the last redemption only move forward.
@@ -58,7 +65,7 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - Battle Points: `Miles ÷ 10` go to the game and the remainder stays. Gen 6 and Gen 7.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, blocks a new claim.
 
-**When the dialog comes.** The original talks about Miles at every opening while the balance is above zero. The patch is quieter:
+**When the dialog comes.** The original talks about Miles at every opening while the balance is above zero. The patch is quieter (apart from the welcome gift, above):
 
 | Balance | Redeemed today | What appears |
 | --- | --- | --- |
