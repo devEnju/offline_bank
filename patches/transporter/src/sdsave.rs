@@ -10,8 +10,9 @@
 //! ```
 //!
 //! `<g>` is the game letter, `<l>` the language letter the original accepts,
-//! `<rr>` the cartridge revision. The four-letter game code the original
-//! reads from a cartridge is taken from the name.
+//! `<rr>` the revision of that game's cartridge in that language (`revision`):
+//! one name per game and language, no other. The four-letter game code the
+//! original reads from a cartridge is taken from the name.
 
 /// Exact size of a Gen 5 save.
 pub const SAVE_SIZE: u64 = 0x8_0000;
@@ -22,8 +23,6 @@ pub const PATH_CAPACITY: usize = 48;
 pub const MAX_SAVES: usize = GAMES.len();
 /// Language letters of the game code the original accepts (`00243568`).
 pub const LANGUAGES: [u8; 7] = *b"JOFIDSK";
-/// Cartridge revisions looked for. Only 00 and 01 are known to exist.
-pub const REVISIONS: u8 = 2;
 
 const FOLDER: &[u8] = b"/roms/nds/saves/POKEMON_";
 
@@ -61,6 +60,14 @@ pub const GAMES: [Game; 4] = [
     },
 ];
 
+/// The revision of the cartridge of `game` in `language`, as the cartridge
+/// dumps list them: 01 for the Japanese Black 2 and White 2, 00 for every
+/// other game and language.
+pub fn revision(game: u8, language: u8) -> u8 {
+    let sequel = GAMES[game as usize % GAMES.len()].title.len() == 2;
+    u8::from(sequel && language == b'J')
+}
+
 /// True for the game codes the original treats as a Gen 5 cartridge.
 pub fn is_gen5_code(code: [u8; 4]) -> bool {
     code[0] == b'I'
@@ -74,13 +81,11 @@ pub struct Save {
     /// Index into `GAMES`.
     pub game: u8,
     pub language: u8,
-    pub revision: u8,
 }
 impl Save {
     pub const NONE: Self = Self {
         game: 0,
         language: 0,
-        revision: 0,
     };
     fn info(self) -> Game {
         GAMES[self.game as usize % GAMES.len()]
@@ -106,7 +111,7 @@ impl Save {
         put(b"_IR");
         put(&[self.info().letter, self.language]);
         put(b"01_");
-        put(&[b'0' + self.revision / 10 % 10, b'0' + self.revision % 10]);
+        put(&[b'0', b'0' + revision(self.game, self.language)]);
         put(b".sav");
         if backup {
             put(b".bak");
@@ -188,8 +193,8 @@ impl Saves {
     /// A new session. `cartridge` is the game code the cartridge slot
     /// reported, if any. `language` is the letter of the language whose games
     /// are listed. `exists` answers whether a path names a file of exactly
-    /// `SAVE_SIZE` bytes that opens for reading and writing. For each game
-    /// the highest revision wins.
+    /// `SAVE_SIZE` bytes that opens for reading and writing. Each game has
+    /// one name in a language (`Save::path`).
     ///
     /// The first item is presented in the cartridge's place: the cartridge
     /// itself if its game comes first, otherwise a save.
@@ -212,22 +217,13 @@ impl Saves {
                 self.item_count += 1;
                 continue;
             }
-            for revision in (0..REVISIONS).rev() {
-                let save = Save {
-                    game,
-                    language,
-                    revision,
-                };
-                let length = save.path(false, &mut path);
-                if exists(&path[..length]) {
-                    if (self.count as usize) < MAX_SAVES {
-                        self.list[self.count as usize] = save;
-                        self.items[self.item_count as usize] = self.count;
-                        self.item_count += 1;
-                        self.count += 1;
-                    }
-                    break;
-                }
+            let save = Save { game, language };
+            let length = save.path(false, &mut path);
+            if exists(&path[..length]) && (self.count as usize) < MAX_SAVES {
+                self.list[self.count as usize] = save;
+                self.items[self.item_count as usize] = self.count;
+                self.item_count += 1;
+                self.count += 1;
             }
         }
         if self.item_count != 0 {
@@ -313,12 +309,8 @@ mod tests {
         assert_eq!(out[length - 1], 0);
         String::from_utf8(out[..length - 1].to_vec()).unwrap()
     }
-    fn save(game: u8, language: u8, revision: u8) -> Save {
-        Save {
-            game,
-            language,
-            revision,
-        }
+    fn save(game: u8, language: u8) -> Save {
+        Save { game, language }
     }
     /// German is the listed language unless a test says otherwise.
     fn scan(present: &[&str]) -> Saves {
@@ -337,31 +329,46 @@ mod tests {
     }
 
     #[test]
-    fn names_match_the_files_godmode9_and_twilight_menu_produce() {
-        // The three names confirmed on a console, and Black by analogy.
+    fn every_game_and_language_has_its_one_name() {
+        // German White, White 2 and Black 2 are the names confirmed on a
+        // console. Revision 01 only for the Japanese Black 2 and White 2.
+        let mut names = Vec::new();
+        for language in LANGUAGES {
+            for game in 0..GAMES.len() as u8 {
+                names.push(text(save(game, language), false));
+            }
+        }
         assert_eq!(
-            text(save(1, b'D', 0), false),
-            "/roms/nds/saves/POKEMON_W_IRAD01_00.sav"
+            names[..8],
+            [
+                "/roms/nds/saves/POKEMON_B_IRBJ01_00.sav",
+                "/roms/nds/saves/POKEMON_W_IRAJ01_00.sav",
+                "/roms/nds/saves/POKEMON_B2_IREJ01_01.sav",
+                "/roms/nds/saves/POKEMON_W2_IRDJ01_01.sav",
+                "/roms/nds/saves/POKEMON_B_IRBO01_00.sav",
+                "/roms/nds/saves/POKEMON_W_IRAO01_00.sav",
+                "/roms/nds/saves/POKEMON_B2_IREO01_00.sav",
+                "/roms/nds/saves/POKEMON_W2_IRDO01_00.sav",
+            ]
         );
+        assert_eq!(names.len(), 28);
         assert_eq!(
-            text(save(3, b'D', 0), false),
-            "/roms/nds/saves/POKEMON_W2_IRDD01_00.sav"
+            names
+                .iter()
+                .filter(|name| name.ends_with("_01.sav"))
+                .count(),
+            2
         );
+        assert!(names.contains(&String::from("/roms/nds/saves/POKEMON_W_IRAD01_00.sav")));
+        assert!(names.contains(&String::from("/roms/nds/saves/POKEMON_W2_IRDD01_00.sav")));
+        assert!(names.contains(&String::from("/roms/nds/saves/POKEMON_B2_IRED01_00.sav")));
         assert_eq!(
-            text(save(2, b'D', 0), false),
-            "/roms/nds/saves/POKEMON_B2_IRED01_00.sav"
-        );
-        assert_eq!(
-            text(save(0, b'O', 1), false),
-            "/roms/nds/saves/POKEMON_B_IRBO01_01.sav"
-        );
-        assert_eq!(
-            text(save(2, b'J', 1), true),
+            text(save(2, b'J'), true),
             "/roms/nds/saves/POKEMON_B2_IREJ01_01.sav.bak"
         );
         // The longest path fits, terminator included.
         let mut out = [0; PATH_CAPACITY];
-        assert!(save(2, b'J', 1).path(true, &mut out) <= PATH_CAPACITY);
+        assert!(save(2, b'J').path(true, &mut out) <= PATH_CAPACITY);
     }
 
     #[test]
@@ -374,7 +381,7 @@ mod tests {
             (2, *b"IRED", 3),
             (3, *b"IRDD", 4),
         ] {
-            let save = save(game, b'D', 0);
+            let save = save(game, b'D');
             assert_eq!(save.game_code().to_le_bytes(), code);
             assert_eq!(save.kind(), kind);
             assert!(is_gen5_code(code));
@@ -385,13 +392,15 @@ mod tests {
     }
 
     #[test]
-    fn scan_finds_only_exact_names_and_prefers_the_higher_revision() {
+    fn scan_finds_only_the_exact_name_of_each_game() {
         let present = [
             "/roms/nds/saves/POKEMON_W_IRAD01_00.sav",
             "/roms/nds/saves/POKEMON_B2_IRED01_00.sav",
-            "/roms/nds/saves/POKEMON_B2_IRED01_01.sav",
             "/roms/nds/saves/POKEMON_B2_IREO01_00.sav",
-            // Not accepted: other game, lower case, renamed, other folder.
+            // Not accepted: the other revision, other game, lower case,
+            // renamed, other folder.
+            "/roms/nds/saves/POKEMON_B_IRBD01_01.sav",
+            "/roms/nds/saves/POKEMON_B2_IREJ01_00.sav",
             "/roms/nds/saves/POKEMON_HG_IPKD01_00.sav",
             "/roms/nds/saves/pokemon_w2_irdd01_00.sav",
             "/roms/nds/saves/White 2.sav",
@@ -399,13 +408,17 @@ mod tests {
         ];
         let found = scan(&present);
         let list: Vec<Save> = found.list[..found.count()].to_vec();
-        // Game order; Black 2 German at revision 01; the English one is not
-        // in the listed language.
-        assert_eq!(list, vec![save(1, b'D', 0), save(2, b'D', 1)]);
-        assert_eq!(found.current(), Some(save(1, b'D', 0)));
+        // Game order; the English Black 2 is not in the listed language.
+        assert_eq!(list, vec![save(1, b'D'), save(2, b'D')]);
+        assert_eq!(found.current(), Some(save(1, b'D')));
         // With English listed, only that one.
         let found = scan_in(None, b'O', &present);
-        assert_eq!(found.list[..found.count()], [save(2, b'O', 0)]);
+        assert_eq!(found.list[..found.count()], [save(2, b'O')]);
+        // The Japanese Black 2 is found only under its revision 01.
+        assert_eq!(scan_in(None, b'J', &present).count(), 0);
+        let japanese = ["/roms/nds/saves/POKEMON_B2_IREJ01_01.sav"];
+        let found = scan_in(None, b'J', &japanese);
+        assert_eq!(found.list[..found.count()], [save(2, b'J')]);
         // A language without saves offers nothing.
         assert_eq!(scan_in(None, b'K', &present).count(), 0);
     }
@@ -460,10 +473,10 @@ mod tests {
 
     #[test]
     fn the_order_is_always_black_white_black2_white2_whatever_the_source() {
-        let black = (1, Some(save(0, b'D', 0)));
-        let white = (2, Some(save(1, b'D', 0)));
-        let black2 = (3, Some(save(2, b'D', 0)));
-        let white2 = (4, Some(save(3, b'D', 0)));
+        let black = (1, Some(save(0, b'D')));
+        let white = (2, Some(save(1, b'D')));
+        let black2 = (3, Some(save(2, b'D')));
+        let white2 = (4, Some(save(3, b'D')));
         // No cartridge.
         assert_eq!(listed(&mut scan(&[W2, B])), vec![black, white2]);
         assert_eq!(
@@ -495,22 +508,22 @@ mod tests {
     fn only_games_in_the_listed_language_are_offered() {
         let present = [B, W, W_ENGLISH, W2];
         let german = vec![
-            (1, Some(save(0, b'D', 0))),
-            (2, Some(save(1, b'D', 0))),
-            (4, Some(save(3, b'D', 0))),
+            (1, Some(save(0, b'D'))),
+            (2, Some(save(1, b'D'))),
+            (4, Some(save(3, b'D'))),
         ];
         assert_eq!(listed(&mut scan(&present)), german);
         assert_eq!(
             listed(&mut scan_in(None, b'O', &present)),
-            vec![(2, Some(save(1, b'O', 0)))]
+            vec![(2, Some(save(1, b'O')))]
         );
         // A German White cartridge replaces the German White save.
         assert_eq!(
             listed(&mut scan_with(Some(*b"IRAD"), &present)),
             vec![
-                (1, Some(save(0, b'D', 0))),
+                (1, Some(save(0, b'D'))),
                 (2, None),
-                (4, Some(save(3, b'D', 0)))
+                (4, Some(save(3, b'D')))
             ]
         );
         // A French White cartridge is not offered while German is listed and
@@ -546,23 +559,23 @@ mod tests {
         // Black on SD, a Black 2 cartridge whose save is damaged, White 2 on SD.
         let mut saves = scan_with(Some(*b"IRED"), &[B, B2, W2]);
         assert_eq!(saves.count(), 2);
-        assert_eq!(saves.current(), Some(save(0, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(0, b'D')));
         // Black added at position 0; next is the cartridge.
         assert_eq!(saves.next_for_list(1), Some(Item::Cartridge { kind: 3 }));
         assert_eq!(saves.current(), None);
         // The cartridge added no entry (count stays 1); next is White 2.
-        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(3, b'D', 0))));
+        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(3, b'D'))));
         assert_eq!(saves.next_for_list(2), None);
         saves.select(1);
-        assert_eq!(saves.current(), Some(save(3, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(3, b'D')));
         saves.select(0);
-        assert_eq!(saves.current(), Some(save(0, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(0, b'D')));
         // The first item rejected: a cartridge in front, then one save.
         let mut saves = scan_with(Some(*b"IRBD"), &[W]);
-        assert_eq!(saves.next_for_list(0), Some(Item::Save(save(1, b'D', 0))));
+        assert_eq!(saves.next_for_list(0), Some(Item::Save(save(1, b'D'))));
         assert_eq!(saves.next_for_list(1), None);
         saves.select(0);
-        assert_eq!(saves.current(), Some(save(1, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(1, b'D')));
     }
 
     #[test]
@@ -574,7 +587,7 @@ mod tests {
             true
         });
         assert_eq!(saves.count(), MAX_SAVES);
-        // One probe per game when the highest revision exists.
+        // One probe per game, found or not.
         assert_eq!(probes, GAMES.len());
         let mut probes = 0;
         let mut empty = Saves::EMPTY;
@@ -582,21 +595,21 @@ mod tests {
             probes += 1;
             false
         });
-        assert_eq!(probes, GAMES.len() * REVISIONS as usize);
+        assert_eq!(probes, GAMES.len());
         // A listed cartridge's own game is not probed.
         let mut probes = 0;
         empty.scan(Some(*b"IRBD"), b'D', |_| {
             probes += 1;
             false
         });
-        assert_eq!(probes, (GAMES.len() - 1) * REVISIONS as usize);
+        assert_eq!(probes, GAMES.len() - 1);
         // A cartridge in another language takes no game's place.
         let mut probes = 0;
         empty.scan(Some(*b"IRBO"), b'D', |_| {
             probes += 1;
             false
         });
-        assert_eq!(probes, GAMES.len() * REVISIONS as usize);
+        assert_eq!(probes, GAMES.len());
     }
 
     #[test]
@@ -607,20 +620,20 @@ mod tests {
             "/roms/nds/saves/POKEMON_B2_IRED01_00.sav",
         ]);
         // Save 0 is read by the original first; its entry lands at position 0.
-        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(1, b'D', 0))));
+        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(1, b'D'))));
         // Save 1 is damaged: the original adds no entry (count stays 1).
-        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(2, b'D', 0))));
+        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(2, b'D'))));
         // Save 2 is added at position 1; nothing is left.
         assert_eq!(saves.next_for_list(2), None);
         assert_eq!(saves.entry_count, 2);
         saves.select(1);
-        assert_eq!(saves.current(), Some(save(2, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(2, b'D')));
         saves.select(0);
-        assert_eq!(saves.current(), Some(save(0, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(0, b'D')));
         // A position that is not a DS entry (a Virtual Console title) changes
         // nothing.
         saves.select(5);
-        assert_eq!(saves.current(), Some(save(0, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(0, b'D')));
     }
 
     #[test]
@@ -630,10 +643,10 @@ mod tests {
             "/roms/nds/saves/POKEMON_W_IRAD01_00.sav",
         ]);
         // Save 0 damaged: no entry. Save 1 then lands at position 0.
-        assert_eq!(saves.next_for_list(0), Some(Item::Save(save(1, b'D', 0))));
+        assert_eq!(saves.next_for_list(0), Some(Item::Save(save(1, b'D'))));
         assert_eq!(saves.next_for_list(1), None);
         saves.select(0);
-        assert_eq!(saves.current(), Some(save(1, b'D', 0)));
+        assert_eq!(saves.current(), Some(save(1, b'D')));
     }
 
     #[test]
@@ -646,7 +659,7 @@ mod tests {
         assert!(!saves.take_backup_duty());
         saves.backup_failed();
         assert!(saves.take_backup_duty());
-        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(1, b'D', 0))));
+        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(1, b'D'))));
         assert!(saves.take_backup_duty());
         assert!(!saves.take_backup_duty());
         // A new scan starts a new session.

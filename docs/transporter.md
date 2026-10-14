@@ -61,17 +61,20 @@ The game list shows the games of **one language** only: the cartridge, the saves
 
 Transporter looks for saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps on the SD card and offers each one as its own entry in the game list, beside the cartridge and the Virtual Console titles. Only saves in the [chosen language](#choosing-the-language-of-the-games) are looked for. **The cartridge is preferred for its own game:** with, say, German chosen and a German White cartridge inserted, the White entry is the cartridge and a German White save on the SD card is not offered; saves of the other three games still are. Bank does the same with a game that is both inserted and installed: it uses the cartridge. A cartridge in another language than the chosen one is not listed.
 
-Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's default folder:
+Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's default folder `SD:/roms/nds/saves/`. Each game has exactly one name per language:
 
-```text
-SD:/roms/nds/saves/POKEMON_B_IRB?01_??.sav     Black
-SD:/roms/nds/saves/POKEMON_W_IRA?01_??.sav     White
-SD:/roms/nds/saves/POKEMON_B2_IRE?01_??.sav    Black 2
-SD:/roms/nds/saves/POKEMON_W2_IRD?01_??.sav    White 2
-```
+| Language | Black | White | Black 2 | White 2 |
+| --- | --- | --- | --- | --- |
+| Japanese | `POKEMON_B_IRBJ01_00.sav` | `POKEMON_W_IRAJ01_00.sav` | `POKEMON_B2_IREJ01_01.sav` | `POKEMON_W2_IRDJ01_01.sav` |
+| English | `POKEMON_B_IRBO01_00.sav` | `POKEMON_W_IRAO01_00.sav` | `POKEMON_B2_IREO01_00.sav` | `POKEMON_W2_IRDO01_00.sav` |
+| French | `POKEMON_B_IRBF01_00.sav` | `POKEMON_W_IRAF01_00.sav` | `POKEMON_B2_IREF01_00.sav` | `POKEMON_W2_IRDF01_00.sav` |
+| Italian | `POKEMON_B_IRBI01_00.sav` | `POKEMON_W_IRAI01_00.sav` | `POKEMON_B2_IREI01_00.sav` | `POKEMON_W2_IRDI01_00.sav` |
+| German | `POKEMON_B_IRBD01_00.sav` | `POKEMON_W_IRAD01_00.sav` | `POKEMON_B2_IRED01_00.sav` | `POKEMON_W2_IRDD01_00.sav` |
+| Spanish | `POKEMON_B_IRBS01_00.sav` | `POKEMON_W_IRAS01_00.sav` | `POKEMON_B2_IRES01_00.sav` | `POKEMON_W2_IRDS01_00.sav` |
+| Korean | `POKEMON_B_IRBK01_00.sav` | `POKEMON_W_IRAK01_00.sav` | `POKEMON_B2_IREK01_00.sav` | `POKEMON_W2_IRDK01_00.sav` |
 
-- The first `?` is the language letter of the cartridge: `J` Japanese, `O` English, `F` French, `I` Italian, `D` German, `S` Spanish, `K` Korean. For example `POKEMON_W2_IRDD01_00.sav` is a German White 2 and is listed while German is chosen.
-- `??` is the cartridge revision, `00` or `01`. If both exist for the same game and language, only `01` is used.
+- The last two digits are the cartridge's revision: `01` for the Japanese Black 2 and White 2, `00` for every other one. A save under the other number is not listed; rename it to the name in the table.
+- A save is listed only while its language is chosen: `POKEMON_W2_IRDD01_00.sav` is a German White 2.
 - Any other name, folder or spelling is ignored. A file that is not exactly 524,288 bytes is ignored.
 - At most four saves are offered, one per game, and the whole list holds 40 games, as in the original.
 
@@ -126,5 +129,5 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 - **A duplicate after a power cut.** The delivery is written before the Pokémon are removed from the game. If the power fails exactly between the two, they are in Bank and still in the game. The original prevented this with the server's help; the patch does not.
 - **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them. Which of them it is shows when Bank is opened: Bank solves it or says it with its own numbers.
 - **Access to Bank's data and to the SD card.** Transporter's own header grants neither. Luma3DS gives every application full filesystem access, which is what makes both work; this needs Luma3DS v10.0 or later.
-- **Saves on the SD card.** Only revisions `00` and `01` are looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
+- **Saves on the SD card.** Only the one name per game and language in the table [above](#blackwhite-saves-on-the-sd-card) is looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
 - **Language of the screens.** It can no longer be changed inside Transporter; it is the console's.
