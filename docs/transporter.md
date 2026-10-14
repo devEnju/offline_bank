@@ -75,7 +75,7 @@ Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's 
 
 - The last two digits are the cartridge's revision: `01` for the Japanese Black 2 and White 2, `00` for every other one. A save under the other number is not listed; rename it to the name in the table.
 - A save is listed only while its language is chosen: `POKEMON_W2_IRDD01_00.sav` is a German White 2.
-- Any other name, folder or spelling is ignored. A file that is not exactly 524,288 bytes is ignored.
+- Any other name, folder or spelling is ignored. A file that is not exactly 524,288 bytes is ignored. A save of another game or language than its name says is ignored: a White save renamed to the Black name, or an English save renamed to the German name.
 - At most four saves are offered, one per game, and the whole list holds 40 games, as in the original.
 
 What happens to the file:
@@ -117,7 +117,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later and that Bank and Transporter are from the same release, and otherwise please report it. |
 | The original failure message after confirming a transfer. | The delivery could not be written. The source game was not changed. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |
-| A save on the SD card is not listed. | Its language is not the chosen one; a cartridge of the same game in that language is inserted; the name or folder differs from the pattern above; or the file is not 524,288 bytes. |
+| A save on the SD card is not listed. | Its language is not the chosen one; a cartridge of the same game in that language is inserted; the name or folder differs from the pattern above; the save is of another game or language than its name says; or the file is not 524,288 bytes. |
 | The language screen does not change the language of the screens. | Intended: it chooses the games. The screens follow the console's language. |
 | The last entry of the language list shows Chinese text instead of Back. | The screen's layout is not the one the patch knows, so it was left as it is. Transporter is not version 1.5, or its files are modified. The entry still works as Back. |
 | A save on the SD card is reported as damaged. | The original's own check failed on the file's contents, as it would on a cartridge. |

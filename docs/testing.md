@@ -162,6 +162,7 @@ The saves are in the chosen language.
 | A Gen 5 cartridge in the chosen language, saves on the SD card. | The games are listed in the order Black, White, Black 2, White 2; the cartridge stands at its game's place, the saves at theirs. A save of the cartridge's own game is not offered. Picking the cartridge reads and changes the cartridge; picking a save reads and changes that file. |
 | A Gen 5 cartridge in another language than the chosen one. | The cartridge is not listed; the saves in the chosen language are. After choosing the cartridge's language, the cartridge is listed. |
 | A save with another name, or a file of another size, in the folder. | It is not offered. |
+| An accepted White save copied to the Black name of its language, and a German save copied to the English name of its game (English chosen). | Neither copy is offered. The saves under their own names still are. |
 | An accepted save renamed to the other revision (`_01` instead of `_00`, or for Japanese Black 2 and White 2 `_00` instead of `_01`). | It is not offered; under its name from the table in the guide it is. |
 
 ## An interrupted Save and Quit
