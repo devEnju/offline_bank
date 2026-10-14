@@ -2,12 +2,14 @@
 //!
 //! The router hook leads from the game scan to task 9, "open Bank", and from
 //! there back to the start screen. The task 9 hook shows the loading
-//! screen, has the worker run the conversion, and shows its result as two
-//! numbers under the original's line about the HOME Menu, which stays.
-//! Starting Bank again runs it again, which is safe.
+//! screen and has the worker run the conversion. A conversion ends with the
+//! original's message for a successful save and the start screen; any other
+//! result is shown as two numbers under the original's line about the HOME
+//! Menu, which stays. Starting Bank again runs it again, which is safe, and
+//! finds a converted Bank.
 
 use crate::{
-    migrate::{self, Card},
+    migrate::{self, Card, Done},
     navigation,
 };
 use bank_common::{
@@ -98,6 +100,8 @@ struct Runtime {
     job: Option<JobId>,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
+    /// The original's message for a successful save is up.
+    saved: bool,
     notice: Notice,
 }
 struct State(UnsafeCell<Runtime>);
@@ -110,6 +114,7 @@ static STATE: State = State(UnsafeCell::new(Runtime {
     owner: 0,
     job: None,
     numbers: None,
+    saved: false,
     notice: Notice::new(PACKAGE),
 }));
 struct Guard;
@@ -244,12 +249,41 @@ pub unsafe extern "aapcs" fn bank_migrate_open(raw: *mut u8) -> u32 {
             Ok(Some(numbers)) | Err(numbers) => state.numbers = Some(numbers),
         }
     }
-    // The numbers are the result, so they come at once, under the
-    // original's line about the HOME Menu. That screen does not end:
-    // nothing can go on in this patch, whatever the result. Bank is closed
-    // from the HOME Menu, and the next start converts again, which finds
-    // the work done and says so.
     let [first, second] = state.numbers.unwrap_or([NATIVE_OBJECT, 0]);
+    if [first, second] == [migrate::DONE, Done::Converted as u32] {
+        // Converted: the original's ending of a successful save, and after
+        // A the start screen, which the router answers task 9 with. The
+        // next START converts again and finds the work done.
+        // A message that cannot be shown leaves the numbers instead.
+        let panel = task.ui().map_err(|_| ());
+        if !state.saved {
+            task.end_busy();
+            storage_activity(false);
+            state.saved = panel
+                .and_then(|panel| unsafe { ui::saved(panel) }.map_err(|_| ()))
+                .is_ok();
+            if !state.saved {
+                state.numbers = Some([NATIVE_OBJECT, 0]);
+            }
+            return 0;
+        }
+        match panel.and_then(|panel| unsafe { ui::acknowledged(panel) }.map_err(|_| ())) {
+            Ok(false) => return 0,
+            Ok(true) => {
+                state.saved = false;
+                state.numbers = None;
+                return task.finish(true);
+            }
+            Err(()) => {
+                state.saved = false;
+                state.numbers = Some([NATIVE_OBJECT, 0]);
+                return 0;
+            }
+        }
+    }
+    // Any other result comes at once, as numbers under the original's line
+    // about the HOME Menu. That screen does not end: nothing can go on in
+    // this patch. Bank is closed from the HOME Menu.
     state.notice.done(task, first, second)
 }
 

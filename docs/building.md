@@ -91,7 +91,7 @@ This builds it into `build/migration/` and verifies it (`Verify-BankPatch.ps1 -P
 
 It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
-This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always two numbers under the original's line about the HOME Menu, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
+This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. A conversion ends with the original's message for a successful save and the start screen; every other result is two numbers under the original's line about the HOME Menu. The runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
 
 ### The download from the official server
 
@@ -105,11 +105,10 @@ This builds it into `build/download/` and verifies it (`Verify-BankPatch.ps1 -Pa
 
 **It has not been run against the official server.** It was written from the original's code alone; the checks made there are listed in [internals.md](internals.md#the-download-patch). Its guide in the release says so.
 
-It ends, like the migration, on two numbers under the original's line about the HOME Menu:
+Like the migration, it ends a download with the original's message for a successful save and the start screen; START then shows `0000D0AD 00000002`. Every other result is two numbers under the original's line about the HOME Menu:
 
 | Numbers | Meaning |
 | --- | --- |
-| `0000D0AD 00000001` | downloaded and written |
 | `0000D0AD 00000002` | an offline Bank was on the card already; nothing was contacted or changed |
 | `00000BAD 00000001` | the server holds no Bank for this console; nothing was created or changed |
 | any other pair | the files could not be read or written; the numbers are the offline Bank's ([bank.md](bank.md#troubleshooting)) |

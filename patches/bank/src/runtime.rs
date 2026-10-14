@@ -76,6 +76,8 @@ enum Step {
     SavePrepare,
     SaveWrite,
     SaveFinalize,
+    /// The save is done and the original's message for it is up.
+    Saved,
 }
 struct Runtime {
     worker: Option<BankWorker>,
@@ -871,6 +873,13 @@ impl Runtime {
         if self.owner != task.raw() as usize {
             return Err(Fault::NativeObject);
         }
+        if self.step == Step::Saved {
+            return match unsafe { bank_common::ui::acknowledged(task.ui()?) } {
+                Ok(false) => Ok(false),
+                Ok(true) => Ok(self.complete(task)),
+                Err(_) => Err(Fault::NativeObject),
+            };
+        }
         if self.step == Step::SaveWrite {
             let game = self.game.as_mut().ok_or(Fault::GameWrite)?;
             match game.poll().map_err(|_| Fault::GameWrite)? {
@@ -945,7 +954,13 @@ impl Runtime {
                 self.baseline = Some(evidence);
                 self.pending = false;
                 self.begin_rewards(task)?;
-                Ok(self.complete(task))
+                // The original's ending of a successful save: its sound and
+                // message, which waits. Nothing is read or written now.
+                self.step = Step::Saved;
+                task.end_busy();
+                storage_activity(false);
+                unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
+                Ok(false)
             }
             _ => Err(Fault::JournalRecovery),
         }

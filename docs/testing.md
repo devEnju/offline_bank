@@ -60,7 +60,7 @@ With the normal Bank package. What each feature is meant to do is in [bank.md](b
 | Back on game selection. | Start screen. |
 | Select a game, Back on its confirmation. | Game selection again. |
 | Select a game, cancel at the reward prompt; again, leave the boxes without saving. | Start screen. Nothing saved. |
-| Move Pokémon both ways, rename a box, Save and Quit, restart. | Everything persisted in Bank and in the game. No missing or duplicate Pokémon. |
+| Move Pokémon both ways, rename a box, Save and Quit, restart. | After the loading screen the success sound and "Success! Changes saved.", as on the unpatched Bank; A leads to the start screen. Everything persisted in Bank and in the game. No missing or duplicate Pokémon. |
 | Press HOME and close the lid right after leaving the start screen, while the Bank loads after selecting a game, and during Save and Quit. | Nothing happens while a loading screen is shown. On the start screen, game selection, in the boxes, and on an error screen both work as usual. |
 | No usable game present. | The original "no game" notice once, then the start screen. |
 | The same error with the console set to Japanese, Korean or Chinese. | The second and third line read the same as in English: the letters, digits, `.` and `-` are all there. |
@@ -269,18 +269,17 @@ Start from a console whose Bank was last used with the old version, and from a b
 | --- | --- | --- | --- |
 | 16 | new Bank | start Bank, before converting | the error message, then the line about the HOME Menu with `00000003` and the size of the file it refused as second number; nothing changed |
 | 17 | new Transporter | start Transporter and press START, before converting | the "did not complete correctly… open Pokémon Bank" message right after START, then the title screen; no game list appears |
-| 18 | migration | start Bank, press START | a loading screen, then the line about the HOME Menu with the version and "-migration" on its second line and `0000600D 00000001` on its third, and nothing before it. Close Bank from the HOME Menu |
-| 19 | migration | start Bank again, press START | the same line with `0000600D 00000002` |
+| 18 | migration | start Bank, press START | a loading screen, then the success sound and "Success! Changes saved."; A leads to the start screen |
+| 19 | migration | press START again | the line about the HOME Menu with the version and "-migration" on its second line and `0000600D 00000002` on its third, and nothing before it. Close Bank from the HOME Menu |
 | 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
 | 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
 Runs 16 and 17 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
 
-A migration patch never opens the Bank. Its result is always two numbers, under the line about the HOME Menu:
+A migration patch never opens the Bank. A conversion ends with the success message and the start screen; every other result is two numbers, under the line about the HOME Menu:
 
 | Numbers | Meaning |
 | --- | --- |
-| `0000600D 00000001` | converted |
 | `0000600D 00000002` | already converted; nothing changed |
 | `0000600D 00000000` | no Bank found |
 | `00000BAD 00000007` | the old Bank has a Save and Quit in progress; the old version has to finish it |
@@ -306,13 +305,13 @@ Package `build/download/`. None of these runs has been made yet. It needs the li
 | --- | --- | --- |
 | D1 | Start screen | "Ver. 1.5-download" |
 | D2 | START, with an offline Bank on the card | after a loading screen the line about the HOME Menu, the version with "-download" on its second line and `0000D0AD 00000002` on its third; nothing is contacted |
-| D3 | Move the offline Bank's files off the card (keep them). With a game on the console: START | the original connects and loads; no main menu, no game selection, no reward dialog, no boxes; then `0000D0AD 00000001` |
-| D4 | START again | `0000D0AD 00000002` |
+| D3 | Move the offline Bank's files off the card (keep them). With a game on the console: START | the original connects and loads; no main menu, no game selection, no reward dialog, no boxes; then the success sound and "Success! Changes saved.", and after A the start screen |
+| D4 | START again | the line about the HOME Menu with `0000D0AD 00000002` |
 | D5 | Install the offline Bank and start it | the boxes, the transport box and the Poké Miles as they are on the server |
 | D6 | Install the original Bank without a patch and use it online | it opens as always: nothing is locked, and the boxes on the server are unchanged |
 | D7 | The download again, wireless off, no Bank on the card: START | the original's message about the connection, then its start screen; nothing written |
 | D8 | After D3, compare the games' saves with the backup | unchanged, byte for byte |
-| D9 | On a console without any game the original can use (no cartridge, none installed), no Bank on the card: START | no question about Pokémon HOME; the original connects and loads as in D3; then `0000D0AD 00000001` |
+| D9 | On a console without any game the original can use (no cartridge, none installed), no Bank on the card: START | no question about Pokémon HOME; the original connects and loads as in D3; then the success message as there |
 
 D6 shows that the session was closed on the server; it is the run that matters most. The load used here does not write Bank's own save, so D6 also shows that the original copes with that. If the original says the server is locked, wait as it asks and note it.
 

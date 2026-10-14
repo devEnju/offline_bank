@@ -187,6 +187,32 @@ pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
     Ok(())
 }
 
+/// Native message 9: "Success! Changes saved."
+const SAVED_NOTICE: u32 = 9;
+
+/// How the original's Save and Quit ends when it succeeded (002b21c4..
+/// 002b2224): the success sound 0x50012 through 001e9bc0, the end of the
+/// loading panel, and message 9, which waits. Its failure (002b2238) plays
+/// no sound. 001e9bc0(id, fade, tag, mode) starts a sound once, on the first
+/// free of the eleven sound players, without a fade-in, with the tag -1
+/// that lets any stop call (001d6200, 002b6084) end it; nothing is left to
+/// end when it is over. Poll `acknowledged` afterwards.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with the loading panel up and
+/// no dialog active, on the main task thread.
+pub unsafe fn saved(ui: *mut u8) -> Result<(), Error> {
+    pointer(ui as u32)?;
+    pointer(unsafe { word(ui, 0x5c) })?;
+    pointer(unsafe { word(ui, 0x78) })?;
+    pointer(unsafe { word(ui, 0x94) })?;
+    unsafe {
+        let play: unsafe extern "aapcs" fn(u32, u32, u32, u32) = transmute(0x001e_9bc0usize);
+        play(0x0005_0012, 0, u32::MAX, 0);
+        stop_loading(ui)?;
+        display(ui, SAVED_NOTICE, true)
+    }
+}
+
 /// What native task 9 does on entering its welcome for a new Bank
 /// (002ae634): end loading, show the dialog scene through 001d6194, and
 /// 002b6114(0x10004, 0x3c, 0), the call before each of that character's
