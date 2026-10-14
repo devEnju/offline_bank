@@ -153,8 +153,11 @@ pub const FIRST_START_EDITS: [(u32, u32, u32); 8] = [
     // mov r5, r7, zero), so the language screen, task 1, is never entered.
     (0x002a4940, 0xe1a05007, 0xe3a05001),
     // Task 3 without a valid save (was: ldr r5, [r4, #0x40], the start of
-    // showing the notice): b 002ac8a8, where accepting it continues. The
-    // save is created and written as after "accept".
+    // showing the notice): b 002ac8c8, where accepting it selects state
+    // 0x14. The save is created and written as after "accept". Accepting
+    // first clears the notice's listener and puts the loading panel back up
+    // (002ac8a8..002ac8c4); without the notice the scan's panel is still up
+    // with its message, and the listener is as on a start with a valid save.
     (0x002ac5b0, 0xe5945040, FIRST_START_ACCEPT_BRANCH),
     // Task 3 stores a language in a new save only if one was picked
     // (002ac6ec, beq 002ac710). That is left as it is: the pick is written
@@ -174,8 +177,8 @@ pub const FIRST_START_EDITS: [(u32, u32, u32); 8] = [
     (0x002ac640, 0xe1a02000, 0xe3a02000),
     (0x002ac648, 0xe6ff1075, 0xe3a01000),
 ];
-/// `b 002ac8a8` at 002ac5b0.
-pub const FIRST_START_ACCEPT_BRANCH: u32 = 0xea0000bc;
+/// `b 002ac8c8` at 002ac5b0.
+pub const FIRST_START_ACCEPT_BRANCH: u32 = 0xea0000c4;
 
 pub(crate) fn first_start_edits() -> impl Iterator<Item = CheckedEdit> {
     FIRST_START_EDITS
@@ -290,7 +293,7 @@ mod tests {
         assert!(message_hook(0x80000000).is_err());
         assert_eq!(
             FIRST_START_ACCEPT_BRANCH.to_le_bytes(),
-            encode_arm_branch(0x002ac5b0, 0x002ac8a8, false).unwrap()
+            encode_arm_branch(0x002ac5b0, 0x002ac8c8, false).unwrap()
         );
         assert_eq!(first_start_edits().count(), 8);
     }

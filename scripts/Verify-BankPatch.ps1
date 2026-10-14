@@ -169,7 +169,7 @@ try {
     # sleep for its whole session itself.
     if ($Patch -ne 'download') {
         $branches+=@(
-            @(0x2ac5b0,0xe5945040L,0x2ac8a8,$false),
+            @(0x2ac5b0,0xe5945040L,0x2ac8c8,$false),
             @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
         )
     }

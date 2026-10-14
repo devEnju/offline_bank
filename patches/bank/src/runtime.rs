@@ -733,10 +733,15 @@ impl Runtime {
             }
             local_date(task)?;
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
-            // The original shows this message for both: opening an existing
-            // Bank and loading it for the chosen game.
-            unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::BANK_LOADING_MESSAGE) }
+            // Opening inherits the scan's live panel, SD-card warning,
+            // sound and animation. Only loading for a chosen game sets up
+            // its loading text; opening must not restart or replace the UI.
+            if !opening {
+                unsafe {
+                    bank_common::ui::loading(task.ui()?, bank_common::ui::BANK_LOADING_MESSAGE)
+                }
                 .map_err(|_| Fault::NativeObject)?;
+            }
             // The task's +1c continuation is patched to this same poller before
             // enabling busy protection. No blocking join or FS call occurs here.
             task.begin_busy();

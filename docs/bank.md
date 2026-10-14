@@ -20,12 +20,14 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 
 Not included: Pokémon HOME, purchases, event gifts, and import or export tools for save editors.
 
+For an existing Bank, the original warning about removing the Game Card or SD card stays on the same loading screen from START until game selection. The spinner and sound continue while Bank scans the games and opens its local files.
+
 ## First start
 
 The original asks two things when it has no save data of its own yet. Both are gone:
 
 - **Language.** Bank no longer asks and no longer follows an earlier choice: it is in the console's language at every start, as Poké Transporter is. No language is ever stored, and one stored earlier by the original is cleared. A Japanese console gets kana; kanji could only be chosen on the removed screen.
-- **Precaution for Use.** The notice is not shown. Bank goes on as if you had accepted it and creates its save data in the same step ("Preparing Pokémon Bank for your use…"), once.
+- **Precaution for Use.** The notice is not shown. Bank goes on as if you had accepted it and creates its save data in the same step, once.
 
 **If you remove the patch later**, the original finds save data in which the notice is accepted and no language is chosen: it asks for the language and does not show the notice again. That also holds for save data in which the original had stored a language: the patched Bank clears it at its first start, so the original asks again.
 

@@ -139,8 +139,9 @@ pub unsafe fn acknowledged(ui: *mut u8) -> Result<bool, Error> {
 
 /// Native message 2, shown by task 9 only while it creates a new Bank.
 pub const CREATING_MESSAGE: u32 = 2;
-/// Native message 0xE, on screen while task 9 opens an existing Bank (left
-/// up by the tasks before it) and while task 0x10 loads it.
+/// Native message 0xE: "Communicating with the Pokémon Bank server...".
+/// The scene set-up shows it after game selection, before task 0x10 loads
+/// the Bank. The offline opening keeps the game scan's panel and text.
 pub const BANK_LOADING_MESSAGE: u32 = 0xe;
 /// Native notice 0x1A, shown by game selection when no game can be used.
 pub const NO_GAME_NOTICE: u32 = 0x1a;

@@ -56,7 +56,8 @@ With the normal Bank package. What each feature is meant to do is in [bank.md](b
 
 | Do this | Expected |
 | --- | --- |
-| First start. | Original opening message, moving spinner, loading sound, then game selection. The main menu never appears. Short pauses are possible (see [Limits](bank.md#limits)). |
+| Press START with an existing offline Bank and a usable game. Repeat after Back from game selection and after Save and Quit. | The warning about removing the Game Card or SD card stays on one loading panel until game selection. The spinner and loading sound continue across the scan and local opening, without restarting or changing to the server text. The main menu never appears. Short pauses are possible (see [Limits](bank.md#limits)). |
+| Press START with no offline Bank yet and a usable game; once also with Bank's own save data deleted (its very first start). | The same scan warning on one loading panel, without restarting, then Brigette's welcome. After the welcome, "Preparing Pokémon Bank for your use…", then game selection. No server text before game selection. |
 | Back on game selection. | Start screen. |
 | Select a game, Back on its confirmation. | Game selection again. |
 | Select a game, cancel at the reward prompt; again, leave the boxes without saving. | Start screen. Nothing saved. |
