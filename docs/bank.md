@@ -116,7 +116,7 @@ The formats are described in [internals.md](internals.md#storage).
 
 ## Install
 
-1. Close Bank and all games. Back up every connected game save, Bank's own save, and Bank's extdata `0x00000C9B` as one dated set ([how](#backing-up-the-bank)).
+1. Close Bank and all games. Back up every connected game save and Bank's own save. When updating, back up Bank's extdata `0x00000C9B` with them, as one dated set ([how](#backing-up-the-bank)); before the first install it holds no data.
 2. Make sure the installed Pokémon Bank is version 1.5, the final update.
 3. Copy both files from the same release or build:
 

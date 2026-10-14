@@ -315,7 +315,7 @@ That a migration refuses a Bank with a Save and Quit in progress, and that a cut
 
 ## The download from the official server
 
-Package `build/download/`. None of these runs has been made yet. It needs the live service, an internet connection and the console's Nintendo Network ID. No game is needed, and none is read or saved. Back up Bank's extdata first, and the games on the console, so that run D8 can compare them.
+Package `build/download/`. It needs the live service, an internet connection and the console's Nintendo Network ID. No game is needed, and none is read or saved. Back up Bank's extdata first, and the games on the console, so that run D8 can compare them.
 
 | Run | Do | Must show |
 | --- | --- | --- |

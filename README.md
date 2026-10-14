@@ -1,12 +1,12 @@
-# Pokémon Bank and Transporter Offline Patch
+# Pokémon Bank and Poké Transporter Offline Patch
 
-> **This project was developed entirely with AI assistance:** analysis, code, tests, and documentation. It's tried on a real console, but it has not had the review or testing that a conventionally developed tool would have. Use it at your own risk and keep backups.
+> **This project was developed entirely with AI assistance:** analysis, code, tests, and documentation. The released versions are tried on real consoles, without any problems so far. Still, it has not had the review a conventionally developed tool would have. Use it at your own risk and keep backups.
 
 Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5** work without Nintendo's servers. Bank keeps its boxes on the SD card; Transporter moves Pokémon from Gen 1, 2 and 5 games into Bank's transport box, so that they can still reach Gen 6 and 7 games after the official servers go offline.
 
 <p align="center"><img src="pictures/v0.2.1-migration-boxes.png" alt="The box screen of the patched Pokémon Bank"></p>
 
-**Status: development build.** It has been tried on one console only. Back up your game saves and Bank's extra data before trying it.
+**Status: early release.** As with any tool that touches saves, a backup is a good idea: of your game saves before installing, and of Bank's extra data before an update.
 
 ## Pokémon Bank
 
@@ -48,7 +48,7 @@ The repository itself holds no patch files. Without a release, [build them yours
 
 You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS) v10.0 or later, and Pokémon Bank and Poké Transporter installed in version 1.5, their final updates.
 
-1. Back up your game saves and Bank's extra data. The boxes are in Bank's *extdata*, not in its save ([how to back them up](docs/bank.md#backing-up-the-bank)).
+1. Back up your game saves. If you are updating, back up Bank's extra data too: the offline Bank keeps its boxes in Bank's *extdata*, not in its save ([how to back them up](docs/bank.md#backing-up-the-bank)).
 2. Extract the zip and copy its `luma` folder to the root of the SD card, merging it with the one that is there.
 3. Hold SELECT while powering on and switch on *Enable game patching*.
 4. Start Bank once before using Transporter.
@@ -72,7 +72,7 @@ The choice lasts until Transporter is closed. More in [docs/transporter.md](docs
 
 ### Can I get my Pokémon from the official Pokémon Bank?
 
-While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and says it succeeded. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip. This patch has not been tested against the official server yet; back up first.
+While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and says it succeeded. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip.
 
 ### Why do I need a migration between two versions?
 
@@ -99,7 +99,7 @@ With enough information I will probably look into it, but this is a hobby projec
 
 ### Not included
 
-Pokémon HOME, purchases, legality checks (they existed only on the server), event gifts, and import or export tools for save editors.
+Pokémon HOME, purchases, server-side legality checks, event gifts, and import or export tools for save editors.
 
 ## Credits
 

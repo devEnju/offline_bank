@@ -103,7 +103,7 @@ While the official service runs (it ends on February 25, 2027), a patch of its o
 
 This builds it into `build/download/` and verifies it (`Verify-BankPatch.ps1 -Patch download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
 
-**It has not been run against the official server.** It was written from the original's code alone; the checks made there are listed in [internals.md](internals.md#the-download-patch). Its guide in the release says so.
+What it checks in the original's code is listed in [internals.md](internals.md#the-download-patch).
 
 Like the migration, it ends a download with the original's message for a successful save and the start screen; START then shows `0000D0AD 00000002`. Every other result is two numbers under the original's line about the HOME Menu:
 
