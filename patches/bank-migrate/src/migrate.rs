@@ -34,7 +34,7 @@ use bank_common::{
 };
 use offline_core::{
     crc32,
-    native_blob::{BLOB_SIZE, FRACTION_OFFSET, REDEEMED_OFFSET},
+    native_blob::{self, BLOB_SIZE, FRACTION_OFFSET},
     Phase, Storage, StoreError,
 };
 
@@ -304,17 +304,12 @@ fn unwritten<E>(step: Step) -> impl Fn(bank_files::Error<E>) -> Stopped<E> {
     }
 }
 
-/// Puts what the previous release kept in its rewards record where the
-/// current one keeps it: in the body, the day as u16 year, month, day (no
-/// day: zeros), the remainder as a u16.
+/// Gives the body the unused places as a new Bank has them
+/// (`native_blob::clear_unused`): nothing the server put into a downloaded
+/// Bank, and no day of a redemption. Of the previous release's rewards
+/// record the remainder goes into the body, as a u16.
 fn into_body(body: &mut [u8], record: previous::rewards::Record) {
-    let mut redeemed = [0; 4];
-    if let Some((year, month, day)) = record.redeemed {
-        redeemed[..2].copy_from_slice(&year.to_le_bytes());
-        redeemed[2] = month;
-        redeemed[3] = day;
-    }
-    body[REDEEMED_OFFSET..REDEEMED_OFFSET + 4].copy_from_slice(&redeemed);
+    native_blob::clear_unused(body);
     body[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&record.fraction.to_le_bytes());
 }
 
@@ -816,14 +811,21 @@ mod tests {
             assert!(only_the_new_files(&card));
             assert!(card.0.borrow().unreadable.is_empty());
             assert!(current(&card).unwrap() == body);
-            // The current release reads the record of that Bank there.
-            let view = offline_core::native_blob::NativeBlobView::parse_layout(&body).unwrap();
-            let day = offline_core::rewards::Date::new(2026, 10, 6).unwrap();
+            // The current release reads the remainder of that Bank there; the
+            // day of its last redemption is not kept.
+            let view = native_blob::NativeBlobView::parse_layout(&body).unwrap();
             let now = offline_core::rewards::Record {
                 fraction: 321,
-                redeemed: Some(day),
+                redeemed: None,
             };
             assert_eq!(view.rewards(), now);
+            // The unused places are as in a new Bank, but for the remainder.
+            for range in native_blob::UNUSED {
+                for at in range {
+                    let fraction = FRACTION_OFFSET..FRACTION_OFFSET + 2;
+                    assert!(fraction.contains(&at) || body[at] == 0, "{at:#x}");
+                }
+            }
             // A second run finds nothing to do and changes nothing.
             let files = card.files();
             assert_eq!(convert(&card), Ok(Done::AlreadyNew));

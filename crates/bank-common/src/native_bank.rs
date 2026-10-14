@@ -307,7 +307,7 @@ mod tests {
         bank.set_rewards(record);
         assert_eq!(bank.rewards(), Ok(record));
         expected[0x174..0x178].copy_from_slice(&[0xea, 0x07, 10, 6]);
-        expected[0xAD61A..0xAD61C].copy_from_slice(&[0xcf, 0x02]);
+        expected[0x166..0x168].copy_from_slice(&[0xcf, 0x02]);
         assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
         bank.set_rewards(Record::NONE);
         assert_eq!(bank.rewards(), Ok(Record::NONE));

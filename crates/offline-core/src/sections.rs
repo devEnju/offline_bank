@@ -6,7 +6,7 @@
 //!
 //! | Body range | Content | File |
 //! | --- | --- | --- |
-//! | `0..17C` | Header: names, format, reward date, Miles, flags | main |
+//! | `0..17C` | Header: group names, format, reward date, Miles state, flags | main |
 //! | `17C..AAF14` | 100 boxes | bank |
 //! | `AAF14..ACA44` | Transport box records (30 x `E8`) | transport |
 //! | `ACA44..AD5FC` | Format tag per box slot | bank |
@@ -280,7 +280,7 @@ mod tests {
         const { assert!(MILES.end <= MAIN_RANGES[0].end) };
         const { assert!(MAIN_RANGES[1].start <= DEX.start) };
         const { assert!(DEX.end <= MAIN_RANGES[1].end) };
-        assert_eq!(MAIN_RANGES[1].start, crate::native_blob::FRACTION_OFFSET);
+        const { assert!(crate::native_blob::FRACTION_OFFSET + 2 <= MAIN_RANGES[0].end) };
     }
 
     #[test]

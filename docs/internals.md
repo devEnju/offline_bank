@@ -90,7 +90,7 @@ The original takes the second load only when its scan found no usable game and t
 - *The reward step writes the files.* Task `0xC`'s set-up (`002ad77c`) only takes the shared UI and sends nothing, and it is the task the original enters after a load. Its update is the patch's: it copies the Bank object (`NativeBank::snapshot`, the range the original's save and restore use) into the worker's buffer, has the worker write it with `BankFiles::initialize` (the main file and the transport box first, the Bank file and the journal last), and ends with outcome `0x15`. The original router answers that with `0x13` by itself. The session is closed whether the files could be written or not.
 - *After cleanup, task 9 runs again* if a result exists. Its set-up creates the shared UI that cleanup destroyed (`002aeb1c`). A written Bank ends as the original's successful save does (`ui::saved`); after A the task ends, the router answers it with cleanup (stage `Saved`), the start screen follows, and the next START looks at the card again and finds the Bank (`D0AD 2`). Every other result is shown with `Notice::done`, the migration's screen.
 
-Everything in the Bank object comes along: boxes, the transport box, the Pokédex part, and the Miles balance with its reward date, which are fields of the object. The two places the patch uses beside them do not come from the server, which has its pass count at `174` and whatever its padding holds at `AD61A`: `download::write` sets both to what a new Bank has, no remainder and never redeemed.
+Everything in the Bank object comes along: boxes, the transport box, the Pokédex part, and the Miles balance with its reward date, which are fields of the object. What only the server filled does not come along: `download::write` sets every unused place ([Native body](#native-body)) to what a new Bank has there, which includes the patch's two Miles fields, no remainder and never redeemed.
 
 **What was checked in the original's code**, since no run against the server has been made:
 
@@ -276,16 +276,34 @@ The files of the offline Bank and the rules by which Transporter delivers into t
 
 The Bank object of the original is `0xBB530` bytes; its serialized body is `object + 8`, length `0xBB518`. Only that range is stored; helper pointers behind it are never persisted. Offsets are hexadecimal.
 
-| Body offset | Content |
-| --- | --- |
-| `15C`, `15E` | Format `2`, box count `100` |
-| `160`, `170` | Reward date (year u16, month, day, hour, minute); whole Miles (u32, capped at 65,535) |
-| `174` | In the original the server's pass count as last seen; in the patch the day of the last redemption |
-| `17C` | 100 boxes, stride `1B56`: 30 records of `E8` bytes, then a `24`-byte name and a u16 index |
-| `AAF14`, `AD5FC` | 30 transport-box records and their 30 format tags |
-| `ACA44`, `B4AA0`, `B5658` | Per-slot format tag, flag byte, and 8-byte timestamp; they move with the Pokémon |
-| `AD61C` | Eight `44`-byte trainer and adventure records, one per game version |
-| `AD83C` | `7260` bytes of Pokédex data: eight version regions plus derived state |
+| Body offset | Size | Content | File | Unused |
+| --- | --- | --- | --- | --- |
+| `0` | 8 | Written from the server's reply when the Bank is opened (`002ae7e4`); nothing reads it offline | main | yes |
+| `8` | 10 × `22` | The names of the 10 box groups: defaults at the first start (`002ae9f0`), the renaming screen (`002a717c`) | main | |
+| `15C`, `15E` | 2, 2 | Format `2`, box count `100` | main | |
+| `160` | 6 | Reward date: year u16, month, day, hour, minute | main | |
+| `166` | 2 | The patch's remainder of the Miles ([below](#the-miles-state-in-the-body)); the original never addresses it | main | yes |
+| `168`, `16C` | 4, 4 | Two values of the server's distributions, used only in its gift states (`002ab29c`, `002ab2b0`) | main | yes |
+| `170` | 4 | Whole Miles, capped at 65,535 | main | |
+| `174` | 4 | In the original the server's pass count as last seen; in the patch the day of the last redemption | main | yes |
+| `178` | 1 | Whether the welcome gift was given | main | |
+| `179` | 1 | "A new pass on the server": set only with a count from it (`002aac50`) | main | yes |
+| `17A` | 1 | Nothing addresses it | main | yes |
+| `17B` | 1 | A flag of Bank's own: the load keeps it across the server's reload (`002d11e4`), message variants read it (`001e5490`) | main | |
+| `17C` | 100 × `1B56` | 100 boxes: 30 records of `E8` bytes, then a `24`-byte name and a u16 index | Bank | |
+| `AAF14` | 30 × `E8` | Transport-box records | transport box | |
+| `ACA44` | 3,000 | Format tag per box slot | Bank | |
+| `AD5FC` | 30 | Format tags of the transport box | transport box | |
+| `AD61A` | 2 | Padding; nothing addresses it | main | yes |
+| `AD61C` | 8 × `44` | Trainer and adventure records, one per game version | main | |
+| `AD83C` | `7260` | Pokédex data: eight version regions plus derived state | main | |
+| `B4A9C` | 2, 2 | Transfer counters, to Bank and to the game (`002b2320`) | main | |
+| `B4AA0` | 3,000 | Flag byte per box slot | Bank | |
+| `B5658` | 3,000 × 8 | Timestamp per box slot | Bank | |
+| `BB418` | 1 | A flag of Bank's own, beside `17B` (`001d51f0`, `002ba574`) | main | |
+| `BB419` | 255 | Rest of the tail; nothing addresses it | main | yes |
+
+The per-slot tag, flag byte and timestamp move with the Pokémon. *Unused* (`native_blob::UNUSED`) holds nothing of the Bank: what only the server fills, the patch's Miles record, and bytes nothing addresses. A new Bank has zeros there: the object comes from a clearing allocation, and its initializer (`00116294`) writes none of them. A downloaded or converted Bank gets them the same way (`native_blob::clear_unused`); the conversion then puts its remainder back.
 
 Pokémon records are encrypted with the LCG `seed * 0x41C64E6D + 0x6073`; the checksum at `+6` is the 16-bit sum of the 112 decrypted words.
 
@@ -383,17 +401,17 @@ Everything about Miles is stored with the Bank body, in the main file ([rewards.
 | `160` | 6 | Date and time up to which Miles were counted | Date and time of the last Save and Quit, from where hours are counted |
 | `170` | 4 | Miles balance | The same |
 | `174` | 4 | The server's pass count, last seen | Day of the last redemption: u16 year, month, day. Anything that is not a date is "never redeemed" |
-| `AD61A` | 2 | Padding between the transport box's tags and the records | Remainder in Pokémon-hours. A save writes 0..719; a larger number is paid out at the next load like any other |
+| `166` | 2 | Nothing: the two bytes after the reward date | Remainder in Pokémon-hours. A save writes 0..719; a larger number is paid out at the next load like any other |
 
-The original has one reader and one writer of `174`, the accessors `002ba524` and `002ba53c`, both called from claim state `0x1B` only (`002aac1c`, `002aac3c`): it stores the session's count there when that has grown, and then sets the flag at `179`. Both calls lie behind `cmn r0, #1; beq 002aac54` at `002aac04`, which skips them while the session reports no count. The reward hook presents the count as -1 for every call of the claim task ([Rewards](#rewards)), so the original never reaches the field. The builder and the verify script check those two words. Nothing in the original refers to the two bytes at `AD61A`; its initializer does not write them.
+The original has one reader and one writer of `174`, the accessors `002ba524` and `002ba53c`, both called from claim state `0x1B` only (`002aac1c`, `002aac3c`): it stores the session's count there when that has grown, and then sets the flag at `179`. Both calls lie behind `cmn r0, #1; beq 002aac54` at `002aac04`, which skips them while the session reports no count. The reward hook presents the count as -1 for every call of the claim task ([Rewards](#rewards)), so the original never reaches the field. The builder and the verify script check those two words. Nothing in the original addresses the two bytes at `166`: every user of the date (`001d5880`, called from `002aa7e8`, `002aacfc`, `002ad42c` and `002aea04`) reads and writes its six bytes, and the initializer does not write them.
 
 **Starting values.** Every way a Bank comes into being sets both fields explicitly:
 
-| A Bank that is | `174` | `AD61A` |
+| A Bank that is | `174` | `166` |
 | --- | --- | --- |
 | created by the offline patch (`create_bank`) | zero: never redeemed | zero |
-| downloaded from the server (`download::write`) | zero, not the server's count | zero, not the server's padding |
-| converted from the previous release | the day from its rewards record, or zero | the remainder from that record |
+| downloaded from the server (`download::write`) | zero, not the server's count | zero |
+| converted from the previous release | zero: the day of a redemption is not kept | the remainder from its rewards record |
 
 A value at `174` that is not a calendar day reads as "never redeemed", so no content of the field can stop Bank.
 

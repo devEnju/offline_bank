@@ -6,6 +6,8 @@
 //! constructor depends on additional application/configuration state. Checking
 //! this layout does not verify account identity, every field, or save legality.
 
+use core::ops::Range;
+
 pub const BLOB_SIZE: usize = 0xBB518;
 pub const FORMAT_VERSION: u16 = 2;
 pub const BOX_COUNT: usize = 100;
@@ -26,9 +28,32 @@ pub const REDEEMED_OFFSET: usize = 0x174;
 /// 002ba590, setter 002ba59c). The original's reward task sets it before it
 /// shows the welcome (002a9888).
 pub const FIRST_PRESENT_OFFSET: usize = 0x178;
-/// The remainder below one Mile, two bytes of padding between the transport
-/// box's format tags and the trainer records that the original never touches.
-pub const FRACTION_OFFSET: usize = 0xAD61A;
+/// The remainder below one Mile, the two bytes after the reward date. The
+/// original never addresses them: every user of the date (001d5880, called
+/// from 002aa7e8, 002aacfc, 002ad42c, 002aea04) reads and writes its six bytes.
+pub const FRACTION_OFFSET: usize = 0x166;
+/// Places of the body that hold nothing of the Bank: what only the server
+/// fills, the patch's Miles record, and bytes nothing addresses. A new Bank
+/// has zeros there: the object comes from a clearing allocation and its
+/// initializer (00116294) writes none of them. A Bank that comes from
+/// elsewhere, downloaded or converted, gets them that way (`clear_unused`).
+pub const UNUSED: [Range<usize>; 6] = [
+    // Written from the server's reply when the Bank is opened (002ae7e4).
+    0x0..0x8,
+    // The patch's remainder, then two values of the server's distributions,
+    // used only in the server's gift states (002ab29c, 002ab2b0).
+    FRACTION_OFFSET..MILES_OFFSET,
+    // The server's pass count; the patch's day of the last redemption.
+    REDEEMED_OFFSET..FIRST_PRESENT_OFFSET,
+    // "A new pass on the server" (set 002aac50 only with a count from it),
+    // and a byte nothing addresses.
+    FIRST_PRESENT_OFFSET + 1..FIRST_PRESENT_OFFSET + 3,
+    // Padding between the transport box's format tags and the records.
+    0xAD61A..0xAD61C,
+    // The tail after Bank's own flag at its start (001d51f0, 002ba574):
+    // nothing addresses it.
+    0xBB419..BLOB_SIZE,
+];
 const FORMAT_OFFSET: usize = 0x15C;
 const BOX_COUNT_OFFSET: usize = 0x15E;
 
@@ -127,6 +152,16 @@ pub fn stored_pokemon_checksum_matches(record: &[u8; POKEMON_SIZE]) -> bool {
     stored_pokemon_checksum(record) == word(record, 6)
 }
 
+/// Sets the places in `UNUSED` to what a new Bank has there. `body` is a
+/// whole body; a shorter one is cleared as far as it reaches.
+pub fn clear_unused(body: &mut [u8]) {
+    for range in UNUSED {
+        if let Some(place) = body.get_mut(range) {
+            place.fill(0);
+        }
+    }
+}
+
 fn exact_size(actual: usize) -> Result<(), BlobError> {
     if actual == BLOB_SIZE {
         Ok(())
@@ -220,7 +255,8 @@ mod tests {
         const { assert!(MILES_OFFSET + 4 <= BOXES_OFFSET) };
         const { assert!(REWARD_DATE_OFFSET + crate::rewards::Moment::NATIVE_SIZE <= MILES_OFFSET) };
         const { assert!(MILES_OFFSET + 4 == REDEEMED_OFFSET) };
-        const { assert!(FRACTION_OFFSET == EXTRA_SLOT_FORMAT_OFFSET + 30) };
+        const { assert!(REWARD_DATE_OFFSET + crate::rewards::Moment::NATIVE_SIZE == FRACTION_OFFSET) };
+        const { assert!(FRACTION_OFFSET + 2 <= MILES_OFFSET) };
         assert_eq!(
             NativeBlobView::parse_layout(&data).unwrap().reward_date(),
             None
@@ -242,5 +278,61 @@ mod tests {
             chunk.copy_from_slice(&(0xFFFF ^ (seed >> 16) as u16).to_le_bytes());
         }
         assert_eq!(stored_pokemon_checksum(&record), expected);
+    }
+
+    #[test]
+    fn clearing_the_unused_places_keeps_every_field_of_the_bank() {
+        let mut data = fixture();
+        clear_unused(&mut data);
+        let unused = |at: usize| UNUSED.iter().any(|range| range.contains(&at));
+        for (at, byte) in data.iter().enumerate() {
+            let expected = if unused(at) {
+                0
+            } else if at == FORMAT_OFFSET {
+                FORMAT_VERSION as u8
+            } else if at == BOX_COUNT_OFFSET {
+                BOX_COUNT as u8
+            } else if at == FORMAT_OFFSET + 1 || at == BOX_COUNT_OFFSET + 1 {
+                0
+            } else {
+                0xA5
+            };
+            assert_eq!(*byte, expected, "{at:#x}");
+        }
+        // What the Bank holds: group names, format, reward date, Miles, the
+        // welcome flag, Bank's two flags, the boxes and their tags, the
+        // transport box, the records and the Pokédex, the slot data.
+        for at in [
+            0x8,
+            0x15B,
+            REWARD_DATE_OFFSET,
+            REWARD_DATE_OFFSET + 5,
+            MILES_OFFSET,
+            MILES_OFFSET + 3,
+            FIRST_PRESENT_OFFSET,
+            0x17B,
+            BOXES_OFFSET,
+            0xAD619,
+            0xAD61C,
+            0xBB417,
+            0xBB418,
+        ] {
+            assert!(!unused(at), "{at:#x}");
+        }
+        for range in [
+            0..8,
+            FRACTION_OFFSET..FRACTION_OFFSET + 2,
+            0x168..0x170,
+            REDEEMED_OFFSET..REDEEMED_OFFSET + 4,
+            0x179..0x17B,
+            0xAD61A..0xAD61C,
+            0xBB419..BLOB_SIZE,
+        ] {
+            assert!(range.clone().all(unused), "{range:x?}");
+        }
+        // In order and apart.
+        assert!(UNUSED.windows(2).all(|pair| pair[0].end < pair[1].start));
+        let view = NativeBlobView::parse_layout(&data).unwrap();
+        assert_eq!(view.rewards(), crate::rewards::Record::NONE);
     }
 }

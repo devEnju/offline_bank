@@ -49,7 +49,7 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - It comes after the first game selection of a Bank that has not had it. A Bank downloaded from the official server had it there.
 - It becomes permanent with the next Save and Quit, together with the Miles. If you leave without saving, it comes again at the next opening, again with 100, never twice.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, comes first with the original's notice. If you go on to the boxes, the welcome waits for the next opening of a game that can take a gift.
-- It comes also on a day you have already redeemed. The balance stops at 65,535 as always.
+- The balance stops at 65,535 as always.
 
 **When it is saved.** Miles are added when the selected game has loaded and again at Save and Quit, and become permanent there, in the same step as your boxes. If you exit without saving, nothing changes and the same hours are credited next time. A new Bank starts earning with its first Save and Quit.
 

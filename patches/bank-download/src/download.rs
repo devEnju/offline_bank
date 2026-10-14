@@ -3,11 +3,7 @@
 //! patch does, so what is written here is what the offline patch reads.
 
 use bank_common::bank_files::{self, BankFiles, Files};
-use offline_core::{
-    native_blob::{FRACTION_OFFSET, REDEEMED_OFFSET},
-    rewards::Record,
-    Storage,
-};
+use offline_core::{native_blob, Storage};
 
 /// First number of a result that is no error.
 pub const DONE: u32 = 0xd0ad;
@@ -33,24 +29,16 @@ pub fn present<F: Files>(files: F) -> Outcome<bool, F> {
 /// and the transport box first, the Bank file last. `false`, with nothing
 /// written, if a Bank is on the card after all: one is never replaced.
 ///
-/// The two places in which the offline patch keeps its Miles state are not
-/// the server's to fill: it has its pass count in the one and whatever its
-/// padding holds in the other. They are written as a new Bank has them: no
-/// remainder, never redeemed.
+/// What only the server filled, and the places of the patch's Miles state,
+/// are written as a new Bank has them (`native_blob::clear_unused`): nothing
+/// of the server's is kept that the Bank does not need, no remainder, never
+/// redeemed.
 pub fn write<F: Files>(files: F, staging: &mut [u8]) -> Outcome<bool, F> {
     let mut files = BankFiles::new(files);
     if files.open()?.is_some() {
         return Ok(false);
     }
-    let (redeemed, fraction) = Record::NONE.to_fields();
-    for (at, bytes) in [
-        (REDEEMED_OFFSET, &redeemed[..]),
-        (FRACTION_OFFSET, &fraction[..]),
-    ] {
-        if let Some(place) = staging.get_mut(at..at + bytes.len()) {
-            place.copy_from_slice(bytes);
-        }
-    }
+    native_blob::clear_unused(staging);
     files.initialize(staging)?;
     Ok(true)
 }
@@ -62,10 +50,11 @@ mod tests {
     use bank_common::testing::*;
     use std::{format, vec::Vec};
 
-    /// `body` as a download stores it: with the patch's Miles state empty.
+    /// `body` as a download stores it: without the unused places.
     fn stored(mut body: Vec<u8>) -> Vec<u8> {
-        body[REDEEMED_OFFSET..REDEEMED_OFFSET + 4].fill(0);
-        body[FRACTION_OFFSET..FRACTION_OFFSET + 2].fill(0);
+        for range in native_blob::UNUSED {
+            body[range].fill(0);
+        }
         body
     }
 
@@ -88,17 +77,26 @@ mod tests {
     }
 
     #[test]
-    fn the_miles_state_of_a_downloaded_bank_starts_empty_whatever_the_server_had_there() {
+    fn a_downloaded_bank_keeps_nothing_of_the_servers_but_the_bank() {
         // The server's pass count, here one that reads as a date, and
-        // something in the padding.
+        // something in every other unused place.
         let mut loaded = body(0x31, 0x44, 0);
-        loaded[REDEEMED_OFFSET..REDEEMED_OFFSET + 4].copy_from_slice(&[0xea, 0x07, 10, 6]);
-        loaded[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&[0xff, 0xff]);
+        for range in native_blob::UNUSED {
+            loaded[range].fill(0x5a);
+        }
+        let at = native_blob::REDEEMED_OFFSET;
+        loaded[at..at + 4].copy_from_slice(&[0xea, 0x07, 10, 6]);
         let disk = Shared::default();
         assert_eq!(write(disk.clone(), &mut loaded.clone()), Ok(true));
         let stored = load(&mut opened(&disk.reboot())).0;
-        let view = offline_core::native_blob::NativeBlobView::parse_layout(&stored).unwrap();
-        assert_eq!(view.rewards(), Record::NONE);
+        let view = native_blob::NativeBlobView::parse_layout(&stored).unwrap();
+        assert_eq!(view.rewards(), offline_core::rewards::Record::NONE);
+        for range in native_blob::UNUSED {
+            assert!(
+                stored[range.clone()].iter().all(|&byte| byte == 0),
+                "{range:x?}"
+            );
+        }
         // Nothing else differs from what was loaded.
         assert!(stored == self::stored(loaded));
     }
