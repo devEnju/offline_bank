@@ -13,7 +13,7 @@ use bank_common::{
     native_bank::NativeBank,
     task::{
         checked_pointer, read_word, storage_activity, write_word, NotNative, Notice, Task,
-        FS_SESSION, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE,
+        FS_SESSION, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
     },
     worker::{JobId, WorkerError},
 };
@@ -68,8 +68,8 @@ enum Step {
     Introduce,
     Initialize,
     Recover,
-    /// A notice of the original is up that leads back to the start screen:
-    /// no usable game, or a save in progress that waits for its game.
+    /// A save in progress waits for its game at a native notice, then
+    /// returns to the start screen.
     TurnBack,
     Load,
     SaveInspect,
@@ -734,24 +734,6 @@ impl Runtime {
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
             if opening {
                 self.turn_back = false;
-                let coordinator = task.pointer(8)?;
-                let available =
-                    (1..=8).any(|kind| unsafe { coordinator.add(kind * 12 + 1).read() } != 0);
-                if !available {
-                    // Check before opening or recovering files: no welcome
-                    // or Bank creation without a game the user can select.
-                    let ui = task.ui()?;
-                    unsafe { bank_common::ui::stop_loading(ui) }
-                        .map_err(|_| Fault::NativeObject)?;
-                    self.owner = task.raw() as usize;
-                    self.turn_back = true;
-                    self.step = Step::TurnBack;
-                    task.end_busy();
-                    storage_activity(false);
-                    unsafe { bank_common::ui::notice(ui, bank_common::ui::NO_GAME_NOTICE) }
-                        .map_err(|_| Fault::NativeObject)?;
-                    return Ok(false);
-                }
             }
             local_date(task)?;
             // Opening inherits the scan's live panel, SD-card warning,
@@ -1118,6 +1100,46 @@ pub unsafe extern "aapcs" fn bank_offline_load(raw: *mut u8) -> u32 {
             state.fault = fault;
             state.report_failure(task)
         }
+    }
+}
+
+// Only scan state 0x18's BL at 002ac7a4 enters here. Its r4 is the live
+// scan task (002abe0c: mov r4, r0); preserve the native caller's LR and
+// callee-saved registers while handing that task to the Rust adapter.
+core::arch::global_asm!(
+    ".syntax unified",
+    ".arm",
+    ".section .text.bank.no_game, \"ax\"",
+    ".align 2",
+    ".global bank_offline_no_game",
+    ".type bank_offline_no_game, %function",
+    "bank_offline_no_game:",
+    "mov r0, r4",
+    "b {notice}",
+    ".size bank_offline_no_game, .-bank_offline_no_game",
+    notice = sym no_game_notice,
+);
+unsafe extern "aapcs" {
+    /// # Safety
+    /// Called only from the reviewed scan message call, with its live task in r4.
+    pub fn bank_offline_no_game();
+}
+unsafe extern "aapcs" fn no_game_notice(raw: *mut u8) {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
+        return;
+    };
+    let Some(mut guard) = Guard::acquire() else {
+        return;
+    };
+    let state = guard.state();
+    // No offline files or worker job have been opened during the native
+    // scan. On failure its acknowledgment state keeps the error screen up.
+    let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
+        bank_common::ui::notice_pages(ui, 0, 2).map_err(|_| Fault::NativeObject)
+    });
+    if let Err(fault) = shown {
+        state.fault = fault;
+        state.report_failure(task);
     }
 }
 

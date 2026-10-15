@@ -14,11 +14,12 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_save",
         "bank_offline_rewards",
         "bank_offline_timestamp",
+        "bank_offline_no_game",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
-    // Twenty-four edited words plus the linked bootstrap bytes.
-    regions: 25,
+    // Twenty-five edited words plus the linked bootstrap bytes.
+    regions: 26,
     menu_edits: &[],
     edits,
 };
@@ -39,13 +40,29 @@ pub const NATIVE_FINISHED_BODY: [u32; 2] = [0xe3a00001, 0xe12fff1e];
 pub const COUNT_UNAVAILABLE: u32 = 0x002aac04;
 pub const COUNT_UNAVAILABLE_BODY: [u32; 2] = [0xe3700001, 0x0a000011];
 
-/// With all eight games unavailable, the scan selects state 0x18, which
-/// shows a notice and then asks about Pokemon HOME. Select its successful
-/// end (0x1f) instead; task 9 shows the no-game notice before opening files.
-/// The EQ condition and the following state store stay the original's.
-pub const NO_GAME_STATE: (u32, u32, u32) = (0x002ac560, 0x03a00018, 0x03a0001f);
+/// Scan state 0x18 keeps its native loading-panel shutdown and notice.
+/// Only the message call is adapted; state 0x19 then waits for A and exits
+/// through the native unsuccessful-scan route, instead of asking about HOME.
+pub const NO_GAME_CALL: u32 = 0x002ac7a4;
+pub const NO_GAME_CONTINUATION: (u32, u32, u32) = (0x002ac7a8, 0xe3a00021, 0xe3a00019);
+
+// Native task in r4, no-game branch, acknowledgment loop, and failure exit.
+const NO_GAME_NATIVE: [(u32, u32); 7] = [
+    (0x002abe0c, 0xe1a04000),
+    (0x002ac560, 0x03a00018),
+    (0x002ac7b4, 0xe5940040),
+    (0x002ac7c0, 0xe3500004),
+    (0x002ac7c8, 0x0a0000b0),
+    (0x002ac924, 0xe3a00003),
+    (0x002aca90, 0xe3a00020),
+];
 
 pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
+    for (address, expected) in NO_GAME_NATIVE {
+        if crate::le32(code, (address - CODE_BASE) as usize)? != expected {
+            return crate::fail("native no-game notice/acknowledgment is not the reviewed code");
+        }
+    }
     for (index, word) in NATIVE_FINISHED_BODY.into_iter().enumerate() {
         let offset = (NATIVE_FINISHED - CODE_BASE) as usize + index * 4;
         if crate::le32(code, offset)? != word {
@@ -65,6 +82,7 @@ pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<Chec
         save: payload.export("bank_offline_save")?,
         rewards: payload.export("bank_offline_rewards")?,
         timestamp: payload.export("bank_offline_timestamp")?,
+        no_game: payload.export("bank_offline_no_game")?,
         message: payload.export(MESSAGE_ENTRY)?,
         version: payload.export(VERSION_ENTRY)?,
     })
@@ -78,6 +96,7 @@ struct HookTargets {
     save: u32,
     rewards: u32,
     timestamp: u32,
+    no_game: u32,
     message: u32,
     version: u32,
 }
@@ -88,9 +107,14 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     let mut edits = vec![
         archive_preservation_candidate(),
         word(
-            NO_GAME_STATE.0,
-            NO_GAME_STATE.1,
-            NO_GAME_STATE.2.to_le_bytes(),
+            NO_GAME_CALL,
+            u32::from_le_bytes(crate::encode_arm_branch(NO_GAME_CALL, 0x001d6650, true)?),
+            crate::encode_arm_branch(NO_GAME_CALL, targets.no_game, true)?,
+        ),
+        word(
+            NO_GAME_CONTINUATION.0,
+            NO_GAME_CONTINUATION.1,
+            NO_GAME_CONTINUATION.2.to_le_bytes(),
         ),
         word(
             0x001d3bf4,
@@ -134,6 +158,7 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
         save: 0x3fb400,
         rewards: 0x3fba00,
         timestamp: 0x3fbc00,
+        no_game: 0x3fbe00,
         message: 0x3fca00,
         version: 0x3fcc00,
     })
@@ -147,20 +172,32 @@ mod tests {
     use crate::encode_arm_branch;
 
     #[test]
-    fn a_scan_without_games_skips_the_home_question() {
+    fn a_scan_without_games_keeps_its_notice_and_uses_native_acknowledgment() {
         let edits = sample_edits();
         let scan = edits
             .iter()
-            .find(|edit| edit.offset == (0x002ac560 - CODE_BASE) as usize)
+            .find(|edit| edit.offset == (NO_GAME_CALL - CODE_BASE) as usize)
             .unwrap();
-        assert_eq!(scan.expected, 0x03a00018u32.to_le_bytes());
-        let instruction = u32::from_le_bytes(scan.replacement.as_slice().try_into().unwrap());
-        // ARM MOVEQ r0, #imm: only an all-zero availability scan changes
-        // state. The immediate selects the native end, not state 0x18's
-        // HOME notice/question. The branch and state store stay native.
-        assert_eq!(instruction & 0xffff_ff00, 0x03a0_0000);
-        assert_eq!(instruction & 0xff, 0x1f);
-        for address in [0x002ac564, 0x002ac568, 0x002ac4c4, 0x002ac904] {
+        assert_eq!(
+            scan.expected,
+            encode_arm_branch(NO_GAME_CALL, 0x1d6650, true).unwrap()
+        );
+        assert_eq!(
+            scan.replacement,
+            encode_arm_branch(NO_GAME_CALL, 0x3fbe00, true).unwrap()
+        );
+        let continuation = edits
+            .iter()
+            .find(|edit| edit.offset == (NO_GAME_CONTINUATION.0 - CODE_BASE) as usize)
+            .unwrap();
+        assert_eq!(continuation.expected, 0xe3a00021u32.to_le_bytes());
+        assert_eq!(continuation.replacement, 0xe3a00019u32.to_le_bytes());
+        // Detection, loading-panel shutdown, acknowledgment polling and
+        // both native scan exits stay intact, as does game selection.
+        for address in [
+            0x002ac560, 0x002ac564, 0x002ac568, 0x002ac4c4, 0x002ac758, 0x002ac7b4, 0x002ac7c8,
+            0x002ac904, 0x002ac924, 0x002adc50, 0x002d0fc8, 0x002b0098,
+        ] {
             assert!(edits
                 .iter()
                 .all(|edit| edit.offset != (address - CODE_BASE) as usize));
@@ -176,6 +213,7 @@ mod tests {
             save: 0x3fb400,
             rewards: 0x3fba00,
             timestamp: 0x3fbc00,
+            no_game: 0x3fbe00,
             message: 0x3fca00,
             version: 0x3fcc00,
         };

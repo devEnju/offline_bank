@@ -112,14 +112,14 @@ try {
     # The entry functions of each patch; the first is the entry of the ELF.
     # The last is the one every patch has: where the original's "show a
     # message" function goes first.
-    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_message_shown','bank_version_shown')
+    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game','bank_message_shown','bank_version_shown')
     $exportNames=@{
         offline=$offlineNames
         migrate=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
         download=@('bank_download_next','bank_download_scan','bank_download_scan_busy','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
     }[$Patch]
-    $exportCount=@{offline=7;migrate=4;test=9;download=7}[$Patch]
+    $exportCount=@{offline=8;migrate=4;test=10;download=7}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
     $foreign=@{offline=@('bank_migrate_*','bank_download_*');migrate=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Patch]
@@ -175,6 +175,7 @@ try {
     }
     if ($Patch -in 'offline','test') {
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
+        $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game',$true)
     }
     # Main-menu locations edited by earlier packages. They must stay original,
     # but for the one the test build edits to show the menu (further down).
@@ -229,9 +230,8 @@ try {
     # Only the offline patch: loading, saving and rewards.
     if ($Patch -in 'offline','test') {
         $pointers+=@(
-            # No game: end the scan before its HOME-transfer question.
-            # Task 9 shows the notice before opening any offline Bank files.
-            @(0x2ac560,0x03a00018L,0x03a0001fL),
+            # Native no-game notice, then its own acknowledgment/error exit.
+            @(0x2ac7a8,0xe3a00021L,0xe3a00019L),
             @(0x361a08,0x2a9750,'bank_offline_rewards'),
             @(0x361be4,0x2ad1bc,'bank_offline_rewards'),
             @(0x361ed4,0x2af460,'bank_offline_load'),
@@ -253,7 +253,7 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=25;migrate=16;test=27;download=10}[$Patch]
+    $regions=@{offline=26;migrate=16;test=28;download=10}[$Patch]
     # SDK CreateThread adds 0x20 to the worker's SDK argument before SVC 08.
     foreach($check in @(@(0x232144,0xe3550020L),@(0x23214c,0x92850020L),@(0x232154,0x9a000008L),@(0x232160,0xe3500027L),@(0x232164,0x92800018L),@(0x232174,0xe3500040L),@(0x232178,0x83e00000L),@(0x2321b8,0xaef62b00L),@(0x2321bc,0x93725b00L))) {
         Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1]) 'Native SDK thread-priority conversion'
@@ -340,6 +340,17 @@ try {
         if ($menuEdits -contains $location[0]) { continue }
         Assert-Check ((U32 $patched $offset) -eq $location[1]) ('Menu location is not original '+$location[0].ToString('x8'))
         Assert-Check ([Array]::IndexOf[byte]($allowed,1,$offset,4) -eq -1 -and [Array]::IndexOf[byte]($covered,1,$offset,4) -eq -1) ('Menu location still patched '+$location[0].ToString('x8'))
+    }
+    if ($Patch -in 'offline','test') {
+        foreach($check in @(@(0x2abe0c,0xe1a04000L),@(0x2ac560,0x03a00018L),@(0x2ac7b4,0xe5940040L),@(0x2ac7c0,0xe3500004L),@(0x2ac7c8,0x0a0000b0L),@(0x2ac924,0xe3a00003L),@(0x2aca90,0xe3a00020L))) {
+            Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1] -and (U32 $patched ($check[0]-0x100000)) -eq $check[1]) 'Native no-game route changed'
+        }
+        foreach($range in @(@(0x2adc50,0x2adfd8),@(0x2d0fc8,0x2d1084),@(0x2b0098,0x2b0270),@(0x2ae310,0x2ae540))) {
+            Assert-Check ((Hash $original ($range[0]-0x100000) ($range[1]-$range[0])) -eq (Hash $patched ($range[0]-0x100000) ($range[1]-$range[0]))) 'Native game selection/progress check changed'
+        }
+        $adapter=$symbols.bank_offline_no_game
+        $adapterOffset=$adapter.value-0x100000
+        Assert-Check ($adapter.size -eq 8 -and (U32 $patched $adapterOffset) -eq 0xe1a00004L -and ((U32 $patched ($adapterOffset+4)) -band 0xff000000L) -eq 0xea000000L) 'No-game adapter must pass r4 and tail-branch without changing LR/SP'
     }
     $payloadFileOffset=$rx.address-0x100000
     $payloadMemory=$imageEnd-$rx.address

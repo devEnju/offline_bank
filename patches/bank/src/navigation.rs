@@ -31,8 +31,7 @@ pub const MENU_USE: u8 = 0xc;
 
 /// `outcome` is the finished task's byte `+0x30`; `native` is what the original
 /// router returned for it. `turn_back` is set when opening ended at a notice
-/// that leads back to the start screen: no usable game, or a save in progress
-/// that waits for its game.
+/// that leads back to the start screen: a save in progress waits for its game.
 pub fn destination(current: u32, outcome: u8, native: u32, turn_back: bool) -> u32 {
     match (current, outcome) {
         (3, 4) => OPEN,

@@ -26,6 +26,9 @@ mod linked {
     static MESSAGE: unsafe extern "aapcs" fn() = bank_common::task::bank_message_shown;
     #[used]
     #[link_section = ".bank.link_roots"]
+    static NO_GAME: unsafe extern "aapcs" fn() = bank_payload::runtime::bank_offline_no_game;
+    #[used]
+    #[link_section = ".bank.link_roots"]
     static VERSION: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
         bank_payload::runtime::bank_version_shown;
 

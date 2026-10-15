@@ -14,6 +14,7 @@ pub enum Error {
     InvalidPointer,
     MissingBuffer,
     InsufficientCapacity,
+    InvalidMessage,
 }
 fn pointer(value: u32) -> Result<*mut u8, Error> {
     if value == 0 || value & 3 != 0 {
@@ -59,6 +60,16 @@ unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize
     )))
 }
 
+/// Terminate the allocated native string and reset the dialog's parser.
+unsafe fn begin(context: *mut u8, text: *mut u8, room: &mut [u16], len: usize) {
+    room[len] = 0;
+    unsafe {
+        text.add(0xa).cast::<u16>().write(len as u16);
+        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
+        begin(context, text);
+    }
+}
+
 /// Shows the screen a patch ends on, as one dialog that does not end, the
 /// way the original shows its message 0x1C (002a926c): a reason, and after
 /// A the line about the HOME Menu, which stays. Without a reason the line
@@ -89,20 +100,13 @@ pub unsafe fn stop(
 ) -> Result<(), Error> {
     let label = label.units();
     let context = pointer(unsafe { word(ui, 0x5c) })?;
-    // Ends the text at `len` and hands it to the dialog.
-    let begin = |text: *mut u8, room: &mut [u16], len: usize| unsafe {
-        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
-        room[len] = 0;
-        text.add(0xa).cast::<u16>().write(len as u16);
-        begin(context, text);
-    };
     let mut home = [0u16; HOME_ROOM];
     let mut home_len = 0;
     unsafe { display(ui, HOME_NOTICE, false)? };
     if let Some((text, room, len)) = unsafe { text(ui)? } {
         let Some(_) = reason else {
             let len = numbers::put(room, len, label, first, second).unwrap_or(len);
-            begin(text, room, len);
+            unsafe { begin(context, text, room, len) };
             return Ok(());
         };
         if len < HOME_ROOM {
@@ -121,7 +125,7 @@ pub unsafe fn stop(
     if home_len != 0 {
         len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
     }
-    begin(text, room, len);
+    unsafe { begin(context, text, room, len) };
     Ok(())
 }
 
@@ -143,8 +147,6 @@ pub const CREATING_MESSAGE: u32 = 2;
 /// The scene set-up shows it after game selection, before task 0x10 loads
 /// the Bank. The offline opening keeps the game scan's panel and text.
 pub const BANK_LOADING_MESSAGE: u32 = 0xe;
-/// Native notice 0x1A, shown by game selection when no game can be used.
-pub const NO_GAME_NOTICE: u32 = 0x1a;
 /// Native message 0xA: "You previously used a different copy of this game.
 /// Please try again using {name}'s game (Trainer ID No. {number})."
 const OTHER_COPY_NOTICE: u32 = 0xa;
@@ -244,12 +246,20 @@ unsafe fn display(ui: *mut u8, message: u32, wait: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// Shows an original localized notice with acknowledgement. Poll
-/// `acknowledged` afterwards.
+/// Shows the first `pages` pages of an original notice. The final retained
+/// page has no page-break command, so the native renderer treats it as the
+/// end of the message; A closes it rather than advancing to another page.
 /// # Safety
 /// `ui` has stop's native lifetime contract, with no other dialog active.
-pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
-    unsafe { display(ui, message, true) }
+pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<(), Error> {
+    unsafe { display(ui, message, true)? };
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+        return Err(Error::MissingBuffer);
+    };
+    let end = numbers::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
+    unsafe { begin(context, text, room, end) };
+    Ok(())
 }
 
 /// Shows the original's message for another copy of a game, filled the way
