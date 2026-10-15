@@ -26,7 +26,7 @@ Details: [docs/bank.md](docs/bank.md).
 - Also lists Black, White, Black 2 and White 2 saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps on the SD card, beside a cartridge and the Virtual Console titles ([details](docs/transporter.md#blackwhite-saves-on-the-sd-card)).
 - The language screen chooses which language's games are listed, so the list stays short ([details](docs/transporter.md#choosing-the-language-of-the-games)).
 - Writes the Pokémon into Bank's transport box first, then removes them from the source game. A power cut in between never loses a Pokémon.
-- Contains a shining Easter egg for Gen 1 Virtual Console transfers, based on content that was lost.
+- Contains a shining Easter egg for Gen 1 Virtual Console transfers, based on content that was lost to time.
 
 Details: [docs/transporter.md](docs/transporter.md).
 
@@ -72,17 +72,19 @@ The choice lasts until Transporter is closed. More in [docs/transporter.md](docs
 
 ### Can I get my Pokémon from the official Pokémon Bank?
 
-While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and says it succeeded. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip.
+While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and says it succeeded. Then you put the normal patch in its place. The steps are in the `README.txt` of its zip.
 
 ### Why do I need a migration between two versions?
 
 The normal patches read only the files of their own version, so that they stay free of code for earlier formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
 
-When a release changes how the Bank is stored, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how ([background](docs/building.md#the-migration-from-the-previous-release)).
+When a release changes how the Bank is stored, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how.
 
 ### Why has the save format been changed?
 
 So that a power cut cannot cost you the Bank. Up to v0.2.1 a cut during Save and Quit could leave the one Bank file unreadable, and with it every box. Since v0.3.0 everything is stored in pairs of files, and a save only writes into the file of a pair that is not in use. A cut can then only damage a file Bank does not need, and the next start goes on with the other one ([details](docs/bank.md#where-the-bank-is-stored)).
+
+The newest v0.4.0 migration to v0.5.0 improves the file format to not waste anymore space on an SD card than is needed.
 
 ## Problems and feature requests
 
