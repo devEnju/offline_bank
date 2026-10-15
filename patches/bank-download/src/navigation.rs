@@ -14,9 +14,8 @@
 //! - After that load the reward step follows, where the original would
 //!   release the session (0x1d) and show its HOME screens (0x1b).
 //! - After cleanup, once a result exists, task 9 runs again to show it.
-//!   A written Bank is shown with the original's message for a successful
-//!   save, after which cleanup leads to the start screen, and the next START
-//!   looks at the card again.
+//!   Every result, including success, stays on the HOME/version/result screen
+//!   until Bank is closed.
 //!
 //! The reward step's update is the patch's own. It ends with the original's
 //! outcome for "cancel", 0x15, which the original router answers with 0x13
@@ -49,9 +48,6 @@ pub enum Stage {
     Online,
     /// A result exists and is to be shown.
     Decided,
-    /// The original's message for a successful save was shown: back to the
-    /// start screen.
-    Saved,
 }
 
 /// `native` is what the original router returned for the task that ended.
@@ -65,19 +61,17 @@ pub fn destination(current: u32, native: u32, stage: Stage) -> u32 {
         // Loaded: the files are written before the session is released.
         (HOME_LOAD, Stage::Online) if native == HOME_RELEASE => WRITE,
         (CLEANUP, Stage::Decided) => OPEN,
-        (OPEN, Stage::Saved) => CLEANUP,
         _ => native,
     }
 }
 
 /// The stage after `destination` was asked with `stage`:
-/// preparation becomes "online" once the scan task ends, and "saved"
-/// becomes "looking" once cleanup was.
+/// preparation becomes "online" once the scan task ends. A decided result
+/// stays decided through native release, cleanup and the final screen.
 pub fn next_stage(current: u32, stage: Stage) -> Stage {
     match (current, stage) {
         (SCAN, Stage::Preparing) => Stage::Online,
         (CLEANUP, Stage::Preparing | Stage::Online) => Stage::Looking,
-        (OPEN, Stage::Saved) => Stage::Looking,
         _ => stage,
     }
 }
@@ -249,24 +243,27 @@ mod tests {
     }
 
     #[test]
-    fn after_the_success_message_the_start_screen_follows_and_the_card_is_looked_at_again() {
-        // Task 9 ends without trouble; the original would answer its menu.
+    fn a_local_write_result_releases_the_session_before_the_persistent_screen() {
         for home in [false, true] {
-            let native = original(OPEN, 4, home);
-            assert_eq!(destination(OPEN, native, Stage::Saved), CLEANUP);
+            let mut stage = Stage::Decided;
+            // The result exists, but native release and disconnect still
+            // finish before the result task is created. No extra save runs.
+            for (current, outcome, expected) in [
+                (WRITE, CANCELLED, 0x13),
+                (0x13, 4, CLEANUP),
+                (CLEANUP, 4, OPEN),
+            ] {
+                assert_eq!(
+                    destination(current, original(current, outcome, home), stage),
+                    expected
+                );
+                stage = next_stage(current, stage);
+                assert_eq!(stage, Stage::Decided);
+            }
+            // The result hook keeps task 9 alive, including after A; its
+            // stage must not reset as the old success acknowledgment did.
+            assert_eq!(next_stage(OPEN, stage), Stage::Decided);
         }
-        assert_eq!(next_stage(OPEN, Stage::Saved), Stage::Looking);
-        // Cleanup then selects the start screen, and START the scan, which
-        // leads to the look at the card.
-        assert_eq!(
-            destination(CLEANUP, original(CLEANUP, 4, false), Stage::Looking),
-            2
-        );
-        assert_eq!(destination(2, original(2, 4, false), Stage::Looking), SCAN);
-        assert_eq!(
-            destination(SCAN, original(SCAN, 4, false), Stage::Looking),
-            CLEANUP
-        );
     }
 
     #[test]

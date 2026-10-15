@@ -1,12 +1,10 @@
 //! The two hooks of the migration patch, on Bank's main thread.
 //!
 //! The scan task runs the conversion before any game is checked and then
-//! returns through cleanup to the start screen. Its hook shows the loading
-//! screen and has the worker run the conversion. A conversion ends with the
-//! original's message for a successful save and the start screen; any other
-//! result is shown as two numbers under the original's line about the HOME
-//! Menu, which stays. Starting Bank again runs it again, which is safe, and
-//! finds a converted Bank.
+//! shows the preparation screen while the worker runs the conversion. Every
+//! result, including success, stays under the original's line about the HOME
+//! Menu with the version and two numbers. Reopening Bank and pressing START
+//! runs it again, which is safe, and finds a converted Bank.
 
 use crate::{
     migrate::{self, Card, Done},
@@ -108,8 +106,6 @@ struct Runtime {
     job: Option<JobId>,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
-    /// The original's message for a successful save is up.
-    saved: bool,
     notice: Notice,
 }
 struct State(UnsafeCell<Runtime>);
@@ -122,7 +118,6 @@ static STATE: State = State(UnsafeCell::new(Runtime {
     owner: 0,
     job: None,
     numbers: None,
-    saved: false,
     notice: Notice::new(PACKAGE),
 }));
 struct Guard;
@@ -157,8 +152,7 @@ impl Runtime {
     unsafe fn open(&mut self, task: Task) -> Result<Option<[u32; 2]>, [u32; 2]> {
         let Some(id) = self.job else {
             let panel = task.ui().map_err(|_| [NATIVE_OBJECT, 0])?;
-            unsafe { ui::loading(panel, ui::BANK_LOADING_MESSAGE) }
-                .map_err(|_| [NATIVE_OBJECT, 0])?;
+            unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| [NATIVE_OBJECT, 0])?;
             // The task's +1c continuation is patched to this same poller
             // before enabling busy protection. No FS call occurs here.
             task.begin_busy();
@@ -253,38 +247,7 @@ pub unsafe extern "aapcs" fn bank_migrate_scan(raw: *mut u8) -> u32 {
         }
     }
     let [first, second] = state.numbers.unwrap_or([NATIVE_OBJECT, 0]);
-    if [first, second] == [migrate::DONE, Done::Converted as u32] {
-        // Converted: the original's ending of a successful save, and after
-        // A the start screen, reached through the router's cleanup. The
-        // next START converts again and finds the work done.
-        // A message that cannot be shown leaves the numbers instead.
-        let panel = task.ui().map_err(|_| ());
-        if !state.saved {
-            task.end_busy();
-            storage_activity(false);
-            state.saved = panel
-                .and_then(|panel| unsafe { ui::saved(panel) }.map_err(|_| ()))
-                .is_ok();
-            if !state.saved {
-                state.numbers = Some([NATIVE_OBJECT, 0]);
-            }
-            return 0;
-        }
-        match panel.and_then(|panel| unsafe { ui::acknowledged(panel) }.map_err(|_| ())) {
-            Ok(false) => return 0,
-            Ok(true) => {
-                state.saved = false;
-                state.numbers = None;
-                return task.finish(true);
-            }
-            Err(()) => {
-                state.saved = false;
-                state.numbers = Some([NATIVE_OBJECT, 0]);
-                return 0;
-            }
-        }
-    }
-    // Any other result comes at once, as numbers under the original's line
+    // Every result comes at once, as numbers under the original's line
     // about the HOME Menu. That screen does not end: nothing can go on in
     // this patch. Bank is closed from the HOME Menu.
     state.notice.done(task, first, second)

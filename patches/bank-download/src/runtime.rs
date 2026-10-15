@@ -140,8 +140,6 @@ struct Runtime {
     /// Whether the task 9 that shows the result has brought up the loading
     /// panel, as the task that looked at the card did.
     panel: bool,
-    /// The original's message for a successful save is up.
-    saved: bool,
     notice: Notice,
 }
 struct State(UnsafeCell<Runtime>);
@@ -156,7 +154,6 @@ static STATE: State = State(UnsafeCell::new(Runtime {
     stage: Stage::Looking,
     numbers: None,
     panel: false,
-    saved: false,
     notice: Notice::new(PACKAGE),
 }));
 struct Guard;
@@ -232,7 +229,7 @@ impl Runtime {
         unsafe {
             self.job(task, |state| {
                 let panel = task.ui().map_err(|_| [NATIVE_OBJECT, 0])?;
-                ui::loading(panel, ui::BANK_LOADING_MESSAGE).map_err(|_| [NATIVE_OBJECT, 0])?;
+                ui::loading(panel, ui::CREATING_MESSAGE).map_err(|_| [NATIVE_OBJECT, 0])?;
                 // The task's +1c continuation is this patch's poller while
                 // it looks. No FS call occurs here.
                 task.begin_busy();
@@ -252,6 +249,12 @@ impl Runtime {
     unsafe fn write(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
         unsafe {
             self.job(task, |state| {
+                // The native server load left this panel active. Only its text
+                // changes for local work; sound and animation keep running.
+                ui::loading_message(
+                    task.ui().map_err(|_| [NATIVE_OBJECT, 0])?,
+                    ui::CREATING_MESSAGE,
+                );
                 let object = task.bank_pointer().map_err(|_| [NATIVE_OBJECT, 0])?;
                 let bank = NativeBank::from_raw(object).map_err(|_| [NATIVE_OBJECT, 0])?;
                 let live = bank.snapshot().map_err(|_| [NATIVE_OBJECT, 0])?.as_bytes();
@@ -372,46 +375,11 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
             // from. The screen comes on the next frame.
             state.panel = true;
             if let Ok(panel) = task.ui() {
-                let _ = unsafe { ui::loading(panel, ui::BANK_LOADING_MESSAGE) };
+                let _ = unsafe { ui::loading(panel, ui::CREATING_MESSAGE) };
             }
             task.begin_busy();
             unsafe { write_word(raw, 0x10, 1) };
             return 0;
-        }
-        if [first, second] == [DONE, WRITTEN] {
-            // Written: the original's ending of a successful save, and after
-            // A the start screen. The next START looks at the card again and
-            // finds the Bank. A message that cannot be shown leaves the
-            // numbers instead.
-            let panel = task.ui().map_err(|_| ());
-            if !state.saved {
-                task.end_busy();
-                state.saved = panel
-                    .and_then(|panel| unsafe { ui::saved(panel) }.map_err(|_| ()))
-                    .is_ok();
-                if !state.saved {
-                    state.numbers = Some([NATIVE_OBJECT, 0]);
-                }
-                return 0;
-            }
-            state.saved = false;
-            return match panel.and_then(|panel| unsafe { ui::acknowledged(panel) }.map_err(|_| ()))
-            {
-                Ok(false) => {
-                    state.saved = true;
-                    0
-                }
-                Ok(true) => {
-                    state.numbers = None;
-                    state.panel = false;
-                    state.stage = Stage::Saved;
-                    task.finish(true)
-                }
-                Err(()) => {
-                    state.numbers = Some([NATIVE_OBJECT, 0]);
-                    0
-                }
-            };
         }
         // The numbers are the result, under the original's line about the
         // HOME Menu. That screen does not end: Bank is closed from the HOME

@@ -1,7 +1,8 @@
 //! Task routing after native 002a5580 has chosen its destination.
 //!
 //! START enters task 3, whose update runs only the conversion. No game scan
-//! runs. Cleanup (0x14) then leads back to the start screen.
+//! runs. Its result screen stays until Bank is closed. If the task cannot
+//! show that screen, cleanup (0x14) leads back to the start screen.
 
 pub const SCAN: u32 = 3;
 pub const CLEANUP: u32 = 0x14;

@@ -103,7 +103,7 @@ After START, migration checks existing local extdata before any cartridge or ins
 
 It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
-This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. A conversion ends with the original's message for a successful save and the start screen; every other result is two numbers under the original's line about the HOME Menu. The runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
+This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with the version/package label and two numbers. `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. The runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
 
 ### The download from the official server
 
@@ -119,10 +119,11 @@ After START, download checks local extdata before contacting anything. If no off
 
 What it checks in the original's code is listed in [internals.md](internals.md#the-download-patch).
 
-Like the migration, it ends a download with the original's message for a successful save and the start screen; START then shows `0000D0AD 00000002`. Every other result is two numbers under the original's line about the HOME Menu:
+Local inspection and file writing use the original preparation message and power-off warning. Native online phases keep their own messages. Like migration, every completed result stays under the original's line about the HOME Menu, with the version/package label and two numbers. Success appears after native session release and cleanup, with no success message, sound or A press. Close Bank from HOME before switching packages or reopening to check it again:
 
 | Numbers | Meaning |
 | --- | --- |
+| `0000D0AD 00000001` | the Bank was downloaded and written successfully |
 | `0000D0AD 00000002` | an offline Bank was on the card already; nothing was contacted or changed |
 | `00000BAD 00000001` | the server holds no Bank for this console; nothing was created or changed |
 | any other pair | the files could not be read or written; the numbers are the offline Bank's ([bank.md](bank.md#troubleshooting)) |

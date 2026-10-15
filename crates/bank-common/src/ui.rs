@@ -141,7 +141,8 @@ pub unsafe fn acknowledged(ui: *mut u8) -> Result<bool, Error> {
     Ok(unsafe { poll(context) } == 4)
 }
 
-/// Native message 2, shown by task 9 only while it creates a new Bank.
+/// Native message 2: preparing Bank, with the warning not to turn off power.
+/// Task 9 uses it for creation; utilities use it for their local work.
 pub const CREATING_MESSAGE: u32 = 2;
 /// Native message 0xE: "Communicating with the Pokémon Bank server...".
 /// The scene set-up shows it after game selection, before task 0x10 loads
@@ -164,11 +165,20 @@ pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
     pointer(unsafe { word(ui, 0x94) })?;
     unsafe {
         let open_status: unsafe extern "aapcs" fn(*mut u8) = transmute(0x001d_5b44usize);
-        let show_message: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(0x0025_da24usize);
         open_status(ui);
-        show_message(ui, message);
+        loading_message(ui, message);
     }
     Ok(())
+}
+
+/// Changes only the native loading text, retaining the panel, sound and spinner.
+/// # Safety
+/// `ui` has loading's native lifetime contract and its loading panel is already
+/// active, set up by `loading` or the original's native task initializer.
+pub unsafe fn loading_message(ui: *mut u8, message: u32) {
+    let show_message: unsafe extern "aapcs" fn(*mut u8, u32) =
+        unsafe { transmute(0x0025_da24usize) };
+    unsafe { show_message(ui, message) };
 }
 
 /// The three operations native tasks perform when loading ends: stop sound
