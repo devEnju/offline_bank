@@ -53,6 +53,16 @@ cargo +stable fmt --all -- --check
 
 The tests run on the PC and cover the storage format, a power cut injected at every write of a save, Miles rules, routing, deliveries into the transport box, the SD-save rules, and the builder. What only a console can show is in [testing.md](testing.md).
 
+### CRC throughput on the host
+
+The checksum integration tests compare the table implementation with the original bitwise calculation, including exhaustive one-byte and two-byte inputs and streamed native bodies. The throughput benchmark is ignored by normal test runs; invoke it explicitly, twice with the host otherwise idle:
+
+```powershell
+cargo +stable test -p offline-core --test checksum --release --locked --offline crc32_throughput -- --ignored --exact --nocapture
+```
+
+It uses the workspace's release settings, warms up both implementations, and reports median throughput and their ratio across seven samples, alternating their order. Inputs are a journal's 136 checksummed bytes, a 512-byte read chunk, the Bank file, and the native body, including body updates in 512-byte chunks. Data generation and allocation are outside timing; input, function, and output pass through `black_box`. These are PC measurements of CRC work, not ARM11 timings or total loading speed. Console comparisons are described in [testing.md](testing.md#loading-time-comparison).
+
 ### Test builds for an interrupted save
 
 Recovery after a power cut cannot be triggered on demand on a console, so one extra Bank package exists for rehearsing it. It is built behind a cargo feature that is off by default and is never part of a release.

@@ -357,6 +357,8 @@ Without the marker a start begins again from the untouched old files; with it, f
 
 ### The journal
 
+Checksums use CRC-32/ISO-HDLC: reflected polynomial `0xEDB88320`, initial state `0xFFFFFFFF`, and final inversion. [checksum.rs](../crates/offline-core/src/checksum.rs) updates one byte at a time through a 256-entry table generated at compile time. Each linked payload holds one read-only 1 KiB table, with no runtime initialization. One-shot and incremental checksums are identical to the bitwise calculation, so stored bytes and format versions are unchanged and no migration is needed. The linker rounds payload regions to 4 KiB pages; the allocation increase can exceed the table's size.
+
 [format.rs](../crates/offline-core/src/format.rs), [store.rs](../crates/offline-core/src/store.rs). The record names the copy of each file that belongs to the current save and that copy's CRC-32, the same for a save in progress together with what identifies its game, and a delivery from Transporter that waits. A copy belongs to a save only if its bytes have the checksum the record names. Bank and Transporter read and write it with the same code. 140 bytes, little endian:
 
 | Bytes | Field | Written by |

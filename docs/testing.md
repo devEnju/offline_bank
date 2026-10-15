@@ -48,6 +48,23 @@ With the normal Bank and Transporter packages.
 | 3 | Transfer from a Generation 5 game with Transporter. Back on its title screen, press START again. Then open Bank, take the Pokémon out of the transport box, Save and Quit. Start Transporter again and press START. | The transfer completes. The second START answers with the "Pokémon remains in the Transport Box" message and returns to the title screen, without a game list. In Bank the Pokémon are there once. Afterwards START leads to the game list again. |
 | 4 | Start a game, press HOME, and start Bank from the HOME Menu without closing the game first. Press START, pick a game, look at the boxes, and leave; once with Save and Quit and once without saving. Back on the start screen, press HOME. | The HOME Menu appears, both times |
 
+## Loading-time comparison
+
+Compare packages built with the bitwise CRC and the table CRC on the same console, SD card, and game. Keep both files of each package together. Back up the starting Bank extdata and game saves, and restore the same starting state before each run; for migration, restore the previous-format Bank each time. For creation, start with empty Bank extdata each time. Follow the backup and test-data precautions above.
+
+Repeat each operation five times per package, alternating packages. Record the console model, package IDs, and elapsed times outside this page; compare medians. Use video frames or the same timing method for both packages, with these endpoints:
+
+| Operation | Start | End |
+| --- | --- | --- |
+| Creation | The "Preparing Pokémon Bank for your use…" panel appears after the welcome | Game selection is usable |
+| Reopening | START on Bank's title screen with an existing Bank | Game selection is usable |
+| Loading a game | Confirm the selected game | Boxes are usable, answering the same reward prompts in both runs |
+| Saving | Confirm Save and Quit after the same moves | The success message appears |
+| Migration | START with the same previous-format Bank | The conversion result appears |
+| Transporter delivery | Confirm transfer from the same Gen 5 Box 1, with Bank's transport box empty | The transfer-complete message appears |
+
+The spinner and loading sound must retain their expected continuity in both packages. Reopen after saving, and open Bank after migration and Transporter delivery; all expected Pokémon and metadata must persist, with no checksum errors. CRC timings on the PC do not establish a console speedup: SD access, native game work, and prompts also contribute to these intervals.
+
 ## Bank, feature by feature
 
 With the normal Bank package. What each feature is meant to do is in [bank.md](bank.md).
