@@ -26,7 +26,7 @@ SECTIONS {
     .text : {
         FILL(0)
         KEEP(*(.text.bank_migrate_next))
-        KEEP(*(.text.bank_migrate_open))
+        KEEP(*(.text.bank_migrate_scan))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } :payload_rx

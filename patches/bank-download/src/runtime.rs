@@ -1,10 +1,8 @@
 //! The hooks of the download patch, on Bank's main thread.
 //!
-//! The router hook asks the original and changes five of its answers
-//! (`navigation`). Task 9, "open Bank", is the patch's own twice and the
-//! original's in between: first it looks at the card before anything is
-//! contacted, at the end it shows the result as two numbers under the
-//! original's line about the HOME Menu, which stays. The load is the one
+//! Task 3 first checks local data before any native scan runs, then keeps
+//! archive and first-start setup without detecting games. Task 9 runs
+//! online and shows the final result after cleanup. The load is the one
 //! the original made for Pokémon HOME, which needs no game. The reward
 //! step, task 0xc, is the patch's: it writes what the original loaded and
 //! ends as cancelled, which the original answers by leaving without saving.
@@ -20,7 +18,7 @@ use bank_common::{
     session,
     task::{
         checked_pointer, read_word, storage_activity, write_word, Notice, Task, FS_SESSION,
-        TASK_OPEN, TASK_REWARD_GUARD,
+        TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN,
     },
     ui,
     worker::{JobId, Service, Shared, Worker, WorkerError},
@@ -47,6 +45,8 @@ const STORAGE_INVALID: u32 = 5;
 /// takes, `bank15::OPEN_TASK`).
 const OPEN_UPDATE: usize = 0x002a_e568;
 const OPEN_BUSY: usize = 0x002b_4a20;
+const SCAN_UPDATE: usize = 0x002a_be08;
+const SCAN_BUSY: usize = 0x002b_4a20;
 /// What the server's reply says about this console's Bank, a byte of the
 /// reply object every task holds at `+0x28`: with 0x35 the original's task 9
 /// greets the user and creates a Bank on the server (002ae620).
@@ -88,12 +88,19 @@ impl Service for Files {
         }
         let files = ExtFiles { session };
         match job {
-            Job::Look { .. } => match download::present(files) {
-                Ok(true) => Ok(Reply::Present),
-                Ok(false) => Ok(Reply::Absent),
-                Err(bank_files::Error::Io(error)) => Err(fs_error(error, STORAGE_OPEN)),
-                Err(error) => Err(files_error(error, STORAGE_INVALID)),
-            },
+            Job::Look { .. } => {
+                if !unsafe { fs::ExtdataStorage::archive_exists(session) }
+                    .map_err(|error| fs_error(error, STORAGE_OPEN))?
+                {
+                    return Ok(Reply::Absent);
+                }
+                match download::present(files) {
+                    Ok(true) => Ok(Reply::Present),
+                    Ok(false) => Ok(Reply::Absent),
+                    Err(bank_files::Error::Io(error)) => Err(fs_error(error, STORAGE_OPEN)),
+                    Err(error) => Err(files_error(error, STORAGE_INVALID)),
+                }
+            }
             Job::Write { .. } => match download::write(files, staging) {
                 Ok(true) => Ok(Reply::Written),
                 Ok(false) => Ok(Reply::Present),
@@ -219,7 +226,7 @@ impl Runtime {
             }
         }
     }
-    /// Task 9 before anything is contacted: the loading panel, and the
+    /// Task 3 before anything is contacted: the loading panel, and the
     /// worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
         unsafe {
@@ -262,7 +269,7 @@ impl Runtime {
 }
 
 /// Replaces only BL 002A5580 at 002A5A2C. The original router is called
-/// first and decides; three of its answers are changed (`navigation`).
+/// first and decides; utility routing is applied afterward (`navigation`).
 /// # Safety
 /// Called on Bank's main thread with the live initialized task manager. The
 /// bootstrap, paired exheader and every hook must be installed for the exact
@@ -278,7 +285,72 @@ pub unsafe extern "aapcs" fn bank_download_next(manager: *mut u8, current: u32) 
     let state = guard.state();
     let destination = navigation::destination(current, native, state.stage);
     state.stage = navigation::next_stage(current, state.stage);
+    if destination == navigation::SCAN {
+        storage_activity(true);
+    }
     destination
+}
+
+/// Local preflight runs before the native scan's first update. With no Bank,
+/// preserve native archive/first-start setup and skip game detection.
+unsafe fn scan(raw: *mut u8, original: usize) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
+        return 1;
+    };
+    let Some(mut guard) = Guard::acquire() else {
+        return 0;
+    };
+    let state = guard.state();
+    if state.numbers.is_none() && state.stage == Stage::Looking {
+        match unsafe { state.look(task) } {
+            Ok(None) => return 0,
+            Ok(Some(Reply::Absent)) => {
+                state.stage = Stage::Preparing;
+                state.owner = 0;
+                state.panel = false;
+                task.end_busy();
+                unsafe { write_word(raw, 0x10, 0) };
+                // The callback may be the worker's forced busy poll. Let
+                // the next frame enter native state 0 through the update;
+                // the native busy poll expects a real native file job.
+                return 0;
+            }
+            Ok(Some(_)) => state.decide([DONE, PRESENT]),
+            Err(numbers) => state.decide(numbers),
+        }
+    }
+    if let Some([first, second]) = state.numbers {
+        let shown = state.notice.done(task, first, second);
+        if shown != 0 {
+            state.stage = Stage::Looking;
+        }
+        return shown;
+    }
+    if state.stage != Stage::Preparing {
+        return task.finish(false);
+    }
+    let native_state = unsafe { read_word(raw, 0x10) };
+    unsafe { write_word(raw, 0x10, navigation::preparation_state(native_state)) };
+    // The native busy poll can call the hooked update; release the guard first.
+    drop(guard);
+    let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(original) };
+    unsafe { original(raw) }
+}
+
+/// Replaces task 3's update before game detection.
+/// # Safety
+/// The native task driver supplies the live initialized scan task on the UI thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_download_scan(raw: *mut u8) -> u32 {
+    unsafe { scan(raw, SCAN_UPDATE) }
+}
+
+/// Replaces task 3's busy poll.
+/// # Safety
+/// As `bank_download_scan`.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_download_scan_busy(raw: *mut u8) -> u32 {
+    unsafe { scan(raw, SCAN_BUSY) }
 }
 
 /// Task 9, shared by its update and its busy poll. `original` is the
@@ -292,23 +364,6 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
         return unsafe { original(raw) };
     };
     let state = guard.state();
-    if state.numbers.is_none() && state.stage == Stage::Looking {
-        match unsafe { state.look(task) } {
-            Ok(None) => return 0,
-            Ok(Some(Reply::Absent)) => {
-                // Nothing is on the card. The task ends, and the router
-                // sends the session on to the original's connect.
-                state.stage = Stage::NoneFound;
-                state.owner = 0;
-                state.panel = false;
-                storage_activity(false);
-                task.end_busy();
-                return task.finish(true);
-            }
-            Ok(Some(_)) => state.decide([DONE, PRESENT]),
-            Err(numbers) => state.decide(numbers),
-        }
-    }
     if let Some([first, second]) = state.numbers {
         if !state.panel {
             // A task 9 that begins with the result, after cleanup: it is

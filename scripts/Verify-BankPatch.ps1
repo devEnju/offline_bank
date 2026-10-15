@@ -115,11 +115,11 @@ try {
     $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_message_shown','bank_version_shown')
     $exportNames=@{
         offline=$offlineNames
-        migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown','bank_version_shown')
+        migrate=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
-        download=@('bank_download_next','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
+        download=@('bank_download_next','bank_download_scan','bank_download_scan_busy','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
     }[$Patch]
-    $exportCount=@{offline=7;migrate=4;test=9;download=5}[$Patch]
+    $exportCount=@{offline=7;migrate=4;test=9;download=7}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
     $foreign=@{offline=@('bank_migrate_*','bank_download_*');migrate=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Patch]
@@ -187,19 +187,28 @@ try {
     )
     # Task 9, "open Bank": its update and busy poll. The download patch has
     # an entry for each, as each calls the function its slot held.
-    $open=@{offline='bank_offline_load';migrate='bank_migrate_open';test='bank_offline_load';download='bank_download_open'}[$Patch]
+    $open=@{offline='bank_offline_load';migrate='bank_migrate_scan';test='bank_offline_load';download='bank_download_open'}[$Patch]
     $openBusy=if ($Patch -eq 'download') { 'bank_download_open_busy' } else { $open }
-    $pointers=@(
-        @(0x361cfc,0x2ae568,$open),
-        @(0x361d0c,0x2b4a20,$openBusy)
-    )
+    $pointers=@()
+    if ($Patch -eq 'migrate') {
+        $pointers+=@(
+            @(0x361ac4,0x2abe08,'bank_migrate_scan'),
+            @(0x361ad4,0x2b4a20,'bank_migrate_scan')
+        )
+    } else {
+        $pointers+=@(
+            @(0x361cfc,0x2ae568,$open),
+            @(0x361d0c,0x2b4a20,$openBusy)
+        )
+    }
     if ($Patch -eq 'download') {
         # The reward step's update writes the files and ends as cancelled.
-        # The scan goes on without its Pokemon HOME question when it finds no
-        # game: beq 002ac4c4 becomes beq 002aca50, a whole instruction word.
+        # Local preflight replaces the scan before game detection; its
+        # native archive/first-start preparation runs only after absence.
         $pointers+=@(
             @(0x361be4,0x2ad1bc,'bank_download_save'),
-            @(0x2ac564,0x0affffd6L,0x0a000139L)
+            @(0x361ac4,0x2abe08,'bank_download_scan'),
+            @(0x361ad4,0x2b4a20,'bank_download_scan_busy')
         )
     } else {
         $pointers+=@(
@@ -244,7 +253,11 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=25;migrate=16;test=27;download=9}[$Patch]
+    $regions=@{offline=25;migrate=16;test=27;download=10}[$Patch]
+    # SDK CreateThread adds 0x20 to the worker's SDK argument before SVC 08.
+    foreach($check in @(@(0x232144,0xe3550020L),@(0x23214c,0x92850020L),@(0x232154,0x9a000008L),@(0x232160,0xe3500027L),@(0x232164,0x92800018L),@(0x232174,0xe3500040L),@(0x232178,0x83e00000L),@(0x2321b8,0xaef62b00L),@(0x2321bc,0x93725b00L))) {
+        Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1]) 'Native SDK thread-priority conversion'
+    }
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     # Claim state 0x1b reaches the Bank field at 174 only behind this test of
     # the session's count (cmn r0, #1; beq 002aac54). The patch keeps the

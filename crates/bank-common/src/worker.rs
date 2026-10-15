@@ -15,6 +15,13 @@ use core::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+// SDK 002320d4 adds 0x20 to priorities in 0..=0x20 before SVC 08.
+// Keep the desired kernel priority separate from the SDK argument.
+#[cfg(any(test, target_arch = "arm"))]
+const WORKER_KERNEL_PRIORITY: u32 = 0x31;
+#[cfg(any(test, target_arch = "arm"))]
+const WORKER_SDK_PRIORITY: u32 = WORKER_KERNEL_PRIORITY - 0x20;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JobId(u32);
 
@@ -191,11 +198,6 @@ mod arm {
     const STACK_SIZE: usize = 0x8000;
     const GUARD_SIZE: usize = 64;
     const GUARD_BYTE: u8 = 0xa7;
-    /// One below the main thread (`0x30` in Bank's exheader), on the same
-    /// core, so the worker runs while the main thread waits for the next
-    /// frame. Above it, every checksum or comparison held off the main
-    /// thread, and with it frames and the loading sound.
-    const WORKER_PRIORITY: u32 = 0x31;
     #[repr(C, align(8))]
     struct Stack([u8; STACK_SIZE]);
     #[repr(C)]
@@ -445,7 +447,7 @@ mod arm {
                 entry as *const () as usize,
                 &context,
                 stack.add(STACK_SIZE),
-                WORKER_PRIORITY,
+                WORKER_SDK_PRIORITY,
                 -2,
                 0,
             )
@@ -496,6 +498,14 @@ pub use arm::{Service, Shared, Worker};
 mod tests {
     extern crate std;
     use super::*;
+
+    #[test]
+    fn the_sdk_argument_maps_to_a_kernel_priority_below_the_main_thread() {
+        assert_eq!(WORKER_SDK_PRIORITY, 0x11);
+        assert!((0..=0x1f).contains(&WORKER_SDK_PRIORITY));
+        assert_eq!(WORKER_SDK_PRIORITY + 0x20, WORKER_KERNEL_PRIORITY);
+        assert_eq!(WORKER_KERNEL_PRIORITY, 0x30 + 1);
+    }
     use std::{
         sync::{Arc, Barrier},
         thread,

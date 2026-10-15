@@ -1,7 +1,7 @@
 //! The two hooks of the migration patch, on Bank's main thread.
 //!
-//! The router hook leads from the game scan to task 9, "open Bank", and from
-//! there back to the start screen. The task 9 hook shows the loading
+//! The scan task runs the conversion before any game is checked and then
+//! returns through cleanup to the start screen. Its hook shows the loading
 //! screen and has the worker run the conversion. A conversion ends with the
 //! original's message for a successful save and the start screen; any other
 //! result is shown as two numbers under the original's line about the HOME
@@ -17,7 +17,7 @@ use bank_common::{
     fs::{self, ExtdataStorage},
     task::{
         checked_pointer, read_word, storage_activity, write_word, Notice, Task, FS_SESSION,
-        TASK_OPEN,
+        TASK_SCAN,
     },
     ui,
     worker::{JobId, Service, Shared, Worker, WorkerError},
@@ -79,6 +79,14 @@ impl Service for Converter {
         if job.session == 0 {
             // Bank's own FS session is not initialized yet.
             return Err(WorkerError::operation(STORAGE_OPEN, 0x7800_0000));
+        }
+        if !unsafe { ExtdataStorage::archive_exists(job.session) }.map_err(|error| {
+            WorkerError::operation(
+                migrate::FAILED + migrate::Step::ReadOld as u32,
+                error.diagnostic(),
+            )
+        })? {
+            return Ok([migrate::DONE, Done::NoBank as u32]);
         }
         let mut files = ExtFiles {
             session: job.session,
@@ -145,7 +153,7 @@ impl Runtime {
         }
         self.worker.as_mut().ok_or([NATIVE_OBJECT, 0])
     }
-    /// One frame of task 9. `Ok(None)` while the conversion runs.
+    /// One frame of the utility task. `Ok(None)` while the conversion runs.
     unsafe fn open(&mut self, task: Task) -> Result<Option<[u32; 2]>, [u32; 2]> {
         let Some(id) = self.job else {
             let panel = task.ui().map_err(|_| [NATIVE_OBJECT, 0])?;
@@ -188,7 +196,7 @@ impl Runtime {
 }
 
 /// Replaces only BL 002A5580 at 002A5A2C. The original router is still
-/// called; its answer is narrowed to the way to task 9 and back.
+/// called; its answer is narrowed to the utility task and cleanup.
 /// # Safety
 /// Called on Bank's main thread with the live initialized task manager. The
 /// bootstrap, paired exheader and both hooks must be installed for the exact
@@ -214,11 +222,6 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
     if cancelled {
         return navigation::CLEANUP;
     }
-    if matches!((current, outcome), (3, 4 | 0x17)) {
-        unsafe {
-            manager.add(0x1c).write(0);
-        }
-    }
     let destination = navigation::destination(current, outcome, next);
     // Refuse HOME and sleep from the scan to the end of the conversion.
     if navigation::loads(destination) {
@@ -229,14 +232,14 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
     destination
 }
 
-/// Replaces the update and busy-poll virtuals of task 9; its constructor,
+/// Replaces the update and busy-poll virtuals of task 3; its constructor,
 /// init and end stay native.
 /// # Safety
 /// The trusted Bank task driver supplies the live task object on the main
 /// thread, after native init.
 #[no_mangle]
-pub unsafe extern "aapcs" fn bank_migrate_open(raw: *mut u8) -> u32 {
-    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_OPEN]) }) else {
+pub unsafe extern "aapcs" fn bank_migrate_scan(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
         return 1;
     };
     let Some(mut guard) = Guard::acquire() else {
@@ -252,7 +255,7 @@ pub unsafe extern "aapcs" fn bank_migrate_open(raw: *mut u8) -> u32 {
     let [first, second] = state.numbers.unwrap_or([NATIVE_OBJECT, 0]);
     if [first, second] == [migrate::DONE, Done::Converted as u32] {
         // Converted: the original's ending of a successful save, and after
-        // A the start screen, which the router answers task 9 with. The
+        // A the start screen, reached through the router's cleanup. The
         // next START converts again and finds the work done.
         // A message that cannot be shown leaves the numbers instead.
         let panel = task.ui().map_err(|_| ());

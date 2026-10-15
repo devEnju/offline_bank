@@ -1,10 +1,9 @@
 //! The migration patch: converts the Bank of the previous release and does
-//! nothing else. It makes the offline patch's edits on the way from the
-//! start screen to "open Bank" and none behind it.
+//! nothing else. Task 3 runs the conversion without its native game scan.
 
 use super::{
     archive_preservation_candidate, first_start_edits, message_hook, router_call, startup_call,
-    version_call, word, Profile, MESSAGE_ENTRY, OPEN_TASK, VERSION_ENTRY,
+    version_call, word, Profile, MESSAGE_ENTRY, SCAN_TASK, VERSION_ENTRY,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
 
@@ -12,7 +11,7 @@ pub const PROFILE: Profile = Profile {
     name: "migrate",
     entries: &[
         "bank_migrate_next",
-        "bank_migrate_open",
+        "bank_migrate_scan",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
@@ -26,7 +25,7 @@ fn edits(_: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
     hook_edits(
         payload.bootstrap_entry,
         payload.export("bank_migrate_next")?,
-        payload.export("bank_migrate_open")?,
+        payload.export("bank_migrate_scan")?,
         payload.export(MESSAGE_ENTRY)?,
         payload.export(VERSION_ENTRY)?,
     )
@@ -46,9 +45,9 @@ fn hook_edits(
         message_hook(message)?,
         version_call(version)?,
     ];
-    // Task 9 keeps its native constructor, init and end; its update and
+    // Task 3 keeps its native constructor, init and end; its update and
     // busy poll run the conversion.
-    for (address, expected) in OPEN_TASK {
+    for (address, expected) in SCAN_TASK {
         edits.push(word(address, expected, open.to_le_bytes()));
     }
     edits.extend(first_start_edits());
@@ -61,7 +60,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_migration_edits_the_way_to_opening_and_nothing_behind_it() {
+    fn the_migration_replaces_the_scan_and_leaves_online_tasks_original() {
         let edits = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400, 0x3fb600).unwrap();
         assert_eq!(edits.len(), PROFILE.regions - 1);
         let at = |address: u32| {
@@ -69,7 +68,7 @@ mod tests {
                 .iter()
                 .find(|edit| edit.offset == (address - CODE_BASE) as usize)
         };
-        for (address, expected) in OPEN_TASK {
+        for (address, expected) in SCAN_TASK {
             let edit = at(address).unwrap();
             assert_eq!(edit.expected, expected.to_le_bytes());
             assert_eq!(edit.replacement, 0x3fb200u32.to_le_bytes());
@@ -85,6 +84,8 @@ mod tests {
         // Loading, saving, rewards, the timestamp and the scene
         // set-up stay the original's, and so does the main menu.
         for address in [
+            0x00361cfc,
+            0x00361d0c,
             0x001d3bf4,
             offline::SCENE_UPDATE_SLOT,
             0x00361a08,
@@ -107,11 +108,17 @@ mod tests {
     }
 
     #[test]
-    fn every_edit_of_the_migration_is_one_the_offline_patch_makes_at_the_same_place() {
+    fn the_migration_shares_startup_edits_and_has_its_own_utility_task() {
         let migration = hook_edits(0x313910, 0x3fb000, 0x3fb200, 0x3fb400, 0x3fb600).unwrap();
         let offline_edits = offline::sample_edits();
         assert!(migration.len() < offline_edits.len());
         for edit in &migration {
+            if SCAN_TASK
+                .iter()
+                .any(|(address, _)| edit.offset == (address - CODE_BASE) as usize)
+            {
+                continue;
+            }
             let same = offline_edits
                 .iter()
                 .find(|other| other.offset == edit.offset)

@@ -141,6 +141,23 @@ pub(crate) fn version_call(target: u32) -> crate::Result<CheckedEdit> {
 /// the functions they hold.
 pub(crate) const OPEN_TASK: [(u32, u32); 2] = [(0x00361cfc, 0x002ae568), (0x00361d0c, 0x002b4a20)];
 
+/// Task 3's update and busy poll. Utility patches intercept it before games.
+pub(crate) const SCAN_TASK: [(u32, u32); 2] = [(0x00361ac4, 0x002abe08), (0x00361ad4, 0x002b4a20)];
+
+// SDK CreateThread's priority conversion, including its encoded-priority
+// literals. The worker passes SDK 0x11, which this code turns into kernel 0x31.
+const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
+    (0x00232144, 0xe3550020),
+    (0x0023214c, 0x92850020),
+    (0x00232154, 0x9a000008),
+    (0x00232160, 0xe3500027),
+    (0x00232164, 0x92800018),
+    (0x00232174, 0xe3500040),
+    (0x00232178, 0x83e00000),
+    (0x002321b8, 0xaef62b00),
+    (0x002321bc, 0x93725b00),
+];
+
 /// The first start without prompts (docs/internals.md, "First start"):
 /// (virtual address, original word, replacement word). Bank asks for a
 /// language while its own save holds none, and shows its "Precaution for
@@ -206,6 +223,11 @@ pub fn prepare_development_patch(
     exheader: &[u8],
     elf: &[u8],
 ) -> crate::Result<crate::placement::PreparedPlacement> {
+    for (address, expected) in SDK_PRIORITY_CODE {
+        if crate::le32(code, (address - CODE_BASE) as usize)? != expected {
+            return crate::fail("SDK thread-priority conversion is not the reviewed code");
+        }
+    }
     let payload = crate::elf::inspect_payload_elf(elf, profile.entries)?;
     let mut edits = (profile.edits)(code, &payload)?;
     edits.push(payload.bootstrap_edit());
@@ -247,6 +269,29 @@ pub fn prepare_development_patch(
 mod tests {
     use super::*;
     use crate::encode_arm_branch;
+
+    #[test]
+    fn reviewed_sdk_conversion_rejects_a_kernel_priority_used_as_an_sdk_argument() {
+        // Transcription of the checked ARM block at 00232144..00232178.
+        let convert = |sdk: u32| {
+            if sdk <= 0x20 {
+                return sdk + 0x20;
+            }
+            let first = 0xaef6_2b00u32.wrapping_add(sdk);
+            if first <= 0x27 {
+                return first + 0x18;
+            }
+            let last = 0x9372_5b00u32.wrapping_add(sdk);
+            if last > 0x40 {
+                u32::MAX
+            } else {
+                last
+            }
+        };
+        assert_eq!(convert(0x11), 0x31);
+        assert_eq!(convert(0x1f), 0x3f);
+        assert_eq!(convert(0x31), u32::MAX);
+    }
 
     #[test]
     fn preservation_instruction_targets_existing_error_cleanup() {

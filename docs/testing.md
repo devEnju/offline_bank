@@ -322,6 +322,10 @@ Start from a console whose Bank was last used with the old version, and from a b
 | 20 | new Bank | start Bank | boxes, Pokédex, Poké Miles and transport box as they were under the old version |
 | 21 | new Bank and new Transporter | run 3 of [Normal use](#normal-use) | as there |
 
+Repeat runs 18 and 19 with no cartridge and no compatible installed games, restoring the old Bank backup before run 18. Conversion and its results must be the same; no game scan, no-game notice, HOME transfer question, or game selection appears. With the extdata archive absent, START must instead show `0000600D 00000000` and leave the archive absent; an empty existing archive gives the same result without creating Bank files. Read errors must remain errors and must not create or reset data.
+
+The normal, migration, download, and test packages must all start their worker without `00000002 E0E01BFD`. During actual file work the loading animation and sound must continue, HOME and sleep must be refused, and messages that wait must restore them as specified for that package.
+
 Runs 16 and 17 are what keeps the normal patches free of code for earlier versions: an old Bank must be refused by both, with nothing written, and Transporter must stop before it reads any game.
 
 A migration patch never opens the Bank. A conversion ends with the success message and the start screen; every other result is two numbers, under the line about the HOME Menu:
@@ -348,6 +352,8 @@ That a migration refuses a Bank with a Save and Quit in progress, and that a cut
 ## The download from the official server
 
 Package `build/download/`. It needs the live service, an internet connection and the console's Nintendo Network ID. No game is needed, and none is read or saved. Back up Bank's extdata first, and the games on the console, so that run D8 can compare them.
+
+Repeat the local-data refusal and download runs with a cartridge, with only installed games, and with neither. The local extdata result must be independent of game availability; no game detection or HOME transfer question appears. Also test an absent archive and an empty one. Native first-start prompts, when needed, remain. With previous-format or unreadable local data, the patch must stop before connection and preserve every existing file. Online completion still requires a live-service console test.
 
 | Run | Do | Must show |
 | --- | --- | --- |

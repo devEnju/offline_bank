@@ -1,14 +1,13 @@
 //! Task routing after native 002a5580 has chosen its destination.
 //!
-//! The session is the original's: game scan (3), connect and sign-in (5, 8,
+//! The session keeps local preflight and native setup (3), connect and sign-in (5, 8,
 //! 0xf), open Bank (9), the load the original made for Pokémon HOME (0x1c),
 //! which reads and saves no game, the reward step (0xc), leaving without
-//! saving (0x13), cleanup (0x14). The patch changes five answers:
+//! saving (0x13), cleanup (0x14):
 //!
-//! - After the game scan task 9 runs once before anything is contacted, to
-//!   look for a Bank on the card (`Stage::Looking`).
-//! - When it found none, the original's connect follows (`Stage::NoneFound`
-//!   says the look is over and nothing was there).
+//! - Task 3 first looks for a local Bank (`Stage::Looking`). With none,
+//!   only archive preparation and first-start bookkeeping run
+//!   (`Stage::Preparing`); game detection is skipped before connecting.
 //! - After task 9 has opened the Bank online, the HOME load follows, also
 //!   where the original would show its main menu: no game is chosen. The
 //!   original goes there itself when its scan found no game (002a576c).
@@ -44,8 +43,8 @@ pub const CANCELLED: u8 = 0x15;
 pub enum Stage {
     /// The card has not been looked at.
     Looking,
-    /// The look has just ended and found no Bank: go online.
-    NoneFound,
+    /// No local Bank: run native archive/first-start setup without scanning games.
+    Preparing,
     /// Online; the original decides.
     Online,
     /// A result exists and is to be shown.
@@ -58,10 +57,8 @@ pub enum Stage {
 /// `native` is what the original router returned for the task that ended.
 pub fn destination(current: u32, native: u32, stage: Stage) -> u32 {
     match (current, stage) {
-        // The original answers 5, its connect, or cleanup when its scan
-        // found nothing it can go on with; only the first is changed.
-        (SCAN, Stage::Looking) if native == CONNECT => OPEN,
-        (OPEN, Stage::NoneFound) => CONNECT,
+        // No native continuation can connect before the local check finishes.
+        (SCAN, Stage::Looking) => CLEANUP,
         // Opened online: the original answers its menu, or this load
         // itself when its scan found no game.
         (OPEN, Stage::Online) if native == MENU => HOME_LOAD,
@@ -73,14 +70,24 @@ pub fn destination(current: u32, native: u32, stage: Stage) -> u32 {
     }
 }
 
-/// The stage after `destination` was asked with `stage`: the one-frame
-/// "none found" becomes "online" once the connect was chosen, and "saved"
+/// The stage after `destination` was asked with `stage`:
+/// preparation becomes "online" once the scan task ends, and "saved"
 /// becomes "looking" once cleanup was.
 pub fn next_stage(current: u32, stage: Stage) -> Stage {
     match (current, stage) {
-        (OPEN, Stage::NoneFound) => Stage::Online,
+        (SCAN, Stage::Preparing) => Stage::Online,
+        (CLEANUP, Stage::Preparing | Stage::Online) => Stage::Looking,
         (OPEN, Stage::Saved) => Stage::Looking,
         _ => stage,
+    }
+}
+
+/// Native task 3 state 0 prepares the archive. States 1..=0x11 detect games;
+/// state 0x12 starts the native save/account bookkeeping needed online.
+pub const fn preparation_state(state: u32) -> u32 {
+    match state {
+        1..=0x11 => 0x12,
+        _ => state,
     }
 }
 
@@ -134,13 +141,13 @@ mod tests {
     #[test]
     fn the_card_is_looked_at_before_anything_is_contacted() {
         assert_eq!(original(SCAN, 4, false), CONNECT);
-        assert_eq!(destination(SCAN, CONNECT, Stage::Looking), OPEN);
+        assert_eq!(destination(SCAN, CONNECT, Stage::Looking), CLEANUP);
         // A scan that failed ends as the original ends it.
         assert_eq!(destination(SCAN, CLEANUP, Stage::Looking), CLEANUP);
         // Nothing on the card: the original's connect, and from then on
         // every answer is the original's.
-        assert_eq!(destination(OPEN, 4, Stage::NoneFound), CONNECT);
-        assert_eq!(next_stage(OPEN, Stage::NoneFound), Stage::Online);
+        assert_eq!(destination(SCAN, CONNECT, Stage::Preparing), CONNECT);
+        assert_eq!(next_stage(SCAN, Stage::Preparing), Stage::Online);
         assert_eq!(next_stage(SCAN, Stage::Looking), Stage::Looking);
     }
 
@@ -156,7 +163,14 @@ mod tests {
                         _ => native,
                     };
                     assert_eq!(destination(current, native, Stage::Online), expected);
-                    assert_eq!(next_stage(current, Stage::Online), Stage::Online);
+                    assert_eq!(
+                        next_stage(current, Stage::Online),
+                        if current == CLEANUP {
+                            Stage::Looking
+                        } else {
+                            Stage::Online
+                        }
+                    );
                 }
             }
         }
@@ -166,8 +180,8 @@ mod tests {
     /// task that ends with the original's outcome for a failure, 3; every
     /// other ends without trouble, the reward step as cancelled.
     fn session(home: bool, failed: Option<u32>) -> Vec<u32> {
-        let mut current = OPEN;
-        let mut stage = Stage::NoneFound;
+        let mut current = SCAN;
+        let mut stage = Stage::Preparing;
         let mut seen = Vec::new();
         loop {
             let outcome = match current {
@@ -222,7 +236,7 @@ mod tests {
     #[test]
     fn a_result_is_shown_after_cleanup_and_only_then() {
         assert_eq!(destination(CLEANUP, 2, Stage::Decided), OPEN);
-        for stage in [Stage::Looking, Stage::NoneFound, Stage::Online] {
+        for stage in [Stage::Looking, Stage::Preparing, Stage::Online] {
             assert_eq!(destination(CLEANUP, 2, stage), 2);
         }
         // With a result the session still ends the original's way first.
@@ -251,7 +265,23 @@ mod tests {
         assert_eq!(destination(2, original(2, 4, false), Stage::Looking), SCAN);
         assert_eq!(
             destination(SCAN, original(SCAN, 4, false), Stage::Looking),
-            OPEN
+            CLEANUP
         );
+    }
+
+    #[test]
+    fn preparation_skips_every_game_detection_state_but_keeps_native_setup() {
+        assert_eq!(preparation_state(0), 0);
+        for state in 1..=0x11 {
+            assert_eq!(preparation_state(state), 0x12);
+        }
+        for state in 0x12..=0x25 {
+            assert_eq!(preparation_state(state), state);
+        }
+        // No local data allows archive setup; a native setup failure still
+        // cleans up and the next START performs the local check again.
+        assert_eq!(destination(SCAN, CLEANUP, Stage::Preparing), CLEANUP);
+        let stage = next_stage(SCAN, Stage::Preparing);
+        assert_eq!(next_stage(CLEANUP, stage), Stage::Looking);
     }
 }

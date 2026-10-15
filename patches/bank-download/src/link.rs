@@ -11,6 +11,14 @@ mod linked {
         bank_download_payload::runtime::bank_download_next;
     #[used]
     #[link_section = ".bank.link_roots"]
+    static SCAN: unsafe extern "aapcs" fn(*mut u8) -> u32 =
+        bank_download_payload::runtime::bank_download_scan;
+    #[used]
+    #[link_section = ".bank.link_roots"]
+    static SCAN_BUSY: unsafe extern "aapcs" fn(*mut u8) -> u32 =
+        bank_download_payload::runtime::bank_download_scan_busy;
+    #[used]
+    #[link_section = ".bank.link_roots"]
     static OPEN: unsafe extern "aapcs" fn(*mut u8) -> u32 =
         bank_download_payload::runtime::bank_download_open;
     #[used]

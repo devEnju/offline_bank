@@ -77,6 +77,46 @@ mod tests {
     }
 
     #[test]
+    fn damaged_or_unreadable_local_data_is_never_treated_as_an_empty_card() {
+        for unreadable in [false, true] {
+            let disk = Shared::default();
+            assert_eq!(write(disk.clone(), &mut body(0x31, 0x44, 7)), Ok(true));
+            {
+                let mut state = disk.0.borrow_mut();
+                let bank = bank_files::FileName::Bank as u8;
+                if unreadable {
+                    state.unreadable.insert((bank, 0));
+                    state.unreadable.insert((bank, 1));
+                } else {
+                    let bytes = state.files.get_mut(&bank).unwrap();
+                    bytes[0] ^= 1;
+                    bytes[bank_files::RECORD as usize] ^= 1;
+                }
+            }
+            let before = disk.0.borrow().files.clone();
+            assert!(present(disk.clone()).is_err());
+            assert!(write(disk.clone(), &mut body(0x52, 0x66, 0)).is_err());
+            assert_eq!(disk.0.borrow().files, before);
+        }
+    }
+
+    #[test]
+    fn an_inspection_error_never_authorizes_creating_files() {
+        struct Inaccessible;
+        impl bank_files::Files for Inaccessible {
+            type Storage = Handle;
+            fn open(&mut self, _: bank_files::FileName) -> Result<Option<Handle>, ()> {
+                Err(()) // Includes native wrong-size, permission and I/O failures.
+            }
+            fn create(&mut self, _: bank_files::FileName) -> Result<Handle, ()> {
+                panic!("a failed inspection must not reach creation")
+            }
+        }
+        assert!(present(Inaccessible).is_err());
+        assert!(write(Inaccessible, &mut body(0x52, 0x66, 0)).is_err());
+    }
+
+    #[test]
     fn a_downloaded_bank_keeps_nothing_of_the_servers_but_the_bank() {
         // The server's pass count, here one that reads as a date, and
         // something in every other unused place.
