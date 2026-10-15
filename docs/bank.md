@@ -16,16 +16,20 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
 | HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
-| Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original redemption is kept. Server gifts and distributions are skipped. |
+| Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original welcome gift and redemption are kept. Server gifts and distributions are skipped. |
 
 Not included: Pokémon HOME, purchases, event gifts, and import or export tools for save editors.
+
+For an existing Bank, the original warning about removing the Game Card or SD card stays on the same loading screen from START until game selection. The spinner and sound continue while Bank scans the games and opens its local files.
+
+If no compatible save can be read, Bank shows the original missing-save explanation and Pokédex reminder. A advances to the second page; A again closes the dialog and returns to the start screen. The Pokémon HOME question is omitted. No offline Bank is opened or created. Insert a cartridge or make an installed save available, then press START again. A readable save's Pokédex eligibility is checked later, when you select that game, as in the original.
 
 ## First start
 
 The original asks two things when it has no save data of its own yet. Both are gone:
 
 - **Language.** Bank no longer asks and no longer follows an earlier choice: it is in the console's language at every start, as Poké Transporter is. No language is ever stored, and one stored earlier by the original is cleared. A Japanese console gets kana; kanji could only be chosen on the removed screen.
-- **Precaution for Use.** The notice is not shown. Bank goes on as if you had accepted it and creates its save data in the same step ("Preparing Pokémon Bank for your use…"), once.
+- **Precaution for Use.** The notice is not shown. Bank goes on as if you had accepted it and creates its save data in the same step, once.
 
 **If you remove the patch later**, the original finds save data in which the notice is accepted and no language is chosen: it asks for the language and does not show the notice again. That also holds for save data in which the original had stored a language: the patched Bank clears it at its first start, so the original asks again.
 
@@ -44,6 +48,13 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - There is one balance for the whole Bank. Opening Y and then Ultra Sun does not earn twice.
 - The balance stops at the original limit of 65,535.
 
+**The welcome gift.** Once per Bank, the original's welcome gives 100 Miles: its three messages after the game is loaded, then the choices as for any redemption.
+
+- It comes after the first game selection of a Bank that has not had it. A Bank downloaded from the official server had it there.
+- It becomes permanent with the next Save and Quit, together with the Miles. If you leave without saving, it comes again at the next opening, again with 100, never twice.
+- A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, comes first with the original's notice. If you go on to the boxes, the welcome waits for the next opening of a game that can take a gift.
+- The balance stops at 65,535 as always.
+
 **When it is saved.** Miles are added when the selected game has loaded and again at Save and Quit, and become permanent there, in the same step as your boxes. If you exit without saving, nothing changes and the same hours are credited next time. A new Bank starts earning with its first Save and Quit.
 
 **The clock.** The date of the last Save and Quit and the day of the last redemption only move forward.
@@ -58,7 +69,7 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - Battle Points: `Miles ÷ 10` go to the game and the remainder stays. Gen 6 and Gen 7.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, blocks a new claim.
 
-**When the dialog comes.** The original talks about Miles at every opening while the balance is above zero. The patch is quieter:
+**When the dialog comes.** The original talks about Miles at every opening while the balance is above zero. The patch is quieter (apart from the welcome gift, above):
 
 | Balance | Redeemed today | What appears |
 | --- | --- | --- |
@@ -87,23 +98,22 @@ The original import copies; it does not merge within a version.
 
 ## Where the Bank is stored
 
-Ten files inside SD extdata archive `0x00000C9B`, the archive Bank already owns. They come in five pairs:
+Eight files inside SD extdata archive `0x00000C9B`, the archive Bank already owns. They come in four pairs. The first three are the data the original Bank kept on the server, cut into three pieces and otherwise unchanged; nothing is added to them.
 
 | Files | Size of each | Each holds |
 | --- | --- | --- |
-| `/bank.bin`, `/bank.alt.bin` | 730,474 bytes | One set of the 100 boxes with their names, groups, and per-slot data. |
-| `/journal.bin`, `/journal.alt.bin` | 192 bytes | One copy of the record that says which set of boxes is current and whether a save is in progress. |
-| `/dex.bin`, `/dex.alt.bin` | 29,888 bytes | One version of the Pokédex of all eight game versions and their trainer and adventure records. |
-| `/mover.bin`, `/mover.alt.bin` | 7,056 bytes | One version of the transport box: up to 30 Pokémon from Poké Transporter. |
-| `/rewards.bin`, `/rewards.alt.bin` | 80 bytes | One version of what the original has no place for: the part of a Mile below one, and the day of the last redemption. The Miles balance and the date of the last Save and Quit are in `/bank.bin`, where the original keeps them. |
+| `/bank.bin`, `/bank.alt.bin` | 729,800 bytes | One set of the 100 boxes: the Pokémon, each box's name, and what Bank keeps per slot. Nothing else. |
+| `/main.bin`, `/main.alt.bin` | 30,466 bytes | One version of everything else Bank needs: the group names, the Pokédex of all eight game versions with their trainer and adventure records, and everything about Miles (balance, the date of the last Save and Quit, the part of a Mile below one, the day of the last redemption). |
+| `/mover.bin`, `/mover.alt.bin` | 6,990 bytes | One version of the transport box: up to 30 Pokémon from Poké Transporter. |
+| `/journal.bin`, `/journal.alt.bin` | 140 bytes | One copy of the record that ties the others together: which file of each pair belongs to the current save, with a checksum of each; whether a save is in progress, and with which game; and whether Pokémon from Poké Transporter wait to be shown. |
 
 **Why pairs.** If the power fails while the console writes a file, that file can become unreadable as a whole. So Bank never writes into a file that holds something it still needs: a save goes into the file of each pair that is not in use, and only when everything is written does that file become the current one. The two files of a pair take turns. `.alt` means "the alternate of the two", not "the older one"; half the time it holds your current data.
 
-- **They always belong to the same save.** After a power cut, Bank uses the versions of the smaller files that match whichever Bank save survived.
-- **A missing file is not an error.** No Pokédex files mean an empty Pokédex, no transport files an empty transport box, no rewards files no carried part of a Mile and no redemption yet. The next save creates them.
+- **They always belong to the same save.** One record names the file of each pair that belongs to it, and a file counts only if it has the checksum the record names. After a power cut, Bank goes on with the three files that record names.
+- **Missing transport files are not an error while the transport box is empty.** The next save creates them.
 - **A file that a power cut left unreadable is replaced.** It is always the one that was being written, never the one in use. Bank goes on with the other file of the pair, and the next save deletes the unreadable one and writes it anew.
-- **A file of the wrong size is never touched.** Bank stops with error `3` and the size as second number. This is also what happens with a Bank that was last used with v0.2.1, whose `/bank.bin` is twice as large. Such a Bank is converted once, with the migration that ships with release v0.3.0; that release says how.
-- **A damaged Pokédex or rewards file in use does not stop Bank either.** The Pokédex then starts empty and the carried part of a Mile at zero; the balance is not in that file. Each game's part comes back when its records screen is opened and that session is saved. A damaged transport box in use does stop Bank (error `9`), because it can hold Pokémon.
+- **A file of the wrong size is never touched.** Bank stops with an error whose second number is the size: error `3` for the files of the record and the boxes, which are opened first, and the error of the step that needed it for another file. This is also what happens with a Bank that was last used with an earlier release whose files have other sizes. Such a Bank is converted once, with the migration that ships with the release that changed the files; that release says how.
+- **A damaged file in use stops Bank** (error `9`). That holds for the boxes, for the main file, and for the transport box while it holds Pokémon: Bank never replaces what it cannot read with something empty. Pokémon from Poké Transporter that wait and cannot be read are not shown, and Save and Quit is then refused (error `F`), so that nothing is saved over them. A power cut cannot cause it, since it only reaches the file being written.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
 - These files live inside console-managed, encrypted extdata. They are not loose files on the SD card, and Bank's own 128 KiB save is not where the boxes are.
@@ -117,7 +127,7 @@ The formats are described in [internals.md](internals.md#storage).
 
 ## Install
 
-1. Close Bank and all games. Back up every connected game save, Bank's own save, and Bank's extdata `0x00000C9B` as one dated set ([how](#backing-up-the-bank)).
+1. Close Bank and all games. Back up every connected game save and Bank's own save. When updating, back up Bank's extdata `0x00000C9B` with them, as one dated set ([how](#backing-up-the-bank)); before the first install it holds no data.
 2. Make sure the installed Pokémon Bank is version 1.5, the final update.
 3. Copy both files from the same release or build:
 
@@ -177,7 +187,7 @@ Name and number are those of the game the session was made with; the number has 
 | the installed copy | a cartridge of the same game is inserted, so Bank reads the cartridge and not the installed copy | the **installed copy's** game, not the cartridge's | Take the cartridge out. |
 | the installed copy | the game is no longer installed | the installed copy's game | Install it again with its save. |
 
-The message only comes for a Save and Quit that was cut off. An error in a running session, for example a cartridge pulled out during Save and Quit, ends that run of Bank with two numbers ([Troubleshooting](#troubleshooting)); nothing is waiting then. Start Bank again with the game in, and if the save was cut off, this section applies.
+The message only comes for a Save and Quit that was cut off. A cartridge taken out before Save and Quit is chosen gets the original's message to check that the Game Card is inserted, and Bank returns to its start screen with nothing saved; put it back and press START. An error in a running session, for example a cartridge pulled out while Save and Quit writes, ends that run of Bank with two numbers ([Troubleshooting](#troubleshooting)); nothing is waiting then. Start Bank again with the game in, and if the save was cut off, this section applies.
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
@@ -216,7 +226,7 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
 | `77000000` | Bank's filesystem session changed between two opens. |
 | `79000000` | A file that is needed exists but cannot be opened. |
-| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 Pokédex, 2 transport, 3 rewards. `pp`: 1 damaged, 3 a waiting delivery would be overwritten. |
+| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
 
 **Starting over with an empty Bank.** This deletes every Pokémon stored in the offline Bank.
@@ -231,7 +241,7 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 
 ## Limits
 
-- **First start.** Creating the files runs in the background, but two original steps still run on the main thread and can cause short pauses: the game scan creates the extdata archive, and the default box and group names are formatted in one call. If the power fails while the Bank is being created ("Preparing Pokémon Bank for your use…"), the next start creates it again from the beginning, welcome included; nothing has to be deleted.
+- **First start.** Creating the files runs in the background. Two original steps still run in the foreground and can cause short pauses: the game scan creates the extdata archive, and the default box and group names are formatted in one call. If the power fails while the Bank is being created ("Preparing Pokémon Bank for your use…"), the next start creates it again from the beginning, welcome included; nothing has to be deleted.
 - **Backups.** The journal cannot repair a game save damaged mid-write, and cannot detect restoring a Bank backup and a game backup from different times. Always back up Bank's extdata and your games together.
 - **Power cuts.** A cut during Save and Quit can only damage the file being written, which Bank does not need and replaces. It cannot protect against damage to the SD card's own file table; that holds for every save on the console.
 - **Interrupted Save and Quit.** One case can lose Pokémon: see [If Save and Quit is interrupted](#if-save-and-quit-is-interrupted).

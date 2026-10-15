@@ -26,6 +26,8 @@ SECTIONS {
     .text : {
         FILL(0)
         KEEP(*(.text.bank_download_next))
+        KEEP(*(.text.bank_download_scan))
+        KEEP(*(.text.bank_download_scan_busy))
         KEEP(*(.text.bank_download_open))
         *(.text .text.*)
         *(.rodata .rodata.*)

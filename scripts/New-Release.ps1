@@ -25,16 +25,21 @@ if ($Draft -and $Publish) { throw 'A draft cannot be published.' }
 # The first version that stores the Bank the way this one does. A Bank last
 # used with an older version is not continued by a newer one; a release
 # from this version on can ship the migration for the version before it.
-$bankFilesSince = 'v0.3.0'
+# The release that ships the migration is that first version itself; every
+# later one names it here.
+$bankFilesSince = ''
 if ($MigrateFrom) {
     if ($MigrateFrom -notmatch '^v\d+\.\d+\.\d+$') { throw "MigrateFrom must look like v1.0.0: $MigrateFrom" }
     if ($Publish) { throw '-Publish finds the migration zip of the earlier run by itself.' }
+    if (-not $bankFilesSince) { $bankFilesSince = $Version }
 }
+if (-not $bankFilesSince) { throw 'Set $bankFilesSince to the first version that stores the Bank as this one does, or name the version before it with -MigrateFrom.' }
 
 if ($Download -and $Publish) { throw '-Publish finds the download zip of the earlier run by itself.' }
 $suffix = if ($Draft) { '-draft' } else { '' }
 $name = "offline_bank-$Version$suffix"
-$releaseRoot = Join-Path $projectRoot 'build/release'
+# A release lies in a folder of its own, named for its version.
+$releaseRoot = Join-Path $projectRoot "build/release/$Version$suffix"
 $zip = Join-Path $releaseRoot "$name.zip"
 $notesPath = Join-Path $releaseRoot "$name.md"
 # The migration zip carries the version it converts from.
@@ -129,12 +134,13 @@ try {
     Invoke-Checked 'formatting' { cargo +stable fmt --all -- --check }
 
     # 3. The patches, built from these sources and independently verified.
-    # Each build script replaces the package of its kind in build/<kind>,
+    # Each build script replaces the package of its kind in its folder
+    # (build/binary/bank and build/binary/transporter, build/<kind> for the others),
     # writes its name into PACKAGE.txt (Get-PackageId.ps1: the hash of its
     # compiled code and of the builder's profile with the edits of the
     # original), and verifies it.
     function Get-Verified([string]$kind) {
-        $directory = Join-Path $projectRoot "build/$kind"
+        $directory = Join-Path $projectRoot $(if ($kind -in 'bank', 'transporter') { "build/binary/$kind" } else { "build/$kind" })
         $id = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
         if ($id -ne (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) {
             throw "Package $kind is not the one of the current sources."
@@ -163,8 +169,8 @@ try {
         $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Package 'bank' 'Bank') }
         '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Package 'transporter' 'Transporter') }
     }
-    $migration = if ($MigrateFrom) { Get-Package 'bank-migrate' 'BankMigration' }
-    $downloaded = if ($Download) { Get-Package 'bank-download' 'BankDownload' }
+    $migration = if ($MigrateFrom) { Get-Package 'migration' 'BankMigration' }
+    $downloaded = if ($Download) { Get-Package 'download' 'BankDownload' }
 
     # 4. The zips, each laid out for the root of the SD card.
     $stage = Join-Path $releaseRoot $name
@@ -173,6 +179,7 @@ try {
     foreach ($path in @($stage, $zip, $notesPath, $migrationStage, $migrationZip, $downloadStage, $downloadZip) | Where-Object { $_ }) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse }
     }
+    New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
     $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
     $source = if ($Draft -and $dirty) { "$commit plus uncommitted changes" } else { $commit }
     $draftMark = if ($Draft) { ' (DRAFT, not a release)' } else { '' }
@@ -202,8 +209,9 @@ try {
     $readme.Add('configuration (hold SELECT while powering on).')
     $readme.Add('')
     $readme.Add('The two files of a title only work as a pair. Back up your game saves')
-    $readme.Add('and the extra data of Pokemon Bank first, and start Bank once before')
-    $readme.Add('using Transporter. Always update Bank and Transporter together.')
+    $readme.Add('first, and the extra data of Pokemon Bank before every update. Start')
+    $readme.Add('Bank once before using Transporter. Always update Bank and Transporter')
+    $readme.Add('together.')
     $readme.Add('')
     $readme.Add('If you already have an offline Bank: this version continues a Bank')
     $readme.Add("that was last used with $bankFilesSince or later, and no older one.")
@@ -226,7 +234,7 @@ try {
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
     Remove-Item -LiteralPath $stage -Recurse
 
-    # The migration from v0.2.1: its own zip, with everything its user has
+    # The migration from the previous release: its own zip, with everything its user has
     # to know. This block goes when patches/bank-migrate goes.
     if ($MigrateFrom) {
         $steps = [Collections.Generic.List[string]]::new()
@@ -246,22 +254,24 @@ try {
         $steps.Add('   for example with Checkpoint.')
         $steps.Add('3. Copy the luma folder of this zip to the root of the SD card. It')
         $steps.Add('   replaces the two files of Pokemon Bank.')
-        $steps.Add('4. Start Pokemon Bank and press START. After a loading screen two')
-        $steps.Add('   numbers appear. This patch never opens the Bank; the numbers are all')
-        $steps.Add('   it shows.')
-        $steps.Add('     0000600D 00000001  Converted. Go on with step 5.')
+        $steps.Add('4. Start Pokemon Bank and press START. After preparation, the HOME')
+        $steps.Add('   instruction, version and two result numbers stay on screen. This')
+        $steps.Add('   patch never opens the Bank. Close it from HOME before step 5.')
+        $steps.Add('     0000600D 00000001  Converted successfully. Go on with step 5.')
         $steps.Add('     0000600D 00000002  Already converted. Go on with step 5.')
         $steps.Add("     0000600D 00000000  No Bank was found. Go on with step 5; $Version")
         $steps.Add('                        creates one.')
         $steps.Add("     00000BAD 00000007  A Save and Quit was interrupted. Put $MigrateFrom")
         $steps.Add('                        back, start Bank once, then begin again at step 3.')
+        $steps.Add("     00000BAD 00000008  The Bank needs a Save and Quit first. Put $MigrateFrom")
+        $steps.Add('                        back, open Bank with a game, Save and Quit, then')
+        $steps.Add('                        begin again at step 3.')
         $steps.Add('     00000BA1 to        A step failed. Start Pokemon Bank again with these')
         $steps.Add('     00000BA4           files; that is always safe. If it keeps happening,')
         $steps.Add('                        restore your backup and report both numbers.')
         $steps.Add("5. Install ${Version}: copy the luma folder of $name.zip to")
         $steps.Add('   the SD card. It replaces these files and updates Poke Transporter.')
-        $steps.Add('6. Start Pokemon Bank. Your boxes and Pokedex are as before. Poke Miles')
-        $steps.Add('   that were not redeemed start at 0.')
+        $steps.Add('6. Start Pokemon Bank. Your boxes, Pokedex and Poke Miles are as before.')
         $steps.Add('')
         $steps.Add('The conversion needs about 1.5 MB of free space on the SD card. If the')
         $steps.Add('power fails while it runs, start it again; the old Bank stays untouched')
@@ -289,10 +299,7 @@ try {
         $steps.Add("The official service ends on $serviceEnds. After that day this")
         $steps.Add('patch cannot do anything.')
         $steps.Add('')
-        $steps.Add('NOT TESTED against the official server: it was written and checked from')
-        $steps.Add('the code of the original alone, because its author has no Nintendo')
-        $steps.Add('Network ID to try it with. Make the backup of step 1. If it stops')
-        $steps.Add('anywhere, please report the last screen and any numbers.')
+        $steps.Add('If it stops anywhere, please report the last screen and any numbers.')
         $steps.Add('')
         $steps.Add('- Your Pokemon stay on the server as well; this makes a copy.')
         $steps.Add('- It only writes when no offline Bank is on the SD card. An offline')
@@ -301,16 +308,14 @@ try {
         $steps.Add('- You need an internet connection and your Nintendo Network ID on')
         $steps.Add('  this console. No game is needed: none is chosen, read or saved.')
         $steps.Add('')
-        $steps.Add('1. Back up the extra data (extdata) of Pokemon Bank and your game saves,')
-        $steps.Add('   for example with Checkpoint.')
-        $steps.Add('2. Copy the luma folder of this zip to the root of the SD card. It')
+        $steps.Add('1. Copy the luma folder of this zip to the root of the SD card. It')
         $steps.Add('   replaces the two files of Pokemon Bank. The start screen then says')
         $steps.Add('   "Ver. 1.5-download".')
-        $steps.Add('3. Start Pokemon Bank and press START. It connects as the original does;')
+        $steps.Add('2. Start Pokemon Bank and press START. It connects as the original does;')
         $steps.Add('   there is no menu and nothing to choose. After the loading screens')
-        $steps.Add('   two numbers appear under "Press HOME to return to the HOME Menu".')
-        $steps.Add('   This patch never opens the Bank; the numbers are all it shows.')
-        $steps.Add('     0000D0AD 00000001  Downloaded and written. Go on with step 4.')
+        $steps.Add('   the HOME instruction, version and two result numbers stay on screen.')
+        $steps.Add('   This patch never opens the Bank. Close it from HOME before step 3.')
+        $steps.Add('     0000D0AD 00000001  Downloaded and written. Go on with step 3.')
         $steps.Add('     0000D0AD 00000002  An offline Bank is already on the SD card.')
         $steps.Add('                        Nothing was contacted or changed.')
         $steps.Add('     00000BAD 00000001  The server holds no Bank for this console.')
@@ -321,9 +326,9 @@ try {
         $steps.Add('   A message of the original instead (no connection, maintenance, the')
         $steps.Add('   server is locked for a while) leads back to its start screen. Nothing')
         $steps.Add('   was written; try again later.')
-        $steps.Add("4. Install ${Version}: copy the luma folder of $name.zip to")
+        $steps.Add("3. Install ${Version}: copy the luma folder of $name.zip to")
         $steps.Add('   the SD card. It replaces these files and installs Poke Transporter.')
-        $steps.Add('5. Start Pokemon Bank. Your boxes are there.')
+        $steps.Add('4. Start Pokemon Bank. Your boxes are there.')
         $steps.Add('')
         Add-Files $downloadStage $bankTitle $downloaded 'Pokemon Bank 1.5, download from the official server' "$downloadName.zip" $steps
         [IO.File]::WriteAllLines((Join-Path $downloadStage 'README.txt'), $steps)
@@ -344,7 +349,7 @@ try {
     }
     if ($Download) {
         $notes.Add('')
-        $notes.Add("**Pokémon still on the official server?** ``$downloadName.zip`` fetches your Bank from the official server into a new offline Bank; the steps are in its ``README.txt``. It works while the official service runs, until $serviceEnds, and only when no offline Bank is on the SD card yet. It has not been tested against the official server; back up first.")
+        $notes.Add("**Pokémon still on the official server?** ``$downloadName.zip`` fetches your Bank from the official server into a new offline Bank; the steps are in its ``README.txt``. It works while the official service runs, until $serviceEnds, and only when no offline Bank is on the SD card yet.")
     }
     $notes.Add('')
     $notes.Add('| | |')

@@ -13,7 +13,7 @@ use bank_common::{
     native_bank::NativeBank,
     task::{
         checked_pointer, read_word, storage_activity, write_word, NotNative, Notice, Task,
-        FS_SESSION, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE,
+        FS_SESSION, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
     },
     worker::{JobId, WorkerError},
 };
@@ -24,8 +24,8 @@ use core::{
 };
 use offline_core::{
     native_blob::NativeBlobView,
-    rewards::{self, Currency, Dialog, Entry, Moment, Receipt, Record, RewardError},
-    sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
+    rewards::{self, Currency, Dialog, Entry, Moment, Receipt, RewardError},
+    sections::{RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
     Phase, RecoveryDecision,
 };
 
@@ -68,14 +68,19 @@ enum Step {
     Introduce,
     Initialize,
     Recover,
-    /// A notice of the original is up that leads back to the start screen:
-    /// no usable game, or a save in progress that waits for its game.
+    /// A save in progress waits for its game at a native notice, then
+    /// returns to the start screen.
     TurnBack,
     Load,
     SaveInspect,
     SavePrepare,
     SaveWrite,
     SaveFinalize,
+    /// Save and Quit has ended, saved or not, and the original's message
+    /// for that ending is up.
+    Ended {
+        saved: bool,
+    },
 }
 struct Runtime {
     worker: Option<BankWorker>,
@@ -110,15 +115,29 @@ struct Runtime {
 #[derive(Clone, Copy)]
 struct RewardSession {
     entry: Option<Entry>,
-    settlement: Option<Record>,
+    /// Save and Quit has written the Miles state into the Bank body.
+    settled: bool,
     claimed: bool,
+    welcome: Welcome,
 }
 impl RewardSession {
     const NONE: Self = Self {
         entry: None,
-        settlement: None,
+        settled: false,
         claimed: false,
+        welcome: Welcome::None,
     };
+}
+/// The original's welcome gift in this session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Welcome {
+    /// The Bank was loaded with the gift already given, or this is the
+    /// test build, which passes every reward screen silently.
+    None,
+    /// The loaded Bank has not had it: the original's reward task gives it.
+    Pending,
+    /// Given in this session, on top of the balance.
+    Credited,
 }
 /// State of the native claim task immediately before its redemption step.
 #[derive(Clone, Copy)]
@@ -409,15 +428,17 @@ impl Runtime {
         let bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
         let snapshot = bank.snapshot().map_err(|_| Fault::NativeObject)?;
-        let dex = crate::dex::evidence(snapshot.as_bytes()).map_err(|_| Fault::NativeObject)?;
+        // Only Save and Quit consumes this evidence. Creation has no earlier
+        // persisted Pokédex to compare against.
+        if self.step == Step::SaveInspect {
+            self.save_dex =
+                Some(crate::dex::evidence(snapshot.as_bytes()).map_err(|_| Fault::NativeObject)?);
+        }
         let staging = self
             .worker()?
             .staging_mut()
             .map_err(|_| Fault::StorageLoad)?;
         staging.copy_from_slice(snapshot.as_bytes());
-        if self.step == Step::SaveInspect {
-            self.save_dex = Some(dex);
-        }
         Ok(())
     }
     /// The native body the worker assembled in staging.
@@ -441,30 +462,18 @@ impl Runtime {
         self.blank = Some((record, body[TRANSPORT_TAGS.start]));
         Ok(())
     }
-    /// Fills regions no file supplied with what a new Bank has: the live
-    /// Pokédex defaults and blank transport records.
-    fn fill_defaults(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
-        // A delivery is the complete box Transporter built and needs no fill.
-        let first = if loaded.transport_missing {
-            0
-        } else {
-            TRANSPORT_SLOTS
-        };
-        if !loaded.dex_missing && first == TRANSPORT_SLOTS {
+    /// Fills a transport box no file supplied with what a new Bank has:
+    /// blank records. A box that was read is complete, a delivery too.
+    fn fill_defaults(&mut self, loaded: Loaded) -> Result<(), Fault> {
+        if !loaded.transport_missing {
             return Ok(());
         }
         let (record, tag) = self.blank.ok_or(Fault::NativeObject)?;
-        let bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
-            .map_err(|_| Fault::NativeObject)?;
-        let live = bank.snapshot().map_err(|_| Fault::NativeObject)?.as_bytes();
         let staging = self
             .worker()?
             .staging_mut()
             .map_err(|_| Fault::StorageLoad)?;
-        if loaded.dex_missing {
-            staging[DEX].copy_from_slice(&live[DEX]);
-        }
-        for slot in first..TRANSPORT_SLOTS {
+        for slot in 0..TRANSPORT_SLOTS {
             let at = TRANSPORT_RECORDS.start + slot * RECORD_SIZE;
             staging[at..at + RECORD_SIZE].copy_from_slice(&record);
             staging[TRANSPORT_TAGS.start + slot] = tag;
@@ -473,7 +482,7 @@ impl Runtime {
     }
     /// Restores the assembled body into the native object.
     fn restore_bank(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
-        self.fill_defaults(task, loaded)?;
+        self.fill_defaults(loaded)?;
         let raw = task.bank_pointer()?;
         let expected = crate::dex::evidence(self.staged_body()?).map_err(|_| Fault::StorageLoad)?;
         if self.step == Step::SaveFinalize {
@@ -507,28 +516,35 @@ impl Runtime {
         Ok(())
     }
     /// Starts the session's provisional reward state from what was loaded:
-    /// the balance and the reward date of the Bank body, the Pokémon in its
-    /// boxes, and the record beside it. The hours since that date are paid
-    /// into the native balance, where the original reward screens read it.
-    fn begin_rewards(&mut self, task: Task, record: Record) -> Result<(), Fault> {
+    /// the balance, the reward date and the record of the Bank body, and the
+    /// Pokémon in its boxes. The hours since that date are paid into the
+    /// native balance, where the original reward screens read it.
+    fn begin_rewards(&mut self, task: Task) -> Result<(), Fault> {
         let count = bank_count(task)?;
         let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
         let stored = bank.reward_date().map_err(|_| Fault::NativeObject)?;
         let balance = bank.miles().map_err(|_| Fault::NativeObject)?;
+        let record = bank.rewards().map_err(|_| Fault::NativeObject)?;
         let entry =
             rewards::enter(record, stored, balance, count, clock()?).map_err(reward_fault)?;
         bank.set_miles(entry.balance());
+        let given = bank.first_present().map_err(|_| Fault::NativeObject)?;
         self.rewards = RewardSession {
             entry: Some(entry),
-            settlement: None,
+            settled: false,
             claimed: false,
+            welcome: if given || cfg!(feature = "test-build") {
+                Welcome::None
+            } else {
+                Welcome::Pending
+            },
         };
         Ok(())
     }
     /// Reads the clock again at Save and Quit and fixes the Miles state that
-    /// must be written with this save's Pokémon changes: the balance and the
-    /// reward date in the Bank body, the record for the rewards file.
+    /// must be written with this save's Pokémon changes: the balance, the
+    /// reward date and the record, all in the Bank body.
     fn settle_rewards(&mut self, task: Task) -> Result<(), Fault> {
         let entry = self.rewards.entry.ok_or(Fault::RewardState)?;
         let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
@@ -537,7 +553,39 @@ impl Runtime {
         let settlement = rewards::settle(&entry, balance, clock()?, self.rewards.claimed);
         bank.set_miles(settlement.balance);
         bank.set_reward_date(settlement.date);
-        self.rewards.settlement = Some(settlement.record);
+        bank.set_rewards(settlement.record);
+        self.rewards.settled = true;
+        Ok(())
+    }
+    /// The welcome gift, around the original's call. In state 5 the original
+    /// sets the balance to 100 once message 4 is answered; the balance before
+    /// is returned, and `welcome_after` adds the gift to it instead. Before
+    /// the choice (state 6) the quote is the whole balance, as the ordinary
+    /// way's state 0x15 leaves it.
+    fn welcome_before(&mut self, task: Task) -> Result<Option<u32>, Fault> {
+        let step = unsafe { read_word(task.raw(), 0x10) };
+        if !matches!(step, 5 | 6) {
+            return Ok(None);
+        }
+        let balance = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+            .and_then(|bank| bank.miles())
+            .map_err(|_| Fault::NativeObject)?;
+        if step == 6 {
+            unsafe { write_word(task.raw(), 0x50, balance) };
+            return Ok(None);
+        }
+        Ok(Some(balance))
+    }
+    /// After state 5: still waiting for the answer to message 4, or the gift
+    /// was given and is added to the balance it found.
+    fn welcome_after(&mut self, task: Task, before: u32) -> Result<(), Fault> {
+        if unsafe { read_word(task.raw(), 0x10) } == 5 {
+            return Ok(());
+        }
+        let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+            .map_err(|_| Fault::NativeObject)?;
+        bank.set_miles(rewards::welcome(before));
+        self.rewards.welcome = Welcome::Credited;
         Ok(())
     }
     fn probe_claim(&mut self, task: Task) -> Result<ClaimProbe, Fault> {
@@ -627,19 +675,11 @@ impl Runtime {
         storage_activity(false);
         true
     }
-    /// Creates the Bank file from the original's defaults for a new Bank.
-    fn create_bank(&mut self, task: Task) -> Result<(), Fault> {
-        // Only an explicit NotFound for our private file permits fresh
-        // initialization. Native defaults/translated names stay on UI.
-        let defaults: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x002a_e8b0usize) };
-        unsafe { defaults(task.raw()) };
-        // A fresh Bank has no Miles record until its first save.
-        self.stage_bank(task)?;
-        self.submit(task, Step::Initialize, Job::Initialize)
-    }
     /// The welcome the original gives before it creates a Bank. Its own
     /// update runs states 2 and 3 (three messages, each acknowledged) and
     /// leaves state 4, where it would ask the server for the new Bank.
+    /// Preparation returns between the panel, native defaults and staging,
+    /// giving the main loop a chance to update the UI and audio.
     unsafe fn introduce(&mut self, task: Task) -> Result<bool, Fault> {
         if self.owner != task.raw() as usize {
             return Err(Fault::NativeObject);
@@ -656,8 +696,27 @@ impl Runtime {
                 unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::CREATING_MESSAGE) }
                     .map_err(|_| Fault::NativeObject)?;
                 task.begin_busy();
+                unsafe { write_word(task.raw(), 0x10, 6) };
+                Ok(false)
+            }
+            6 => {
+                // Only a missing private Bank permits fresh initialization.
+                // Native defaults/translated names stay on the UI thread.
+                let defaults: unsafe extern "aapcs" fn(*mut u8) =
+                    unsafe { transmute(0x002a_e8b0usize) };
+                unsafe { defaults(task.raw()) };
+                // Miles start at the first save. Clear our reward fields,
+                // including the padding the original does not initialize.
+                unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+                    .map_err(|_| Fault::NativeObject)?
+                    .set_rewards(offline_core::rewards::Record::NONE);
+                unsafe { write_word(task.raw(), 0x10, 7) };
+                Ok(false)
+            }
+            7 => {
+                self.stage_bank(task)?;
                 unsafe { write_word(task.raw(), 0x10, 1) };
-                self.create_bank(task)?;
+                self.submit(task, Step::Initialize, Job::Initialize)?;
                 Ok(false)
             }
             _ => Err(Fault::NativeObject),
@@ -682,12 +741,20 @@ impl Runtime {
             if !self.files_closed() {
                 return Ok(false);
             }
-            local_date(task)?;
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
-            // The original shows this message for both: opening an existing
-            // Bank and loading it for the chosen game.
-            unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::BANK_LOADING_MESSAGE) }
+            if opening {
+                self.turn_back = false;
+            }
+            local_date(task)?;
+            // Opening inherits the scan's live panel, SD-card warning,
+            // sound and animation. Only loading for a chosen game sets up
+            // its loading text; opening must not restart or replace the UI.
+            if !opening {
+                unsafe {
+                    bank_common::ui::loading(task.ui()?, bank_common::ui::BANK_LOADING_MESSAGE)
+                }
                 .map_err(|_| Fault::NativeObject)?;
+            }
             // The task's +1c continuation is patched to this same poller before
             // enabling busy protection. No blocking join or FS call occurs here.
             task.begin_busy();
@@ -696,7 +763,6 @@ impl Runtime {
             self.trainer = None;
             self.rewards = RewardSession::NONE;
             if opening {
-                self.turn_back = false;
                 self.capture_blank(task)?;
                 let session = unsafe { FS_SESSION.read() };
                 self.submit(task, Step::Open, Job::Open { session })?;
@@ -801,19 +867,6 @@ impl Runtime {
                 // panel. Game selection starts from the validated Bank instead.
                 let ui = task.ui()?;
                 unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
-                let coordinator = task.pointer(8)?;
-                let available =
-                    (1..=8).any(|kind| unsafe { coordinator.add(kind * 12 + 1).read() } != 0);
-                if !available {
-                    // Native selection would repeat this notice without an
-                    // exit. Show it once, then return to the start screen.
-                    self.turn_back = true;
-                    self.step = Step::TurnBack;
-                    task.end_busy();
-                    unsafe { bank_common::ui::notice(ui, bank_common::ui::NO_GAME_NOTICE) }
-                        .map_err(|_| Fault::NativeObject)?;
-                    return Ok(false);
-                }
                 Ok(self.complete(task))
             }
             (
@@ -837,13 +890,13 @@ impl Runtime {
                 self.trainer = Some(Trainer::of_game(&name, id, gen7));
                 self.pending = false;
                 capture_counts(task)?;
-                self.begin_rewards(task, loaded.rewards)?;
+                self.begin_rewards(task)?;
                 Ok(self.complete(task))
             }
             _ => Err(Fault::StorageInvalid),
         }
     }
-    unsafe fn save(&mut self, task: Task) -> Result<bool, Fault> {
+    unsafe fn save(&mut self, task: Task) -> Result<Option<bool>, Fault> {
         if self.step == Step::Idle {
             self.baseline.ok_or(Fault::GameRead)?;
             let coordinator = task.pointer(8)?;
@@ -869,26 +922,56 @@ impl Runtime {
             let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
             self.game = Some(game);
             self.submit(task, Step::SaveInspect, Job::Inspect { game: descriptor })?;
-            return Ok(false);
+            return Ok(None);
         }
         if self.owner != task.raw() as usize {
             return Err(Fault::NativeObject);
         }
+        if let Step::Ended { saved } = self.step {
+            return match unsafe { bank_common::ui::acknowledged(task.ui()?) } {
+                Ok(false) => Ok(None),
+                Ok(true) => {
+                    self.complete(task);
+                    Ok(Some(saved))
+                }
+                Err(_) => Err(Fault::NativeObject),
+            };
+        }
         if self.step == Step::SaveWrite {
             let game = self.game.as_mut().ok_or(Fault::GameWrite)?;
             match game.poll().map_err(|_| Fault::GameWrite)? {
-                NativePoll::Pending => return Ok(false),
+                NativePoll::Pending => return Ok(None),
                 NativePoll::Complete => {
                     let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
                     self.submit(task, Step::SaveFinalize, Job::Finalize { game: descriptor })?;
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
         }
         let Some(reply) = self.poll(task)? else {
-            return Ok(false);
+            return Ok(None);
         };
         match (self.step, reply) {
+            (Step::SaveInspect, Reply::CardRemoved) => {
+                // The game could not be read and the original's test finds
+                // no Game Card; nothing was written.
+                // As the original's own failed save (task 7 state 0x10):
+                // loading ends, the message waits, outcome 3, cleanup and
+                // the start screen. Of its message only the advice about
+                // the card is shown; its first part names a server. The
+                // changes made in memory go with the session.
+                if !self.baseline.ok_or(Fault::GameRead)?.cartridge {
+                    return Err(Fault::GameRead);
+                }
+                let ui = task.ui()?;
+                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+                self.step = Step::Ended { saved: false };
+                task.end_busy();
+                storage_activity(false);
+                unsafe { bank_common::ui::notice_rest(ui, bank_common::ui::FAILURE_NOTICE) }
+                    .map_err(|_| Fault::NativeObject)?;
+                Ok(None)
+            }
             (Step::SaveInspect, Reply::Inspected(original)) => {
                 let baseline = self.baseline.ok_or(Fault::GameRead)?;
                 if baseline.title != original.title || baseline.fingerprint != original.fingerprint
@@ -903,7 +986,9 @@ impl Runtime {
                     .map_err(|_| Fault::GamePrepare)?
                     .freeze()
                     .map_err(|_| Fault::GamePrepare)?;
-                let rewards = self.rewards.settlement.ok_or(Fault::RewardState)?;
+                if !self.rewards.settled {
+                    return Err(Fault::RewardState);
+                }
                 let trainer = self.trainer.ok_or(Fault::GameRead)?;
                 // A game the Bank knows already, with the same trainer,
                 // brings its records and Pokédex along with the save.
@@ -921,10 +1006,9 @@ impl Runtime {
                         prepared,
                         baseline: original,
                         trainer,
-                        rewards,
                     },
                 )?;
-                Ok(false)
+                Ok(None)
             }
             (Step::SavePrepare, Reply::ReadyToWrite) => {
                 // Room for the retained native game-writer thread.
@@ -933,7 +1017,7 @@ impl Runtime {
                 let game = self.game.as_mut().ok_or(Fault::GameWrite)?;
                 unsafe { game.start_after_journal() }.map_err(|_| Fault::GameWrite)?;
                 self.step = Step::SaveWrite;
-                Ok(false)
+                Ok(None)
             }
             (
                 Step::SaveFinalize,
@@ -946,8 +1030,14 @@ impl Runtime {
                 self.restore_bank(task, loaded)?;
                 self.baseline = Some(evidence);
                 self.pending = false;
-                self.begin_rewards(task, loaded.rewards)?;
-                Ok(self.complete(task))
+                self.begin_rewards(task)?;
+                // The original's ending of a successful save: its sound and
+                // message, which waits. Nothing is read or written now.
+                self.step = Step::Ended { saved: true };
+                task.end_busy();
+                storage_activity(false);
+                unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
+                Ok(None)
             }
             _ => Err(Fault::JournalRecovery),
         }
@@ -977,7 +1067,8 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
         unsafe { transmute(0x002a_5580usize) };
     let next = unsafe { original(manager, current) };
-    // A task that ended during the welcome was cancelled; nothing was begun.
+    // A task that ended during welcome/preparation was cancelled; no file
+    // initialization was submitted yet.
     if state.step == Step::Introduce {
         state.step = Step::Idle;
         state.owner = 0;
@@ -993,7 +1084,7 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
             break 'route 0x14;
         }
-        if matches!((current, outcome), (3, 4 | 0x17)) {
+        if (current, outcome) == (3, 4) {
             unsafe {
                 manager.add(0x1c).write(0);
             }
@@ -1046,6 +1137,46 @@ pub unsafe extern "aapcs" fn bank_offline_load(raw: *mut u8) -> u32 {
     }
 }
 
+// Only scan state 0x18's BL at 002ac7a4 enters here. Its r4 is the live
+// scan task (002abe0c: mov r4, r0); preserve the native caller's LR and
+// callee-saved registers while handing that task to the Rust adapter.
+core::arch::global_asm!(
+    ".syntax unified",
+    ".arm",
+    ".section .text.bank.no_game, \"ax\"",
+    ".align 2",
+    ".global bank_offline_no_game",
+    ".type bank_offline_no_game, %function",
+    "bank_offline_no_game:",
+    "mov r0, r4",
+    "b {notice}",
+    ".size bank_offline_no_game, .-bank_offline_no_game",
+    notice = sym no_game_notice,
+);
+unsafe extern "aapcs" {
+    /// # Safety
+    /// Called only from the reviewed scan message call, with its live task in r4.
+    pub fn bank_offline_no_game();
+}
+unsafe extern "aapcs" fn no_game_notice(raw: *mut u8) {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
+        return;
+    };
+    let Some(mut guard) = Guard::acquire() else {
+        return;
+    };
+    let state = guard.state();
+    // No offline files or worker job have been opened during the native
+    // scan. On failure its acknowledgment state keeps the error screen up.
+    let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
+        bank_common::ui::notice_pages(ui, 0, 2).map_err(|_| Fault::NativeObject)
+    });
+    if let Err(fault) = shown {
+        state.fault = fault;
+        state.report_failure(task);
+    }
+}
+
 /// # Safety
 /// Same main-thread task contract as bank_offline_load, for task7 only.
 #[no_mangle]
@@ -1061,8 +1192,8 @@ pub unsafe extern "aapcs" fn bank_offline_save(raw: *mut u8) -> u32 {
         return state.report_failure(task);
     }
     match unsafe { state.save(task) } {
-        Ok(false) => 0,
-        Ok(true) => task.finish(true),
+        Ok(None) => 0,
+        Ok(Some(saved)) => task.finish(saved),
         Err(fault) => {
             state.fault = fault;
             state.report_failure(task)
@@ -1102,10 +1233,11 @@ fn freeze_accrual_date(task: Task) -> Result<(), Fault> {
     Ok(())
 }
 
-/// Retains native pending-gift guards and balance redemption while skipping
-/// service requests, historical distributions, first-use gifts, and the native
-/// hourly accrual. The displayed balance already holds the session's local
-/// earnings; each completed redemption is checked against its game receipt.
+/// Retains native pending-gift guards, the welcome gift and balance
+/// redemption while skipping service requests, historical distributions and
+/// the native hourly accrual. The displayed balance already holds the
+/// session's local earnings; each completed redemption is checked against its
+/// game receipt.
 /// # Safety
 /// The verified task C/D update vtables supply their live initialized objects
 /// on the main thread after the selected game and Bank passed the load hook.
@@ -1125,22 +1257,35 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
     let setup = (|| -> Result<*mut u8, Fault> {
         let session = task.pointer(0x28)?;
         let step = unsafe { read_word(raw, 0x10) };
+        // The welcome's own states: 5 gives the gift, 4 and 6 lead from it to
+        // the choice of state 7.
+        let welcome = state.rewards.welcome;
+        let on_welcome = match step {
+            5 => welcome == Welcome::Pending,
+            4 | 6 => welcome == Welcome::Credited,
+            _ => false,
+        };
         // Only the verified local subgraphs are permitted. Task C protects
         // existing Gen6 pending gifts and full Gen7 gift storage.
         if state.baseline.is_none()
             || state.pending
             || (is_guard && step > 7)
-            || (!is_guard && !matches!(step, 0 | 7..=0xd | 0x16 | 0x1b..=0x22))
+            || (!is_guard && !(matches!(step, 0 | 7..=0xd | 0x16 | 0x1b..=0x22) || on_welcome))
         {
             return Err(Fault::RewardState);
         }
         if step == 0 || (!is_guard && step == 0x1b) {
             freeze_accrual_date(task)?;
+            // A Bank that has not had the welcome gift: the original's state
+            // 0 reads its flag and gives it (message 4, then state 5).
+            let welcome = step == 0 && welcome == Welcome::Pending;
             if !is_guard {
                 unsafe {
                     write_word(raw, 0x4c, 1); // disables remote re-query
                     write_word(raw, 0x50, 0); // no server-awarded points
-                    write_word(raw, 0x10, 0x1b);
+                    if !welcome {
+                        write_word(raw, 0x10, 0x1b);
+                    }
                 }
             }
             // Nothing to say: both tasks go to states of their own that end
@@ -1155,6 +1300,10 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             // way whatever there is to get, and claims nothing.
             let dialog = if cfg!(feature = "test-build") {
                 Dialog::Silent
+            } else if welcome {
+                // The guard's notices stand before the gift as before any
+                // redemption, whatever the balance.
+                Dialog::Offer
             } else {
                 entry.dialog(balance)
             };
@@ -1187,6 +1336,13 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             unsafe { transmute(0x002a_d1bcusize) };
         return unsafe { original(raw) };
     }
+    let before_gift = match state.welcome_before(task) {
+        Ok(balance) => balance,
+        Err(fault) => {
+            state.fault = fault;
+            return state.report_failure(task);
+        }
+    };
     // Redemption happens only inside native state 0xb, after its dialog fade.
     let probe = if unsafe { read_word(raw, 0x10) } == 0xb {
         match state.probe_claim(task) {
@@ -1206,6 +1362,12 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
     let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(0x002a_9750usize) };
     let result = unsafe { original(raw) };
     unsafe { write_word(session, 0x38, remote_count) };
+    if let Some(balance) = before_gift {
+        if let Err(fault) = state.welcome_after(task, balance) {
+            state.fault = fault;
+            return state.report_failure(task);
+        }
+    }
     if let Some(probe) = probe {
         let step = unsafe { read_word(raw, 0x10) };
         if let Err(fault) = state.check_claim(task, probe, step) {

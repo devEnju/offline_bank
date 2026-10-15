@@ -1,3 +1,4 @@
+//! Frozen: the previous release's `sidecar.rs`. Only the migration reads it.
 //! Two-slot side files that follow the Bank journal without one of their own.
 //!
 //! The Bank file is the single source of truth. A side file holds two slots;
@@ -13,7 +14,7 @@
 //! CRC at 36; zero at 40..60; u32 CRC of bytes 0..60 at 60. The payload
 //! follows at +64. An all-zero or damaged header is a void slot.
 
-use crate::{crc32, format::zero, SnapshotRef, Storage};
+use super::{crc32, format::zero, SnapshotRef, Storage};
 
 pub const SLOTS: usize = 2;
 pub const HEADER_SIZE: usize = 64;
@@ -208,7 +209,7 @@ impl<S: Storage> Sidecar<S> {
         self.storage
             .read(at + first.len() as u64, second)
             .map_err(SidecarError::Io)?;
-        let mut crc = crate::checksum::Crc32::new();
+        let mut crc = super::checksum::Crc32::new();
         crc.update(first);
         crc.update(second);
         if crc.finish() != slot.crc {
@@ -256,7 +257,7 @@ impl<S: Storage> Sidecar<S> {
         if len > self.kind.capacity as usize {
             return Err(SidecarError::PayloadTooLarge);
         }
-        let mut payload_crc = crate::checksum::Crc32::new();
+        let mut payload_crc = super::checksum::Crc32::new();
         for part in parts {
             payload_crc.update(part);
         }
@@ -315,203 +316,5 @@ impl<S: Storage> Sidecar<S> {
             .write(self.offset(index), &[0; HEADER_SIZE])
             .map_err(SidecarError::Io)?;
         self.storage.sync().map_err(SidecarError::Io)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    extern crate std;
-    use super::*;
-    use std::{vec, vec::Vec};
-
-    const KIND: Kind = Kind {
-        magic: *b"BKOFTEST",
-        capacity: 10,
-    };
-    struct Memory {
-        bytes: Vec<u8>,
-        budget: Option<usize>,
-    }
-    impl Storage for Memory {
-        type Error = ();
-        fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
-            out.copy_from_slice(&self.bytes[at as usize..at as usize + out.len()]);
-            Ok(())
-        }
-        fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
-            // A cut lands a prefix of the write.
-            for (index, byte) in bytes.iter().enumerate() {
-                if let Some(budget) = &mut self.budget {
-                    if *budget == 0 {
-                        return Err(());
-                    }
-                    *budget -= 1;
-                }
-                self.bytes[at as usize + index] = *byte;
-            }
-            Ok(())
-        }
-        fn sync(&mut self) -> Result<(), ()> {
-            Ok(())
-        }
-        fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
-            self.bytes[at as usize..(at + length) as usize].fill(0);
-            Ok(())
-        }
-    }
-    fn file() -> Sidecar<Memory> {
-        Sidecar::new(
-            Memory {
-                bytes: vec![0; KIND.file_len() as usize],
-                budget: None,
-            },
-            KIND,
-        )
-    }
-    const OLD: Tag = Tag {
-        generation: 7,
-        crc: 0x1111,
-    };
-    const NEW: Tag = Tag {
-        generation: 8,
-        crc: 0x2222,
-    };
-
-    #[test]
-    fn geometry_is_fixed_and_aligned() {
-        assert_eq!((KIND.slot_len(), KIND.file_len()), (76, 152));
-        assert_eq!(
-            Kind {
-                magic: [0; 8],
-                capacity: 16
-            }
-            .slot_len(),
-            80
-        );
-    }
-
-    #[test]
-    fn empty_file_has_no_slots_and_any_slot_is_spare() {
-        let mut file = file();
-        let slots = file.slots().unwrap();
-        assert_eq!(slots, [None, None]);
-        assert_eq!(matching(&slots, OLD), None);
-        assert_eq!(spare(&slots, Some(OLD)), 0);
-        assert_eq!(spare(&slots, None), 0);
-    }
-
-    #[test]
-    fn round_trip_keeps_tag_fields_and_split_payload() {
-        let mut file = file();
-        let written = file.write(1, Some(OLD), 42, 3, &[b"abc", b"defg"]).unwrap();
-        let slots = file.slots().unwrap();
-        assert_eq!(slots, [None, Some(written)]);
-        assert_eq!((written.aux, written.count, written.len), (42, 3, 7));
-        let mut out = [0; 7];
-        file.read(1, &written, &mut out).unwrap();
-        assert_eq!(&out, b"abcdefg");
-        let (mut first, mut second) = ([0; 3], [0; 4]);
-        file.read_split(1, &written, &mut first, &mut second)
-            .unwrap();
-        assert_eq!((&first, &second), (b"abc", b"defg"));
-        assert_eq!(
-            file.read(1, &written, &mut [0; 6]),
-            Err(SidecarError::WrongLength)
-        );
-        assert_eq!(
-            file.write(0, None, 0, 0, &[&[0; 11]]),
-            Err(SidecarError::PayloadTooLarge)
-        );
-        // An untagged slot is valid but matches no snapshot.
-        let untagged = file.write(0, None, 9, 1, &[b"x"]).unwrap();
-        assert_eq!(untagged.tag, None);
-        assert_eq!(matching(&file.slots().unwrap(), OLD), Some(1));
-    }
-
-    #[test]
-    fn the_current_slot_is_never_the_spare_one() {
-        let mut file = file();
-        file.write(0, Some(OLD), 0, 0, &[b"old"]).unwrap();
-        for _ in 0..4 {
-            // Repeated attempts for the next snapshot reuse the other slot.
-            let slots = file.slots().unwrap();
-            assert_eq!(spare(&slots, Some(OLD)), 1);
-            file.write(1, Some(NEW), 0, 0, &[b"new"]).unwrap();
-        }
-        let slots = file.slots().unwrap();
-        assert_eq!(
-            (matching(&slots, OLD), matching(&slots, NEW)),
-            (Some(0), Some(1))
-        );
-        // After the Bank committed NEW, the old slot becomes the spare.
-        assert_eq!(spare(&slots, Some(NEW)), 0);
-    }
-
-    #[test]
-    fn damage_voids_a_slot_or_fails_its_read_but_never_the_other() {
-        let mut file = file();
-        let kept = file.write(0, Some(OLD), 0, 0, &[b"keep"]).unwrap();
-        let other = file.write(1, Some(NEW), 0, 0, &[b"lose"]).unwrap();
-        let slot = KIND.slot_len() as usize;
-        for at in 0..HEADER_SIZE {
-            let mut damaged = Sidecar::new(
-                Memory {
-                    bytes: file.storage.bytes.clone(),
-                    budget: None,
-                },
-                KIND,
-            );
-            damaged.storage.bytes[slot + at] ^= 1;
-            assert_eq!(damaged.slots().unwrap(), [Some(kept), None], "byte {at}");
-        }
-        file.storage.bytes[slot + HEADER_SIZE] ^= 1;
-        assert_eq!(file.slots().unwrap(), [Some(kept), Some(other)]);
-        assert_eq!(
-            file.read(1, &other, &mut [0; 4]),
-            Err(SidecarError::Checksum)
-        );
-        let mut out = [0; 4];
-        file.read(0, &kept, &mut out).unwrap();
-        assert_eq!(&out, b"keep");
-    }
-
-    #[test]
-    fn a_cut_at_any_byte_leaves_the_current_slot_and_no_false_match() {
-        let mut base = file();
-        let kept = base.write(0, Some(OLD), 0, 0, &[b"keep"]).unwrap();
-        let total = HEADER_SIZE + 4 + HEADER_SIZE;
-        for cut in 0..=total {
-            let mut file = Sidecar::new(
-                Memory {
-                    bytes: base.storage.bytes.clone(),
-                    budget: Some(cut),
-                },
-                KIND,
-            );
-            let result = file.write(1, Some(NEW), 0, 0, &[b"next"]);
-            assert_eq!(result.is_ok(), cut == total, "cut {cut}");
-            file.storage.budget = None;
-            let slots = file.slots().unwrap();
-            assert_eq!(slots[0], Some(kept), "cut {cut}");
-            if let Some(index) = matching(&slots, NEW) {
-                let mut out = [0; 4];
-                file.read(index, &slots[index].unwrap(), &mut out).unwrap();
-                assert_eq!(&out, b"next", "cut {cut}");
-            }
-        }
-    }
-
-    #[test]
-    fn another_files_magic_is_not_accepted() {
-        let mut file = file();
-        file.write(0, Some(OLD), 0, 0, &[b"data"]).unwrap();
-        let mut other = Sidecar::new(
-            file.into_inner(),
-            Kind {
-                magic: *b"BKOFELSE",
-                ..KIND
-            },
-        );
-        assert_eq!(other.slots().unwrap(), [None, None]);
     }
 }

@@ -14,11 +14,12 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_save",
         "bank_offline_rewards",
         "bank_offline_timestamp",
+        "bank_offline_no_game",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
-    // Twenty-three edited words plus the linked bootstrap bytes.
-    regions: 24,
+    // Twenty-five edited words plus the linked bootstrap bytes.
+    regions: 26,
     menu_edits: &[],
     edits,
 };
@@ -32,11 +33,46 @@ pub const SCENE_UPDATE: u32 = 0x002af034;
 pub const NATIVE_FINISHED: u32 = 0x002af124;
 pub const NATIVE_FINISHED_BODY: [u32; 2] = [0xe3a00001, 0xe12fff1e];
 
+/// Claim state 0x1b reads and writes the Bank field at body offset 174 only
+/// behind this test of the session's count: `cmn r0, #1; beq 002aac54`. The
+/// reward hook presents the count as -1, so the original never reaches the
+/// field, and the patch keeps the day of the last redemption in it.
+pub const COUNT_UNAVAILABLE: u32 = 0x002aac04;
+pub const COUNT_UNAVAILABLE_BODY: [u32; 2] = [0xe3700001, 0x0a000011];
+
+/// Scan state 0x18 keeps its native loading-panel shutdown and notice.
+/// Only the message call is adapted; state 0x19 then waits for A and exits
+/// through the native unsuccessful-scan route, instead of asking about HOME.
+pub const NO_GAME_CALL: u32 = 0x002ac7a4;
+pub const NO_GAME_CONTINUATION: (u32, u32, u32) = (0x002ac7a8, 0xe3a00021, 0xe3a00019);
+
+// Native task in r4, no-game branch, acknowledgment loop, and failure exit.
+const NO_GAME_NATIVE: [(u32, u32); 7] = [
+    (0x002abe0c, 0xe1a04000),
+    (0x002ac560, 0x03a00018),
+    (0x002ac7b4, 0xe5940040),
+    (0x002ac7c0, 0xe3500004),
+    (0x002ac7c8, 0x0a0000b0),
+    (0x002ac924, 0xe3a00003),
+    (0x002aca90, 0xe3a00020),
+];
+
 pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
+    for (address, expected) in NO_GAME_NATIVE {
+        if crate::le32(code, (address - CODE_BASE) as usize)? != expected {
+            return crate::fail("native no-game notice/acknowledgment is not the reviewed code");
+        }
+    }
     for (index, word) in NATIVE_FINISHED_BODY.into_iter().enumerate() {
         let offset = (NATIVE_FINISHED - CODE_BASE) as usize + index * 4;
         if crate::le32(code, offset)? != word {
             return crate::fail("native finished stub 002af124 is not the reviewed code");
+        }
+    }
+    for (index, word) in COUNT_UNAVAILABLE_BODY.into_iter().enumerate() {
+        let offset = (COUNT_UNAVAILABLE - CODE_BASE) as usize + index * 4;
+        if crate::le32(code, offset)? != word {
+            return crate::fail("claim state 0x1b at 002aac04 is not the reviewed code");
         }
     }
     native_hook_edits(HookTargets {
@@ -46,6 +82,7 @@ pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<Chec
         save: payload.export("bank_offline_save")?,
         rewards: payload.export("bank_offline_rewards")?,
         timestamp: payload.export("bank_offline_timestamp")?,
+        no_game: payload.export("bank_offline_no_game")?,
         message: payload.export(MESSAGE_ENTRY)?,
         version: payload.export(VERSION_ENTRY)?,
     })
@@ -59,6 +96,7 @@ struct HookTargets {
     save: u32,
     rewards: u32,
     timestamp: u32,
+    no_game: u32,
     message: u32,
     version: u32,
 }
@@ -68,6 +106,16 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     // ARM B to retain its caller's LR/SP before the original prologue executes.
     let mut edits = vec![
         archive_preservation_candidate(),
+        word(
+            NO_GAME_CALL,
+            u32::from_le_bytes(crate::encode_arm_branch(NO_GAME_CALL, 0x001d6650, true)?),
+            crate::encode_arm_branch(NO_GAME_CALL, targets.no_game, true)?,
+        ),
+        word(
+            NO_GAME_CONTINUATION.0,
+            NO_GAME_CONTINUATION.1,
+            NO_GAME_CONTINUATION.2.to_le_bytes(),
+        ),
         word(
             0x001d3bf4,
             0xe92d4ff3,
@@ -110,6 +158,7 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
         save: 0x3fb400,
         rewards: 0x3fba00,
         timestamp: 0x3fbc00,
+        no_game: 0x3fbe00,
         message: 0x3fca00,
         version: 0x3fcc00,
     })
@@ -118,9 +167,42 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{FIRST_START_EDITS, RETIRED_MENU_EDITS};
+    use super::super::{LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS};
     use super::*;
     use crate::encode_arm_branch;
+
+    #[test]
+    fn a_scan_without_games_keeps_its_notice_and_uses_native_acknowledgment() {
+        let edits = sample_edits();
+        let scan = edits
+            .iter()
+            .find(|edit| edit.offset == (NO_GAME_CALL - CODE_BASE) as usize)
+            .unwrap();
+        assert_eq!(
+            scan.expected,
+            encode_arm_branch(NO_GAME_CALL, 0x1d6650, true).unwrap()
+        );
+        assert_eq!(
+            scan.replacement,
+            encode_arm_branch(NO_GAME_CALL, 0x3fbe00, true).unwrap()
+        );
+        let continuation = edits
+            .iter()
+            .find(|edit| edit.offset == (NO_GAME_CONTINUATION.0 - CODE_BASE) as usize)
+            .unwrap();
+        assert_eq!(continuation.expected, 0xe3a00021u32.to_le_bytes());
+        assert_eq!(continuation.replacement, 0xe3a00019u32.to_le_bytes());
+        // Detection, loading-panel shutdown, acknowledgment polling and
+        // both native scan exits stay intact, as does game selection.
+        for address in [
+            0x002ac560, 0x002ac564, 0x002ac568, 0x002ac4c4, 0x002ac758, 0x002ac7b4, 0x002ac7c8,
+            0x002ac904, 0x002ac924, 0x002adc50, 0x002d0fc8, 0x002b0098,
+        ] {
+            assert!(edits
+                .iter()
+                .all(|edit| edit.offset != (address - CODE_BASE) as usize));
+        }
+    }
 
     #[test]
     fn development_hooks_encode_reviewed_native_calls_and_vtables() {
@@ -131,6 +213,7 @@ mod tests {
             save: 0x3fb400,
             rewards: 0x3fba00,
             timestamp: 0x3fbc00,
+            no_game: 0x3fbe00,
             message: 0x3fca00,
             version: 0x3fcc00,
         };
@@ -178,7 +261,9 @@ mod tests {
         }
         // The first start: each edit is present with its original word, and
         // the notice is skipped to where accepting it continues.
-        for (address, expected, replacement) in FIRST_START_EDITS {
+        for (address, expected, replacement) in
+            LANGUAGE_EDITS.into_iter().chain(SCAN_FIRST_START_EDITS)
+        {
             let edit = edits
                 .iter()
                 .find(|e| e.offset == (address - CODE_BASE) as usize)

@@ -8,6 +8,7 @@ use core::{mem::transmute, ptr::NonNull};
 /// Vtables of the tasks a patch replaces the update of: opening the Bank
 /// (task 9), loading it (0x10), saving (7), reward claim (0xd) and reward
 /// guard (0xc).
+pub const TASK_SCAN: u32 = 0x0036_1ab8;
 pub const TASK_OPEN: u32 = 0x0036_1cf0;
 pub const TASK_LOAD: u32 = 0x0036_1ec8;
 pub const TASK_SAVE: u32 = 0x0036_2028;
@@ -71,7 +72,7 @@ impl Task {
     pub fn ui(self) -> Result<*mut u8, NotNative> {
         let offset = match unsafe { read_word(self.raw(), 0) } {
             TASK_LOAD | TASK_REWARD_GUARD => 0x38,
-            TASK_REWARDS => 0x40,
+            TASK_SCAN | TASK_REWARDS => 0x40,
             _ => 0x3c,
         };
         self.pointer(offset)

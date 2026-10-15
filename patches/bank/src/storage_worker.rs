@@ -6,7 +6,7 @@ use crate::{
     transaction::Trainer,
 };
 use bank_common::bank_files::Loaded;
-use offline_core::{rewards::Record, Fingerprint, Phase, RecoveryDecision};
+use offline_core::{Fingerprint, Phase, RecoveryDecision};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameEvidence {
@@ -43,8 +43,6 @@ pub enum Job {
         baseline: GameEvidence,
         /// Whose game it is, read when the game was loaded.
         trainer: Trainer,
-        /// The Miles state that must commit with this save.
-        rewards: Record,
     },
     Finalize {
         game: GameIoDescriptor,
@@ -80,6 +78,9 @@ pub enum Reply {
         loaded: Option<Loaded>,
     },
     Inspected(GameEvidence),
+    /// The game's save could not be read, and the original's test finds no
+    /// Game Card. Nothing was written.
+    CardRemoved,
     ReadyToWrite,
     /// The save in progress moved Pokémon both ways and its game is not
     /// there: it waits for the game of this title and trainer. Nothing was
@@ -252,10 +253,6 @@ mod arm {
             ) {
                 return Err(WorkerError::operation(16, 0));
             }
-            // Remove transport slots the published save made obsolete. A
-            // failure here is retried by the next save and must not undo
-            // this one.
-            let _ = self.files.tidy_transport();
             let loaded = self.read_bank(staging)?;
             Ok(Reply::BankReady {
                 evidence,
@@ -312,7 +309,12 @@ mod arm {
                     })
                 }
                 Job::Inspect { game } => {
-                    let evidence = inspect(game)?;
+                    // A reply, not an error: the worker stays usable for
+                    // the next session.
+                    let evidence = match inspect(game) {
+                        Err(_) if !detected(game) => return Ok(Reply::CardRemoved),
+                        evidence => evidence?,
+                    };
                     require_secure(game, evidence.secure.current)?;
                     Ok(Reply::Inspected(evidence))
                 }
@@ -418,7 +420,6 @@ mod arm {
                     prepared,
                     baseline,
                     trainer,
-                    rewards,
                 } => {
                     if game.kind != prepared.kind
                         || game.kind.title_id() != baseline.title
@@ -493,7 +494,7 @@ mod arm {
                     self.files.rehearse(rehearsal::chosen());
                     // Side files first, then the Bank journal.
                     self.files
-                        .prepare(staging, rewards, identity, images.before, images.after)
+                        .prepare(staging, identity, images.before, images.after)
                         .map_err(|e| files_error(e, 15))?;
                     // No game write is allowed until this post-barrier check ends.
                     let unchanged = inspect(game)?;
@@ -526,7 +527,7 @@ mod arm {
         WorkerError::operation(fault, error.diagnostic())
     }
     /// Second number for side-file problems: `7A00ffpp`, with `ff` the file
-    /// (0 Bank, 1 Pokédex, 2 transport, 3 rewards) and `pp` the
+    /// (0 Bank, 1 main, 2 transport) and `pp` the
     /// `bank_files::Problem`.
     fn files_error(error: bank_files::Error<fs::Error>, fault: u32) -> WorkerError {
         match error {
@@ -619,6 +620,14 @@ mod arm {
             gamecard: second != 0,
             value,
         })
+    }
+    /// Whether the game's Game Card is there, by the original's own test:
+    /// its game selection asks for the game's secure value (00292d64,
+    /// 001643dc, 00164370 → 0016578c) and shows message 0x1F, "No Pokémon
+    /// Game Card detected", when the query fails. An answer that is not
+    /// what the query gives is not taken for a missing card.
+    fn detected(game: GameIoDescriptor) -> bool {
+        !matches!(platform(game), Err(error) if error.native_result() != 0)
     }
     fn require_secure(game: GameIoDescriptor, expected: u64) -> Result<(), WorkerError> {
         if platform(game)?.matches_native_rule(expected) {

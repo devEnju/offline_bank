@@ -1,11 +1,11 @@
 //! The download patch: has the original load the Bank from its server and
 //! writes it as the offline patch's files. Everything online stays the
-//! original's; the patch takes the router call, task 9 and the reward step,
-//! and has the scan go on without its question when it finds no game.
+//! original's; task 3 checks local data before native preparation and never
+//! detects games. Task 9 and the reward step load and store the Bank.
 
 use super::{
     archive_preservation_candidate, router_call, startup_call, version_call, word, Profile,
-    OPEN_TASK, VERSION_ENTRY,
+    OPEN_TASK, SCAN_TASK, VERSION_ENTRY,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
 
@@ -13,25 +13,18 @@ pub const PROFILE: Profile = Profile {
     name: "download",
     entries: &[
         "bank_download_next",
+        "bank_download_scan",
+        "bank_download_scan_busy",
         "bank_download_open",
         "bank_download_open_busy",
         "bank_download_save",
         VERSION_ENTRY,
     ],
-    // Eight edited words plus the linked bootstrap bytes.
-    regions: 9,
+    // Nine edited words plus the linked bootstrap bytes.
+    regions: 10,
     menu_edits: &[],
     edits,
 };
-
-/// The game scan's state 0x11, where it has found no usable game (all
-/// eight availability bytes zero): `moveq r0, #0x18` at 002ac560 selects
-/// the state that asks about Pokémon HOME, and this `beq 002ac4c4` stores
-/// it. The branch goes to 002aca50 instead, the original's own code for the
-/// first button of that question after its touch of the dialog: state
-/// 0x12 and the byte `task + 0x44`, with which the scan ends with outcome
-/// 0x17 and the session takes the load that needs no game.
-pub const NO_GAME_BRANCH: (u32, u32, u32) = (0x002ac564, 0x0affffd6, 0x0a000139);
 
 /// Task 0xc, the reward step the patch enters after the load: the update
 /// slot of its vtable and the update it holds.
@@ -42,6 +35,8 @@ fn edits(_: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
     hook_edits(Targets {
         startup: payload.bootstrap_entry,
         next: payload.export("bank_download_next")?,
+        scan: payload.export("bank_download_scan")?,
+        scan_busy: payload.export("bank_download_scan_busy")?,
         open: payload.export("bank_download_open")?,
         open_busy: payload.export("bank_download_open_busy")?,
         save: payload.export("bank_download_save")?,
@@ -53,6 +48,8 @@ fn edits(_: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
 struct Targets {
     startup: u32,
     next: u32,
+    scan: u32,
+    scan_busy: u32,
     open: u32,
     open_busy: u32,
     save: u32,
@@ -74,10 +71,11 @@ fn hook_edits(targets: Targets) -> crate::Result<Vec<CheckedEdit>> {
             OPEN_TASK[1].1,
             targets.open_busy.to_le_bytes(),
         ),
+        word(SCAN_TASK[0].0, SCAN_TASK[0].1, targets.scan.to_le_bytes()),
         word(
-            NO_GAME_BRANCH.0,
-            NO_GAME_BRANCH.1,
-            NO_GAME_BRANCH.2.to_le_bytes(),
+            SCAN_TASK[1].0,
+            SCAN_TASK[1].1,
+            targets.scan_busy.to_le_bytes(),
         ),
         // The reward step asks the server nothing: its update writes the
         // files and ends as cancelled.
@@ -91,12 +89,16 @@ fn hook_edits(targets: Targets) -> crate::Result<Vec<CheckedEdit>> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{offline, CODE_BASE, FIRST_START_EDITS, RETIRED_MENU_EDITS};
+    use super::super::{
+        offline, CODE_BASE, LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS,
+    };
     use super::*;
 
     const TARGETS: Targets = Targets {
         startup: 0x313910,
         next: 0x3fb000,
+        scan: 0x3fba00,
+        scan_busy: 0x3fbc00,
         open: 0x3fb200,
         open_busy: 0x3fb400,
         save: 0x3fb600,
@@ -120,24 +122,20 @@ mod tests {
         let reward = at(REWARD_UPDATE_SLOT).unwrap();
         assert_eq!(reward.expected, REWARD_UPDATE.to_le_bytes());
         assert_eq!(reward.replacement, 0x3fb600u32.to_le_bytes());
-        // The scan's branch is a conditional branch before and after, from
-        // 002ac564 to 002ac4c4 and to 002aca50.
-        let scan = at(NO_GAME_BRANCH.0).unwrap();
-        assert_eq!(scan.expected, NO_GAME_BRANCH.1.to_le_bytes());
-        assert_eq!(scan.replacement, NO_GAME_BRANCH.2.to_le_bytes());
-        let target = |word: u32| {
-            assert_eq!(word >> 24, 0x0a);
-            let offset = ((word << 8) as i32) >> 6;
-            (NO_GAME_BRANCH.0 + 8).wrapping_add(offset as u32)
-        };
-        assert_eq!(target(NO_GAME_BRANCH.1), 0x002ac4c4);
-        assert_eq!(target(NO_GAME_BRANCH.2), 0x002aca50);
+        for ((address, expected), target) in
+            SCAN_TASK.into_iter().zip([TARGETS.scan, TARGETS.scan_busy])
+        {
+            let edit = at(address).unwrap();
+            assert_eq!(edit.expected, expected.to_le_bytes());
+            assert_eq!(edit.replacement, target.to_le_bytes());
+        }
+        assert!(at(0x002ac564).is_none());
         // The original stays as it is where the offline patch replaces the
         // server: the first start's prompts, the load, the save, the reward
         // claim, the clock, the show-message function
         // (the original refuses HOME for its whole session itself), and the
         // main menu.
-        for (address, _, _) in FIRST_START_EDITS {
+        for (address, _, _) in LANGUAGE_EDITS.into_iter().chain(SCAN_FIRST_START_EDITS) {
             assert!(at(address).is_none());
         }
         for address in [
@@ -170,8 +168,8 @@ mod tests {
                 None => own += 1,
             }
         }
-        // One place is the download's alone: the scan's no-game branch.
-        assert_eq!(own, 1);
+        // Its two scan-task hooks run before game detection.
+        assert_eq!(own, 2);
         // Its own entry functions are its own; the one for the version line
         // has the same name in every patch.
         assert!(PROFILE

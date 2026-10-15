@@ -1,5 +1,5 @@
 <#
-Builds the console test package of the Bank patch into build/bank-test and
+Builds the console test package of the Bank patch into build/test and
 checks it with Verify-BankPatch.ps1. It is for rehearsing an interrupted Save
 and Quit on a console (docs/building.md) and is never part of a release:
 New-Release.ps1 does not know it, and its folder holds a TEST-BUILD.txt that
@@ -26,15 +26,15 @@ try {
     })
     if ($extractions.Count -ne 1) { throw 'Extraction did not return one input record.' }
     $inputRecord = $extractions[0]
-    $relative = 'build/bank-test'
+    $relative = 'build/test'
     $output = Join-Path $projectRoot $relative
     & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Patch test -Version $Version | Out-Host
-    $elf = Join-Path $projectRoot 'build/intermediate/bank-test/bank-payload.elf'
+    $elf = Join-Path $projectRoot 'build/intermediate/test/bank-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     & cargo +stable run --locked --offline -p patch-builder -- build-development test $inputRecord.code $inputRecord.exheader $elf $output
     if ($LASTEXITCODE -ne 0) { throw "Test patch build failed: $LASTEXITCODE" }
-    Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind bank-test)
+    Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind test)
     & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -Patch test | Out-Null
     $report = Get-Content -LiteralPath (Join-Path $output 'verification.json') -Raw | ConvertFrom-Json
     if ($report.status -ne 'passed') { throw 'Verification failed for the test package' }
@@ -51,7 +51,8 @@ try {
         '                             Shows error 00007E57 00000002.'
         '  Use Pokemon Bank (record)  first writes the journal record 150 times, then saves normally.'
         '                             For cutting the power during those writes.'
-        '  Use Pokemon Bank (boxes)   first writes the spare snapshot slot 30 times, then saves normally.'
+        '  Use Pokemon Bank (boxes)   first writes the file of the boxes that is not in use 30 times, then'
+        '                             saves normally.'
         '                             For cutting the power during those writes.'
         '  Back                       the original: asks, then returns to the start screen.'
         ''

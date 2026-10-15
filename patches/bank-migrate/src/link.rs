@@ -11,8 +11,8 @@ mod linked {
         bank_migrate_payload::runtime::bank_migrate_next;
     #[used]
     #[link_section = ".bank.link_roots"]
-    static OPEN: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_migrate_payload::runtime::bank_migrate_open;
+    static SCAN: unsafe extern "aapcs" fn(*mut u8) -> u32 =
+        bank_migrate_payload::runtime::bank_migrate_scan;
     #[used]
     #[link_section = ".bank.link_roots"]
     static STARTUP: unsafe extern "aapcs" fn(*mut u8) =

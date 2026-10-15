@@ -26,13 +26,13 @@ The builder identifies the inputs by hash and refuses any other version. The exp
 Each script unpacks its CIA, compiles the injected code, writes a package, and verifies it:
 
 ```text
-build/bank/           code.ips, exheader.bin, manifest.json, report.md, verification.json, PACKAGE.txt
-build/transporter/    the same
+build/binary/bank/           code.ips, exheader.bin, manifest.json, report.md, verification.json, PACKAGE.txt
+build/binary/transporter/    the same
 ```
 
 **The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). The version is given to the build: every build script for Bank takes `-Version v1.2.3` (or `v1.2.3-draft`) and compiles it into the payload, and `New-Release.ps1` passes its own, with `-draft` for the offline package of a draft. A package built without it says `dev`. The version is part of the compiled code, so it is part of the package's name too.
 
-A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way: the test package into `build/bank-test/`, the migration into `build/bank-migrate/`, the download into `build/bank-download/` (all below).
+A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way, each into a folder beside `binary`: the test package into `build/test/`, the migration into `build/migration/`, the download into `build/download/` (all below).
 
 ## Verify
 
@@ -53,6 +53,16 @@ cargo +stable fmt --all -- --check
 
 The tests run on the PC and cover the storage format, a power cut injected at every write of a save, Miles rules, routing, deliveries into the transport box, the SD-save rules, and the builder. What only a console can show is in [testing.md](testing.md).
 
+### CRC throughput on the host
+
+The checksum integration tests compare the table implementation with the original bitwise calculation, including exhaustive one-byte and two-byte inputs and streamed native bodies. The throughput benchmark is ignored by normal test runs; invoke it explicitly, twice with the host otherwise idle:
+
+```powershell
+cargo +stable test -p offline-core --test checksum --release --locked --offline crc32_throughput -- --ignored --exact --nocapture
+```
+
+It uses the workspace's release settings, warms up both implementations, and reports median throughput and their ratio across seven samples, alternating their order. Inputs are a journal's 136 checksummed bytes, a 512-byte read chunk, the Bank file, and the native body, including body updates in 512-byte chunks. Data generation and allocation are outside timing; input, function, and output pass through `black_box`. These are PC measurements of CRC work, not ARM11 timings or total loading speed.
+
 ### Test builds for an interrupted save
 
 Recovery after a power cut cannot be triggered on demand on a console, so one extra Bank package exists for rehearsing it. It is built behind a cargo feature that is off by default and is never part of a release.
@@ -61,7 +71,7 @@ Recovery after a power cut cannot be triggered on demand on a console, so one ex
 ./scripts/Build-BankTestPatches.ps1
 ```
 
-This builds and verifies it into `build/bank-test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
+This builds and verifies it into `build/test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
 
 - After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. All five buttons say "Use Pokémon Bank" in the console's language, and the four rehearsals have a word in brackets behind it, the same in every language. Back on the game selection leads to the menu again.
 - The reward dialogs never come, and nothing is claimed, so that a run is short.
@@ -79,19 +89,21 @@ cargo +stable test -p bank-common --features test-build --release --locked --off
 
 Two patches do one thing each and are not the offline patch. Each has its own crate, builder profile and script, and nothing depends on either.
 
-### The migration from v0.2.1
+### The migration from the previous release
 
-Version 0.2.1 stored the Bank in four files; since v0.3.0 it has ten ([internals.md](internals.md#files)). The step from the one to the other has a patch of its own, [patches/bank-migrate](../patches/bank-migrate/src/), which converts the Bank and does nothing else ([internals.md](internals.md#patches-for-bank)). The offline patch has no code for the earlier files.
+The release before this one stored the Bank differently ([internals.md](internals.md#files)). The step from the one to the other has a patch of its own, [patches/bank-migrate](../patches/bank-migrate/src/), which converts the Bank and does nothing else ([internals.md](internals.md#patches-for-bank)). It holds the only code that reads the earlier files: that release's storage code, frozen in [previous/](../patches/bank-migrate/src/previous/). The offline patch has no code for the earlier files.
 
 ```powershell
 ./scripts/Build-BankMigrationPatch.ps1
 ```
 
-This builds it into `build/bank-migrate/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
+This builds it into `build/migration/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
-It belongs to that one step and ships with the releases that follow it while users of v0.2.1 are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+After START, migration checks existing local extdata before any cartridge or installed-game detection; neither is run. A missing archive gives `0000600D 00000000` without creating one. The presence or absence of a game never decides whether conversion runs.
 
-This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. Its result is always two numbers under the original's line about the HOME Menu, and the runs that check a migration are the same each time ([testing.md](testing.md#updating-from-the-version-before)).
+It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+
+This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with the version/package label and two numbers. `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. Its PC tests cover interrupted conversions; the console checks are in [testing.md](testing.md#a-release-with-a-migration), the user's steps in the package's README.
 
 ### The download from the official server
 
@@ -101,15 +113,17 @@ While the official service runs (it ends on February 25, 2027), a patch of its o
 ./scripts/Build-BankDownloadPatch.ps1
 ```
 
-This builds it into `build/bank-download/` and verifies it (`Verify-BankPatch.ps1 -Patch download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
+This builds it into `build/download/` and verifies it (`Verify-BankPatch.ps1 -Patch download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
 
-**It has not been run against the official server.** It was written from the original's code alone; the checks made there are listed in [internals.md](internals.md#the-download-patch). Its guide in the release says so.
+After START, download checks local extdata before contacting anything. If no offline Bank is present, it keeps the original archive and first-start preparation, then connects without detecting a cartridge or installed game. A missing archive is absence; unreadable or previous-format data stops the download instead of allowing an overwrite.
 
-It ends, like the migration, on two numbers under the original's line about the HOME Menu:
+What it checks in the original's code is listed in [internals.md](internals.md#the-download-patch); the console checks are in [testing.md](testing.md#the-download).
+
+Local inspection and file writing use the original preparation message and power-off warning. Native online phases keep their own messages. Like migration, every completed result stays under the original's line about the HOME Menu, with the version/package label and two numbers. Success appears after native session release and cleanup, with no success message, sound or A press. Close Bank from HOME before switching packages or reopening to check it again:
 
 | Numbers | Meaning |
 | --- | --- |
-| `0000D0AD 00000001` | downloaded and written |
+| `0000D0AD 00000001` | the Bank was downloaded and written successfully |
 | `0000D0AD 00000002` | an offline Bank was on the card already; nothing was contacted or changed |
 | `00000BAD 00000001` | the server holds no Bank for this console; nothing was created or changed |
 | any other pair | the files could not be read or written; the numbers are the offline Bank's ([bank.md](bank.md#troubleshooting)) |
@@ -146,17 +160,17 @@ In this order, stopping at the first problem, it:
 1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the tag does not exist yet (files git does not track may lie in the folder);
 2. runs the tests, Clippy and the formatting check;
 3. builds both patches from the committed sources and verifies them;
-4. writes `build/release/offline_bank-v1.0.0.zip`;
-5. writes the release notes `build/release/offline_bank-v1.0.0.md`;
+4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes its migration and download zips;
+5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
 
 **A release that ships the migration** names the one version it converts from, the version before the Bank was last stored differently:
 
 ```powershell
-./scripts/New-Release.ps1 -Version v0.3.1 -MigrateFrom v0.2.1
+./scripts/New-Release.ps1 -Version v1.1.0 -MigrateFrom v1.0.0
 ```
 
-It then writes a second zip, `offline_bank-v0.2.1-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. The `README.txt` of every release names the oldest Bank the version continues (`$bankFilesSince` in the script). Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
+It then writes a second zip, `offline_bank-v1.0.0-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. The `README.txt` of every release names the oldest Bank the version continues: the release that ships the migration is that version itself, and every later release names it in `$bankFilesSince` in the script. Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
 
 **A release made while the official service runs** can ship the download:
 
@@ -191,7 +205,7 @@ Patch files are never committed to the repository; they exist only as release do
 
 ```text
 patches/bank/           the offline patch for Bank
-patches/bank-migrate/   the migration patch for Bank, from v0.2.1
+patches/bank-migrate/   the migration patch for Bank, from the previous release
 patches/bank-download/  the download patch for Bank, from the official server
 patches/transporter/    code injected into Transporter
 crates/bank-common/     what every patch for Bank shares: files, worker thread, dialogs

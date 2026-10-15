@@ -1,5 +1,6 @@
 //! What a patch does to a message of the original for its last screen: the
-//! cut after its first part, the line of two numbers with the line above it
+//! cut after its first part, or what follows that part, the line of two
+//! numbers with the line above it
 //! that says which version and package shows them, and the page that
 //! follows.
 //!
@@ -19,6 +20,13 @@ const LINE_FEED: u16 = 0x0a;
 pub const LEN: usize = 17;
 /// The dialog's last line.
 const LINE: usize = 3;
+
+/// End of `pages` pages, immediately before the next page-break command.
+/// Control arguments are skipped as records, never interpreted as text.
+/// A missing boundary or malformed record is an error, not the full message.
+pub fn page_end(text: &[u16], pages: usize) -> Option<usize> {
+    boundaries(text, pages).0
+}
 
 /// The version this package was built as: the release script names it
 /// (`OFFLINE_BANK_VERSION`, docs/building.md). A package built without one
@@ -99,11 +107,18 @@ pub fn line(first: u32, second: u32) -> [u16; LEN] {
     out
 }
 
-/// Where the first page of `text` ends, and where its first line does.
-fn first_part(text: &[u16]) -> (Option<usize>, Option<usize>) {
+/// The requested page break and first line feed outside control records.
+/// Both dialog cuts use this walk; a malformed record ends the search.
+fn boundaries(text: &[u16], mut pages: usize) -> (Option<usize>, Option<usize>) {
+    if pages == 0 {
+        return (None, None);
+    }
     let mut line = None;
     let mut at = 0;
     while at < text.len() {
+        if text[at] == 0 {
+            break;
+        }
         if text[at] != CONTROL {
             if text[at] == LINE_FEED && line.is_none() {
                 line = Some(at);
@@ -114,10 +129,21 @@ fn first_part(text: &[u16]) -> (Option<usize>, Option<usize>) {
         if at + 2 >= text.len() {
             break;
         }
-        if text[at + 2] == NEW_PAGE {
-            return (Some(at), line);
+        let count = usize::from(text[at + 1]);
+        let end = at + 2 + count;
+        if count == 0 || end > text.len() {
+            break;
         }
-        at += 2 + usize::from(text[at + 1]);
+        if text[at + 2] == NEW_PAGE {
+            if count != 1 {
+                break;
+            }
+            pages -= 1;
+            if pages == 0 {
+                return (Some(at), line);
+            }
+        }
+        at = end;
     }
     (None, line)
 }
@@ -126,8 +152,24 @@ fn first_part(text: &[u16]) -> (Option<usize>, Option<usize>) {
 /// a message of one page, its first line. Nothing is written; a message
 /// that ends there is the original's own text up to that point.
 pub fn cut(text: &[u16]) -> usize {
-    let (page, feed) = first_part(text);
+    let (page, feed) = boundaries(text, 1);
     page.or(feed).unwrap_or(text.len())
+}
+
+/// Where the message `text` goes on after its first part (`cut`): behind
+/// the page break and the line feed the next page begins with or, in a
+/// message of one page, behind its first line. `None` if nothing follows.
+pub fn rest(text: &[u16]) -> Option<usize> {
+    let start = match boundaries(text, 1) {
+        (Some(page), _) => {
+            let start = page + 3;
+            start + usize::from(text.get(start) == Some(&LINE_FEED))
+        }
+        (None, feed) => feed? + 1,
+    };
+    text.get(start)
+        .is_some_and(|&unit| unit != 0)
+        .then_some(start)
 }
 
 /// Ends the message in `text[..len]` after its first part (`cut`) and puts
@@ -210,6 +252,41 @@ mod tests {
         }
         out
     }
+
+    #[test]
+    fn page_prefix_keeps_the_first_break_and_ends_before_the_second() {
+        let text = message(&[2, 2, 2]);
+        let end = page_end(&text, 2).unwrap();
+        assert_eq!(&text[..end], message(&[2, 2]));
+        assert_eq!(&text[end..end + 3], PAGE);
+        assert_eq!(page_end(&text[..end], 2), None);
+        assert_eq!(page_end(&text, 1), Some(message(&[2]).len()));
+    }
+
+    #[test]
+    fn page_boundaries_skip_control_arguments_and_reject_malformed_records() {
+        let mut text = vec![CONTROL, 4, 0x0100, CONTROL, 1, NEW_PAGE];
+        text.extend(message(&[1, 1, 1]));
+        assert_eq!(cut(&text), 6 + message(&[1]).len());
+        assert_eq!(page_end(&text, 2), Some(6 + message(&[1, 1]).len()));
+        for malformed in [
+            vec![],
+            vec![CONTROL],
+            vec![CONTROL, 0],
+            vec![CONTROL, 2, NEW_PAGE],
+            vec![CONTROL, 2, NEW_PAGE, 7],
+            vec![0, CONTROL, 1, NEW_PAGE],
+        ] {
+            assert_eq!(page_end(&malformed, 1), None);
+        }
+        let text = message(&[1, 1, 1]);
+        assert_eq!(page_end(&text, 0), None);
+        assert_eq!(page_end(&text, 3), None);
+        let end = page_end(&text, 2).unwrap();
+        for length in 0..end + PAGE.len() {
+            assert_eq!(page_end(&text[..length], 2), None);
+        }
+    }
     fn put_in(text: &[u16], room: usize) -> Option<Vec<u16>> {
         let mut buffer = vec![0xffff; room];
         buffer[..text.len()].copy_from_slice(text);
@@ -223,7 +300,7 @@ mod tests {
     }
     /// The lines of the first page, as text.
     fn first_page(text: &[u16]) -> Vec<String> {
-        let end = first_part(text).0.unwrap_or(text.len());
+        let end = page_end(text, 1).unwrap_or(text.len());
         String::from_utf16(&text[..end])
             .unwrap()
             .split('\n')
@@ -253,7 +330,7 @@ mod tests {
         // what follows that page is dropped.
         for first in [1, 2] {
             let out = put_in(&message(&[first, 2]), 96).unwrap();
-            assert_eq!(first_part(&out).0, None);
+            assert_eq!(page_end(&out, 1), None);
             assert_eq!(out[out.len() - LEN..], numbers());
             assert_eq!(first_page(&out).len(), 3);
         }
@@ -357,7 +434,7 @@ mod tests {
     fn pages(text: &[u16]) -> Vec<Vec<u16>> {
         let mut out = Vec::new();
         let mut rest = text;
-        while let (Some(end), _) = first_part(rest) {
+        while let Some(end) = page_end(rest, 1) {
             out.push(rest[..end].to_vec());
             assert_eq!(rest[end + PAGE.len()], LINE_FEED);
             rest = &rest[end + PAGE.len() + 1..];
@@ -396,6 +473,31 @@ mod tests {
         assert_eq!(cut(&message(&[2])), 4);
         assert_eq!(cut(&message(&[1])), 4);
         assert_eq!(cut(&[]), 0);
+    }
+
+    #[test]
+    fn the_rest_is_what_follows_the_first_page_or_the_first_line() {
+        // Nine languages: the pages after the first, as the original has them.
+        for shape in [&[1, 2][..], &[2, 2], &[2, 3], &[1, 3, 2]] {
+            let text = message(shape);
+            let start = rest(&text).unwrap();
+            assert_eq!(text[start..], message(&shape[1..]));
+        }
+        // One page: what follows its first line.
+        let text = message(&[2]);
+        assert_eq!(rest(&text), Some(5));
+        assert_eq!(text[5..], message(&[1]));
+        // Nothing follows, or the page break is not a record.
+        for nothing in [
+            message(&[1]),
+            vec![],
+            [message(&[1]), PAGE.to_vec()].concat(),
+            [message(&[1]), PAGE.to_vec(), vec![LINE_FEED]].concat(),
+            [message(&[1]), vec![LINE_FEED, 0]].concat(),
+            vec![CONTROL, 0, LINE_FEED],
+        ] {
+            assert_eq!(rest(&nothing), None, "{nothing:x?}");
+        }
     }
 
     #[test]
@@ -443,8 +545,14 @@ mod tests {
         text.extend("b".encode_utf16());
         text.extend(PAGE);
         text.extend("c".encode_utf16());
-        assert_eq!(first_part(&text), (Some(6), None));
+        assert_eq!(boundaries(&text, 1), (Some(6), None));
+        assert_eq!(cut(&text), 6);
+        // The one-page error's fallback also ignores line feeds in arguments.
+        let mut single = text[..6].to_vec();
+        single.extend([LINE_FEED, b'c' as u16]);
+        assert_eq!(cut(&single), 6);
+        assert_eq!(page_end(&single, 1), None);
         // A code cut off at the end of the text ends the search.
-        assert_eq!(first_part(&[CONTROL, 1]), (None, None));
+        assert_eq!(boundaries(&[CONTROL, 1], 1), (None, None));
     }
 }

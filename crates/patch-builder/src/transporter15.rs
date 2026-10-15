@@ -70,7 +70,9 @@ pub const ENTRY_TITLE_END: u32 = PAYLOAD_ADDRESS + 60;
 pub const ENTRY_LIST_READY: u32 = PAYLOAD_ADDRESS + 64;
 pub const ENTRY_MESSAGE: u32 = PAYLOAD_ADDRESS + 68;
 pub const ENTRY_VERSION: u32 = PAYLOAD_ADDRESS + 72;
-pub const ENTRY_COUNT: u32 = 19;
+pub const ENTRY_SHINY_BUILD: u32 = PAYLOAD_ADDRESS + 76;
+pub const ENTRY_SHINY_GENDER: u32 = PAYLOAD_ADDRESS + 80;
+pub const ENTRY_COUNT: u32 = 21;
 
 enum Word {
     Raw(u32),
@@ -195,6 +197,13 @@ const EDITS: &[(u32, u32, Word)] = &[
     // request; the original final save and success message (sub-state 0xE)
     // come next.
     (0x0024_a3c0, 0xe3a0_000a, Raw(0xe3a0_000e)),
+    // --- Gen 1 conversion (0024F428): the Easter egg. ---
+    // The constructor call (was: bl 0019CD3C): the entry may ask for a shiny
+    // in the construction parameters, then makes the call.
+    (0x0024_f6b0, 0xebfd_35a1, BranchLink(ENTRY_SHINY_BUILD)),
+    // The gender from the Attack DV (was: ldrb r1, [r4, #0x1b]): the entry
+    // keeps the constructor's gender, or runs the instruction.
+    (0x0024_f8e0, 0xe5d4_101b, BranchLink(ENTRY_SHINY_GENDER)),
 ];
 
 fn word_edit(address: u32, original: u32, word: &Word) -> Result<CheckedEdit> {
@@ -716,6 +725,8 @@ mod tests {
             (0x0013_aee4, LAYOUT_CHECK),
             (0x0024_ba44, ENTRY_TITLE_BEGIN),
             (0x0024_ba74, ENTRY_TITLE_END),
+            (0x0024_f6b0, ENTRY_SHINY_BUILD),
+            (0x0024_f8e0, ENTRY_SHINY_GENDER),
             (STARTUP_CALL, BOOTSTRAP_ADDRESS),
         ] {
             let call = word(address, &BranchLink(entry));
@@ -734,6 +745,8 @@ mod tests {
             (0x0022_b5b0, 0xebfd_da8a, 0x001a_1fe0),
             // The scanner's "is this title installed?".
             (0x0024_12d4, 0xeb00_3ff3, 0x0025_12a8),
+            // The Gen 1 converter's call of the Pokémon constructor.
+            (0x0024_f6b0, 0xebfd_35a1, 0x0019_cd3c),
         ] {
             assert_eq!(branch_target(address, original, true), Some(target));
         }

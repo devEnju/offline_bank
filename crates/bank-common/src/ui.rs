@@ -3,8 +3,9 @@
 //! Every text is the original's own, in the language of the screens. The
 //! error dialog is the first sentence of the original's message for a failed
 //! save, and as its next page the start screen's line about the HOME Menu
-//! with two code numbers on the dialog's third line; nothing else is written
-//! here.
+//! with two code numbers on the dialog's third line. A save that did not
+//! start for lack of its Game Card shows that message's other part, the
+//! advice to check the card. Nothing else is written here.
 
 use crate::numbers;
 use core::mem::transmute;
@@ -14,6 +15,7 @@ pub enum Error {
     InvalidPointer,
     MissingBuffer,
     InsufficientCapacity,
+    InvalidMessage,
 }
 fn pointer(value: u32) -> Result<*mut u8, Error> {
     if value == 0 || value & 3 != 0 {
@@ -27,7 +29,9 @@ unsafe fn word(base: *mut u8, offset: usize) -> u32 {
 }
 
 /// Native message 0xB, which the original shows after a failed save
-/// (task 0x16, 002a9118): "The server did not receive the data. ..."
+/// (task 7 state 0x10, task 0x16 at 002a9118): "The server did not receive
+/// the data." and then "Please confirm that your Game Card is properly
+/// inserted, and then try again."
 pub const FAILURE_NOTICE: u32 = 0xb;
 /// Native message 0x4D, the start screen's own line: "Press HOME to return
 /// to the HOME Menu". One line in every language of the original.
@@ -57,6 +61,16 @@ unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize
         unsafe { core::slice::from_raw_parts_mut(data, capacity) },
         len,
     )))
+}
+
+/// Terminate the allocated native string and reset the dialog's parser.
+unsafe fn begin(context: *mut u8, text: *mut u8, room: &mut [u16], len: usize) {
+    room[len] = 0;
+    unsafe {
+        text.add(0xa).cast::<u16>().write(len as u16);
+        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
+        begin(context, text);
+    }
 }
 
 /// Shows the screen a patch ends on, as one dialog that does not end, the
@@ -89,20 +103,13 @@ pub unsafe fn stop(
 ) -> Result<(), Error> {
     let label = label.units();
     let context = pointer(unsafe { word(ui, 0x5c) })?;
-    // Ends the text at `len` and hands it to the dialog.
-    let begin = |text: *mut u8, room: &mut [u16], len: usize| unsafe {
-        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
-        room[len] = 0;
-        text.add(0xa).cast::<u16>().write(len as u16);
-        begin(context, text);
-    };
     let mut home = [0u16; HOME_ROOM];
     let mut home_len = 0;
     unsafe { display(ui, HOME_NOTICE, false)? };
     if let Some((text, room, len)) = unsafe { text(ui)? } {
         let Some(_) = reason else {
             let len = numbers::put(room, len, label, first, second).unwrap_or(len);
-            begin(text, room, len);
+            unsafe { begin(context, text, room, len) };
             return Ok(());
         };
         if len < HOME_ROOM {
@@ -121,7 +128,7 @@ pub unsafe fn stop(
     if home_len != 0 {
         len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
     }
-    begin(text, room, len);
+    unsafe { begin(context, text, room, len) };
     Ok(())
 }
 
@@ -137,13 +144,13 @@ pub unsafe fn acknowledged(ui: *mut u8) -> Result<bool, Error> {
     Ok(unsafe { poll(context) } == 4)
 }
 
-/// Native message 2, shown by task 9 only while it creates a new Bank.
+/// Native message 2: preparing Bank, with the warning not to turn off power.
+/// Task 9 uses it for creation; utilities use it for their local work.
 pub const CREATING_MESSAGE: u32 = 2;
-/// Native message 0xE, on screen while task 9 opens an existing Bank (left
-/// up by the tasks before it) and while task 0x10 loads it.
+/// Native message 0xE: "Communicating with the Pokémon Bank server...".
+/// The scene set-up shows it after game selection, before task 0x10 loads
+/// the Bank. The offline opening keeps the game scan's panel and text.
 pub const BANK_LOADING_MESSAGE: u32 = 0xe;
-/// Native notice 0x1A, shown by game selection when no game can be used.
-pub const NO_GAME_NOTICE: u32 = 0x1a;
 /// Native message 0xA: "You previously used a different copy of this game.
 /// Please try again using {name}'s game (Trainer ID No. {number})."
 const OTHER_COPY_NOTICE: u32 = 0xa;
@@ -161,11 +168,20 @@ pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
     pointer(unsafe { word(ui, 0x94) })?;
     unsafe {
         let open_status: unsafe extern "aapcs" fn(*mut u8) = transmute(0x001d_5b44usize);
-        let show_message: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(0x0025_da24usize);
         open_status(ui);
-        show_message(ui, message);
+        loading_message(ui, message);
     }
     Ok(())
+}
+
+/// Changes only the native loading text, retaining the panel, sound and spinner.
+/// # Safety
+/// `ui` has loading's native lifetime contract and its loading panel is already
+/// active, set up by `loading` or the original's native task initializer.
+pub unsafe fn loading_message(ui: *mut u8, message: u32) {
+    let show_message: unsafe extern "aapcs" fn(*mut u8, u32) =
+        unsafe { transmute(0x0025_da24usize) };
+    unsafe { show_message(ui, message) };
 }
 
 /// The three operations native tasks perform when loading ends: stop sound
@@ -185,6 +201,32 @@ pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
         unbind(context, 0, 0, 0);
     }
     Ok(())
+}
+
+/// Native message 9: "Success! Changes saved."
+const SAVED_NOTICE: u32 = 9;
+
+/// How the original's Save and Quit ends when it succeeded (002b21c4..
+/// 002b2224): the success sound 0x50012 through 001e9bc0, the end of the
+/// loading panel, and message 9, which waits. Its failure (002b2238) plays
+/// no sound. 001e9bc0(id, fade, tag, mode) starts a sound once, on the first
+/// free of the eleven sound players, without a fade-in, with the tag -1
+/// that lets any stop call (001d6200, 002b6084) end it; nothing is left to
+/// end when it is over. Poll `acknowledged` afterwards.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with the loading panel up and
+/// no dialog active, on the main task thread.
+pub unsafe fn saved(ui: *mut u8) -> Result<(), Error> {
+    pointer(ui as u32)?;
+    pointer(unsafe { word(ui, 0x5c) })?;
+    pointer(unsafe { word(ui, 0x78) })?;
+    pointer(unsafe { word(ui, 0x94) })?;
+    unsafe {
+        let play: unsafe extern "aapcs" fn(u32, u32, u32, u32) = transmute(0x001e_9bc0usize);
+        play(0x0005_0012, 0, u32::MAX, 0);
+        stop_loading(ui)?;
+        display(ui, SAVED_NOTICE, true)
+    }
 }
 
 /// What native task 9 does on entering its welcome for a new Bank
@@ -217,12 +259,36 @@ unsafe fn display(ui: *mut u8, message: u32, wait: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// Shows an original localized notice with acknowledgement. Poll
-/// `acknowledged` afterwards.
+/// Shows the first `pages` pages of an original notice. The final retained
+/// page has no page-break command, so the native renderer treats it as the
+/// end of the message; A closes it rather than advancing to another page.
 /// # Safety
 /// `ui` has stop's native lifetime contract, with no other dialog active.
-pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
-    unsafe { display(ui, message, true) }
+pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<(), Error> {
+    unsafe { display(ui, message, true)? };
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+        return Err(Error::MissingBuffer);
+    };
+    let end = numbers::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
+    unsafe { begin(context, text, room, end) };
+    Ok(())
+}
+
+/// Shows an original message without its first part (`numbers::rest`),
+/// waiting for A. The rest moves to the front of the UI's own string object.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
+    unsafe { display(ui, message, true)? };
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+        return Err(Error::MissingBuffer);
+    };
+    let start = numbers::rest(&room[..len]).ok_or(Error::InvalidMessage)?;
+    room.copy_within(start..len, 0);
+    unsafe { begin(context, text, room, len - start) };
+    Ok(())
 }
 
 /// Shows the original's message for another copy of a game, filled the way

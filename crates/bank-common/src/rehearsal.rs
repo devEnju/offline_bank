@@ -16,14 +16,15 @@ pub enum Rehearsal {
     StopAfterGame = 2,
     /// First writes the journal record again and again, then saves.
     TearRecord = 3,
-    /// First writes the spare snapshot slot again and again, then saves.
+    /// First writes the spare copy of the Bank file again and again, then
+    /// saves.
     TearBoxes = 4,
 }
 
 /// How often `TearRecord` writes the journal record before the save goes on.
 pub const TEAR_RECORD_PASSES: u32 = 150;
-/// How often `TearBoxes` writes the spare snapshot slot. Even, so that the
-/// payload ends as it began.
+/// How often `TearBoxes` writes the spare copy of the Bank file. Even, so
+/// that the payload ends as it began.
 pub const TEAR_BOXES_PASSES: u32 = 30;
 
 static CHOSEN: AtomicU8 = AtomicU8::new(Rehearsal::None as u8);

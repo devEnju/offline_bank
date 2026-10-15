@@ -127,6 +127,22 @@ trait Api {
     fn close_file(&mut self, file: u32) -> Result<(), Error>;
 }
 
+/// Probe without creating or mounting an archive through the native manager.
+#[cfg(any(test, target_arch = "arm"))]
+fn archive_exists(api: &mut impl Api) -> Result<bool, Error> {
+    match api.open_archive() {
+        Ok(archive) => {
+            if archive == 0 {
+                return Err(Error::InvalidHandle(Operation::OpenArchive));
+            }
+            api.close_archive(archive)?;
+            Ok(true)
+        }
+        Err(error) if error.reported_absence() == Some(ReportedAbsence::Archive) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(any(test, target_arch = "arm"))]
 struct File<A: Api> {
     api: A,
@@ -537,6 +553,14 @@ pub struct ExtdataStorage {
 
 #[cfg(target_arch = "arm")]
 impl ExtdataStorage {
+    /// Whether Bank's archive can be opened. Only archive NotFound is false;
+    /// no archive or file is created, and a successful handle is closed.
+    /// # Safety
+    /// The same session and native-thread requirements as `open_existing` apply.
+    pub unsafe fn archive_exists(session: u32) -> Result<bool, Error> {
+        archive_exists(&mut native::Native::new(session, "/")?)
+    }
+
     /// Opens the unit files that exist and requires the exact allocation
     /// size of each. `None` when none of them exists.
     ///
@@ -980,6 +1004,7 @@ mod tests {
         short: Option<u32>,
         failure: Option<Operation>,
         creates: usize,
+        archive_error: Option<Error>,
     }
     struct Mock(Rc<RefCell<State>>);
     fn failure(operation: Operation) -> Error {
@@ -990,6 +1015,9 @@ mod tests {
     }
     impl Api for Mock {
         fn open_archive(&mut self) -> Result<u64, Error> {
+            if let Some(error) = self.0.borrow().archive_error {
+                return Err(error);
+            }
             if self.0.borrow().failure == Some(Operation::OpenArchive) {
                 Err(failure(Operation::OpenArchive))
             } else {
@@ -998,7 +1026,11 @@ mod tests {
         }
         fn close_archive(&mut self, _: u64) -> Result<(), Error> {
             self.0.borrow_mut().closes.push("archive");
-            Ok(())
+            if self.0.borrow().failure == Some(Operation::CloseArchive) {
+                Err(failure(Operation::CloseArchive))
+            } else {
+                Ok(())
+            }
         }
         fn create_file(&mut self, _: u64, length: u64) -> Result<(), Error> {
             let mut s = self.0.borrow_mut();
@@ -1060,6 +1092,54 @@ mod tests {
             File::open(Mock(state.clone()), 1, length as u64, false).unwrap(),
             state,
         )
+    }
+
+    #[test]
+    fn archive_probe_closes_its_handle_and_never_touches_files() {
+        let state = Rc::new(RefCell::new(State::default()));
+        assert_eq!(archive_exists(&mut Mock(state.clone())), Ok(true));
+        let state = state.borrow();
+        assert_eq!(state.closes, ["archive"]);
+        assert_eq!(state.creates, 0);
+        assert_eq!(state.reads, 0);
+        assert!(state.writes.is_empty());
+    }
+
+    #[test]
+    fn only_archive_not_found_is_absence_and_close_errors_propagate() {
+        let state = Rc::new(RefCell::new(State::default()));
+        let mut api = Mock(state.clone());
+        // Usage/NotFound/FS/NotFound: use the same class as reported_absence.
+        let not_found = Error::Native {
+            operation: Operation::OpenArchive,
+            code: 0xc880_4478,
+        };
+        state.borrow_mut().archive_error = Some(not_found);
+        assert_eq!(archive_exists(&mut api), Ok(false));
+        for error in [
+            failure(Operation::OpenArchive),
+            Error::Native {
+                operation: Operation::OpenArchive,
+                code: 0xd8a0_4565,
+            },
+            Error::Native {
+                operation: Operation::OpenFile,
+                code: 0xc880_4478,
+            },
+            Error::InvalidHandle(Operation::OpenArchive),
+        ] {
+            state.borrow_mut().archive_error = Some(error);
+            assert_eq!(archive_exists(&mut api), Err(error));
+        }
+        assert!(state.borrow().closes.is_empty());
+        state.borrow_mut().archive_error = None;
+        state.borrow_mut().failure = Some(Operation::CloseArchive);
+        assert_eq!(
+            archive_exists(&mut api),
+            Err(failure(Operation::CloseArchive))
+        );
+        assert_eq!(state.borrow().closes, ["archive"]);
+        assert_eq!(state.borrow().creates, 0);
     }
 
     #[test]

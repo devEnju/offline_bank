@@ -1,6 +1,6 @@
 <#
-Independent check of the built package of one patch for Bank, in build/bank,
-build/bank-migrate, build/bank-download or build/bank-test. This script shares no code
+Independent check of the built package of one patch for Bank, in
+build/binary/bank, build/migration, build/download or build/test. This script shares no code
 with patch-builder: it parses the ELF and IPS itself, rebuilds the expected image
 from hardcoded reviewed addresses, and compares every byte. It reads only local
 build inputs and writes verification.json into the package folder.
@@ -36,10 +36,10 @@ function CString([byte[]]$bytes,[int]$offset) {
     Assert-Check ($end -ge $offset) 'Unterminated ELF string'
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
-$kind=@{offline='bank';migrate='bank-migrate';test='bank-test';download='bank-download'}[$Patch]
+$kind=@{offline='bank';migrate='migration';test='test';download='download'}[$Patch]
 $crate=@{offline='bank';migrate='bank-migrate';test='bank';download='bank-download'}[$Patch]
 if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$crate-payload.elf" }
-$packagePath="build/$kind"
+$packagePath=if($Patch -eq 'offline'){'build/binary/bank'}else{"build/$kind"}
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
     $packageName='unknown'
@@ -112,14 +112,14 @@ try {
     # The entry functions of each patch; the first is the entry of the ELF.
     # The last is the one every patch has: where the original's "show a
     # message" function goes first.
-    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_message_shown','bank_version_shown')
+    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game','bank_message_shown','bank_version_shown')
     $exportNames=@{
         offline=$offlineNames
-        migrate=@('bank_migrate_next','bank_migrate_open','bank_message_shown','bank_version_shown')
+        migrate=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
-        download=@('bank_download_next','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
+        download=@('bank_download_next','bank_download_scan','bank_download_scan_busy','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
     }[$Patch]
-    $exportCount=@{offline=7;migrate=4;test=9;download=5}[$Patch]
+    $exportCount=@{offline=8;migrate=4;test=10;download=7}[$Patch]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
     $foreign=@{offline=@('bank_migrate_*','bank_download_*');migrate=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Patch]
@@ -153,10 +153,11 @@ try {
     # called, the router is the patch's own, and the start screen's call
     # that writes its version line (002b49c4, bl 001e21c8) goes to the
     # entry that adds the patch's name to it. What every patch but the
-    # download edits: the first start has no prompts (the notice is skipped
-    # to where accepting it continues), and the "show a message" function
-    # (001d6650, push {r4-r8, lr}) goes to the entry that lets HOME and
-    # sleep through for a message that waits.
+    # download edits: the "show a message" function (001d6650,
+    # push {r4-r8, lr}) goes to the entry that lets HOME and sleep through
+    # for a message that waits. The offline and test patches also skip the
+    # first start's notice to where accepting it continues; the migration
+    # replaces task 3's update, where that notice is.
     $router=$exportNames[0]
     $branches=@(
         @(0x29f338,0xe594002cL,0x29f4fc,$false),
@@ -168,13 +169,12 @@ try {
     # first start keeps its prompts, and the original refuses HOME and
     # sleep for its whole session itself.
     if ($Patch -ne 'download') {
-        $branches+=@(
-            @(0x2ac5b0,0xe5945040L,0x2ac8a8,$false),
-            @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
-        )
+        $branches+=,@(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
     }
     if ($Patch -in 'offline','test') {
+        $branches+=,@(0x2ac5b0,0xe5945040L,0x2ac8c8,$false)
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
+        $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game',$true)
     }
     # Main-menu locations edited by earlier packages. They must stay original,
     # but for the one the test build edits to show the menu (further down).
@@ -187,29 +187,42 @@ try {
     )
     # Task 9, "open Bank": its update and busy poll. The download patch has
     # an entry for each, as each calls the function its slot held.
-    $open=@{offline='bank_offline_load';migrate='bank_migrate_open';test='bank_offline_load';download='bank_download_open'}[$Patch]
+    $open=@{offline='bank_offline_load';migrate='bank_migrate_scan';test='bank_offline_load';download='bank_download_open'}[$Patch]
     $openBusy=if ($Patch -eq 'download') { 'bank_download_open_busy' } else { $open }
-    $pointers=@(
-        @(0x361cfc,0x2ae568,$open),
-        @(0x361d0c,0x2b4a20,$openBusy)
-    )
+    $pointers=@()
+    if ($Patch -eq 'migrate') {
+        $pointers+=@(
+            @(0x361ac4,0x2abe08,'bank_migrate_scan'),
+            @(0x361ad4,0x2b4a20,'bank_migrate_scan')
+        )
+    } else {
+        $pointers+=@(
+            @(0x361cfc,0x2ae568,$open),
+            @(0x361d0c,0x2b4a20,$openBusy)
+        )
+    }
     if ($Patch -eq 'download') {
         # The reward step's update writes the files and ends as cancelled.
-        # The scan goes on without its Pokemon HOME question when it finds no
-        # game: beq 002ac4c4 becomes beq 002aca50, a whole instruction word.
+        # Local preflight replaces the scan before game detection; its
+        # native archive/first-start preparation runs only after absence.
         $pointers+=@(
             @(0x361be4,0x2ad1bc,'bank_download_save'),
-            @(0x2ac564,0x0affffd6L,0x0a000139L)
+            @(0x361ac4,0x2abe08,'bank_download_scan'),
+            @(0x361ad4,0x2b4a20,'bank_download_scan_busy')
         )
     } else {
         $pointers+=@(
             # First start, whole instruction words: a saved language is not
             # applied (nop) and the language is always "known" (mov r5, #1).
             @(0x2a4898,0xebfeddfbL,0xe320f000L),
-            @(0x2a4940,0xe1a05007L,0xe3a05001L),
+            @(0x2a4940,0xe1a05007L,0xe3a05001L)
+        )
+    }
+    if ($Patch -in 'offline','test') {
+        $pointers+=@(
             # A saved language is cleared through the original's store and
-            # write: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30]; cmp r5, #0;
-            # mov r2, #0; mov r1, #0.
+            # write in task 3: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30];
+            # cmp r5, #0; mov r2, #0; mov r1, #0.
             @(0x2ac61c,0xe59060f0L,0xe5906074L),
             @(0x2ac628,0xe1b05000L,0xe1d053b0L),
             @(0x2ac62c,0xe320f000L,0xe3550000L),
@@ -220,6 +233,8 @@ try {
     # Only the offline patch: loading, saving and rewards.
     if ($Patch -in 'offline','test') {
         $pointers+=@(
+            # Native no-game notice, then its own acknowledgment/error exit.
+            @(0x2ac7a8,0xe3a00021L,0xe3a00019L),
             @(0x361a08,0x2a9750,'bank_offline_rewards'),
             @(0x361be4,0x2ad1bc,'bank_offline_rewards'),
             @(0x361ed4,0x2af460,'bank_offline_load'),
@@ -241,8 +256,16 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=24;migrate=16;test=26;download=9}[$Patch]
+    $regions=@{offline=26;migrate=10;test=28;download=10}[$Patch]
+    # SDK CreateThread adds 0x20 to the worker's SDK argument before SVC 08.
+    foreach($check in @(@(0x232144,0xe3550020L),@(0x23214c,0x92850020L),@(0x232154,0x9a000008L),@(0x232160,0xe3500027L),@(0x232164,0x92800018L),@(0x232174,0xe3500040L),@(0x232178,0x83e00000L),@(0x2321b8,0xaef62b00L),@(0x2321bc,0x93725b00L))) {
+        Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1]) 'Native SDK thread-priority conversion'
+    }
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
+    # Claim state 0x1b reaches the Bank field at 174 only behind this test of
+    # the session's count (cmn r0, #1; beq 002aac54). The patch keeps the
+    # day of the last redemption in that field.
+    Assert-Check ((U32 $original 0x1aac04) -eq 0xe3700001L -and (U32 $original 0x1aac08) -eq 0x0a000011L) 'Claim state 0x1b count test 002aac04'
     [byte[]]$expected=[byte[]]::new($expandedSize)
     [Array]::Copy($original,0,$expected,0,$original.Length)
     [byte[]]$allowed=[byte[]]::new($original.Length)
@@ -320,6 +343,17 @@ try {
         if ($menuEdits -contains $location[0]) { continue }
         Assert-Check ((U32 $patched $offset) -eq $location[1]) ('Menu location is not original '+$location[0].ToString('x8'))
         Assert-Check ([Array]::IndexOf[byte]($allowed,1,$offset,4) -eq -1 -and [Array]::IndexOf[byte]($covered,1,$offset,4) -eq -1) ('Menu location still patched '+$location[0].ToString('x8'))
+    }
+    if ($Patch -in 'offline','test') {
+        foreach($check in @(@(0x2abe0c,0xe1a04000L),@(0x2ac560,0x03a00018L),@(0x2ac7b4,0xe5940040L),@(0x2ac7c0,0xe3500004L),@(0x2ac7c8,0x0a0000b0L),@(0x2ac924,0xe3a00003L),@(0x2aca90,0xe3a00020L))) {
+            Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1] -and (U32 $patched ($check[0]-0x100000)) -eq $check[1]) 'Native no-game route changed'
+        }
+        foreach($range in @(@(0x2adc50,0x2adfd8),@(0x2d0fc8,0x2d1084),@(0x2b0098,0x2b0270),@(0x2ae310,0x2ae540))) {
+            Assert-Check ((Hash $original ($range[0]-0x100000) ($range[1]-$range[0])) -eq (Hash $patched ($range[0]-0x100000) ($range[1]-$range[0]))) 'Native game selection/progress check changed'
+        }
+        $adapter=$symbols.bank_offline_no_game
+        $adapterOffset=$adapter.value-0x100000
+        Assert-Check ($adapter.size -eq 8 -and (U32 $patched $adapterOffset) -eq 0xe1a00004L -and ((U32 $patched ($adapterOffset+4)) -band 0xff000000L) -eq 0xea000000L) 'No-game adapter must pass r4 and tail-branch without changing LR/SP'
     }
     $payloadFileOffset=$rx.address-0x100000
     $payloadMemory=$imageEnd-$rx.address

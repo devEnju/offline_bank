@@ -138,11 +138,20 @@ impl Drop for SdFile {
     }
 }
 
-/// A file of exactly the size of a Gen 5 save that opens for reading and
-/// writing. Nothing is created.
-fn usable(path: &[u8]) -> bool {
-    unsafe { SdFile::open(path, OPEN_READ_WRITE) }
-        .is_some_and(|file| file.size() == Some(SAVE_SIZE))
+/// For a file of exactly the size of a Gen 5 save that opens for reading and
+/// writing, the two bytes at each offset. Nothing is created.
+fn identity(path: &[u8], offsets: [u64; 2]) -> Option<[[u8; 2]; 2]> {
+    let file = unsafe { SdFile::open(path, OPEN_READ_WRITE) }?;
+    if file.size() != Some(SAVE_SIZE) {
+        return None;
+    }
+    let mut copies = [[0; 2]; 2];
+    for (copy, offset) in copies.iter_mut().zip(offsets) {
+        if !file.read(offset, copy.as_mut_ptr(), 2) {
+            return None;
+        }
+    }
+    Some(copies)
 }
 
 fn open_save(save: Save, backup: bool, flags: u32) -> Option<SdFile> {
@@ -195,7 +204,7 @@ pub unsafe extern "aapcs" fn transporter_cart_id(out: *mut u32, task: *const u8)
         // language screen are offered; a Gen 5 cartridge in that language
         // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
-        saves.scan(cartridge, language::filter_letter(), usable);
+        saves.scan(cartridge, language::filter_letter(), identity);
     }
     match saves.current() {
         Some(save) => {

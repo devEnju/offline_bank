@@ -7,8 +7,11 @@
 
 use core::{marker::PhantomData, ptr::NonNull};
 use offline_core::{
-    native_blob::{BlobError, NativeBlobView, BLOB_SIZE, MILES_OFFSET, REWARD_DATE_OFFSET},
-    rewards::Moment,
+    native_blob::{
+        BlobError, NativeBlobView, BLOB_SIZE, FRACTION_OFFSET, MILES_OFFSET, REDEEMED_OFFSET,
+        REWARD_DATE_OFFSET,
+    },
+    rewards::{Moment, Record},
 };
 
 pub const OBJECT_SIZE: usize = 0xBB530;
@@ -138,6 +141,11 @@ impl<'a> NativeBank<'a> {
         }
     }
 
+    /// Whether the welcome gift was given, as native 002ba590 reads it.
+    pub fn first_present(&self) -> Result<bool, NativeBankError> {
+        Ok(self.snapshot()?.first_present())
+    }
+
     /// The reward date as native 001d5880 points at it; `None` without one.
     pub fn reward_date(&self) -> Result<Option<Moment>, NativeBankError> {
         Ok(self.snapshot()?.reward_date())
@@ -153,6 +161,24 @@ impl<'a> NativeBank<'a> {
                 .as_ptr()
                 .add(BODY_OFFSET + REWARD_DATE_OFFSET)
                 .copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
+        }
+    }
+
+    /// The remainder and the day of the last redemption, kept in the body.
+    pub fn rewards(&self) -> Result<Record, NativeBankError> {
+        Ok(self.snapshot()?.rewards())
+    }
+
+    /// Writes the record into its two places of the body.
+    pub fn set_rewards(&mut self, record: Record) {
+        let (redeemed, fraction) = record.to_fields();
+        // SAFETY: both ranges lie inside the exclusively borrowed body.
+        unsafe {
+            let body = self.pointer.as_ptr().add(BODY_OFFSET);
+            body.add(REDEEMED_OFFSET)
+                .copy_from_nonoverlapping(redeemed.as_ptr(), redeemed.len());
+            body.add(FRACTION_OFFSET)
+                .copy_from_nonoverlapping(fraction.as_ptr(), fraction.len());
         }
     }
 
@@ -270,6 +296,45 @@ mod tests {
         assert_eq!(bank.reward_date(), Ok(Some(date)));
         assert_eq!(bank.miles(), Ok(0xffff));
         expected[0x160..0x166].copy_from_slice(&date.to_native());
+        assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
+
+        // The record: the day in the four bytes after the balance, the
+        // remainder in the two bytes after the transport box's tags.
+        let record = Record {
+            fraction: 719,
+            redeemed: Some(date.day()),
+        };
+        bank.set_rewards(record);
+        assert_eq!(bank.rewards(), Ok(record));
+        expected[0x174..0x178].copy_from_slice(&[0xea, 0x07, 10, 6]);
+        expected[0x166..0x168].copy_from_slice(&[0xcf, 0x02]);
+        assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
+        bank.set_rewards(Record::NONE);
+        assert_eq!(bank.rewards(), Ok(Record::NONE));
+    }
+
+    #[test]
+    fn the_welcome_flag_is_the_byte_native_002ba590_reads() {
+        let mut object = object_fixture();
+        let bytes = object.as_mut_ptr().cast::<u8>();
+        {
+            // SAFETY: exclusive borrowing of the initialized aligned fixture.
+            let mut bank = unsafe { NativeBank::from_raw(bytes) }.unwrap();
+            bank.restore(&body_fixture(0)).unwrap();
+            assert_eq!(bank.first_present(), Ok(false));
+        }
+        // The native getter reads the byte at object + 0x180.
+        assert_eq!(
+            BODY_OFFSET + offline_core::native_blob::FIRST_PRESENT_OFFSET,
+            0x180
+        );
+        // SAFETY: the byte lies inside the fixture; no view is alive.
+        unsafe { bytes.add(0x180).write(1) };
+        // SAFETY: as above.
+        let bank = unsafe { NativeBank::from_raw(bytes) }.unwrap();
+        assert_eq!(bank.first_present(), Ok(true));
+        let mut expected = body_fixture(0);
+        expected[0x178] = 1;
         assert_eq!(bank.snapshot().unwrap().as_bytes(), expected);
     }
 

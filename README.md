@@ -1,12 +1,12 @@
-# Pokémon Bank and Transporter Offline Patch
+# Pokémon Bank and Poké Transporter Offline Patch
 
-> **This project was developed entirely with AI assistance:** analysis, code, tests, and documentation. It's tried on a real console, but it has not had the review or testing that a conventionally developed tool would have. Use it at your own risk and keep backups.
+> **This project was developed entirely with AI assistance:** analysis, code, tests, and documentation. The released versions are tried on real consoles, without any problems so far. Still, it has not had the review a conventionally developed tool would have. Use it at your own risk and keep backups.
 
 Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5** work without Nintendo's servers. Bank keeps its boxes on the SD card; Transporter moves Pokémon from Gen 1, 2 and 5 games into Bank's transport box, so that they can still reach Gen 6 and 7 games after the official servers go offline.
 
 <p align="center"><img src="pictures/v0.2.1-migration-boxes.png" alt="The box screen of the patched Pokémon Bank"></p>
 
-**Status: development build.** It has been tried on one console only. Back up your game saves and Bank's extra data before trying it.
+**Status: early release.** As with any tool that touches saves, a backup is a good idea: of your game saves before installing, and of Bank's extra data before an update.
 
 ## Pokémon Bank
 
@@ -14,7 +14,7 @@ Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5*
 - Transfers to and from X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, and Ultra Moon.
 - Starts straight at game selection; no main menu, no connection.
 - National Pokédex and adventure records, taken over in the records screen as in the original.
-- Poké Miles earned locally at the original rate and redeemed through the original screens.
+- Poké Miles earned locally at the original rate and redeemed through the original screens, with the original welcome gift of 100 Miles.
 - Saves are journaled: an interrupted save leaves either the old or the new state.
 
 Details: [docs/bank.md](docs/bank.md).
@@ -26,6 +26,7 @@ Details: [docs/bank.md](docs/bank.md).
 - Also lists Black, White, Black 2 and White 2 saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps on the SD card, beside a cartridge and the Virtual Console titles ([details](docs/transporter.md#blackwhite-saves-on-the-sd-card)).
 - The language screen chooses which language's games are listed, so the list stays short ([details](docs/transporter.md#choosing-the-language-of-the-games)).
 - Writes the Pokémon into Bank's transport box first, then removes them from the source game. A power cut in between never loses a Pokémon.
+- Contains a shining Easter egg for Gen 1 Virtual Console transfers, based on content that was lost to time.
 
 Details: [docs/transporter.md](docs/transporter.md).
 
@@ -47,7 +48,7 @@ The repository itself holds no patch files. Without a release, [build them yours
 
 You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS) v10.0 or later, and Pokémon Bank and Poké Transporter installed in version 1.5, their final updates.
 
-1. Back up your game saves and Bank's extra data. The boxes are in Bank's *extdata*, not in its save ([how to back them up](docs/bank.md#backing-up-the-bank)).
+1. Back up your game saves. If you are updating, back up Bank's extra data too: the offline Bank keeps its boxes in Bank's *extdata*, not in its save ([how to back them up](docs/bank.md#backing-up-the-bank)).
 2. Extract the zip and copy its `luma` folder to the root of the SD card, merging it with the one that is there.
 3. Hold SELECT while powering on and switch on *Enable game patching*.
 4. Start Bank once before using Transporter.
@@ -67,21 +68,23 @@ The two files of a title only work as a pair; never mix files from different rel
 
 Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's title screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
 
-The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games).
+The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games). A save on the SD card is only listed under its exact name, see [the names per game and language](docs/transporter.md#blackwhite-saves-on-the-sd-card).
 
 ### Can I get my Pokémon from the official Pokémon Bank?
 
-While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and shows two numbers. Then you put the normal patch in its place. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well. The steps are in the `README.txt` of its zip. This patch has not been tested against the official server yet; back up first.
+While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and says it succeeded. Then you put the normal patch in its place. The steps are in the `README.txt` of its zip.
 
 ### Why do I need a migration between two versions?
 
 The normal patches read only the files of their own version, so that they stay free of code for earlier formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
 
-When a release changes how the Bank is stored, as v0.3.0 did, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how ([background](docs/building.md#the-migration-from-v021)).
+When a release changes how the Bank is stored, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how.
 
 ### Why has the save format been changed?
 
 So that a power cut cannot cost you the Bank. Up to v0.2.1 a cut during Save and Quit could leave the one Bank file unreadable, and with it every box. Since v0.3.0 everything is stored in pairs of files, and a save only writes into the file of a pair that is not in use. A cut can then only damage a file Bank does not need, and the next start goes on with the other one ([details](docs/bank.md#where-the-bank-is-stored)).
+
+The next migration, from v0.4.0, changes the files so that they take no more space on the SD card than needed.
 
 ## Problems and feature requests
 
@@ -98,7 +101,7 @@ With enough information I will probably look into it, but this is a hobby projec
 
 ### Not included
 
-Pokémon HOME, purchases, legality checks (they existed only on the server), event gifts, and import or export tools for save editors.
+Pokémon HOME, purchases, server-side legality checks, event gifts, and import or export tools for save editors.
 
 ## Credits
 

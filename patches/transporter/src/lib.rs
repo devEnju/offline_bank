@@ -10,7 +10,9 @@
 //! Bank data object of the same class and layout Bank uses, records and
 //! format tags included; it used to upload that object. The hooks copy the
 //! transport box of that object into the transport-box files of Bank's extdata
-//! through `offline_core::transport::deliver`. Nothing is converted here.
+//! through `offline_core::transport::deliver`. The conversion stays the
+//! original's, with one Easter egg for Gen 1 Virtual Console games
+//! (`legacy_shiny`).
 //!
 //! `cart` presents Black/White saves from the SD card to the original's
 //! cartridge code, beside a Gen 5 cartridge (`sdsave` holds the rules).
@@ -22,6 +24,7 @@
 pub mod gen5;
 pub mod language;
 pub mod layout;
+pub mod legacy_shiny;
 pub mod lytpatch;
 pub mod navigation;
 pub mod sdsave;
