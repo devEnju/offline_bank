@@ -46,15 +46,16 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 | --- | --- | --- |
 | Start-up hook and its call (`001040a4`, `00313910`) | yes | yes |
 | A corrupt extdata archive is kept (`0029f338`) | yes | yes |
-| First start without prompts (8 words) | yes | yes |
+| First start without prompts: the manager's language (`002a4898`, `002a4940`) | yes | yes |
+| First start without prompts: task 3's notice and saved language (6 words from `002ac5b0`) | yes | no: task 3's update is replaced |
 | Task router (`002a5a2c`) | `bank_offline_next` | `bank_migrate_next` |
 | The "show a message" function (`001d6650`) | `bank_message_shown` | `bank_message_shown` |
 | The start screen's version line (`002b49c4`) | `bank_version_shown`, "-offline" | `bank_version_shown`, "-migration" |
 | Task 9, update and busy poll (`00361cfc`, `00361d0c`) | `bank_offline_load` | original |
 | Task 3, update and busy poll (`00361ac4`, `00361ad4`) | original | `bank_migrate_scan` |
 | Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the timestamp helper (8 regions) | yes | no |
-| No-game scan skips the HOME question (`002ac560`) | yes | no |
-| Regions / entry functions | 25 / 7 | 16 / 4 |
+| No-game notice without the HOME question (`002ac7a4`, `002ac7a8`) | `bank_offline_no_game` | no |
+| Regions / entry functions | 26 / 8 | 10 / 4 |
 
 `bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`ui::version`). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", or "Ver. 1.5-test" in a test build.
 

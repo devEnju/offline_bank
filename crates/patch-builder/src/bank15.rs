@@ -161,14 +161,19 @@ const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
 /// The first start without prompts (docs/internals.md, "First start"):
 /// (virtual address, original word, replacement word). Bank asks for a
 /// language while its own save holds none, and shows its "Precaution for
-/// Use" notice while it has no valid save.
-pub const FIRST_START_EDITS: [(u32, u32, u32); 8] = [
+/// Use" notice while it has no valid save. Two edits are in the manager's
+/// set-up, which every start runs; the others are in task 3's update.
+pub const LANGUAGE_EDITS: [(u32, u32, u32); 2] = [
     // Manager set-up (002a47f4): a saved language is not applied (was:
     // bl 0025c08c), so the console's language stays...
     (0x002a4898, 0xebfeddfb, 0xe320f000),
     // ...and the "language known" flag is set also without one (was:
     // mov r5, r7, zero), so the language screen, task 1, is never entered.
     (0x002a4940, 0xe1a05007, 0xe3a05001),
+];
+/// The first start's edits in task 3's update (002abe08). Only a patch that
+/// runs the original's scan reaches them; the migration replaces that update.
+pub const SCAN_FIRST_START_EDITS: [(u32, u32, u32); 6] = [
     // Task 3 without a valid save (was: ldr r5, [r4, #0x40], the start of
     // showing the notice): b 002ac8c8, where accepting it selects state
     // 0x14. The save is created and written as after "accept". Accepting
@@ -197,10 +202,18 @@ pub const FIRST_START_EDITS: [(u32, u32, u32); 8] = [
 /// `b 002ac8c8` at 002ac5b0.
 pub const FIRST_START_ACCEPT_BRANCH: u32 = 0xea0000c4;
 
+/// All eight first-start edits, for a patch that runs the original's scan.
 pub(crate) fn first_start_edits() -> impl Iterator<Item = CheckedEdit> {
-    FIRST_START_EDITS
-        .into_iter()
-        .map(|(address, expected, replacement)| word(address, expected, replacement.to_le_bytes()))
+    checked(LANGUAGE_EDITS.into_iter().chain(SCAN_FIRST_START_EDITS))
+}
+
+/// Only the manager's two, for a patch that replaces task 3's update.
+pub(crate) fn language_edits() -> impl Iterator<Item = CheckedEdit> {
+    checked(LANGUAGE_EDITS.into_iter())
+}
+
+fn checked(edits: impl Iterator<Item = (u32, u32, u32)>) -> impl Iterator<Item = CheckedEdit> {
+    edits.map(|(address, expected, replacement)| word(address, expected, replacement.to_le_bytes()))
 }
 
 /// Main-menu locations edited by earlier builds. They must keep their original
@@ -341,6 +354,14 @@ mod tests {
             encode_arm_branch(0x002ac5b0, 0x002ac8c8, false).unwrap()
         );
         assert_eq!(first_start_edits().count(), 8);
+        // The six of task 3 lie inside its update, from 002abe08 up to the
+        // scan's end (002acab8); the manager's two lie outside it.
+        for (address, _, _) in SCAN_FIRST_START_EDITS {
+            assert!((0x002abe08..0x002acab8).contains(&address));
+        }
+        for (address, _, _) in LANGUAGE_EDITS {
+            assert!(!(0x002abe08..0x002acab8).contains(&address));
+        }
     }
 
     #[test]

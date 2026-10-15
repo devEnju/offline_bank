@@ -89,7 +89,9 @@ fn hook_edits(targets: Targets) -> crate::Result<Vec<CheckedEdit>> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{offline, CODE_BASE, FIRST_START_EDITS, RETIRED_MENU_EDITS};
+    use super::super::{
+        offline, CODE_BASE, LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS,
+    };
     use super::*;
 
     const TARGETS: Targets = Targets {
@@ -133,7 +135,7 @@ mod tests {
         // claim, the clock, the show-message function
         // (the original refuses HOME for its whole session itself), and the
         // main menu.
-        for (address, _, _) in FIRST_START_EDITS {
+        for (address, _, _) in LANGUAGE_EDITS.into_iter().chain(SCAN_FIRST_START_EDITS) {
             assert!(at(address).is_none());
         }
         for address in [

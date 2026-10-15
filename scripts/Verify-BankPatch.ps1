@@ -153,10 +153,11 @@ try {
     # called, the router is the patch's own, and the start screen's call
     # that writes its version line (002b49c4, bl 001e21c8) goes to the
     # entry that adds the patch's name to it. What every patch but the
-    # download edits: the first start has no prompts (the notice is skipped
-    # to where accepting it continues), and the "show a message" function
-    # (001d6650, push {r4-r8, lr}) goes to the entry that lets HOME and
-    # sleep through for a message that waits.
+    # download edits: the "show a message" function (001d6650,
+    # push {r4-r8, lr}) goes to the entry that lets HOME and sleep through
+    # for a message that waits. The offline and test patches also skip the
+    # first start's notice to where accepting it continues; the migration
+    # replaces task 3's update, where that notice is.
     $router=$exportNames[0]
     $branches=@(
         @(0x29f338,0xe594002cL,0x29f4fc,$false),
@@ -168,12 +169,10 @@ try {
     # first start keeps its prompts, and the original refuses HOME and
     # sleep for its whole session itself.
     if ($Patch -ne 'download') {
-        $branches+=@(
-            @(0x2ac5b0,0xe5945040L,0x2ac8c8,$false),
-            @(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
-        )
+        $branches+=,@(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
     }
     if ($Patch -in 'offline','test') {
+        $branches+=,@(0x2ac5b0,0xe5945040L,0x2ac8c8,$false)
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
         $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game',$true)
     }
@@ -216,10 +215,14 @@ try {
             # First start, whole instruction words: a saved language is not
             # applied (nop) and the language is always "known" (mov r5, #1).
             @(0x2a4898,0xebfeddfbL,0xe320f000L),
-            @(0x2a4940,0xe1a05007L,0xe3a05001L),
+            @(0x2a4940,0xe1a05007L,0xe3a05001L)
+        )
+    }
+    if ($Patch -in 'offline','test') {
+        $pointers+=@(
             # A saved language is cleared through the original's store and
-            # write: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30]; cmp r5, #0;
-            # mov r2, #0; mov r1, #0.
+            # write in task 3: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30];
+            # cmp r5, #0; mov r2, #0; mov r1, #0.
             @(0x2ac61c,0xe59060f0L,0xe5906074L),
             @(0x2ac628,0xe1b05000L,0xe1d053b0L),
             @(0x2ac62c,0xe320f000L,0xe3550000L),
@@ -253,7 +256,7 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=26;migrate=16;test=28;download=10}[$Patch]
+    $regions=@{offline=26;migrate=10;test=28;download=10}[$Patch]
     # SDK CreateThread adds 0x20 to the worker's SDK argument before SVC 08.
     foreach($check in @(@(0x232144,0xe3550020L),@(0x23214c,0x92850020L),@(0x232154,0x9a000008L),@(0x232160,0xe3500027L),@(0x232164,0x92800018L),@(0x232174,0xe3500040L),@(0x232178,0x83e00000L),@(0x2321b8,0xaef62b00L),@(0x2321bc,0x93725b00L))) {
         Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1]) 'Native SDK thread-priority conversion'

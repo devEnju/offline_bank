@@ -2,7 +2,7 @@
 //! nothing else. Task 3 runs the conversion without its native game scan.
 
 use super::{
-    archive_preservation_candidate, first_start_edits, message_hook, router_call, startup_call,
+    archive_preservation_candidate, language_edits, message_hook, router_call, startup_call,
     version_call, word, Profile, MESSAGE_ENTRY, SCAN_TASK, VERSION_ENTRY,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
@@ -15,8 +15,8 @@ pub const PROFILE: Profile = Profile {
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
-    // Fifteen edited words plus the linked bootstrap bytes.
-    regions: 16,
+    // Nine edited words plus the linked bootstrap bytes.
+    regions: 10,
     menu_edits: &[],
     edits,
 };
@@ -50,13 +50,17 @@ fn hook_edits(
     for (address, expected) in SCAN_TASK {
         edits.push(word(address, expected, open.to_le_bytes()));
     }
-    edits.extend(first_start_edits());
+    // The manager's language edits. The first start's edits in task 3's
+    // update would never run: the conversion replaces that update.
+    edits.extend(language_edits());
     Ok(edits)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{offline, CODE_BASE, FIRST_START_EDITS, RETIRED_MENU_EDITS};
+    use super::super::{
+        offline, CODE_BASE, LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS,
+    };
     use super::*;
 
     #[test]
@@ -73,10 +77,14 @@ mod tests {
             assert_eq!(edit.expected, expected.to_le_bytes());
             assert_eq!(edit.replacement, 0x3fb200u32.to_le_bytes());
         }
-        for (address, expected, replacement) in FIRST_START_EDITS {
+        for (address, expected, replacement) in LANGUAGE_EDITS {
             let edit = at(address).unwrap();
             assert_eq!(edit.expected, expected.to_le_bytes());
             assert_eq!(edit.replacement, replacement.to_le_bytes());
+        }
+        // Task 3's update is replaced, so nothing inside it is edited.
+        for (address, _, _) in SCAN_FIRST_START_EDITS {
+            assert!(at(address).is_none(), "{address:#x}");
         }
         for address in [0x0029f338, 0x001040a4, 0x002a5a2c, 0x001d6650] {
             assert!(at(address).is_some());

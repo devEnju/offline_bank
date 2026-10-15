@@ -167,7 +167,7 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{FIRST_START_EDITS, RETIRED_MENU_EDITS};
+    use super::super::{LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS};
     use super::*;
     use crate::encode_arm_branch;
 
@@ -261,7 +261,9 @@ mod tests {
         }
         // The first start: each edit is present with its original word, and
         // the notice is skipped to where accepting it continues.
-        for (address, expected, replacement) in FIRST_START_EDITS {
+        for (address, expected, replacement) in
+            LANGUAGE_EDITS.into_iter().chain(SCAN_FIRST_START_EDITS)
+        {
             let edit = edits
                 .iter()
                 .find(|e| e.offset == (address - CODE_BASE) as usize)
