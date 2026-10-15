@@ -159,9 +159,13 @@ try {
         return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
     }
     # A package for Bank says its version on its error and result screens.
-    # Of a draft, the offline package says so too.
+    # Of a draft, the offline package says so too. The migration says the
+    # version it converts from, as its zip is named.
     function Get-Package([string]$kind, [string]$title) {
-        $shown = if ($kind -eq 'transporter') { @{} } elseif ($Draft -and $kind -eq 'bank') { @{ Version = "$Version-draft" } } else { @{ Version = $Version } }
+        $shown = if ($kind -eq 'transporter') { @{} }
+            elseif ($kind -eq 'migration') { @{ Version = $MigrateFrom } }
+            elseif ($Draft -and $kind -eq 'bank') { @{ Version = "$Version-draft" } }
+            else { @{ Version = $Version } }
         & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") @shown | Out-Host
         return Get-Verified $kind
     }

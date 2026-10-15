@@ -205,7 +205,7 @@ v0.4.0
 XXXXXXXX YYYYYYYY
 ```
 
-The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
+The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). A migration shows the version it converts from, as in `v0.4.0-migration`. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
 
 | First number | Step |
 | --- | --- |
