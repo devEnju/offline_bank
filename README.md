@@ -4,7 +4,7 @@
 
 Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5** work without Nintendo's servers. Bank keeps its boxes on the SD card; Transporter moves Pokémon from Gen 1, 2 and 5 games into Bank's transport box, so that they can still reach Gen 6 and 7 games after the official servers go offline.
 
-<p align="center"><img src="pictures/v0.2.1-migration-boxes.png" alt="The box screen of the patched Pokémon Bank"></p>
+<p align="center"><img src="pictures/offline-boxes.png" alt="The box screen of the patched Pokémon Bank"></p>
 
 **Status: early release.** As with any tool that touches saves, a backup is a good idea: of your game saves before installing, and of Bank's extra data before an update.
 
