@@ -36,7 +36,6 @@ pub enum DexError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Evidence {
     pub validity_mask: u8,
-    pub dex_crc32: u32,
     pub family_crc32: [u32; 8],
 }
 
@@ -57,7 +56,6 @@ pub fn evidence(body: &[u8]) -> Result<Evidence, DexError> {
     }
     Ok(Evidence {
         validity_mask: body[VALIDITY_OFFSET],
-        dex_crc32: crc32(&body[DEX_OFFSET..DEX_OFFSET + DEX_SIZE]),
         family_crc32: families,
     })
 }
@@ -313,19 +311,39 @@ mod tests {
         let committed = fixture();
         let before = evidence(&committed).unwrap();
         let mut live = committed.clone();
-        live[DEX_OFFSET + FAMILY_OFFSETS[1]] = 7;
-        live[VALIDITY_OFFSET] |= 2;
-        let changed = evidence(&live).unwrap();
-        assert_ne!(changed, before);
-        for index in 0..8 {
-            assert_eq!(
-                changed.family_crc32[index] != before.family_crc32[index],
-                index == 1
-            );
+        for (family, &dex_offset) in FAMILY_OFFSETS.iter().take(8).enumerate() {
+            // Both the Pokédex and adventure records must detect a change
+            // in this family alone; restoring must recover the evidence.
+            for offset in [
+                DEX_OFFSET + dex_offset,
+                RECORDS_OFFSET + family * RECORD_SIZE,
+            ] {
+                live[offset] = 7;
+                let changed = evidence(&live).unwrap();
+                assert_eq!(changed.validity_mask, before.validity_mask);
+                for index in 0..8 {
+                    assert_eq!(
+                        changed.family_crc32[index] != before.family_crc32[index],
+                        index == family
+                    );
+                }
+                // Leaving without saving reloads the committed body.
+                live.copy_from_slice(&committed);
+                assert_eq!(evidence(&live).unwrap(), before);
+            }
         }
-        // Leaving without saving reloads the committed body.
-        live.copy_from_slice(&committed);
-        assert_eq!(evidence(&live).unwrap(), before);
         assert_eq!(evidence(&live[1..]), Err(DexError::NativeObject));
+    }
+
+    #[test]
+    fn evidence_keeps_validity_separate_from_family_digests() {
+        let mut body = fixture();
+        let before = evidence(&body).unwrap();
+        for family in 0..8 {
+            body[VALIDITY_OFFSET] = 1 << family;
+            let changed = evidence(&body).unwrap();
+            assert_eq!(changed.validity_mask, 1 << family);
+            assert_eq!(changed.family_crc32, before.family_crc32);
+        }
     }
 }

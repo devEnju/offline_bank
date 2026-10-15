@@ -425,15 +425,17 @@ impl Runtime {
         let bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
         let snapshot = bank.snapshot().map_err(|_| Fault::NativeObject)?;
-        let dex = crate::dex::evidence(snapshot.as_bytes()).map_err(|_| Fault::NativeObject)?;
+        // Only Save and Quit consumes this evidence. Creation has no earlier
+        // persisted Pokédex to compare against.
+        if self.step == Step::SaveInspect {
+            self.save_dex =
+                Some(crate::dex::evidence(snapshot.as_bytes()).map_err(|_| Fault::NativeObject)?);
+        }
         let staging = self
             .worker()?
             .staging_mut()
             .map_err(|_| Fault::StorageLoad)?;
         staging.copy_from_slice(snapshot.as_bytes());
-        if self.step == Step::SaveInspect {
-            self.save_dex = Some(dex);
-        }
         Ok(())
     }
     /// The native body the worker assembled in staging.
@@ -670,25 +672,11 @@ impl Runtime {
         storage_activity(false);
         true
     }
-    /// Creates the Bank file from the original's defaults for a new Bank.
-    fn create_bank(&mut self, task: Task) -> Result<(), Fault> {
-        // Only an explicit NotFound for our private file permits fresh
-        // initialization. Native defaults/translated names stay on UI.
-        let defaults: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x002a_e8b0usize) };
-        unsafe { defaults(task.raw()) };
-        // A fresh Bank has no reward date yet: Miles are counted from its
-        // first save. The two places of the patch's own Miles state start
-        // empty too, whatever the new object holds there: the original
-        // does not set the padding the remainder is kept in.
-        unsafe { NativeBank::from_raw(task.bank_pointer()?) }
-            .map_err(|_| Fault::NativeObject)?
-            .set_rewards(offline_core::rewards::Record::NONE);
-        self.stage_bank(task)?;
-        self.submit(task, Step::Initialize, Job::Initialize)
-    }
     /// The welcome the original gives before it creates a Bank. Its own
     /// update runs states 2 and 3 (three messages, each acknowledged) and
     /// leaves state 4, where it would ask the server for the new Bank.
+    /// Preparation returns between the panel, native defaults and staging,
+    /// giving the main loop a chance to update the UI and audio.
     unsafe fn introduce(&mut self, task: Task) -> Result<bool, Fault> {
         if self.owner != task.raw() as usize {
             return Err(Fault::NativeObject);
@@ -705,8 +693,27 @@ impl Runtime {
                 unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::CREATING_MESSAGE) }
                     .map_err(|_| Fault::NativeObject)?;
                 task.begin_busy();
+                unsafe { write_word(task.raw(), 0x10, 6) };
+                Ok(false)
+            }
+            6 => {
+                // Only a missing private Bank permits fresh initialization.
+                // Native defaults/translated names stay on the UI thread.
+                let defaults: unsafe extern "aapcs" fn(*mut u8) =
+                    unsafe { transmute(0x002a_e8b0usize) };
+                unsafe { defaults(task.raw()) };
+                // Miles start at the first save. Clear our reward fields,
+                // including the padding the original does not initialize.
+                unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+                    .map_err(|_| Fault::NativeObject)?
+                    .set_rewards(offline_core::rewards::Record::NONE);
+                unsafe { write_word(task.raw(), 0x10, 7) };
+                Ok(false)
+            }
+            7 => {
+                self.stage_bank(task)?;
                 unsafe { write_word(task.raw(), 0x10, 1) };
-                self.create_bank(task)?;
+                self.submit(task, Step::Initialize, Job::Initialize)?;
                 Ok(false)
             }
             _ => Err(Fault::NativeObject),
@@ -1034,7 +1041,8 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
         unsafe { transmute(0x002a_5580usize) };
     let next = unsafe { original(manager, current) };
-    // A task that ended during the welcome was cancelled; nothing was begun.
+    // A task that ended during welcome/preparation was cancelled; no file
+    // initialization was submitted yet.
     if state.step == Step::Introduce {
         state.step = Step::Idle;
         state.owner = 0;

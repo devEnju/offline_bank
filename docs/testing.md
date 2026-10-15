@@ -63,7 +63,19 @@ Repeat each operation five times per package, alternating packages. Record the c
 | Migration | START with the same previous-format Bank | The conversion result appears |
 | Transporter delivery | Confirm transfer from the same Gen 5 Box 1, with Bank's transport box empty | The transfer-complete message appears |
 
-The spinner and loading sound must retain their expected continuity in both packages. Reopen after saving, and open Bank after migration and Transporter delivery; all expected Pokémon and metadata must persist, with no checksum errors. CRC timings on the PC do not establish a console speedup: SD access, native game work, and prompts also contribute to these intervals.
+Record spinner and loading-sound pauses separately for the native game scan, native defaults, and background file work. Native calls can still pause the UI; the patch must not restart the panel or add a blocking wait for its worker. Reopen after saving, and open Bank after migration and Transporter delivery; all expected Pokémon and metadata must persist, with no checksum errors. CRC timings on the PC do not establish a console speedup: SD access, native game work, and prompts also contribute to these intervals.
+
+### Creation preparation comparison
+
+Console timing, sound and spinner validation of the preparation change remain outstanding. Compare the previous and rebuilt normal Bank packages using the same alternating-run method and creation/reopening/saving endpoints above. Cartridge loading, reader priority, native name initialization, and loading helpers must remain unchanged; do not count an unchanged native pause as a regression in background file work.
+
+| Do | Expected |
+| --- | --- |
+| Create a fresh Bank with a usable game, once also with Bank's own save deleted. | Welcome unchanged; the preparation panel starts before native defaults and body staging on later updates; translated box/group names and rewards are correct; initialization finishes once, then game selection. Record elapsed time and sound/spinner behavior; a pause inside native defaults may remain. |
+| Close Bank with HOME during the welcome; reopen and repeat START. | No offline Bank was created; welcome repeats. |
+| Try HOME, closing the lid, and cancellation during preparation and worker initialization. | Busy protection prevents cancellation; HOME/sleep remain refused until safe completion or error cleanup. No duplicate initialization. |
+| Cut power during preparation, then separately during file creation, restoring the same empty starting state for each run. | Restart safely creates the Bank again, welcome included. No damaged or partial Bank is treated as committed. |
+| Reopen the completed Bank, select a game, change boxes and records, then Save and Quit and reopen. | No repeated creation/welcome; names, Pokémon, rewards, and each game's Pokédex/records persist. Compare loading/saving time and continuity separately from native cartridge work. |
 
 ## Bank, feature by feature
 
@@ -74,7 +86,7 @@ With the normal Bank package. What each feature is meant to do is in [bank.md](b
 | Do this | Expected |
 | --- | --- |
 | Press START with an existing offline Bank and a usable game. Repeat after Back from game selection and after Save and Quit. | The warning about removing the Game Card or SD card stays on one loading panel until game selection. The spinner and loading sound continue across the scan and local opening, without restarting or changing to the server text. The main menu never appears. Short pauses are possible (see [Limits](bank.md#limits)). |
-| Press START with no offline Bank yet and a usable game; once also with Bank's own save data deleted (its very first start). | The same scan warning on one loading panel, without restarting, then Brigette's welcome. After the welcome, "Preparing Pokémon Bank for your use…" with its loading sound running without a break, then game selection. No server text before game selection. |
+| Press START with no offline Bank yet and a usable game; once also with Bank's own save data deleted (its very first start). | The same scan warning on one loading panel, without restarting, then Brigette's welcome. After the welcome, "Preparing Pokémon Bank for your use…", then game selection. The panel starts before native defaults and staging; short native pauses remain possible ([Limits](bank.md#limits)). Background file work keeps updating the UI. No server text before game selection. |
 | Back on game selection. | Start screen. |
 | Select a game, Back on its confirmation. | Game selection again. |
 | Select a game, cancel at the reward prompt; again, leave the boxes without saving. | Start screen. Nothing saved. |
