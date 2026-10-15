@@ -3,8 +3,9 @@
 //! Every text is the original's own, in the language of the screens. The
 //! error dialog is the first sentence of the original's message for a failed
 //! save, and as its next page the start screen's line about the HOME Menu
-//! with two code numbers on the dialog's third line; nothing else is written
-//! here.
+//! with two code numbers on the dialog's third line. A save that did not
+//! start for lack of its Game Card shows that message's other part, the
+//! advice to check the card. Nothing else is written here.
 
 use crate::numbers;
 use core::mem::transmute;
@@ -28,7 +29,9 @@ unsafe fn word(base: *mut u8, offset: usize) -> u32 {
 }
 
 /// Native message 0xB, which the original shows after a failed save
-/// (task 0x16, 002a9118): "The server did not receive the data. ..."
+/// (task 7 state 0x10, task 0x16 at 002a9118): "The server did not receive
+/// the data." and then "Please confirm that your Game Card is properly
+/// inserted, and then try again."
 pub const FAILURE_NOTICE: u32 = 0xb;
 /// Native message 0x4D, the start screen's own line: "Press HOME to return
 /// to the HOME Menu". One line in every language of the original.
@@ -269,6 +272,22 @@ pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<()
     };
     let end = numbers::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
     unsafe { begin(context, text, room, end) };
+    Ok(())
+}
+
+/// Shows an original message without its first part (`numbers::rest`),
+/// waiting for A. The rest moves to the front of the UI's own string object.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
+    unsafe { display(ui, message, true)? };
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+        return Err(Error::MissingBuffer);
+    };
+    let start = numbers::rest(&room[..len]).ok_or(Error::InvalidMessage)?;
+    room.copy_within(start..len, 0);
+    unsafe { begin(context, text, room, len - start) };
     Ok(())
 }
 

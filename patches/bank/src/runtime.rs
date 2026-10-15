@@ -76,8 +76,11 @@ enum Step {
     SavePrepare,
     SaveWrite,
     SaveFinalize,
-    /// The save is done and the original's message for it is up.
-    Saved,
+    /// Save and Quit has ended, saved or not, and the original's message
+    /// for that ending is up.
+    Ended {
+        saved: bool,
+    },
 }
 struct Runtime {
     worker: Option<BankWorker>,
@@ -893,7 +896,7 @@ impl Runtime {
             _ => Err(Fault::StorageInvalid),
         }
     }
-    unsafe fn save(&mut self, task: Task) -> Result<bool, Fault> {
+    unsafe fn save(&mut self, task: Task) -> Result<Option<bool>, Fault> {
         if self.step == Step::Idle {
             self.baseline.ok_or(Fault::GameRead)?;
             let coordinator = task.pointer(8)?;
@@ -919,33 +922,56 @@ impl Runtime {
             let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
             self.game = Some(game);
             self.submit(task, Step::SaveInspect, Job::Inspect { game: descriptor })?;
-            return Ok(false);
+            return Ok(None);
         }
         if self.owner != task.raw() as usize {
             return Err(Fault::NativeObject);
         }
-        if self.step == Step::Saved {
+        if let Step::Ended { saved } = self.step {
             return match unsafe { bank_common::ui::acknowledged(task.ui()?) } {
-                Ok(false) => Ok(false),
-                Ok(true) => Ok(self.complete(task)),
+                Ok(false) => Ok(None),
+                Ok(true) => {
+                    self.complete(task);
+                    Ok(Some(saved))
+                }
                 Err(_) => Err(Fault::NativeObject),
             };
         }
         if self.step == Step::SaveWrite {
             let game = self.game.as_mut().ok_or(Fault::GameWrite)?;
             match game.poll().map_err(|_| Fault::GameWrite)? {
-                NativePoll::Pending => return Ok(false),
+                NativePoll::Pending => return Ok(None),
                 NativePoll::Complete => {
                     let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
                     self.submit(task, Step::SaveFinalize, Job::Finalize { game: descriptor })?;
-                    return Ok(false);
+                    return Ok(None);
                 }
             }
         }
         let Some(reply) = self.poll(task)? else {
-            return Ok(false);
+            return Ok(None);
         };
         match (self.step, reply) {
+            (Step::SaveInspect, Reply::CardRemoved) => {
+                // The game could not be read and the original's test finds
+                // no Game Card; nothing was written.
+                // As the original's own failed save (task 7 state 0x10):
+                // loading ends, the message waits, outcome 3, cleanup and
+                // the start screen. Of its message only the advice about
+                // the card is shown; its first part names a server. The
+                // changes made in memory go with the session.
+                if !self.baseline.ok_or(Fault::GameRead)?.cartridge {
+                    return Err(Fault::GameRead);
+                }
+                let ui = task.ui()?;
+                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+                self.step = Step::Ended { saved: false };
+                task.end_busy();
+                storage_activity(false);
+                unsafe { bank_common::ui::notice_rest(ui, bank_common::ui::FAILURE_NOTICE) }
+                    .map_err(|_| Fault::NativeObject)?;
+                Ok(None)
+            }
             (Step::SaveInspect, Reply::Inspected(original)) => {
                 let baseline = self.baseline.ok_or(Fault::GameRead)?;
                 if baseline.title != original.title || baseline.fingerprint != original.fingerprint
@@ -982,7 +1008,7 @@ impl Runtime {
                         trainer,
                     },
                 )?;
-                Ok(false)
+                Ok(None)
             }
             (Step::SavePrepare, Reply::ReadyToWrite) => {
                 // Room for the retained native game-writer thread.
@@ -991,7 +1017,7 @@ impl Runtime {
                 let game = self.game.as_mut().ok_or(Fault::GameWrite)?;
                 unsafe { game.start_after_journal() }.map_err(|_| Fault::GameWrite)?;
                 self.step = Step::SaveWrite;
-                Ok(false)
+                Ok(None)
             }
             (
                 Step::SaveFinalize,
@@ -1007,11 +1033,11 @@ impl Runtime {
                 self.begin_rewards(task)?;
                 // The original's ending of a successful save: its sound and
                 // message, which waits. Nothing is read or written now.
-                self.step = Step::Saved;
+                self.step = Step::Ended { saved: true };
                 task.end_busy();
                 storage_activity(false);
                 unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
-                Ok(false)
+                Ok(None)
             }
             _ => Err(Fault::JournalRecovery),
         }
@@ -1166,8 +1192,8 @@ pub unsafe extern "aapcs" fn bank_offline_save(raw: *mut u8) -> u32 {
         return state.report_failure(task);
     }
     match unsafe { state.save(task) } {
-        Ok(false) => 0,
-        Ok(true) => task.finish(true),
+        Ok(None) => 0,
+        Ok(Some(saved)) => task.finish(saved),
         Err(fault) => {
             state.fault = fault;
             state.report_failure(task)

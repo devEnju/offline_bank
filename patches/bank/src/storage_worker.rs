@@ -78,6 +78,9 @@ pub enum Reply {
         loaded: Option<Loaded>,
     },
     Inspected(GameEvidence),
+    /// The game's save could not be read, and the original's test finds no
+    /// Game Card. Nothing was written.
+    CardRemoved,
     ReadyToWrite,
     /// The save in progress moved Pokémon both ways and its game is not
     /// there: it waits for the game of this title and trainer. Nothing was
@@ -306,7 +309,12 @@ mod arm {
                     })
                 }
                 Job::Inspect { game } => {
-                    let evidence = inspect(game)?;
+                    // A reply, not an error: the worker stays usable for
+                    // the next session.
+                    let evidence = match inspect(game) {
+                        Err(_) if !detected(game) => return Ok(Reply::CardRemoved),
+                        evidence => evidence?,
+                    };
                     require_secure(game, evidence.secure.current)?;
                     Ok(Reply::Inspected(evidence))
                 }
@@ -612,6 +620,14 @@ mod arm {
             gamecard: second != 0,
             value,
         })
+    }
+    /// Whether the game's Game Card is there, by the original's own test:
+    /// its game selection asks for the game's secure value (00292d64,
+    /// 001643dc, 00164370 → 0016578c) and shows message 0x1F, "No Pokémon
+    /// Game Card detected", when the query fails. An answer that is not
+    /// what the query gives is not taken for a missing card.
+    fn detected(game: GameIoDescriptor) -> bool {
+        !matches!(platform(game), Err(error) if error.native_result() != 0)
     }
     fn require_secure(game: GameIoDescriptor, expected: u64) -> Result<(), WorkerError> {
         if platform(game)?.matches_native_rule(expected) {

@@ -162,8 +162,11 @@ mod tests {
         assert_eq!(destination(0xc, 6, 0x19, false), 0x19);
         assert_eq!(destination(0xd, 5, 0x19, false), 0x19);
         assert_eq!(destination(0x19, 4, 7, false), 7);
-        // Save and Quit, reward cancellation, and box cancellation all clean up.
+        // Save and Quit, reward cancellation, and box cancellation all clean
+        // up; so does a Save and Quit that did not save (outcome 3, as the
+        // original's after its message 0xB).
         assert_eq!(destination(7, 4, CLEANUP, false), CLEANUP);
+        assert_eq!(destination(7, 3, CLEANUP, false), CLEANUP);
         assert_eq!(destination(0xc, 0x15, 0x13, false), CLEANUP);
         assert_eq!(destination(0xd, 0x15, 0x13, false), CLEANUP);
         assert_eq!(destination(0x19, 0x15, 0x13, false), CLEANUP);

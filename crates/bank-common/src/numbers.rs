@@ -1,5 +1,6 @@
 //! What a patch does to a message of the original for its last screen: the
-//! cut after its first part, the line of two numbers with the line above it
+//! cut after its first part, or what follows that part, the line of two
+//! numbers with the line above it
 //! that says which version and package shows them, and the page that
 //! follows.
 //!
@@ -153,6 +154,22 @@ fn boundaries(text: &[u16], mut pages: usize) -> (Option<usize>, Option<usize>) 
 pub fn cut(text: &[u16]) -> usize {
     let (page, feed) = boundaries(text, 1);
     page.or(feed).unwrap_or(text.len())
+}
+
+/// Where the message `text` goes on after its first part (`cut`): behind
+/// the page break and the line feed the next page begins with or, in a
+/// message of one page, behind its first line. `None` if nothing follows.
+pub fn rest(text: &[u16]) -> Option<usize> {
+    let start = match boundaries(text, 1) {
+        (Some(page), _) => {
+            let start = page + 3;
+            start + usize::from(text.get(start) == Some(&LINE_FEED))
+        }
+        (None, feed) => feed? + 1,
+    };
+    text.get(start)
+        .is_some_and(|&unit| unit != 0)
+        .then_some(start)
 }
 
 /// Ends the message in `text[..len]` after its first part (`cut`) and puts
@@ -456,6 +473,31 @@ mod tests {
         assert_eq!(cut(&message(&[2])), 4);
         assert_eq!(cut(&message(&[1])), 4);
         assert_eq!(cut(&[]), 0);
+    }
+
+    #[test]
+    fn the_rest_is_what_follows_the_first_page_or_the_first_line() {
+        // Nine languages: the pages after the first, as the original has them.
+        for shape in [&[1, 2][..], &[2, 2], &[2, 3], &[1, 3, 2]] {
+            let text = message(shape);
+            let start = rest(&text).unwrap();
+            assert_eq!(text[start..], message(&shape[1..]));
+        }
+        // One page: what follows its first line.
+        let text = message(&[2]);
+        assert_eq!(rest(&text), Some(5));
+        assert_eq!(text[5..], message(&[1]));
+        // Nothing follows, or the page break is not a record.
+        for nothing in [
+            message(&[1]),
+            vec![],
+            [message(&[1]), PAGE.to_vec()].concat(),
+            [message(&[1]), PAGE.to_vec(), vec![LINE_FEED]].concat(),
+            [message(&[1]), vec![LINE_FEED, 0]].concat(),
+            vec![CONTROL, 0, LINE_FEED],
+        ] {
+            assert_eq!(rest(&nothing), None, "{nothing:x?}");
+        }
     }
 
     #[test]

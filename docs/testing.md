@@ -30,6 +30,8 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | On a new Bank, receive the 100-Mile welcome gift, Save and Quit, then reopen. | Gift is saved once. Leaving without saving does not make it permanent. |
 | Check Miles accrual, redeem a reward, Save and Quit, then reopen. | Balance and game gift persist correctly. Gen 6 supports Miles/BP; Gen 7 supports BP. [Rules](bank.md#poké-miles). |
 | Import records from two game versions, save and reopen; later save with one known game after its progress changes. | Both versions remain in the National Pokédex. The known game's records update without replacing the other version. Unsaved imports are discarded. |
+| With a cartridge game loaded, move a Pokémon, take the cartridge out on the box screen and Save and Quit. Press A. Repeat in Chinese. | Only "Please confirm that your Game Card is properly inserted, and then try again." (the original's second part of its failure message), without sound, numbers or "Press HOME"; HOME works while it waits. A returns to the title. |
+| Then put the same cartridge back, START, load it, and save normally; or put in another compatible game and START. | Bank and the game are as before the session: the moved Pokémon is where it was. The new session opens, loads and saves as usual. |
 | An error screen: test package, **(before)** ([below](#an-interrupted-save-and-quit)). Press A; repeat in Japanese, Korean or Chinese. | The original's error text, then "Press HOME to return to the HOME Menu", the version with "-test", and the two numbers, all characters readable. A, B and START do nothing; HOME and sleep work, also with Bank started from a running game. |
 
 ## Transporter, feature by feature
