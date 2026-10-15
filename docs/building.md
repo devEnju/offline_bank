@@ -61,7 +61,7 @@ The checksum integration tests compare the table implementation with the origina
 cargo +stable test -p offline-core --test checksum --release --locked --offline crc32_throughput -- --ignored --exact --nocapture
 ```
 
-It uses the workspace's release settings, warms up both implementations, and reports median throughput and their ratio across seven samples, alternating their order. Inputs are a journal's 136 checksummed bytes, a 512-byte read chunk, the Bank file, and the native body, including body updates in 512-byte chunks. Data generation and allocation are outside timing; input, function, and output pass through `black_box`. These are PC measurements of CRC work, not ARM11 timings or total loading speed. Console comparisons are described in [testing.md](testing.md#loading-time-comparison).
+It uses the workspace's release settings, warms up both implementations, and reports median throughput and their ratio across seven samples, alternating their order. Inputs are a journal's 136 checksummed bytes, a 512-byte read chunk, the Bank file, and the native body, including body updates in 512-byte chunks. Data generation and allocation are outside timing; input, function, and output pass through `black_box`. These are PC measurements of CRC work, not ARM11 timings or total loading speed.
 
 ### Test builds for an interrupted save
 
@@ -103,7 +103,7 @@ After START, migration checks existing local extdata before any cartridge or ins
 
 It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
 
-This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with the version/package label and two numbers. `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. Its PC tests cover interrupted conversions; the package's README gives the console steps.
+This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with the version/package label and two numbers. `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. Its PC tests cover interrupted conversions; the console checks are in [testing.md](testing.md#a-release-with-a-migration), the user's steps in the package's README.
 
 ### The download from the official server
 
@@ -117,7 +117,7 @@ This builds it into `build/download/` and verifies it (`Verify-BankPatch.ps1 -Pa
 
 After START, download checks local extdata before contacting anything. If no offline Bank is present, it keeps the original archive and first-start preparation, then connects without detecting a cartridge or installed game. A missing archive is absence; unreadable or previous-format data stops the download instead of allowing an overwrite.
 
-What it checks in the original's code is listed in [internals.md](internals.md#the-download-patch).
+What it checks in the original's code is listed in [internals.md](internals.md#the-download-patch); the console checks are in [testing.md](testing.md#the-download).
 
 Local inspection and file writing use the original preparation message and power-off warning. Native online phases keep their own messages. Like migration, every completed result stays under the original's line about the HOME Menu, with the version/package label and two numbers. Success appears after native session release and cleanup, with no success message, sound or A press. Close Bank from HOME before switching packages or reopening to check it again:
 

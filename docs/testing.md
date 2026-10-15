@@ -30,6 +30,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | On a new Bank, receive the 100-Mile welcome gift, Save and Quit, then reopen. | Gift is saved once. Leaving without saving does not make it permanent. |
 | Check Miles accrual, redeem a reward, Save and Quit, then reopen. | Balance and game gift persist correctly. Gen 6 supports Miles/BP; Gen 7 supports BP. [Rules](bank.md#poké-miles). |
 | Import records from two game versions, save and reopen; later save with one known game after its progress changes. | Both versions remain in the National Pokédex. The known game's records update without replacing the other version. Unsaved imports are discarded. |
+| An error screen: test package, **(before)** ([below](#an-interrupted-save-and-quit)). Press A; repeat in Japanese, Korean or Chinese. | The original's error text, then "Press HOME to return to the HOME Menu", the version with "-test", and the two numbers, all characters readable. A, B and START do nothing; HOME and sleep work, also with Bank started from a running game. |
 
 ## Transporter, feature by feature
 
@@ -37,6 +38,11 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | --- | --- |
 | Transfer a Gen 5 Box 1 with gaps, then try another transfer before emptying Bank's transport box. Move the delivery into Bank, save, and reopen. | Accepted Pokémon arrive once in their original positions and leave the source. Another delivery is refused while Pokémon remain; it is allowed after Bank saves an empty transport box. |
 | Transfer from a supported Gen 5 SD card save. | Only matching game/language saves are listed. The correct file changes, with a `.sav.bak` backup; unrelated saves stay unchanged. |
+| Transfer from a Gen 1 or Gen 2 Virtual Console game. | The Pokémon arrive and can be withdrawn into a Gen 7 game only. |
+| A Box 1 with an Egg or another Pokémon the original refuses. | The original's refusal dialogs for it; the others are offered. No notice about nicknames or OT names. |
+| START on a console where the offline Bank was never started. | The original's "did not complete correctly… open Pokémon Bank" message, then the title. No game list. |
+| Choose another language on the language screen; then Back, and B. | Only that language's games are listed; the logo and start prompt follow it, the other screens stay in the console's language. Back and B leave the choice unchanged. After a restart the console's language applies again. |
+| Try HOME and sleep while the list is built, a game is read and the transfer runs, then on the title, the list, the question and every message that waits for A. | Refused while Transporter works; they work everywhere else. |
 
 ## An interrupted Save and Quit
 
@@ -94,6 +100,40 @@ Choose **(after)**.
 | --- | --- | --- | --- |
 | 10 | Deposit one, withdraw one | Reopen with the same game unchanged. | Both moves are committed in Bank and the game. |
 | 11 | Withdraw one | Play and save, then reopen. | Pokémon is back in Bank and also in the game. |
+
+## A real power cut
+
+Cut the power three to five times for each row: pull the SD card if the model allows it while running, else take out the battery. Holding POWER may shut down in order and interrupt nothing.
+
+| Check | Expected |
+| --- | --- |
+| Test package, **(record)** and then **(boxes)**: move one Pokémon, Save and Quit, cut the power about five seconds in. Reopen; then save again and reopen. | Bank opens with the boxes from before the save. The next save completes and persists. |
+| Normal packages: confirm a Gen 5 transfer, cut the power as soon as the moving screen appears. Open Bank, then look at Box 1 in the game. | The transport box is empty or holds every Pokémon of Box 1, never some. With an empty transport box all are still in the game; with a full one they may be in both places. After Bank saves the transport box empty, Transporter lists games again. |
+
+## A release with a migration
+
+Start from a Bank last used with the previous release, and keep a backup of it: after the conversion the previous release cannot open it.
+
+| Check | Expected |
+| --- | --- |
+| New Bank, before converting: START. | The error screen with `00000003` and the refused file's size; nothing changed. |
+| New Transporter, before converting: START. | The "did not complete correctly… open Pokémon Bank" message, then the title. No game list. |
+| Migration package: START, also with no game present. | Preparation text, then the HOME line with "-migration" and `0000600D 00000001`. No game scan or game selection. |
+| Close Bank from HOME, reopen with the migration, START. | `0000600D 00000002`. |
+| New Bank and Transporter. | Boxes, Pokédex, Miles and transport box as before; a transfer works. |
+
+## The download
+
+Only while the official service runs. Needs the console's Nintendo Network ID; back up the game saves to compare them afterwards.
+
+| Check | Expected |
+| --- | --- |
+| START with an offline Bank on the card. | `0000D0AD 00000002`; nothing is contacted. |
+| Wireless off, no offline Bank: START. | The original's connection message, then its title; nothing written. |
+| No offline Bank: START, once with a game and once without any. | The original connects and loads, without menu, game selection or HOME question, then `0000D0AD 00000001`. |
+| Install the normal Bank and open it. | The boxes, transport box and Miles from the server. |
+| Install the unpatched Bank and use it online. | It opens as always: the server is not locked and its boxes are unchanged. This is the check that matters most. |
+| Compare the game saves with the backup. | Unchanged, byte for byte. |
 
 ## If a check fails
 

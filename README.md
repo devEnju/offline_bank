@@ -84,7 +84,7 @@ When a release changes how the Bank is stored, a separate migration patch conver
 
 So that a power cut cannot cost you the Bank. Up to v0.2.1 a cut during Save and Quit could leave the one Bank file unreadable, and with it every box. Since v0.3.0 everything is stored in pairs of files, and a save only writes into the file of a pair that is not in use. A cut can then only damage a file Bank does not need, and the next start goes on with the other one ([details](docs/bank.md#where-the-bank-is-stored)).
 
-The newest v0.4.0 migration to v0.5.0 improves the file format to not waste anymore space on an SD card than is needed.
+The next migration, from v0.4.0, changes the files so that they take no more space on the SD card than needed.
 
 ## Problems and feature requests
 
