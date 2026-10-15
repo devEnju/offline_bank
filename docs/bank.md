@@ -22,6 +22,8 @@ Not included: Pokémon HOME, purchases, event gifts, and import or export tools 
 
 For an existing Bank, the original warning about removing the Game Card or SD card stays on the same loading screen from START until game selection. The spinner and sound continue while Bank scans the games and opens its local files.
 
+If no usable game is found, Bank shows the original no-game notice once and returns to the start screen. No Pokémon HOME transfer question appears. The welcome and creation of a new offline Bank wait until a usable game is present; insert a cartridge or make an installed game available, then press START again.
+
 ## First start
 
 The original asks two things when it has no save data of its own yet. Both are gone:

@@ -52,7 +52,8 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 | The start screen's version line (`002b49c4`) | `bank_version_shown`, "-offline" | `bank_version_shown`, "-migration" |
 | Task 9, update and busy poll (`00361cfc`, `00361d0c`) | `bank_offline_load` | `bank_migrate_open` |
 | Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the timestamp helper (8 regions) | yes | no |
-| Regions / entry functions | 24 / 7 | 16 / 4 |
+| No-game scan skips the HOME question (`002ac560`) | yes | no |
+| Regions / entry functions | 25 / 7 | 16 / 4 |
 
 `bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`ui::version`). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", or "Ver. 1.5-test" in a test build.
 
@@ -112,7 +113,7 @@ What the code cannot show: how the original behaves online with about 0.8 MB les
 
 ### Edits to the original
 
-The offline patch: 24 regions (23 words and the start-up hook) and seven entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
+The offline patch: 25 regions (24 words and the start-up hook) and seven entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -129,6 +130,7 @@ The offline patch: 24 regions (23 words and the start-up hook) and seven entry f
 | `00362034`, `00362044` | Task 7 update `002b1cf8` and busy poll | `bank_offline_save` |
 | `00361be4` | Task `0xC` update `002ad1bc`, reward guard | `bank_offline_rewards` |
 | `00361a08` | Task `0xD` update `002a9750`, reward claim | `bank_offline_rewards` |
+| `002ac560` | Game scan without a usable game: `MOVEQ r0, #0x18`, the HOME notice/question | `MOVEQ r0, #0x1F`, the scan's normal end; task 9 shows the no-game notice before opening files |
 | `002a4898` | `BL 0025c08c`: apply the language of Bank's save | Nothing; the console's language stays |
 | `002a4940` | "Language known" flag is 0 without a saved language | 1: the language screen is never entered |
 | `002ac5b0` | Task 3 without a valid save: show the "Precaution for Use" notice | Branch to `002ac8c8`, where accepting it selects state `0x14` |
@@ -175,7 +177,7 @@ The version line reads "Ver. 1.5-test". No package that is released links `bank_
 
 **Welcome.** The original's task 9 update (`002ae568`) plays the welcome when the server's reply says that no Bank exists (`[[task + 0x28] + 0x20] == 0x35`), before it creates one; nothing records that it was shown. Entry (`002ae634`): end loading, `001d6194(ui)` shows the dialog scene (pane `0xa2`), `002b6114(0x10004, 0x3c, 0)`. State 2 shows message `[00337e14 + 4 * [task + 0x54]]` (0, 1, 2 of text file 37) through `001d6650(ui, 1, message, 1)`, state 3 waits for `001d6600(ctx) == 4` and counts up; after the third it hides the scene (`002ae6fc`) and sets state 4, the request for a new Bank. The patch has the same case when its Bank file is missing: it makes the entry calls (`ui::welcome`), sets state 2, and calls the original update while the state is 2 or 3 (`Step::Introduce`). At state 4 it shows the loading panel again and creates the file. HOME is not refused during the welcome; a task that ends there has created nothing.
 
-**No usable game.** Selection state 0 would repeat notice `0x1A` forever. Task 9 checks the availability bytes (`manager + kind*12 + 1`), shows the notice once via `001d6650(ui, 0, 0x1A, 1)`, and routes to cleanup.
+**No usable game.** The scan's state `0x11` tests all eight availability bytes. At `002ac560`, `MOVEQ r0, #0x18` originally selected a no-game notice followed by the Pokémon HOME transfer question (states `0x21` onward); accepting it eventually gave outcome `0x17`. The offline and console test profiles select state `0x1F` instead, the normal end. Task 9 checks the availability bytes (`manager + kind*12 + 1`) before reading the local date, opening files, or starting any worker job. With none available, it stops loading, shows notice `0x1A` once via `001d6650(ui, 0, 0x1A, 1)`, and routes to cleanup after acknowledgement. No journal recovery, welcome or Bank creation runs. The router accepts only the scan's normal outcome 4 for opening; a HOME outcome `0x17` goes to cleanup. A new START scans again. Migration and download keep their own scan behavior.
 
 **A save that waits for its game** takes the same way back to the start screen (`Step::TurnBack`), with the original's message `0xA` for another copy of a game ([An interrupted save](#an-interrupted-save)). The original shows it from a server step (`002a8c24`..`002a8ca0`), and `ui::other_copy` fills it as that step does: `001dfd90(string, name, heap)` makes a string object from the zero-terminated name on the task's heap (`task + 0xc`); `002b67d8(ctx, 0, string, attribute)` gives it to the message as value 0; `001e6c0c(ctx, 1, number, digits, 2, 1)` gives the number as value 1; `001d6650(ui, 0, 0xA, 1)` shows the message; `002297a4(string)` ends the string object. The attribute (0 to 2, from the server's reply in the original) is for the grammar of a text; message `0xA` holds only the two values in all ten languages, and 0 is given. The original turns a game's 32-bit trainer ID into the number with `001e20d0(version, &id)`: the low 16 bits and five digits up to Alpha Sapphire, the last six decimal digits and six digits from Sun on (version byte `0x1E`). The patch stores the number as shown (`transaction::Trainer`).
 

@@ -731,8 +731,29 @@ impl Runtime {
             if !self.files_closed() {
                 return Ok(false);
             }
-            local_date(task)?;
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
+            if opening {
+                self.turn_back = false;
+                let coordinator = task.pointer(8)?;
+                let available =
+                    (1..=8).any(|kind| unsafe { coordinator.add(kind * 12 + 1).read() } != 0);
+                if !available {
+                    // Check before opening or recovering files: no welcome
+                    // or Bank creation without a game the user can select.
+                    let ui = task.ui()?;
+                    unsafe { bank_common::ui::stop_loading(ui) }
+                        .map_err(|_| Fault::NativeObject)?;
+                    self.owner = task.raw() as usize;
+                    self.turn_back = true;
+                    self.step = Step::TurnBack;
+                    task.end_busy();
+                    storage_activity(false);
+                    unsafe { bank_common::ui::notice(ui, bank_common::ui::NO_GAME_NOTICE) }
+                        .map_err(|_| Fault::NativeObject)?;
+                    return Ok(false);
+                }
+            }
+            local_date(task)?;
             // Opening inherits the scan's live panel, SD-card warning,
             // sound and animation. Only loading for a chosen game sets up
             // its loading text; opening must not restart or replace the UI.
@@ -750,7 +771,6 @@ impl Runtime {
             self.trainer = None;
             self.rewards = RewardSession::NONE;
             if opening {
-                self.turn_back = false;
                 self.capture_blank(task)?;
                 let session = unsafe { FS_SESSION.read() };
                 self.submit(task, Step::Open, Job::Open { session })?;
@@ -855,19 +875,6 @@ impl Runtime {
                 // panel. Game selection starts from the validated Bank instead.
                 let ui = task.ui()?;
                 unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
-                let coordinator = task.pointer(8)?;
-                let available =
-                    (1..=8).any(|kind| unsafe { coordinator.add(kind * 12 + 1).read() } != 0);
-                if !available {
-                    // Native selection would repeat this notice without an
-                    // exit. Show it once, then return to the start screen.
-                    self.turn_back = true;
-                    self.step = Step::TurnBack;
-                    task.end_busy();
-                    unsafe { bank_common::ui::notice(ui, bank_common::ui::NO_GAME_NOTICE) }
-                        .map_err(|_| Fault::NativeObject)?;
-                    return Ok(false);
-                }
                 Ok(self.complete(task))
             }
             (
@@ -1061,7 +1068,7 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
             break 'route 0x14;
         }
-        if matches!((current, outcome), (3, 4 | 0x17)) {
+        if (current, outcome) == (3, 4) {
             unsafe {
                 manager.add(0x1c).write(0);
             }

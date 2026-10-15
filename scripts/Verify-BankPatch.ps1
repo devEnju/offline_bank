@@ -220,6 +220,9 @@ try {
     # Only the offline patch: loading, saving and rewards.
     if ($Patch -in 'offline','test') {
         $pointers+=@(
+            # No game: end the scan before its HOME-transfer question.
+            # Task 9 shows the notice before opening any offline Bank files.
+            @(0x2ac560,0x03a00018L,0x03a0001fL),
             @(0x361a08,0x2a9750,'bank_offline_rewards'),
             @(0x361be4,0x2ad1bc,'bank_offline_rewards'),
             @(0x361ed4,0x2af460,'bank_offline_load'),
@@ -241,7 +244,7 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=24;migrate=16;test=26;download=9}[$Patch]
+    $regions=@{offline=25;migrate=16;test=27;download=9}[$Patch]
     Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
     # Claim state 0x1b reaches the Bank field at 174 only behind this test of
     # the session's count (cmn r0, #1; beq 002aac54). The patch keeps the

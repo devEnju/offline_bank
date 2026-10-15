@@ -17,8 +17,8 @@ pub const PROFILE: Profile = Profile {
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
-    // Twenty-three edited words plus the linked bootstrap bytes.
-    regions: 24,
+    // Twenty-four edited words plus the linked bootstrap bytes.
+    regions: 25,
     menu_edits: &[],
     edits,
 };
@@ -38,6 +38,12 @@ pub const NATIVE_FINISHED_BODY: [u32; 2] = [0xe3a00001, 0xe12fff1e];
 /// field, and the patch keeps the day of the last redemption in it.
 pub const COUNT_UNAVAILABLE: u32 = 0x002aac04;
 pub const COUNT_UNAVAILABLE_BODY: [u32; 2] = [0xe3700001, 0x0a000011];
+
+/// With all eight games unavailable, the scan selects state 0x18, which
+/// shows a notice and then asks about Pokemon HOME. Select its successful
+/// end (0x1f) instead; task 9 shows the no-game notice before opening files.
+/// The EQ condition and the following state store stay the original's.
+pub const NO_GAME_STATE: (u32, u32, u32) = (0x002ac560, 0x03a00018, 0x03a0001f);
 
 pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>> {
     for (index, word) in NATIVE_FINISHED_BODY.into_iter().enumerate() {
@@ -81,6 +87,11 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     // ARM B to retain its caller's LR/SP before the original prologue executes.
     let mut edits = vec![
         archive_preservation_candidate(),
+        word(
+            NO_GAME_STATE.0,
+            NO_GAME_STATE.1,
+            NO_GAME_STATE.2.to_le_bytes(),
+        ),
         word(
             0x001d3bf4,
             0xe92d4ff3,
@@ -134,6 +145,27 @@ mod tests {
     use super::super::{FIRST_START_EDITS, RETIRED_MENU_EDITS};
     use super::*;
     use crate::encode_arm_branch;
+
+    #[test]
+    fn a_scan_without_games_skips_the_home_question() {
+        let edits = sample_edits();
+        let scan = edits
+            .iter()
+            .find(|edit| edit.offset == (0x002ac560 - CODE_BASE) as usize)
+            .unwrap();
+        assert_eq!(scan.expected, 0x03a00018u32.to_le_bytes());
+        let instruction = u32::from_le_bytes(scan.replacement.as_slice().try_into().unwrap());
+        // ARM MOVEQ r0, #imm: only an all-zero availability scan changes
+        // state. The immediate selects the native end, not state 0x18's
+        // HOME notice/question. The branch and state store stay native.
+        assert_eq!(instruction & 0xffff_ff00, 0x03a0_0000);
+        assert_eq!(instruction & 0xff, 0x1f);
+        for address in [0x002ac564, 0x002ac568, 0x002ac4c4, 0x002ac904] {
+            assert!(edits
+                .iter()
+                .all(|edit| edit.offset != (address - CODE_BASE) as usize));
+        }
+    }
 
     #[test]
     fn development_hooks_encode_reviewed_native_calls_and_vtables() {
