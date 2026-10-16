@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+offline-core = { path = "../offline-core" }
 # For the tables the Transporter hooks copied from the original, which the
 # builder compares with the input.
 transporter-payload = { path = "../../patches/transporter" }

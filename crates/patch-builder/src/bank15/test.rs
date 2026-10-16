@@ -22,6 +22,7 @@ pub const MENU_CHOSEN: u32 = 0x002a6c84;
 
 pub const PROFILE: Profile = Profile {
     name: "test",
+    program: &super::BANK,
     entries: &[
         "bank_offline_next",
         "bank_offline_load",

@@ -11,6 +11,7 @@ use crate::{elf::PayloadElf, CheckedEdit};
 
 pub const PROFILE: Profile = Profile {
     name: "download",
+    program: &super::BANK,
     entries: &[
         "bank_download_next",
         "bank_download_scan",

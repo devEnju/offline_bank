@@ -28,14 +28,14 @@ try {
     $inputRecord = $extractions[0]
     $relative = 'build/test'
     $output = Join-Path $projectRoot $relative
-    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Patch test -Version $Version | Out-Host
+    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Kind test -Version $Version | Out-Host
     $elf = Join-Path $projectRoot 'build/intermediate/test/bank-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
-    & cargo +stable run --locked --offline -p patch-builder -- build-development test $inputRecord.code $inputRecord.exheader $elf $output
+    & cargo +stable run --locked --offline -p patch-builder -- build test $inputRecord.code $inputRecord.exheader $elf $output
     if ($LASTEXITCODE -ne 0) { throw "Test patch build failed: $LASTEXITCODE" }
     Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind test)
-    & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -Patch test | Out-Null
+    & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -Kind test | Out-Null
     $report = Get-Content -LiteralPath (Join-Path $output 'verification.json') -Raw | ConvertFrom-Json
     if ($report.status -ne 'passed') { throw 'Verification failed for the test package' }
     Set-Content -LiteralPath (Join-Path $output 'TEST-BUILD.txt') -Encoding utf8 -Value @(

@@ -1,17 +1,18 @@
-use patch_builder::{hex, inspect_cia, inspect_code, inspect_exheader, BANK_TITLE_ID};
+use patch_builder::{hex, inspect_cia, Profile, PROFILES};
 use std::{env, fs, path::Path, process::ExitCode};
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
-/// The Bank patch a command is for, by its name.
-fn profile(name: &std::ffi::OsStr) -> Result<&'static patch_builder::bank15::Profile, String> {
-    let name = name.to_str().ok_or("the profile name is not text")?;
-    patch_builder::bank15::profile(name).map_err(|e| e.to_string())
+/// The package kind a command is for, by its name.
+fn profile(name: &std::ffi::OsStr) -> Result<&'static Profile, String> {
+    let name = name.to_str().ok_or("the package kind is not text")?;
+    patch_builder::profile(name).map_err(|e| e.to_string())
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    let usage = "usage: patch-builder inspect <cia> | inspect-code <decompressed-code> [exheader] | inspect-payload <profile> <elf> | check-development <profile> <code> <exheader> <elf> | build-development <profile> <code> <exheader> <elf> <fresh-output-directory> | build-transporter <code> <exheader> <elf> <fresh-output-directory>";
+    let usage = "usage: patch-builder inspect <cia> | inspect-payload <kind> <elf> | build <kind> <code> <exheader> <elf> <fresh-output-directory>
+kinds: bank, transporter, test, migration, download";
     let Some(command) = args.first().and_then(|s| s.to_str()) else {
         return Err(usage.into());
     };
@@ -25,12 +26,16 @@ fn run() -> Result<(), String> {
             let v = info.title_version;
             println!("TMD title version: {v} ({}.{}.{}, raw encoding; not the displayed application version)", v >> 10, (v >> 4) & 63, v & 15);
             println!("Content bytes: {}", info.content_size);
-            if info.title_id == BANK_TITLE_ID && v == 0 {
-                println!(
-                    "Status: original Bank version 0; insufficient for the planned Bank 1.5 patch."
-                );
-            } else {
-                println!("Status: identity recorded; patch compatibility requires the exact development-profile fingerprints.");
+            match PROFILES
+                .iter()
+                .map(|profile| profile.program)
+                .find(|program| program.title_id == info.title_id && program.tmd_version == v)
+            {
+                Some(program) => println!(
+                    "Title and version of {}; the build checks the exact files.",
+                    program.label
+                ),
+                None => println!("Not a title and version the builder knows."),
             }
             for content in info.contents {
                 println!(
@@ -100,30 +105,11 @@ fn run() -> Result<(), String> {
             }
             println!("Signature authenticity is not verified. No patch was generated.");
         }
-        "inspect-code" if args.len() == 2 || args.len() == 3 => {
-            let data = read(Path::new(&args[1]))?;
-            let header = args
-                .get(2)
-                .map(|path| {
-                    read(Path::new(path))
-                        .and_then(|bytes| inspect_exheader(&bytes).map_err(|e| e.to_string()))
-                })
-                .transpose()?;
-            let info = inspect_code(&data, header.as_ref()).map_err(|e| e.to_string())?;
-            println!("Code bytes: {} ({:#x})", info.byte_len, info.byte_len);
-            println!("Code SHA-256: {}", hex(&info.sha256));
-            if let Some(length) = info.expected_length {
-                println!("Exheader page total: {length}; size matches.");
-            } else {
-                println!("No exheader supplied: decompression and mapped length were not checked.");
-            }
-            println!("Code inspection alone does not validate or generate an offline patch.");
-        }
         "inspect-payload" if args.len() == 3 => {
             let profile = profile(&args[1])?;
             let data = read(Path::new(&args[2]))?;
             let info = patch_builder::elf::inspect_payload_elf(
-                &patch_builder::bank15::CONTRACT,
+                profile.program.contract,
                 &data,
                 profile.entries,
             )
@@ -136,7 +122,7 @@ fn run() -> Result<(), String> {
             );
             println!(
                 "Payload: {:#010x}; initialized={:#x}; RX={:#x}; total={:#x}",
-                patch_builder::bank15::PAYLOAD_ADDRESS,
+                profile.program.contract.payload,
                 info.image_bytes().len(),
                 info.executable_size,
                 info.memory_size
@@ -144,50 +130,18 @@ fn run() -> Result<(), String> {
             for (name, address) in &info.entries {
                 println!("Export: {name}={address:#010x}");
             }
-            println!("ELF structure verified. Runtime behavior and native hook installation are not approved by this check.");
+            println!("ELF structure verified; the edits of the original are checked by build.");
         }
-        "check-development" if args.len() == 5 => {
+        "build" if args.len() == 6 => {
             let profile = profile(&args[1])?;
             let code = read(Path::new(&args[2]))?;
             let exheader = read(Path::new(&args[3]))?;
             let elf = read(Path::new(&args[4]))?;
-            let prepared = patch_builder::prepare_patch(profile, &code, &exheader, &elf)
-                .map_err(|e| e.to_string())?;
+            let built = patch_builder::build(profile, &code, &exheader, &elf, Path::new(&args[5]))
+                .map_err(|error| error.to_string())?;
             println!(
-                "Profile {}: all original bytes, hashes, ELF exports, and placement checks passed.",
-                profile.name
-            );
-            println!("ELF SHA-256: {}", hex(&patch_builder::sha256(&elf)));
-            println!(
-                "In-memory IPS bytes: {}; exheader bytes: {}",
-                prepared.ips().len(),
-                prepared.exheader().len()
-            );
-            println!(
-                "Expanded code SHA-256: {}",
-                hex(&prepared.expanded_code_sha256())
-            );
-            println!(
-                "Expanded image bytes: {:#x}",
-                prepared.layout().expanded_code_size
-            );
-            println!("No files written. Runtime review and console validation remain required.");
-        }
-        "build-development" if args.len() == 6 => {
-            let profile = profile(&args[1])?;
-            let code = read(Path::new(&args[2]))?;
-            let exheader = read(Path::new(&args[3]))?;
-            let elf = read(Path::new(&args[4]))?;
-            let built = patch_builder::build_development_patch(
-                profile,
-                &code,
-                &exheader,
-                &elf,
-                Path::new(&args[5]),
-            )
-            .map_err(|error| error.to_string())?;
-            println!(
-                "Development artifacts ({}): {}",
+                "{} package ({}): {}",
+                profile.program.label,
                 profile.name,
                 built.directory.display()
             );
@@ -197,29 +151,7 @@ fn run() -> Result<(), String> {
                 "Expanded code SHA-256: {}",
                 hex(&built.expanded_code_sha256)
             );
-            println!(
-                "Paired files, manifest.json, and report.md written. No deployment performed."
-            );
-            println!("Runtime behavior and save recovery require console validation.");
-        }
-        "build-transporter" if args.len() == 5 => {
-            let code = read(Path::new(&args[1]))?;
-            let exheader = read(Path::new(&args[2]))?;
-            let elf = read(Path::new(&args[3]))?;
-            let built =
-                patch_builder::transporter15::build(&code, &exheader, &elf, Path::new(&args[4]))
-                    .map_err(|error| error.to_string())?;
-            println!("Transporter artifacts: {}", built.directory.display());
-            println!("code.ips SHA-256: {}", hex(&built.ips_sha256));
-            println!("exheader.bin SHA-256: {}", hex(&built.exheader_sha256));
-            println!(
-                "Expanded code SHA-256: {}",
-                hex(&built.expanded_code_sha256)
-            );
-            println!(
-                "Paired files, manifest.json, and report.md written. No deployment performed."
-            );
-            println!("Behavior on a console is not established by this build.");
+            println!("Paired files, report.md and manifest.json written. Nothing installed.");
         }
         "--help" | "-h" if args.len() == 1 => println!("{usage}"),
         _ => return Err(usage.into()),

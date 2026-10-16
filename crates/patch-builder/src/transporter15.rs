@@ -9,12 +9,10 @@
 //! Transporter-Offline-Patch; the differences are listed in
 //! docs/internals.md.
 
-use crate::elf::{inspect_payload_elf, Contract, PayloadElf};
-use crate::placement::{prepare_expanded_data, InputIdentity, PreparedPlacement};
-use crate::{encode_arm_branch, fail, hex, le32, sha256, CheckedEdit, Result};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use crate::elf::{Contract, PayloadElf};
+use crate::placement::InputIdentity;
+use crate::profile::{Profile, Program};
+use crate::{encode_arm_branch, fail, le32, CheckedEdit, Result};
 use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES};
 use transporter_payload::sdsave::GAMES;
 
@@ -47,6 +45,29 @@ pub const STARTUP_CALL: u32 = 0x0010_3d9c;
 pub const ORIGINAL_APP_INIT: u32 = 0x0010_4644;
 /// First page after the original zero-initialised data (ends at 003638A4).
 pub const PAYLOAD_ADDRESS: u32 = 0x0036_4000;
+
+/// Poké Transporter 1.5.
+pub const TRANSPORTER: Program = Program {
+    name: "transporter15-title5200-remaster5",
+    label: "Poké Transporter 1.5",
+    title_id: TITLE_ID,
+    tmd_version: TMD_VERSION,
+    remaster_version: REMASTER_VERSION,
+    code_length: CODE_LENGTH,
+    identity: INPUT_IDENTITY,
+    contract: &CONTRACT,
+    check,
+};
+
+/// The one patch for Transporter.
+pub const PROFILE: Profile = Profile {
+    name: "transporter",
+    program: &TRANSPORTER,
+    entries: ENTRIES,
+    regions: EDITS.len() + 1,
+    menu_edits: &[],
+    edits,
+};
 
 /// The linked payload (`elf::Contract`).
 pub const CONTRACT: Contract = Contract {
@@ -286,11 +307,10 @@ fn word_edit(
     })
 }
 
-/// The linked payload, checked as every payload is (`elf::inspect_payload_elf`),
-/// and the layout check, which must begin with the instruction it stands in
-/// for.
-pub fn inspect(elf: &[u8]) -> Result<PayloadElf> {
-    let payload = inspect_payload_elf(&CONTRACT, elf, ENTRIES)?;
+/// What Transporter relies on beyond its edited words: the game list, and
+/// the layout check, which must begin with the instruction it stands in for.
+fn check(code: &[u8], _: &Profile, payload: &PayloadElf, _: &[CheckedEdit]) -> Result<()> {
+    check_game_list(code)?;
     let check = payload.export("transporter_layout_check")?;
     let at = check
         .checked_sub(BOOTSTRAP_ADDRESS)
@@ -298,20 +318,18 @@ pub fn inspect(elf: &[u8]) -> Result<PayloadElf> {
     if le32(payload.bootstrap_bytes(), at as usize)? != LAYOUT_CHECK_FIRST {
         return fail("layout check does not begin with the instruction it stands in for");
     }
-    Ok(payload)
+    Ok(())
 }
 
-/// All edits inside the original image: the listed words and the start-up
-/// hook. The payload itself is placed by `prepare_expanded_data`.
-pub fn edits(payload: &PayloadElf) -> Result<Vec<CheckedEdit>> {
-    let mut out = Vec::new();
-    for (address, original, word) in EDITS {
-        out.push(word_edit(*address, *original, word, |name| {
-            payload.export(name)
-        })?);
-    }
-    out.push(payload.bootstrap_edit());
-    Ok(out)
+/// Every edit of the listed words. The start-up hook's bytes and the payload
+/// are added by `profile::prepare_patch`.
+fn edits(_: &[u8], payload: &PayloadElf) -> Result<Vec<CheckedEdit>> {
+    EDITS
+        .iter()
+        .map(|(address, original, word)| {
+            word_edit(*address, *original, word, |name| payload.export(name))
+        })
+        .collect()
 }
 
 /// The original's table of the Virtual Console titles: 39 rows of
@@ -340,139 +358,6 @@ fn check_game_list(code: &[u8]) -> Result<()> {
         return fail("the games of one language do not fit the original game list");
     }
     Ok(())
-}
-
-/// Checks the whole input pair and every original word, then builds the
-/// paired IPS and exheader.
-pub fn prepare(code: &[u8], exheader: &[u8], elf: &[u8]) -> Result<PreparedPlacement> {
-    if code.len() != CODE_LENGTH || sha256(code) != CODE_SHA256 {
-        return fail("code.bin is not the reviewed Poké Transporter 1.5 executable");
-    }
-    check_game_list(code)?;
-    let payload = inspect(elf)?;
-    let edits = edits(&payload)?;
-    let prepared = prepare_expanded_data(
-        code,
-        exheader,
-        &INPUT_IDENTITY,
-        &payload.linked_payload(),
-        &edits,
-    )?;
-    if prepared.layout().payload_address != PAYLOAD_ADDRESS {
-        return fail("payload placement differs from the reviewed address");
-    }
-    Ok(prepared)
-}
-
-#[derive(Debug, Clone)]
-pub struct Artifacts {
-    pub directory: PathBuf,
-    pub ips_sha256: [u8; 32],
-    pub exheader_sha256: [u8; 32],
-    pub expanded_code_sha256: [u8; 32],
-}
-
-fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| crate::Error(format!("{}: {e}", path.display())))?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| crate::Error(format!("{}: {e}", path.display())))
-}
-
-/// Writes `code.ips`, `exheader.bin`, `manifest.json`, and `report.md` into a
-/// new directory. Nothing existing is replaced, and no console or SD card is
-/// touched.
-pub fn build(code: &[u8], exheader: &[u8], elf: &[u8], output: &Path) -> Result<Artifacts> {
-    let prepared = prepare(code, exheader, elf)?;
-    let payload = inspect(elf)?;
-    let layout = prepared.layout();
-    fs::create_dir(output).map_err(|e| crate::Error(format!("{}: {e}", output.display())))?;
-    let ips_sha256 = sha256(prepared.ips());
-    let exheader_sha256 = sha256(prepared.exheader());
-    let sites: Vec<String> = EDITS
-        .iter()
-        .map(|(address, _, _)| format!("\"{address:08x}\""))
-        .collect();
-    let manifest = format!(
-        concat!(
-            "{{\n",
-            "  \"schema_version\": 3,\n",
-            "  \"profile\": \"transporter15-title5200-remaster5\",\n",
-            "  \"status\": \"development-console-validation-required\",\n",
-            "  \"title_id\": \"00040000000c9c00\",\n",
-            "  \"tmd_version\": {},\n",
-            "  \"source_code_sha256\": \"{}\",\n",
-            "  \"source_exheader_sha256\": \"{}\",\n",
-            "  \"source_elf_sha256\": \"{}\",\n",
-            "  \"expanded_code_sha256\": \"{}\",\n",
-            "  \"expanded_code_bytes\": {},\n",
-            "  \"bootstrap_address\": \"{:08x}\",\n",
-            "  \"bootstrap_bytes\": {},\n",
-            "  \"payload_address\": \"{:08x}\",\n",
-            "  \"payload_executable_bytes\": {},\n",
-            "  \"payload_memory_bytes\": {},\n",
-            "  \"artifacts\": {{\n",
-            "    \"code.ips\": {{ \"sha256\": \"{}\", \"bytes\": {} }},\n",
-            "    \"exheader.bin\": {{ \"sha256\": \"{}\", \"bytes\": {} }}\n",
-            "  }},\n",
-            "  \"word_edits\": [{}]\n",
-            "}}\n"
-        ),
-        TMD_VERSION,
-        hex(&CODE_SHA256),
-        hex(&EXHEADER_SHA256),
-        hex(&sha256(elf)),
-        hex(&prepared.expanded_code_sha256()),
-        layout.expanded_code_size,
-        BOOTSTRAP_ADDRESS,
-        payload.bootstrap_bytes().len(),
-        layout.payload_address,
-        layout.executable_size,
-        layout.memory_size,
-        hex(&ips_sha256),
-        prepared.ips().len(),
-        hex(&exheader_sha256),
-        prepared.exheader().len(),
-        sites.join(", "),
-    );
-    let report = format!(
-        concat!(
-            "# Poké Transporter 1.5 offline patch\n\n",
-            "Install both files from this folder, never one without the other:\n\n",
-            "```text\n",
-            "SD:/luma/titles/00040000000C9C00/code.ips\n",
-            "SD:/luma/titles/00040000000C9C00/exheader.bin\n",
-            "```\n\n",
-            "- Edited instructions: {}\n",
-            "- Start-up hook: {} bytes at `{:08X}`\n",
-            "- Payload: {} bytes of code and {} bytes of data at `{:08X}`\n",
-            "- code.ips SHA-256: `{}`\n",
-            "- exheader.bin SHA-256: `{}`\n\n",
-            "Back up the source game save and Bank's extdata before testing.\n"
-        ),
-        EDITS.len(),
-        payload.bootstrap_bytes().len(),
-        BOOTSTRAP_ADDRESS,
-        layout.executable_size,
-        layout.writable_size,
-        layout.payload_address,
-        hex(&ips_sha256),
-        hex(&exheader_sha256),
-    );
-    write_new(&output.join("code.ips"), prepared.ips())?;
-    write_new(&output.join("exheader.bin"), prepared.exheader())?;
-    write_new(&output.join("report.md"), report.as_bytes())?;
-    write_new(&output.join("manifest.json"), manifest.as_bytes())?;
-    Ok(Artifacts {
-        directory: output.to_path_buf(),
-        ips_sha256,
-        exheader_sha256,
-        expanded_code_sha256: prepared.expanded_code_sha256(),
-    })
 }
 
 #[cfg(test)]
@@ -666,11 +551,5 @@ mod tests {
         }
         // A table cut short is refused, not read past its end.
         assert!(check_game_list(&code[..code.len() - VC_ROW]).is_err());
-    }
-
-    #[test]
-    fn wrong_input_is_refused_before_anything_is_built() {
-        assert!(prepare(&[0; 16], &[0; 0x800], &[]).is_err());
-        assert!(prepare(&vec![0; CODE_LENGTH], &[0; 0x800], &[]).is_err());
     }
 }

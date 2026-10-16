@@ -41,6 +41,7 @@ version = "0.1.0"
 name = "patch-builder"
 version = "0.1.0"
 dependencies = [
+ "offline-core",
  "transporter-payload",
 ]
 

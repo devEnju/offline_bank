@@ -5,16 +5,15 @@ with patch-builder: it parses the ELF and IPS itself, rebuilds the expected imag
 from hardcoded reviewed addresses, and compares every byte. It reads only local
 build inputs and writes verification.json into the package folder.
 
--Patch says which patch for Bank the package is: the offline patch, the
-migration patch, the download patch, or the console test build of the
-offline patch. Each has
-its own entry functions and its own list of regions it may edit, written out
-below. The test build is the offline patch with two more entry functions and
+-Kind says which package for Bank it is: the offline patch (bank), the
+migration patch (migration), the download patch (download), or the console
+test build of the offline patch (test). Each has its own entry functions
+and its own list of regions it may edit, written out below. The test build is the offline patch with two more entry functions and
 two more regions, in the main menu, which only it shows.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('offline', 'migrate', 'test', 'download')][string]$Patch = 'offline',
+    [ValidateSet('bank', 'migration', 'test', 'download')][string]$Kind = 'bank',
     [string]$ElfPath = ''
 )
 Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
@@ -36,10 +35,9 @@ function CString([byte[]]$bytes,[int]$offset) {
     Assert-Check ($end -ge $offset) 'Unterminated ELF string'
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
-$kind=@{offline='bank';migrate='migration';test='test';download='download'}[$Patch]
-$crate=@{offline='bank';migrate='bank-migrate';test='bank';download='bank-download'}[$Patch]
+$crate=@{bank='bank';migration='bank-migrate';test='bank';download='bank-download'}[$Kind]
 if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$crate-payload.elf" }
-$packagePath=if($Patch -eq 'offline'){'build/binary/bank'}else{"build/$kind"}
+$packagePath=if($Kind -eq 'bank'){'build/binary/bank'}else{"build/$kind"}
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
     $packageName='unknown'
@@ -59,7 +57,7 @@ try {
     Assert-Check ($manifest.source_code_sha256 -eq $codeHash -and $manifest.source_exheader_sha256 -eq $headerHash) 'Manifest input hashes'
     Assert-Check ($manifest.source_elf_sha256 -eq $elfHash) 'Manifest ELF hash'
     Assert-Check ($packageName -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) 'Package is not the one of the current payload and profile'
-    Assert-Check ($manifest.patch -eq $Patch) 'Manifest names another patch'
+    Assert-Check ($manifest.patch -eq $Kind) 'Manifest names another patch'
     Assert-Check ($manifest.title_id -eq '00040000000c9b00' -and $manifest.tmd_version -eq 6272 -and $manifest.remaster_version -eq 6) 'Manifest version'
     foreach($name in @('code.ips','exheader.bin')) {
         $bytes=if($name -eq 'code.ips'){$ips}else{$header}
@@ -114,22 +112,22 @@ try {
     # message" function goes first.
     $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game','bank_message_shown','bank_version_shown')
     $exportNames=@{
-        offline=$offlineNames
-        migrate=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
+        bank=$offlineNames
+        migration=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
         download=@('bank_download_next','bank_download_scan','bank_download_scan_busy','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
-    }[$Patch]
-    $exportCount=@{offline=8;migrate=4;test=10;download=7}[$Patch]
+    }[$Kind]
+    $exportCount=@{bank=8;migration=4;test=10;download=7}[$Kind]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
-    $foreign=@{offline=@('bank_migrate_*','bank_download_*');migrate=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Patch]
+    $foreign=@{bank=@('bank_migrate_*','bank_download_*');migration=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Kind]
     foreach($pattern in $foreign) {
         Assert-Check (@($symbols.Keys | Where-Object { $_ -like $pattern }).Count -eq 0) ('Entry function of another patch is linked: '+$pattern)
     }
     Assert-Check (@($symbols.Keys | Where-Object { $_ -like 'bank_offline_menu*' }).Count -eq 0) 'Removed menu wrappers still linked'
     # The test build's menu entry is in no package that is released.
     foreach($name in @('bank_test_menu_chosen','bank_test_menu_update')) {
-        Assert-Check (($Patch -eq 'test') -eq $symbols.ContainsKey($name)) ('Menu entry of the test build '+$name)
+        Assert-Check (($Kind -eq 'test') -eq $symbols.ContainsKey($name)) ('Menu entry of the test build '+$name)
     }
     $wrapperNames=@('bank_svc_close_handle','bank_svc_wait_thread','bank_svc_get_resource_limit','bank_svc_get_resource_limit_values','bank_svc_get_resource_current_values')
     foreach($name in $wrapperNames) {
@@ -168,10 +166,10 @@ try {
     # Not the download patch, which runs the original online: there the
     # first start keeps its prompts, and the original refuses HOME and
     # sleep for its whole session itself.
-    if ($Patch -ne 'download') {
+    if ($Kind -ne 'download') {
         $branches+=,@(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
     }
-    if ($Patch -in 'offline','test') {
+    if ($Kind -in 'bank','test') {
         $branches+=,@(0x2ac5b0,0xe5945040L,0x2ac8c8,$false)
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
         $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game',$true)
@@ -187,10 +185,10 @@ try {
     )
     # Task 9, "open Bank": its update and busy poll. The download patch has
     # an entry for each, as each calls the function its slot held.
-    $open=@{offline='bank_offline_load';migrate='bank_migrate_scan';test='bank_offline_load';download='bank_download_open'}[$Patch]
-    $openBusy=if ($Patch -eq 'download') { 'bank_download_open_busy' } else { $open }
+    $open=@{bank='bank_offline_load';migration='bank_migrate_scan';test='bank_offline_load';download='bank_download_open'}[$Kind]
+    $openBusy=if ($Kind -eq 'download') { 'bank_download_open_busy' } else { $open }
     $pointers=@()
-    if ($Patch -eq 'migrate') {
+    if ($Kind -eq 'migration') {
         $pointers+=@(
             @(0x361ac4,0x2abe08,'bank_migrate_scan'),
             @(0x361ad4,0x2b4a20,'bank_migrate_scan')
@@ -201,7 +199,7 @@ try {
             @(0x361d0c,0x2b4a20,$openBusy)
         )
     }
-    if ($Patch -eq 'download') {
+    if ($Kind -eq 'download') {
         # The reward step's update writes the files and ends as cancelled.
         # Local preflight replaces the scan before game detection; its
         # native archive/first-start preparation runs only after absence.
@@ -218,7 +216,7 @@ try {
             @(0x2a4940,0xe1a05007L,0xe3a05001L)
         )
     }
-    if ($Patch -in 'offline','test') {
+    if ($Kind -in 'bank','test') {
         $pointers+=@(
             # A saved language is cleared through the original's store and
             # write in task 3: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30];
@@ -231,7 +229,7 @@ try {
         )
     }
     # Only the offline patch: loading, saving and rewards.
-    if ($Patch -in 'offline','test') {
+    if ($Kind -in 'bank','test') {
         $pointers+=@(
             # Native no-game notice, then its own acknowledgment/error exit.
             @(0x2ac7a8,0xe3a00021L,0xe3a00019L),
@@ -249,14 +247,14 @@ try {
     # 002a6750) and its listener "an entry was chosen" (holding 002a6c84)
     # are the build's own.
     $menuEdits=@()
-    if ($Patch -eq 'test') {
+    if ($Kind -eq 'test') {
         $menuEdits=@(0x3617bc,0x3617dc)
         $pointers+=@(
             @(0x3617bc,0x2a6750,'bank_test_menu_update'),
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{offline=26;migrate=10;test=28;download=10}[$Patch]
+    $regions=@{bank=26;migration=10;test=28;download=10}[$Kind]
     # SDK CreateThread adds 0x20 to the worker's SDK argument before SVC 08.
     foreach($check in @(@(0x232144,0xe3550020L),@(0x23214c,0x92850020L),@(0x232154,0x9a000008L),@(0x232160,0xe3500027L),@(0x232164,0x92800018L),@(0x232174,0xe3500040L),@(0x232178,0x83e00000L),@(0x2321b8,0xaef62b00L),@(0x2321bc,0x93725b00L))) {
         Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1]) 'Native SDK thread-priority conversion'
@@ -344,7 +342,7 @@ try {
         Assert-Check ((U32 $patched $offset) -eq $location[1]) ('Menu location is not original '+$location[0].ToString('x8'))
         Assert-Check ([Array]::IndexOf[byte]($allowed,1,$offset,4) -eq -1 -and [Array]::IndexOf[byte]($covered,1,$offset,4) -eq -1) ('Menu location still patched '+$location[0].ToString('x8'))
     }
-    if ($Patch -in 'offline','test') {
+    if ($Kind -in 'bank','test') {
         foreach($check in @(@(0x2abe0c,0xe1a04000L),@(0x2ac560,0x03a00018L),@(0x2ac7b4,0xe5940040L),@(0x2ac7c0,0xe3500004L),@(0x2ac7c8,0x0a0000b0L),@(0x2ac924,0xe3a00003L),@(0x2aca90,0xe3a00020L))) {
             Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1] -and (U32 $patched ($check[0]-0x100000)) -eq $check[1]) 'Native no-game route changed'
         }
@@ -379,7 +377,7 @@ try {
 
     Assert-Check ($branches.Count+$pointers.Count+1 -eq $regions -and $manifest.native_edits -eq $regions -and $manifest.main_menu_edits -eq $menuEdits.Count) 'Native region count'
     $report=[ordered]@{
-        status='passed'; package=$packageName; patch=$Patch; source_elf_sha256=$elfHash
+        status='passed'; package=$packageName; patch=$Kind; source_elf_sha256=$elfHash
         ips_sha256=(Hash $ips); paired_exheader_sha256=(Hash $header)
         ips_records=$records; native_regions=$regions; runtime_exports=$exportNames.Count
         system_call_wrappers=$wrapperNames.Count

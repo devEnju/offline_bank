@@ -1,12 +1,15 @@
 //! Reviewed Bank image identity, placement, and the edits of the original
 //! that the patches for Bank are made from.
 //!
-//! Each patch is a `Profile`: the entry functions its payload exports and
+//! Each patch is a `Profile` of the program `BANK`: the entry functions its payload exports and
 //! the edits it makes. The edits that more than one patch makes are defined
 //! here once; a profile only picks from them and adds its own.
 //! Hardware behavior and save recovery still require console validation.
 
-use crate::{elf::PayloadElf, placement::InputIdentity, CheckedEdit, BANK_TITLE_ID};
+pub(crate) use crate::profile::Profile;
+use crate::{
+    elf::PayloadElf, placement::InputIdentity, profile::Program, CheckedEdit, BANK_TITLE_ID,
+};
 
 pub mod download;
 pub mod migrate;
@@ -69,35 +72,18 @@ pub const CONTRACT: crate::elf::Contract = crate::elf::Contract {
     ],
 };
 
-/// One patch for Bank 1.5.
-pub struct Profile {
-    /// Its name on the command line and in the manifest.
-    pub name: &'static str,
-    /// The entry functions its payload must export, in the order of the
-    /// manifest. The first is the entry of the ELF.
-    pub entries: &'static [&'static str],
-    /// Edited regions of the original, the start-up hook's bytes included.
-    pub regions: usize,
-    /// The main-menu locations (`MENU_LOCATIONS`) it edits. None for a
-    /// patch that is released: those never create the main menu.
-    pub menu_edits: &'static [u32],
-    /// Every edit but the start-up hook's bytes. `code` is the original.
-    edits: fn(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>>,
-}
-
-pub const PROFILES: [&Profile; 4] = [
-    &offline::PROFILE,
-    &migrate::PROFILE,
-    &test::PROFILE,
-    &download::PROFILE,
-];
-
-pub fn profile(name: &str) -> crate::Result<&'static Profile> {
-    PROFILES
-        .into_iter()
-        .find(|profile| profile.name == name)
-        .ok_or_else(|| crate::Error(format!("unknown Bank patch profile: {name}")))
-}
+/// Pokémon Bank 1.5, which every patch for Bank edits.
+pub const BANK: Program = Program {
+    name: "bank15-title6272-remaster6",
+    label: "Pokémon Bank 1.5",
+    title_id: BANK_TITLE_ID,
+    tmd_version: TMD_VERSION,
+    remaster_version: REMASTER_VERSION,
+    code_length: CODE_LENGTH,
+    identity: INPUT_IDENTITY,
+    contract: &CONTRACT,
+    check,
+};
 
 /// One edited word: (virtual address, original word, replacement bytes).
 pub(crate) fn word(address: u32, expected: u32, replacement: [u8; 4]) -> CheckedEdit {
@@ -261,25 +247,19 @@ pub const MENU_LOCATIONS: [(u32, u32); 5] = [
     (0x003617dc, 0x002a6c84),
 ];
 
-/// Builds the complete hook set of `profile` in memory, paired with its
-/// expanded exheader. This verifies bytes and layout, not runtime readiness.
-/// No install files are written. See docs/internals.md.
-pub fn prepare_patch(
-    profile: &Profile,
+/// What every patch for Bank relies on beyond its edited words: the SDK's
+/// conversion of the worker's thread priority, and the main menu's
+/// locations, which only a profile that names one may edit.
+fn check(
     code: &[u8],
-    exheader: &[u8],
-    elf: &[u8],
-) -> crate::Result<crate::placement::PreparedPlacement> {
+    profile: &Profile,
+    _: &PayloadElf,
+    edits: &[CheckedEdit],
+) -> crate::Result<()> {
     for (address, expected) in SDK_PRIORITY_CODE {
         if crate::le32(code, (address - CODE_BASE) as usize)? != expected {
             return crate::fail("SDK thread-priority conversion is not the reviewed code");
         }
-    }
-    let payload = crate::elf::inspect_payload_elf(&CONTRACT, elf, profile.entries)?;
-    let mut edits = (profile.edits)(code, &payload)?;
-    edits.push(payload.bootstrap_edit());
-    if edits.len() != profile.regions {
-        return crate::fail("profile edit count changed");
     }
     for (address, original) in MENU_LOCATIONS {
         let offset = (address - CODE_BASE) as usize;
@@ -303,13 +283,7 @@ pub fn prepare_patch(
     {
         return crate::fail("profile names an unknown main-menu location");
     }
-    crate::placement::prepare_expanded_data(
-        code,
-        exheader,
-        &INPUT_IDENTITY,
-        &payload.linked_payload(),
-        &edits,
-    )
+    Ok(())
 }
 
 #[cfg(test)]
@@ -396,17 +370,5 @@ mod tests {
         for (address, _, _) in LANGUAGE_EDITS {
             assert!(!(0x002abe08..0x002acab8).contains(&address));
         }
-    }
-
-    #[test]
-    fn every_profile_has_a_name_of_its_own_and_is_found_by_it() {
-        for (index, known) in PROFILES.into_iter().enumerate() {
-            assert_eq!(profile(known.name).unwrap().entries, known.entries);
-            assert!(!known.entries.is_empty());
-            assert!(PROFILES[..index]
-                .iter()
-                .all(|earlier| earlier.name != known.name));
-        }
-        assert!(profile("unknown").is_err());
     }
 }

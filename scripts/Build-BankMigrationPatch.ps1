@@ -26,16 +26,16 @@ try {
     })
     if ($extractions.Count -ne 1) { throw 'Extraction did not return one input record.' }
     $inputRecord = $extractions[0]
-    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Patch migrate -Version $Version | Out-Host
+    & (Join-Path $PSScriptRoot 'Build-BankPayload.ps1') -Kind migration -Version $Version | Out-Host
     $elf = Join-Path $projectRoot 'build/intermediate/migration/bank-migrate-payload.elf'
     if (-not (Test-Path -LiteralPath $elf -PathType Leaf)) { throw "Missing payload ELF: $elf" }
     $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind migration
     $output = Join-Path $projectRoot 'build/migration'
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
-    & cargo +stable run --locked --offline -p patch-builder -- build-development migrate $inputRecord.code $inputRecord.exheader $elf $output | Out-Host
+    & cargo +stable run --locked --offline -p patch-builder -- build migration $inputRecord.code $inputRecord.exheader $elf $output | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "Migration patch build failed: $LASTEXITCODE" }
     Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value $id
-    & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -Patch migrate | Out-Null
+    & (Join-Path $PSScriptRoot 'Verify-BankPatch.ps1') -Kind migration | Out-Null
     $report = Get-Content -LiteralPath (Join-Path $output 'verification.json') -Raw | ConvertFrom-Json
     if ($report.status -ne 'passed') { throw 'Verification of the migration package failed' }
     Write-Host "Migration package $id`: $output (verified)"

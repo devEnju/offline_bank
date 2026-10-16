@@ -96,6 +96,8 @@ $manifest = Get-Content -LiteralPath (Join-Path $directory 'manifest.json') -Raw
 # The linked ELF the package was built from, and its function symbols.
 $elf = [IO.File]::ReadAllBytes($elfPath)
 Assert-Check ((Hash $elf) -eq $manifest.source_elf_sha256) 'ELF hash equals manifest'
+Assert-Check ($manifest.patch -eq 'transporter' -and $manifest.title_id -eq '00040000000c9c00' -and $manifest.tmd_version -eq 5200 -and $manifest.remaster_version -eq 5) 'manifest names this patch and version'
+Assert-Check ($manifest.native_edits -eq $allowed.Count + 1 -and $manifest.main_menu_edits -eq 0 -and $manifest.paired_files_required -eq $true -and $manifest.hardware_tested_by_builder -eq $false) 'manifest edit count and status'
 Assert-Check ($elf[0] -eq 0x7F -and [Text.Encoding]::ASCII.GetString($elf, 1, 3) -eq 'ELF' -and $elf[4] -eq 1 -and $elf[5] -eq 1) 'ELF32 little-endian header'
 $sectionTable = U32 $elf 32
 $sectionCount = U16 $elf 48
@@ -121,9 +123,9 @@ $bssStart = $dataAddress + $dataSize
 $bssEnd = $bssStart + $bssSize
 $payloadAddress = ($bssEnd + 0xFFF) -band (-bnot 0xFFF)
 Assert-Check ($bssEnd -eq 0x003638A4 -and $payloadAddress -eq 0x00364000) 'memory geometry'
-Assert-Check ([Convert]::ToInt32($manifest.payload_address, 16) -eq $payloadAddress) 'payload address'
-$payloadCode = [int]$manifest.payload_executable_bytes
-$payloadMemory = [int]$manifest.payload_memory_bytes
+Assert-Check ([int]$manifest.placement.payload_address -eq $payloadAddress) 'payload address'
+$payloadCode = [int]$manifest.placement.payload_rx_bytes
+$payloadMemory = [int]$manifest.placement.payload_memory_bytes
 Assert-Check ($payloadCode -gt 0 -and $payloadCode % 0x1000 -eq 0 -and $payloadMemory % 0x1000 -eq 0 -and $payloadCode -lt $payloadMemory) 'payload sizes are whole pages'
 $expandedEnd = $payloadAddress + $payloadMemory
 $expandedLength = $expandedEnd - $base
@@ -154,8 +156,8 @@ Assert-Check ((Hash $header) -eq $manifest.artifacts.'exheader.bin'.sha256) 'exh
 
 # Original text: every changed word is a listed edit or inside the start-up
 # hook, which may only replace zero bytes after the original text.
-$bootstrapStart = [Convert]::ToInt32($manifest.bootstrap_address, 16)
-$bootstrapEnd = $bootstrapStart + [int]$manifest.bootstrap_bytes
+$bootstrapStart = [int]$manifest.placement.bootstrap_address
+$bootstrapEnd = $bootstrapStart + [int]$manifest.placement.bootstrap_bytes
 Assert-Check ($bootstrapStart -eq $textEnd -and $bootstrapEnd -le $textPageEnd) 'start-up hook lies after the original text'
 for ($address = $textEnd; $address -lt $textPageEnd; $address++) {
     Assert-Check ($original[$address - $base] -eq 0) 'bytes after the original text are zero'

@@ -97,7 +97,7 @@ The release before this one stored the Bank differently ([internals.md](internal
 ./scripts/Build-BankMigrationPatch.ps1
 ```
 
-This builds it into `build/migration/` and verifies it (`Verify-BankPatch.ps1 -Patch migrate`). Its PC tests run with the others; among them a cut at every step of the conversion.
+This builds it into `build/migration/` and verifies it (`Verify-BankPatch.ps1 -Kind migration`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
 After START, migration checks existing local extdata before any cartridge or installed-game detection; neither is run. A missing archive gives `0000600D 00000000` without creating one. The presence or absence of a game never decides whether conversion runs.
 
@@ -113,7 +113,7 @@ While the official service runs (it ends on February 25, 2027), a patch of its o
 ./scripts/Build-BankDownloadPatch.ps1
 ```
 
-This builds it into `build/download/` and verifies it (`Verify-BankPatch.ps1 -Patch download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
+This builds it into `build/download/` and verifies it (`Verify-BankPatch.ps1 -Kind download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
 
 After START, download checks local extdata before contacting anything. If no offline Bank is present, it keeps the original archive and first-start preparation, then connects without detecting a cartridge or installed game. A missing archive is absence; unreadable or previous-format data stops the download instead of allowing an overwrite.
 

@@ -24,7 +24,7 @@ exheader.bin 39d93584b07901dfa7ea2fc8ce1236cdd92476584ee2dbb60c11a4ae9402abf7
 | [patches/bank-download/](../patches/bank-download/src/) | The download patch: routing in [navigation.rs](../patches/bank-download/src/navigation.rs), the two file jobs in [download.rs](../patches/bank-download/src/download.rs), the hooks in [runtime.rs](../patches/bank-download/src/runtime.rs). |
 | [patches/bank-migrate/](../patches/bank-migrate/src/) | The migration patch from the previous release: the conversion in [migrate.rs](../patches/bank-migrate/src/migrate.rs), that release's storage code in [previous/](../patches/bank-migrate/src/previous/), and two hooks. |
 | [crates/offline-core/](../crates/offline-core/src/) | `no_std`, no `unsafe`. The journal and the Bank file, the file pairs, transport rules, Miles rules, game-image hashing. |
-| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. Verifies the inputs, parses the linked ELF, emits the paired `code.ips` and `exheader.bin`. [bank15.rs](../crates/patch-builder/src/bank15.rs) holds what belongs to the program and the edits more than one patch makes; each patch has a profile beside it in [bank15/](../crates/patch-builder/src/bank15/): `offline.rs`, `migrate.rs`, `download.rs`, `test.rs`. |
+| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. Verifies the inputs, parses the linked ELF, emits the paired `code.ips` and `exheader.bin`, the same way for every package ([profile.rs](../crates/patch-builder/src/profile.rs)). [bank15.rs](../crates/patch-builder/src/bank15.rs) holds what belongs to the program and the edits more than one patch makes; each patch has a profile beside it in [bank15/](../crates/patch-builder/src/bank15/): `offline.rs`, `migrate.rs`, `download.rs`, `test.rs`. |
 
 ### Patches for Bank
 
@@ -501,7 +501,7 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 | --- | --- |
 | [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), file access in [fs.rs](../patches/transporter/src/fs.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), the assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
 | [crates/offline-core/](../crates/offline-core/src/) | `transport::deliver` and the side-file format, shared with Bank. |
-| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. The profile with every edit and its original word is [transporter15.rs](../crates/patch-builder/src/transporter15.rs). |
+| [crates/patch-builder/](../crates/patch-builder/src/) | Host tool, the same as for Bank. [transporter15.rs](../crates/patch-builder/src/transporter15.rs) holds the program and its one profile, with every edit and its original word. |
 
 ### Edits to the original
 

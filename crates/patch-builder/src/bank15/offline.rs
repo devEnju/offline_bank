@@ -7,7 +7,8 @@ use super::{
 use crate::{elf::PayloadElf, CheckedEdit};
 
 pub const PROFILE: Profile = Profile {
-    name: "offline",
+    name: "bank",
+    program: &super::BANK,
     entries: &[
         "bank_offline_next",
         "bank_offline_load",
