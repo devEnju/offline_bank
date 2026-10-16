@@ -6,6 +6,7 @@
 //! checksum/signature generation and hold exclusive access to both sources.
 
 use crate::{Fingerprint, Sha256, Sha256Error, Storage};
+use core::convert::Infallible;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Overlay<'a> {
@@ -84,6 +85,20 @@ where
     })
 }
 
+/// Hashes the complete existing image alone, for a check that writes
+/// nothing: `fingerprint_images` without overlays, with one hash instead of
+/// two equal ones.
+pub fn fingerprint_image<S: Storage>(
+    source: &mut S,
+    file_len: u64,
+) -> Result<Fingerprint, ImageError<S::Error, Infallible>> {
+    let mut hash = Sha256::new();
+    let mut cursor = 0u64;
+    let mut buffer = [0u8; 512];
+    hash_existing(source, &mut cursor, file_len, &mut hash, None, &mut buffer)?;
+    Ok(hash.finalize())
+}
+
 fn hash_existing<S: Storage, E>(
     source: &mut S,
     cursor: &mut u64,
@@ -109,7 +124,6 @@ fn hash_existing<S: Storage, E>(
 mod tests {
     extern crate std;
     use super::*;
-    use core::convert::Infallible;
     use std::{vec, vec::Vec};
 
     struct Source {
@@ -196,6 +210,12 @@ mod tests {
         .unwrap();
         assert_eq!(actual.before, digest(&input.bytes));
         assert_eq!(actual.before, actual.after);
+        assert_eq!(fingerprint_image(&mut input, 777), Ok(actual.before));
+        input.fail_at = Some(600);
+        assert_eq!(
+            fingerprint_image(&mut input, 777),
+            Err(ImageError::Read("read failed"))
+        );
     }
     #[test]
     fn rejects_overlap_and_range_overflow() {

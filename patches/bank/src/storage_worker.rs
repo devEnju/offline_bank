@@ -97,9 +97,9 @@ mod arm {
         fs::GameMainReader,
         worker::{Service, Shared, Worker, WorkerError, WorkerErrorKind},
     };
-    use core::{cell::UnsafeCell, convert::Infallible, mem::transmute};
+    use core::{cell::UnsafeCell, mem::transmute};
     use offline_core::{
-        game_image::{fingerprint_images, Overlay},
+        game_image::{fingerprint_image, fingerprint_images, Overlay},
         moved,
         native_blob::NativeBlobView,
         sections::{Identity, HELD},
@@ -529,19 +529,14 @@ mod arm {
             .map_err(|e| Fault::GameRead.io(e))?;
         let length = main.len();
         let secure = file_secure(game, &mut main)?;
-        let images = fingerprint_images(
-            &mut main,
-            length,
-            core::iter::empty::<Result<Overlay<'_>, Infallible>>(),
-        )
-        .map_err(|error| match error {
+        let fingerprint = fingerprint_image(&mut main, length).map_err(|error| match error {
             offline_core::game_image::ImageError::Read(e) => Fault::GameRead.io(e),
             _ => Fault::GameRead.with(0),
         })?;
         main.close().map_err(|e| Fault::GameRead.io(e))?;
         Ok(GameEvidence {
             title: game.kind.title_id(),
-            fingerprint: images.before,
+            fingerprint,
             secure,
             cartridge: platform(game)?.gamecard,
         })

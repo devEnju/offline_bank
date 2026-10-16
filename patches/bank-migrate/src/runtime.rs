@@ -154,7 +154,6 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
         outcome,
         cancelled,
         native: next,
-        ..
     }) = (unsafe { Ended::route(manager, current) })
     else {
         return navigation::CLEANUP;

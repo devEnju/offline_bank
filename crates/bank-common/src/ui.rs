@@ -61,7 +61,6 @@ const BUTTON_MESSAGE: usize = 0x001e_0ef8;
 pub enum Error {
     InvalidPointer,
     MissingBuffer,
-    InsufficientCapacity,
     InvalidMessage,
 }
 fn pointer(value: u32) -> Result<*mut u8, Error> {

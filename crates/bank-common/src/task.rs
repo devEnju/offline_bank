@@ -130,7 +130,6 @@ impl Task {
 /// original router answered for it.
 #[derive(Clone, Copy)]
 pub struct Ended {
-    pub current: u32,
     /// The ended task's byte `+0x30`.
     pub outcome: u8,
     /// The manager's flag `+0x1a`, which the original router clears.
@@ -156,7 +155,6 @@ impl Ended {
         let outcome = unsafe { task.add(0x30).read() };
         let router: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(ROUTER) };
         Some(Self {
-            current,
             outcome,
             cancelled,
             native: unsafe { router(manager, current) },

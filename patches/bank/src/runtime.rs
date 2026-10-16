@@ -330,6 +330,10 @@ impl Runtime {
         let Some(worker) = self.worker.as_mut() else {
             return;
         };
+        // No job is out, so a refusal means the worker thread is gone: then
+        // nothing can close the files and nothing is reading or writing them.
+        // `files_closed` answers true, and `files_used` stays set, so the
+        // next session's end asks again.
         if let Ok(id) = unsafe { worker.submit(Job::Close) } {
             self.closing = Some(id);
             self.files_used = false;
@@ -991,7 +995,6 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         outcome,
         cancelled,
         native: next,
-        ..
     }) = (unsafe { Ended::route(manager, current) })
     else {
         return crate::navigation::CLEANUP;
