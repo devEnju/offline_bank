@@ -7,6 +7,7 @@ use crate::{
     native_game::{
         self, GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll,
     },
+    open_files::Files,
     storage_worker::{BankWorker, GameEvidence, Job, Reply},
     transaction::Trainer,
 };
@@ -91,7 +92,7 @@ struct Runtime {
     owner: usize,
     step: Step,
     job: Option<JobId>,
-    files: Files,
+    files: Files<JobId>,
     baseline: Option<Baseline>,
     save_dex: Option<crate::dex::Evidence>,
     fault: Fault,
@@ -107,18 +108,6 @@ struct Runtime {
     /// the freshly constructed Bank before the first restore.
     blank: Option<([u8; RECORD_SIZE], u8)>,
 }
-/// The Bank's files between sessions.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Files {
-    /// No job was given to the worker since they were last closed.
-    Closed,
-    /// A job was given to the worker since they were last closed.
-    Used,
-    /// The job that closes them at the end of a session, until its reply is
-    /// collected.
-    Closing(JobId),
-}
-
 /// The game the Bank was loaded with, as it was then or after the last
 /// save: a save in progress is bound to both.
 #[derive(Clone, Copy)]
@@ -337,38 +326,27 @@ impl Runtime {
     /// of them is open on the start screen, where HOME works and Bank can be
     /// closed. The next session opens them as a first one does.
     fn close_files(&mut self) {
-        if self.files != Files::Used || self.job.is_some() {
+        if !self.files.to_close(self.job.is_some()) {
             return;
         }
         let Some(worker) = self.worker.as_mut() else {
             return;
         };
-        // No job is out, so nothing is reading or writing the files. If the
-        // worker refuses the close (its thread has ended, a wait on it
-        // failed, or its mailbox is not free), nothing was handed over:
-        // `files_closed` answers true, and the files stay `Used`, so the
-        // next session's end asks again.
-        if let Ok(id) = unsafe { worker.submit(Job::Close) } {
-            self.files = Files::Closing(id);
-        }
+        // The worker refuses if its thread has ended, a wait on it failed,
+        // or its mailbox is not free (`open_files`).
+        self.files.asked(unsafe { worker.submit(Job::Close) }.ok());
     }
     /// Collects the reply of `close_files`. False while it is still out.
     fn files_closed(&mut self) -> bool {
-        let Files::Closing(id) = self.files else {
+        let Some(id) = self.files.closing() else {
             return true;
         };
         let Some(worker) = self.worker.as_mut() else {
             self.files = Files::Closed;
             return true;
         };
-        // What closing returned changes nothing here: a file that could not
-        // be closed shows when the next session opens it.
-        let mut job = Some(id);
-        let out = matches!(worker.collect(&mut job), Ok(None));
-        if job.is_none() {
-            self.files = Files::Closed;
-        }
-        !out
+        let out = matches!(worker.collect(&mut Some(id)), Ok(None));
+        self.files.collected(out)
     }
     fn poll(&mut self, task: Task) -> Result<Option<Reply>, Fault> {
         if self.owner != task.raw() as usize {
