@@ -25,7 +25,10 @@ $dataSize = 0x3D3FC
 $bssSize = 0x3A4A8
 $originalAppInit = 0x00104644
 $startupCall = 0x00103D9C
-$elfPath = Join-Path $projectRoot 'build/intermediate/transporter/transporter-payload.elf'
+# Where the package and its payload lie (packages.psd1); what they must
+# contain is written out below.
+$package = (Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1'))[$Kind]
+$elfPath = Join-Path $projectRoot "build/intermediate/$Kind/$($package.Crate).elf"
 
 function Assert-Check([bool]$condition, [string]$message) {
     if (-not $condition) { throw "Verification failed: $message" }
@@ -64,9 +67,9 @@ $original = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exefs/code.bin'))
 $originalHeader = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exheader.bin'))
 Assert-Check ((Hash $original) -eq $expectedCode) 'original code.bin hash'
 Assert-Check ((Hash $originalHeader) -eq $expectedExheader) 'original exheader.bin hash'
-$directory = Join-Path $projectRoot 'build/binary/transporter'
-$Package = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
-Assert-Check ($Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind transporter)) 'package is not the one of the current payload and profile'
+$directory = Join-Path $projectRoot $package.Folder
+$packageName = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
+Assert-Check ($packageName -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $Kind)) 'package is not the one of the current payload and profile'
 
 # Whole-word edits: address -> expected new word, or a branch to an address
 # or to an entry function by name, checked separately. Plain hashtable: an
@@ -282,7 +285,7 @@ Assert-Check ([BitConverter]::ToUInt32($originalHeader, 0x38) -eq $dataSize -and
 
 $report = [ordered]@{
     status = 'passed'
-    package = $Package
+    package = $packageName
     source_code_sha256 = $expectedCode
     source_exheader_sha256 = $expectedExheader
     ips_sha256 = (Hash $ips)

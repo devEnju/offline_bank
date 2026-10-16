@@ -35,9 +35,11 @@ function CString([byte[]]$bytes,[int]$offset) {
     Assert-Check ($end -ge $offset) 'Unterminated ELF string'
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
-$crate=@{bank='bank';migration='bank-migrate';test='bank';download='bank-download'}[$Kind]
-if (-not $ElfPath) { $ElfPath="build/intermediate/$Kind/$crate-payload.elf" }
-$packagePath=if($Kind -eq 'bank'){'build/binary/bank'}else{"build/$kind"}
+# Where the package and its payload lie (packages.psd1); what they must
+# contain is written out below.
+$package=(Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1'))[$Kind]
+if (-not $ElfPath) { $ElfPath="build/intermediate/$Kind/$($package.Crate).elf" }
+$packagePath=$package.Folder
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
     $packageName='unknown'

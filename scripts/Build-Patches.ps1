@@ -27,16 +27,7 @@ Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $toolchain = 'nightly-2026-10-03'
 
-# Each kind: the program it patches, the crate and linker script of its
-# payload, its cargo features, its folder, and its verify script.
-# The test build is the Bank crate with a feature, in folders of its own.
-$packages = @{
-    'bank'        = @{ Program = 'bank'; Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Features = @(); Output = 'build/binary/bank'; Verify = 'Verify-BankPatch.ps1' }
-    'transporter' = @{ Program = 'transporter'; Crate = 'transporter-payload'; Linker = 'patches/transporter/link/transporter15.ld'; Features = @(); Output = 'build/binary/transporter'; Verify = 'Verify-TransporterPatch.ps1' }
-    'test'        = @{ Program = 'bank'; Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Features = @('test-build'); Output = 'build/test'; Verify = 'Verify-BankPatch.ps1' }
-    'migration'   = @{ Program = 'bank'; Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Features = @(); Output = 'build/migration'; Verify = 'Verify-BankPatch.ps1' }
-    'download'    = @{ Program = 'bank'; Crate = 'bank-download-payload'; Linker = 'patches/bank-download/link/bank15-download.ld'; Features = @(); Output = 'build/download'; Verify = 'Verify-BankPatch.ps1' }
-}
+$packages = Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1')
 $cias = @{ 'bank' = $BankCiaPath; 'transporter' = $TransporterCiaPath }
 
 function Invoke-Native([string]$what, [scriptblock]$command) {
@@ -86,7 +77,7 @@ function Build-Package([string]$kind) {
     $original = Get-Input $package.Program
     $elf = Build-Payload $kind $package
     $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind
-    $output = Join-Path $projectRoot $package.Output
+    $output = Join-Path $projectRoot $package.Folder
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
     Invoke-Native 'Package build' { cargo +stable run --locked --offline --quiet -p patch-builder -- build $kind $original.code $original.exheader $elf $output }
     Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value $id

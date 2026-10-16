@@ -135,12 +135,13 @@ try {
 
     # 3. The patches, built from these sources and independently verified.
     # Build-Patches.ps1 replaces the package of each kind in its folder
-    # (build/binary/bank and build/binary/transporter, build/<kind> for the others),
+    # (packages.psd1),
     # writes its name into PACKAGE.txt (Get-PackageId.ps1: the hash of its
     # compiled code and of the builder's profile with the edits of the
     # original), and verifies it.
+    $packages = Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1')
     function Get-Verified([string]$kind) {
-        $directory = Join-Path $projectRoot $(if ($kind -in 'bank', 'transporter') { "build/binary/$kind" } else { "build/$kind" })
+        $directory = Join-Path $projectRoot $packages[$kind].Folder
         $id = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
         if ($id -ne (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) {
             throw "Package $kind is not the one of the current sources."
