@@ -22,47 +22,34 @@ mod linked {
         transporter_shiny_build, transporter_shiny_keeps_gender,
     };
 
-    // Keeps the start-up hook in the link; the builder installs its call.
+    // Keeps the start-up hook and the entries that are Rust functions in
+    // the link; the patched sites call them by name (the builder's profile,
+    // `transporter15::ENTRIES`). The stubs below are kept by the linker
+    // script.
     #[used]
     #[link_section = ".transporter.link_roots"]
     static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
         transporter_payload::bootstrap::transporter_bootstrap_startup;
-
-    // The fixed entry words the patched sites branch to; the builder checks
-    // that they are branches into this image.
-    core::arch::global_asm!(
-        ".section .transporter.entry,\"ax\",%progbits",
-        ".arm",
-        ".global transporter_entry",
-        "transporter_entry:",
-        "b transporter_check_stub",
-        "b transporter_deliver_stub",
-        "b {next}",
-        "b transporter_slot",
-        "b transporter_cart_id_stub",
-        "b {cart_read}",
-        "b {cart_write}",
-        "b transporter_list_next_stub",
-        "b transporter_select_stub",
-        "b transporter_vc_scan_stub",
-        "b {language_chosen}",
-        "b transporter_language_order_stub",
-        "b {language_buttons}",
-        "b transporter_language_back_stub",
-        "b transporter_title_begin_stub",
-        "b transporter_title_end_stub",
-        "b transporter_list_ready_stub",
-        "b transporter_message_stub",
-        "b {version}",
-        "b transporter_shiny_build_stub",
-        "b transporter_shiny_gender_stub",
-        next = sym transporter_next,
-        version = sym transporter_version,
-        cart_read = sym transporter_cart_read,
-        cart_write = sym transporter_cart_write,
-        language_chosen = sym transporter_language_chosen,
-        language_buttons = sym transporter_language_buttons,
-    );
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static NEXT: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = transporter_next;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static CART_READ: unsafe extern "aapcs" fn(u32, u32, *mut u8, u32) -> i32 =
+        transporter_cart_read;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static CART_WRITE: unsafe extern "aapcs" fn(u32, u32, *const u8, u32) -> i32 =
+        transporter_cart_write;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static LANGUAGE_CHOSEN: extern "aapcs" fn(u32) = transporter_language_chosen;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static LANGUAGE_BUTTONS: unsafe extern "aapcs" fn(*mut u8) = transporter_language_buttons;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static VERSION: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) = transporter_version;
 
     // Call-site adapters for the SD-save hooks: they pass the caller's task
     // pointer (r4) and keep what the replaced instruction did.
@@ -70,14 +57,22 @@ mod linked {
         ".section .text.transporter_cart_stubs,\"ax\",%progbits",
         ".arm",
         // 00243528 (was: bl read-cartridge-id). r0 = out, r4 = cartridge task.
+        ".global transporter_cart_id_stub",
+        ".type transporter_cart_id_stub, %function",
         "transporter_cart_id_stub:",
         "mov r1, r4",
         "b {cart_id}",
         // 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.
+        ".size transporter_cart_id_stub, .-transporter_cart_id_stub",
+        ".global transporter_list_next_stub",
+        ".type transporter_list_next_stub, %function",
         "transporter_list_next_stub:",
         "mov r0, r4",
         "b {list_next}",
         // 00244908 (was: mov r0, #0). r4 = list task; r5, r6 stay live.
+        ".size transporter_list_next_stub, .-transporter_list_next_stub",
+        ".global transporter_select_stub",
+        ".type transporter_select_stub, %function",
         "transporter_select_stub:",
         "push {{r4, lr}}",
         "mov r0, r4",
@@ -88,6 +83,9 @@ mod linked {
         // r0 = version, r1 = language id). A row in another language than
         // the listed one answers no; the original answers for the others.
         // It runs on the scanner's thread and only reads the filter.
+        ".size transporter_select_stub, .-transporter_select_stub",
+        ".global transporter_vc_scan_stub",
+        ".type transporter_vc_scan_stub, %function",
         "transporter_vc_scan_stub:",
         "push {{r0, r1, r4, lr}}",
         "mov r0, r1",
@@ -98,6 +96,7 @@ mod linked {
         "bxeq lr",
         "ldr r12, =0x002512a8",
         "bx r12",
+        ".size transporter_vc_scan_stub, .-transporter_vc_scan_stub",
         ".ltorg",
         cart_id = sym transporter_cart_id,
         list_next = sym transporter_list_next,
@@ -111,6 +110,8 @@ mod linked {
         ".arm",
         // 0022BEE0 (was: bl 0022BC0C). r0 = screen; r6 = the constructor's
         // parameter, whose heap the screen's objects come from.
+        ".global transporter_language_order_stub",
+        ".type transporter_language_order_stub, %function",
         "transporter_language_order_stub:",
         "mov r1, r6",
         "b {language_order}",
@@ -118,6 +119,9 @@ mod linked {
         // has no Back button; r0 = the part). On the list, part 0, B now
         // presses the Back button, button 7, as the original does for the
         // two other parts at 0022B3BC..0022B3DC. r4 = screen.
+        ".size transporter_language_order_stub, .-transporter_language_order_stub",
+        ".global transporter_language_back_stub",
+        ".type transporter_language_back_stub, %function",
         "transporter_language_back_stub:",
         "cmp r0, #0",
         "ldrne r12, =0x0022b510",
@@ -130,6 +134,9 @@ mod linked {
         // loads its archives and builds its layouts (0024BA70).
         // 0024BA44 (was: mov r7, #3), while the call's arguments are set up;
         // every register is returned as it came.
+        ".size transporter_language_back_stub, .-transporter_language_back_stub",
+        ".global transporter_title_begin_stub",
+        ".type transporter_title_begin_stub, %function",
         "transporter_title_begin_stub:",
         "push {{r0-r3, r12, lr}}",
         "mov r0, #1",
@@ -138,6 +145,9 @@ mod linked {
         "mov r7, #3",
         "bx lr",
         // 0024BA74 (was: mov r3, #0x27), right after the call.
+        ".size transporter_title_begin_stub, .-transporter_title_begin_stub",
+        ".global transporter_title_end_stub",
+        ".type transporter_title_end_stub, %function",
         "transporter_title_end_stub:",
         "push {{r0-r3, r12, lr}}",
         "mov r0, #0",
@@ -150,6 +160,7 @@ mod linked {
         // site 0013AEE4. r0 and r1 are the layout binary and are returned as
         // they came, with every other register.
         ".global transporter_layout_adjust",
+        ".size transporter_title_end_stub, .-transporter_title_end_stub",
         "transporter_layout_adjust:",
         "push {{r0-r3, r12, lr}}",
         "bl {layout_built}",
@@ -169,6 +180,8 @@ mod linked {
         // ldr r0, [r4, #0x38]): its set-up is done and it is on screen.
         // r4 = task; the instruction is run here and every other register
         // the original still uses is returned as it came.
+        ".global transporter_list_ready_stub",
+        ".type transporter_list_ready_stub, %function",
         "transporter_list_ready_stub:",
         "push {{r1-r3, r12, lr}}",
         "sub sp, sp, #4",
@@ -183,6 +196,9 @@ mod linked {
         // instruction is run here; for a message that waits the entry lets
         // HOME and sleep through; then on inside the original with every
         // register as it came.
+        ".size transporter_list_ready_stub, .-transporter_list_ready_stub",
+        ".global transporter_message_stub",
+        ".type transporter_message_stub, %function",
         "transporter_message_stub:",
         "push {{r4, r5, r6, r7, r8, lr}}",
         "cmp r2, #0",
@@ -190,6 +206,7 @@ mod linked {
         "push {{r0-r3, r12, lr}}",
         "bl {message_waits}",
         "pop {{r0-r3, r12, lr}}",
+        ".size transporter_message_stub, .-transporter_message_stub",
         "5:",
         "ldr r12, =0x0019b510",
         "bx r12",
@@ -200,6 +217,8 @@ mod linked {
         // the search's own step that waits for it and ends the search.
         // 3: its ending without a message. Else: the replaced instruction,
         // with r0 as the search had loaded it, and on with the search.
+        ".global transporter_check_stub",
+        ".type transporter_check_stub, %function",
         "transporter_check_stub:",
         "mov r0, r4",
         "bl {check}",
@@ -221,6 +240,9 @@ mod linked {
         // to the original removal code. 2: still working, the original
         // return, to come back next frame. Else: sub-state 0x11, the
         // original failure message, through the store at 0024A4C0.
+        ".size transporter_check_stub, .-transporter_check_stub",
+        ".global transporter_deliver_stub",
+        ".type transporter_deliver_stub, %function",
         "transporter_deliver_stub:",
         "mov r0, r4",
         "bl {deliver}",
@@ -239,6 +261,9 @@ mod linked {
         // frame [sp, #0xcc] is the record size and [sp, #0xd8] Box 1. Every
         // register but r0 is returned as it came; the six pushed words keep
         // the stack 8-byte aligned and restore r0 = 0.
+        ".size transporter_deliver_stub, .-transporter_deliver_stub",
+        ".global transporter_slot",
+        ".type transporter_slot, %function",
         "transporter_slot:",
         "ldr r0, [r1, r7]",
         "cmp r0, #0",
@@ -253,17 +278,22 @@ mod linked {
         "moveq r0, #0x14",
         "bx lr",
         // svc 0x23 (CloseHandle) behind an ordinary call boundary.
+        ".size transporter_slot, .-transporter_slot",
         ".global transporter_close_handle",
+        ".type transporter_close_handle, %function",
         "transporter_close_handle:",
         "svc #0x23",
         "bx lr",
         // svc 0x24 (WaitSynchronization1) the same way: r0 the handle, the
         // i64 timeout in r2/r3 as AAPCS aligns it.
+        ".size transporter_close_handle, .-transporter_close_handle",
         ".global transporter_wait_thread",
+        ".type transporter_wait_thread, %function",
         "transporter_wait_thread:",
         "push {{r4, lr}}",
         "svc #0x24",
         "pop {{r4, pc}}",
+        ".size transporter_wait_thread, .-transporter_wait_thread",
         ".ltorg",
         check = sym transporter_check,
         message_waits = sym transporter_message_waits,
@@ -281,6 +311,8 @@ mod linked {
         // construction parameters). The entry may ask for a shiny; then the
         // constructor with every register as it came, lr included, so that
         // it returns to 0024F6B4.
+        ".global transporter_shiny_build_stub",
+        ".type transporter_shiny_build_stub, %function",
         "transporter_shiny_build_stub:",
         "push {{r0-r3, r12, lr}}",
         "mov r1, r2",
@@ -293,6 +325,9 @@ mod linked {
         // from the Attack DV; r0 = its threshold). lr and the flags are not
         // live here. Kept gender: on at 0024F910, behind the gender code.
         // Else the instruction, and back to 0024F8E4.
+        ".size transporter_shiny_build_stub, .-transporter_shiny_build_stub",
+        ".global transporter_shiny_gender_stub",
+        ".type transporter_shiny_gender_stub, %function",
         "transporter_shiny_gender_stub:",
         "push {{r0-r3, r12, lr}}",
         "mov r0, r4",
@@ -303,6 +338,7 @@ mod linked {
         "bxne r12",
         "ldrb r1, [r4, #0x1b]",
         "bx lr",
+        ".size transporter_shiny_gender_stub, .-transporter_shiny_gender_stub",
         ".ltorg",
         shiny_build = sym transporter_shiny_build,
         shiny_keeps_gender = sym transporter_shiny_keeps_gender,

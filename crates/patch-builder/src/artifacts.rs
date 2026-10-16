@@ -33,7 +33,7 @@ pub fn build_development_patch(
     output: &Path,
 ) -> Result<DevelopmentArtifacts> {
     let prepared = prepare_development_patch(profile, code, exheader, elf)?;
-    let parsed = inspect_payload_elf(elf, profile.entries)?;
+    let parsed = inspect_payload_elf(&crate::bank15::CONTRACT, elf, profile.entries)?;
     let exports = parsed
         .entries
         .iter()

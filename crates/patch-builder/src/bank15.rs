@@ -36,6 +36,40 @@ pub const INPUT_IDENTITY: InputIdentity = InputIdentity {
     remaster_version: REMASTER_VERSION,
 };
 
+/// The linked payload of every patch for Bank 1.5 (`elf::Contract`).
+pub const CONTRACT: crate::elf::Contract = crate::elf::Contract {
+    prefix: "bank",
+    code_base: CODE_BASE,
+    bootstrap: 0x0031_3910,
+    bootstrap_end: 0x0031_4000,
+    payload: PAYLOAD_ADDRESS,
+    original_app_init: 0x0010_494c,
+    wrappers: &[
+        (
+            "bank_svc_close_handle",
+            &[0xe92d4010, 0xef000023, 0xe8bd8010],
+        ),
+        (
+            "bank_svc_wait_thread",
+            &[0xe92d4010, 0xef000024, 0xe8bd8010],
+        ),
+        (
+            "bank_svc_get_resource_limit",
+            &[
+                0xe92d4001, 0xef000038, 0xe59d2000, 0xe5821000, 0xe28dd004, 0xe49df004,
+            ],
+        ),
+        (
+            "bank_svc_get_resource_limit_values",
+            &[0xe92d4010, 0xef000039, 0xe8bd8010],
+        ),
+        (
+            "bank_svc_get_resource_current_values",
+            &[0xe92d4010, 0xef00003a, 0xe8bd8010],
+        ),
+    ],
+};
+
 /// One patch for Bank 1.5.
 pub struct Profile {
     /// Its name on the command line and in the manifest.
@@ -241,7 +275,7 @@ pub fn prepare_development_patch(
             return crate::fail("SDK thread-priority conversion is not the reviewed code");
         }
     }
-    let payload = crate::elf::inspect_payload_elf(elf, profile.entries)?;
+    let payload = crate::elf::inspect_payload_elf(&CONTRACT, elf, profile.entries)?;
     let mut edits = (profile.edits)(code, &payload)?;
     edits.push(payload.bootstrap_edit());
     if edits.len() != profile.regions {

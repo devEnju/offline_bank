@@ -122,8 +122,12 @@ fn run() -> Result<(), String> {
         "inspect-payload" if args.len() == 3 => {
             let profile = profile(&args[1])?;
             let data = read(Path::new(&args[2]))?;
-            let info = patch_builder::elf::inspect_payload_elf(&data, profile.entries)
-                .map_err(|e| e.to_string())?;
+            let info = patch_builder::elf::inspect_payload_elf(
+                &patch_builder::bank15::CONTRACT,
+                &data,
+                profile.entries,
+            )
+            .map_err(|e| e.to_string())?;
             println!("ELF SHA-256: {}", hex(&info.elf_sha256));
             println!(
                 "Bootstrap: {:#010x}; bytes={:#x}",

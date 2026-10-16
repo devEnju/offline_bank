@@ -50,8 +50,8 @@ transporter_bootstrap_startup:
     .size transporter_bootstrap_startup, .-transporter_bootstrap_startup
 
     @ 0013AEE4 (was: mov r1, r0, the layout binary on its way to
-    @ Layout::Build). Twelve words after the start of this section; the
-    @ builder checks the place. A layout binary starts with "CLYT" and has
+    @ Layout::Build); the builder checks that this is its first
+    @ instruction. A layout binary starts with "CLYT" and has
     @ its size at +0xC; only the language screen's (0x3188 bytes) goes on to
     @ the payload, which checks its content. r2 and r12 are free here: the
     @ original sets r2 next and does not use r12.

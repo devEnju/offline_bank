@@ -3,8 +3,9 @@ param(
     [string]$InputPath = ''
 )
 # Independent check of the Transporter patch package in build/binary/transporter. Shares no code with the
-# builder: it applies code.ips itself and compares the result with the
-# original executable and exheader. Writes verification.json into the package.
+# builder: it applies code.ips itself, reads the entry functions from the
+# linked ELF's symbols, and compares the result with the original executable
+# and exheader. Writes verification.json into the package.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -18,7 +19,7 @@ $dataSize = 0x3D3FC
 $bssSize = 0x3A4A8
 $originalAppInit = 0x00104644
 $startupCall = 0x00103D9C
-$entryCount = 21
+$elfPath = Join-Path $projectRoot 'build/intermediate/transporter/transporter-payload.elf'
 
 function Get-Sha256([byte[]]$bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -31,6 +32,12 @@ function Get-BranchTarget([int]$address, [uint32]$word) {
     return $address + 8 + $offset * 4
 }
 function Assert-That([bool]$condition, [string]$message) { if (-not $condition) { throw "Verification failed: $message" } }
+function Get-ElfWord([byte[]]$bytes, [int]$offset) { return [BitConverter]::ToUInt32($bytes, $offset) }
+function Get-ElfString([byte[]]$bytes, [int]$offset) {
+    $end = $offset
+    while ($bytes[$end] -ne 0) { $end++ }
+    return [Text.Encoding]::ASCII.GetString($bytes, $offset, $end - $offset)
+}
 
 if (-not $InputPath) {
     $candidates = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'build/extracted') -Directory |
@@ -49,36 +56,59 @@ $directory = Join-Path $projectRoot 'build/binary/transporter'
 $Package = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
 Assert-That ($Package -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind transporter)) 'package is not the one of the current payload and profile'
 
-# Whole-word edits: address -> expected new word, or a branch form checked
-# separately. Plain hashtable: an ordered dictionary would treat these integer
-# keys as positions. Entry words are the first twenty-one words of the payload.
+# Whole-word edits: address -> expected new word, or a branch to an address
+# or to an entry function by name, checked separately. Plain hashtable: an
+# ordered dictionary would treat these integer keys as positions.
 $allowed = @{
     0x00103D9C = 'bl:0028D1AC'
-    0x00242EF8 = 'bl:00364008'; 0x002445EC = 'bl:00364040'
-    0x0019B50C = 'b:00364044'
-    0x0024BAE8 = 'bl:00364048'
-    0x00246F48 = 'b:00364000'; 0x00248CDC = 'b:00248E44'
+    0x00242EF8 = 'bl:transporter_next'; 0x002445EC = 'bl:transporter_list_ready_stub'
+    0x0019B50C = 'b:transporter_message_stub'
+    0x0024BAE8 = 'bl:transporter_version'
+    0x00246F48 = 'b:transporter_check_stub'; 0x00248CDC = 'b:00248E44'
     0x00245728 = 'b:00245800'; 0x002460B8 = 'b:002461D0'
     0x002488A0 = 0xE3A00001; 0x002483CC = 0xE3A00001
-    0x002458DC = 'bl:0036400C'
+    0x002458DC = 'bl:transporter_slot'
     0x00247478 = 'b:002474E0'
-    0x00243528 = 'bl:00364010'; 0x002439A8 = 'bl:00364014'
-    0x002437F4 = 'bl:00364018'; 0x0024397C = 'bl:00364018'
-    0x00244F10 = 'bl:0036401C'; 0x00244908 = 'bl:00364020'
-    0x0025C5FC = 'bl:00364028'; 0x0025C618 = 0xE320F000
-    0x0022BEE0 = 'bl:0036402C'; 0x0022B5B0 = 'bl:00364030'
+    0x00243528 = 'bl:transporter_cart_id_stub'; 0x002439A8 = 'bl:transporter_cart_read'
+    0x002437F4 = 'bl:transporter_cart_write'; 0x0024397C = 'bl:transporter_cart_write'
+    0x00244F10 = 'bl:transporter_list_next_stub'; 0x00244908 = 'bl:transporter_select_stub'
+    0x0025C5FC = 'bl:transporter_language_chosen'; 0x0025C618 = 0xE320F000
+    0x0022BEE0 = 'bl:transporter_language_order_stub'; 0x0022B5B0 = 'bl:transporter_language_buttons'
     0x0022B6E0 = 0xE3500007; 0x0022B6E4 = 0x03A01003
-    0x002412D4 = 'bl:00364024'
-    0x0022B3B8 = 'b:00364034'; 0x0013AEE4 = 'bl:0028D1DC'
-    0x0024BA44 = 'bl:00364038'; 0x0024BA74 = 'bl:0036403C'
-    0x0024A150 = 'b:00364004'
+    0x002412D4 = 'bl:transporter_vc_scan_stub'
+    0x0022B3B8 = 'b:transporter_language_back_stub'; 0x0013AEE4 = 'bl:transporter_layout_check'
+    0x0024BA44 = 'bl:transporter_title_begin_stub'; 0x0024BA74 = 'bl:transporter_title_end_stub'
+    0x0024A150 = 'b:transporter_deliver_stub'
     0x0024A3C0 = 0xE3A0000E
-    0x0024F6B0 = 'bl:0036404C'; 0x0024F8E0 = 'bl:00364050'
+    0x0024F6B0 = 'bl:transporter_shiny_build_stub'; 0x0024F8E0 = 'bl:transporter_shiny_gender_stub'
 }
 
 $ips = [IO.File]::ReadAllBytes((Join-Path $directory 'code.ips'))
 $header = [IO.File]::ReadAllBytes((Join-Path $directory 'exheader.bin'))
 $manifest = Get-Content -LiteralPath (Join-Path $directory 'manifest.json') -Raw | ConvertFrom-Json
+
+# The linked ELF the package was built from, and its function symbols.
+$elf = [IO.File]::ReadAllBytes($elfPath)
+Assert-That ((Get-Sha256 $elf) -eq $manifest.source_elf_sha256) 'ELF hash equals manifest'
+Assert-That ($elf[0] -eq 0x7F -and [Text.Encoding]::ASCII.GetString($elf, 1, 3) -eq 'ELF' -and $elf[4] -eq 1 -and $elf[5] -eq 1) 'ELF32 little-endian header'
+$sectionTable = Get-ElfWord $elf 32
+$sectionCount = [BitConverter]::ToUInt16($elf, 48)
+Assert-That ([BitConverter]::ToUInt16($elf, 46) -eq 40) 'ELF section header size'
+$symbols = @{}
+$tables = 0
+for ($index = 0; $index -lt $sectionCount; $index++) {
+    $at = $sectionTable + 40 * $index
+    if ((Get-ElfWord $elf ($at + 4)) -ne 2) { continue }
+    $tables++
+    $first = Get-ElfWord $elf ($at + 16); $length = Get-ElfWord $elf ($at + 20)
+    $strings = Get-ElfWord $elf ($sectionTable + 40 * (Get-ElfWord $elf ($at + 24)) + 16)
+    Assert-That ((Get-ElfWord $elf ($at + 36)) -eq 16 -and $length % 16 -eq 0) 'ELF symbol entries'
+    for ($entry = $first; $entry -lt $first + $length; $entry += 16) {
+        $name = Get-ElfString $elf ($strings + (Get-ElfWord $elf $entry))
+        if ($name) { $symbols[$name] = [pscustomobject]@{ value = (Get-ElfWord $elf ($entry + 4)); size = (Get-ElfWord $elf ($entry + 8)); info = $elf[$entry + 12] } }
+    }
+}
+Assert-That ($tables -eq 1) 'one ELF symbol table'
 
 # Geometry, derived here from the original sizes only.
 $bssStart = $dataAddress + $dataSize
@@ -139,7 +169,19 @@ foreach ($address in $allowed.Keys) {
         $kind, $target = $want.Split(':')
         $top = @{ 'b' = 0xEA; 'bl' = 0xEB }[$kind]
         Assert-That (($new -shr 24) -eq $top) ("{0:X8} is not '$kind'" -f $address)
-        Assert-That ((Get-BranchTarget $address $new) -eq [Convert]::ToInt32($target, 16)) ("{0:X8} branch target" -f $address)
+        if ($target -like 'transporter_*') {
+            # An entry function: a global ARM function of the start-up hook
+            # or of the payload's code pages.
+            Assert-That $symbols.ContainsKey($target) "missing ELF symbol $target"
+            $symbol = $symbols[$target]
+            $inBootstrap = $symbol.value -ge $bootstrapStart -and $symbol.value + $symbol.size -le $bootstrapEnd
+            $inPayload = $symbol.value -ge $payloadAddress -and $symbol.value + $symbol.size -le $payloadAddress + $payloadCode
+            Assert-That ($symbol.info -eq 0x12 -and $symbol.value % 4 -eq 0 -and $symbol.size -ge 4 -and ($inBootstrap -or $inPayload)) "$target is a global ARM function of the hook or the payload code"
+            $target = $symbol.value
+        } else {
+            $target = [Convert]::ToInt32($target, 16)
+        }
+        Assert-That ((Get-BranchTarget $address $new) -eq $target) ("{0:X8} branch target" -f $address)
     } else {
         Assert-That (([int64]$new) -eq (([int64]$want) -band 0xFFFFFFFFL)) ("{0:X8} word" -f $address)
     }
@@ -152,7 +194,11 @@ $second = Get-Word $patched ($bootstrapStart + 4)
 Assert-That ((($second -shr 24) -eq 0xEB) -and ((Get-BranchTarget ($bootstrapStart + 4) $second) -eq $originalAppInit)) 'start-up hook calls the original application init first'
 # The layout check, called from 0013AEE4 before the payload can run, lies in
 # the same executable place and begins with the instruction it stands in for.
-Assert-That ($bootstrapStart + 0x30 + 4 -le $bootstrapEnd -and ([int64](Get-Word $patched ($bootstrapStart + 0x30))) -eq 0xE1A01000L) 'layout check begins with mov r1, r0'
+$layoutCheck = $symbols['transporter_layout_check'].value
+Assert-That ($layoutCheck -ge $bootstrapStart -and $layoutCheck + 4 -le $bootstrapEnd -and ([int64](Get-Word $patched $layoutCheck)) -eq 0xE1A01000L) 'layout check lies in the start-up hook and begins with mov r1, r0'
+# The ELF's entry is the router entry; the start-up hook is the linked one.
+Assert-That ((Get-ElfWord $elf 24) -eq $symbols['transporter_next'].value) 'ELF entry is transporter_next'
+Assert-That ($symbols['transporter_bootstrap_startup'].value -eq $bootstrapStart) 'start-up hook symbol'
 
 # Original read-only data and data: unchanged.
 for ($index = $textPageEnd - $base; $index -lt $original.Length; $index++) {
@@ -166,16 +212,7 @@ for ($address = $bssStart; $address -lt $payloadAddress; $address++) {
 for ($index = $original.Length; $index -lt $expandedLength; $index++) {
     Assert-That $written[$index] 'every added byte is written by the IPS'
 }
-# Payload: distinct entry branches into its own code pages.
-$targets = @()
-for ($index = 0; $index -lt $entryCount; $index++) {
-    $entry = $payloadAddress + 4 * $index
-    $word = Get-Word $patched $entry
-    $target = Get-BranchTarget $entry $word
-    Assert-That (($word -shr 24) -eq 0xEA -and $target -ge $payloadAddress + 4 * $entryCount -and $target -lt $payloadAddress + $payloadCode) ("entry word at {0:X8} branches into the payload code" -f $entry)
-    Assert-That ($targets -notcontains $target) 'entry targets are distinct'
-    $targets += $target
-}
+# Payload: the bytes the ELF links there.
 $text = [Text.Encoding]::ASCII.GetString($patched, $payloadAddress - $base, $payloadCode)
 Assert-That ($text.Contains('/mover.bin') -and $text.Contains('/mover.alt.bin')) 'payload names /mover.bin and /mover.alt.bin'
 Assert-That ($text.Contains('/roms/nds/saves/POKEMON_')) 'payload names the SD save folder'
@@ -210,11 +247,11 @@ $report = [ordered]@{
         'original inputs identified by hash',
         'all IPS records inside the expanded image and disjoint',
         'every changed word of the original text is a listed edit or inside the start-up hook',
-        'every listed edit holds the expected instruction or branch target',
+        'every listed edit holds the expected instruction or branch target; entry functions by their ELF symbols',
         'start-up hook replaces only zero bytes and calls the original application init first',
         'original read-only data and data unchanged',
         'former zero-initialised data written as zero; every added byte written',
-        'payload starts with twenty-one distinct branches into its own code pages',
+        'every entry function is a global ARM function of the start-up hook or the payload code',
         'only exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image',
         'manifest hashes match'
     )

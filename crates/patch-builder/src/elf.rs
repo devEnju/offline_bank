@@ -1,45 +1,39 @@
-//! Strict ELF32 reader for the fixed Bank linker contract.
+//! Strict ELF32 reader for the fixed linker contract of a patch's payload,
+//! the same for Bank and Transporter (`Contract`).
 //! Accepts fully linked ARM EABI5 images only; does not install or execute them.
 
 use crate::{
-    add, bank15, bytes, fail, le16, le32, placement::LinkedPayload, sha256, CheckedEdit, Error,
-    Result,
+    add, bytes, encode_arm_branch, fail, le16, le32, placement::LinkedPayload, sha256, CheckedEdit,
+    Error, Result,
 };
 
-const BOOTSTRAP: u32 = 0x00313910;
-const BOOTSTRAP_END: u32 = 0x00314000;
 const MAX_MEMORY: u32 = 0x00d05000; // keeps the eventual code image within IPS 16 MiB
 
-// Internal AAPCS boundaries, not additional runtime hook exports. These exact
-// bodies prevent the raw-inline-SVC regression that corrupted a Rust Result
-// destination held in r12 during thread-capacity queries.
-const KERNEL_WRAPPERS: [(&str, &[u32]); 5] = [
-    (
-        "bank_svc_close_handle",
-        &[0xe92d4010, 0xef000023, 0xe8bd8010],
-    ),
-    (
-        "bank_svc_wait_thread",
-        &[0xe92d4010, 0xef000024, 0xe8bd8010],
-    ),
-    (
-        "bank_svc_get_resource_limit",
-        &[
-            0xe92d4001, 0xef000038, 0xe59d2000, 0xe5821000, 0xe28dd004, 0xe49df004,
-        ],
-    ),
-    (
-        "bank_svc_get_resource_limit_values",
-        &[0xe92d4010, 0xef000039, 0xe8bd8010],
-    ),
-    (
-        "bank_svc_get_resource_current_values",
-        &[0xe92d4010, 0xef00003a, 0xe8bd8010],
-    ),
-];
+/// What the linked payload of one program must be. The linker script names
+/// its symbols and its start-up section after `prefix`: the start-up hook
+/// `{prefix}_bootstrap_startup` and `{prefix}_bootstrap_enable_rx` in
+/// `.{prefix}.bootstrap`, and the bounds `__{prefix}_payload_start`,
+/// `_rx_end`, `_rx_size`, `_end` and `__{prefix}_original_app_init`.
+#[derive(Debug)]
+pub struct Contract {
+    pub prefix: &'static str,
+    pub code_base: u32,
+    /// The start-up hook's place, in the zero bytes after the original text.
+    pub bootstrap: u32,
+    pub bootstrap_end: u32,
+    /// The payload's first page, after the original zero-initialised data.
+    pub payload: u32,
+    /// The original application init, which the start-up hook calls first.
+    pub original_app_init: u32,
+    /// Internal AAPCS boundaries around system calls, not hook entries, with
+    /// their exact instructions: the kernel overwrites registers that inlined
+    /// code would still use.
+    pub wrappers: &'static [(&'static str, &'static [u32])],
+}
 
 #[derive(Debug)]
 pub struct PayloadElf {
+    contract: &'static Contract,
     pub elf_sha256: [u8; 32],
     pub entry: u32,
     /// The profile's entry functions with their addresses, in its order.
@@ -62,8 +56,8 @@ impl PayloadElf {
     pub fn linked_payload(&self) -> LinkedPayload<'_> {
         LinkedPayload {
             image: &self.image,
-            linked_address: bank15::PAYLOAD_ADDRESS,
-            entry_offset: self.entry - bank15::PAYLOAD_ADDRESS,
+            linked_address: self.contract.payload,
+            entry_offset: self.entry - self.contract.payload,
             executable_size: self.executable_size,
             memory_size: self.memory_size,
         }
@@ -71,7 +65,7 @@ impl PayloadElf {
     /// Requires complete native-image hash validation when used by placement.
     pub fn bootstrap_edit(&self) -> CheckedEdit {
         CheckedEdit {
-            offset: (BOOTSTRAP - bank15::CODE_BASE) as usize,
+            offset: (self.contract.bootstrap - self.contract.code_base) as usize,
             expected: vec![0; self.bootstrap.len()],
             replacement: self.bootstrap.clone(),
         }
@@ -132,8 +126,24 @@ fn string(table: &[u8], offset: u32) -> Result<&str> {
 /// and absence of runtime relocations/dynamic linking/TLS/initializers.
 /// This is not instruction-level proof of the runtime hooks.
 /// `entries` are the entry functions of the patch's profile; the first must
-/// be the entry of the ELF.
-pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
+/// be the entry of the ELF. An entry lies in the payload's code or in the
+/// start-up hook.
+pub fn inspect_payload_elf(
+    contract: &'static Contract,
+    elf: &[u8],
+    entries: &[&str],
+) -> Result<PayloadElf> {
+    let prefix = contract.prefix;
+    let startup = format!("{prefix}_bootstrap_startup");
+    let enable_rx = format!("{prefix}_bootstrap_enable_rx");
+    let bootstrap_section = format!(".{prefix}.bootstrap");
+    let layout = [
+        format!("__{prefix}_payload_start"),
+        format!("__{prefix}_payload_rx_end"),
+        format!("__{prefix}_payload_rx_size"),
+        format!("__{prefix}_payload_end"),
+        format!("__{prefix}_original_app_init"),
+    ];
     if entries.is_empty() {
         return fail("a profile names at least one entry function");
     }
@@ -218,11 +228,11 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
     }
     let boot = segments[0];
     let rx = segments[1];
-    if boot.address != BOOTSTRAP
-        || boot.end()? > BOOTSTRAP_END
+    if boot.address != contract.bootstrap
+        || boot.end()? > contract.bootstrap_end
         || boot.flags != 5
         || boot.file_size != boot.memory_size
-        || rx.address != bank15::PAYLOAD_ADDRESS
+        || rx.address != contract.payload
         || rx.flags != 5
         || rx.file_size != rx.memory_size
         || rx.memory_size % 0x1000 != 0
@@ -328,10 +338,10 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
         if section.flags & 2 != 0 && section.size != 0 {
             alloc_ranges.push((section.address, end(section.address, section.size)?));
         }
-        if name == ".bank.bootstrap" {
+        if name == bootstrap_section {
             bootstrap_sections += 1;
         }
-        if name == ".bank.bootstrap"
+        if name == bootstrap_section
             && (section.address != boot.address
                 || section.size != boot.file_size
                 || section.flags & 7 != 6)
@@ -371,12 +381,14 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
             return fail("unsupported ELF symbol section index");
         }
         if entries.contains(&name)
-            || ["bank_bootstrap_startup", "bank_bootstrap_enable_rx"].contains(&name)
-            || KERNEL_WRAPPERS
+            || name == startup
+            || name == enable_rx
+            || contract
+                .wrappers
                 .iter()
                 .any(|(required, _)| *required == name)
         {
-            let segment = if name.starts_with("bank_bootstrap") {
+            let segment = if name == startup || name == enable_rx || boot.contains(value, 4) {
                 boot
             } else {
                 rx
@@ -398,7 +410,8 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
                     "required hook must be one defined global ARM function in initialized RX",
                 );
             }
-            if let Some((_, words)) = KERNEL_WRAPPERS
+            if let Some((_, words)) = contract
+                .wrappers
                 .iter()
                 .find(|(required, _)| *required == name)
             {
@@ -421,14 +434,7 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
                 }
             }
         }
-        if [
-            "__bank_payload_start",
-            "__bank_payload_rx_end",
-            "__bank_payload_rx_size",
-            "__bank_payload_end",
-            "__bank_original_app_init",
-        ]
-        .contains(&name)
+        if layout.iter().any(|known| known == name)
             && bounds.insert(name.to_owned(), value).is_some()
         {
             return fail("duplicate ELF layout symbol");
@@ -440,28 +446,35 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
             .copied()
             .ok_or_else(|| Error(format!("missing ELF export {name}")))
     };
-    for (name, _) in KERNEL_WRAPPERS {
+    for (name, _) in contract.wrappers {
         get_export(name)?;
     }
     let entries = entries
         .iter()
         .map(|name| Ok((name.to_string(), get_export(name)?)))
         .collect::<Result<Vec<_>>>()?;
-    let bootstrap_entry = get_export("bank_bootstrap_startup")?;
-    get_export("bank_bootstrap_enable_rx")?;
-    if entry != entries[0].1 || bootstrap_entry != BOOTSTRAP {
+    let bootstrap_entry = get_export(&startup)?;
+    get_export(&enable_rx)?;
+    if entry != entries[0].1 || bootstrap_entry != contract.bootstrap {
         return fail("ELF entry/startup symbol differs from the reviewed entry contract");
     }
-    for (name, expected) in [
-        ("__bank_payload_start", rx.address),
-        ("__bank_payload_rx_end", rx.end()?),
-        ("__bank_payload_rx_size", rx.memory_size),
-        ("__bank_payload_end", memory_end),
-        ("__bank_original_app_init", 0x0010494c),
-    ] {
+    for (name, expected) in layout.iter().zip([
+        rx.address,
+        rx.end()?,
+        rx.memory_size,
+        memory_end,
+        contract.original_app_init,
+    ]) {
         if bounds.get(name) != Some(&expected) {
             return fail(format!("ELF layout symbol mismatch: {name}"));
         }
+    }
+    // The start-up hook stands in for the call of the original application
+    // init and makes it first: push {r4, lr}; bl <application init>.
+    let bootstrap = bytes(elf, boot.offset as usize, boot.file_size as usize)?;
+    let call = encode_arm_branch(contract.bootstrap + 4, contract.original_app_init, true)?;
+    if bootstrap.len() < 8 || le32(bootstrap, 0)? != 0xe92d_4010 || bootstrap[4..8] != call {
+        return fail("start-up hook does not begin by calling the original application init");
     }
     let image_end = segments.last().unwrap();
     let image_length = end(image_end.address, image_end.file_size)? - rx.address;
@@ -475,6 +488,7 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
         )?);
     }
     Ok(PayloadElf {
+        contract,
         elf_sha256: sha256(elf),
         entry,
         entries,
@@ -482,7 +496,7 @@ pub fn inspect_payload_elf(elf: &[u8], entries: &[&str]) -> Result<PayloadElf> {
         executable_size: rx.memory_size,
         memory_size,
         image,
-        bootstrap: bytes(elf, boot.offset as usize, boot.file_size as usize)?.to_vec(),
+        bootstrap: bootstrap.to_vec(),
     })
 }
 
@@ -585,10 +599,14 @@ fn check_attributes(data: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bank15;
+
+    const BOOTSTRAP: u32 = bank15::CONTRACT.bootstrap;
+    const KERNEL_WRAPPERS: &[(&str, &[u32])] = bank15::CONTRACT.wrappers;
 
     /// The checks with the entry functions of the offline patch.
     fn inspect(elf: &[u8]) -> Result<PayloadElf> {
-        inspect_payload_elf(elf, bank15::offline::PROFILE.entries)
+        inspect_payload_elf(&bank15::CONTRACT, elf, bank15::offline::PROFILE.entries)
     }
     const SHOFF: usize = 0x2d00;
     const SYMOFF: usize = 0x2200;
@@ -637,11 +655,15 @@ mod tests {
             }
         }
         for at in [
-            0x910, 0x914, 0x1000, 0x1004, 0x1008, 0x100c, 0x1010, 0x1014, 0x1018, 0x101c, 0x1020,
-            0x1024, 0x1028, 0x102c, 0x1030, 0x1034, 0x1038,
+            0x1000, 0x1004, 0x1008, 0x100c, 0x1010, 0x1014, 0x1018, 0x101c, 0x1020, 0x1024, 0x1028,
+            0x102c, 0x1030, 0x1034, 0x1038,
         ] {
             u32_at(&mut elf, at, 0xe12fff1e); // synthetic ARM BX LR
         }
+        // The start-up hook: push {r4, lr}; bl <original application init>.
+        u32_at(&mut elf, 0x910, 0xe92d_4010);
+        let call = encode_arm_branch(BOOTSTRAP + 4, 0x0010_494c, true).unwrap();
+        elf[0x914..0x918].copy_from_slice(&call);
         for (index, (_, words)) in KERNEL_WRAPPERS.iter().enumerate() {
             for (word, value) in words.iter().enumerate() {
                 u32_at(&mut elf, 0x1100 + index * 0x20 + word * 4, *value);
@@ -880,6 +902,17 @@ mod tests {
         attrs[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(check_attributes(&attrs).is_err());
         assert!(uleb(&[0xff; 5], &mut 0).is_err());
+    }
+    #[test]
+    fn the_start_up_hook_must_call_the_original_application_init_first() {
+        for (at, value) in [(0x910, 0xe92d_4000), (0x914, 0xeb00_0000)] {
+            let mut wrong = fixture();
+            u32_at(&mut wrong, at, value);
+            assert!(inspect(&wrong)
+                .unwrap_err()
+                .to_string()
+                .contains("application init"));
+        }
     }
     #[test]
     fn invalid_exception_segment_offset_is_an_error_not_underflow() {

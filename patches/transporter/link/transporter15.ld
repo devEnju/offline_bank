@@ -5,7 +5,7 @@
      data (which ends at 0x003638A4), allocated by the paired exheader. */
 OUTPUT_FORMAT(elf32-littlearm)
 OUTPUT_ARCH(arm)
-ENTRY(transporter_entry)
+ENTRY(transporter_next)
 
 PHDRS {
     bootstrap PT_LOAD FLAGS(5);
@@ -27,7 +27,11 @@ SECTIONS {
     __transporter_payload_start = .;
     .text : {
         FILL(0)
-        KEEP(*(.transporter.entry))
+        KEEP(*(.text.transporter_next))
+        KEEP(*(.text.transporter_cart_stubs))
+        KEEP(*(.text.transporter_language_stubs))
+        KEEP(*(.text.transporter_stubs))
+        KEEP(*(.text.transporter_shiny_stubs))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } :payload_rx
