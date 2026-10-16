@@ -59,7 +59,7 @@ fn hook_edits(
 #[cfg(test)]
 mod tests {
     use super::super::{
-        offline, CODE_BASE, LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS,
+        offline, CODE_BASE, LANGUAGE_EDITS, MENU_LOCATIONS, SCAN_FIRST_START_EDITS,
     };
     use super::*;
 
@@ -105,7 +105,7 @@ mod tests {
         ] {
             assert!(at(address).is_none(), "{address:#x}");
         }
-        for (address, _) in RETIRED_MENU_EDITS {
+        for (address, _) in MENU_LOCATIONS {
             assert!(at(address).is_none());
         }
         let mut offsets: Vec<_> = edits.iter().map(|edit| edit.offset).collect();

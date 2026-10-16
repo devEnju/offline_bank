@@ -11,7 +11,7 @@ pub mod placement;
 pub mod transporter15;
 
 pub use artifacts::{build_development_patch, DevelopmentArtifacts};
-pub use bank15::prepare_development_patch;
+pub use bank15::prepare_patch;
 pub use formats::*;
 pub use hash::{hex, sha256};
 pub use ips::{build_ips, encode_arm_branch, CheckedEdit};

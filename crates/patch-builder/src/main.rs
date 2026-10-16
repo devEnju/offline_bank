@@ -151,9 +151,8 @@ fn run() -> Result<(), String> {
             let code = read(Path::new(&args[2]))?;
             let exheader = read(Path::new(&args[3]))?;
             let elf = read(Path::new(&args[4]))?;
-            let prepared =
-                patch_builder::prepare_development_patch(profile, &code, &exheader, &elf)
-                    .map_err(|e| e.to_string())?;
+            let prepared = patch_builder::prepare_patch(profile, &code, &exheader, &elf)
+                .map_err(|e| e.to_string())?;
             println!(
                 "Profile {}: all original bytes, hashes, ELF exports, and placement checks passed.",
                 profile.name

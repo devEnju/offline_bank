@@ -6,7 +6,7 @@
 use crate::{
     bank15::{self, Profile},
     elf::inspect_payload_elf,
-    hex, prepare_development_patch, sha256, Error, Result,
+    hex, prepare_patch, sha256, Error, Result,
 };
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -32,7 +32,7 @@ pub fn build_development_patch(
     elf: &[u8],
     output: &Path,
 ) -> Result<DevelopmentArtifacts> {
-    let prepared = prepare_development_patch(profile, code, exheader, elf)?;
+    let prepared = prepare_patch(profile, code, exheader, elf)?;
     let parsed = inspect_payload_elf(&crate::bank15::CONTRACT, elf, profile.entries)?;
     let exports = parsed
         .entries

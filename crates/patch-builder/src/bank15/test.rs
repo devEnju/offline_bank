@@ -58,7 +58,7 @@ fn menu_edits(update: u32, chosen: u32) -> [CheckedEdit; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CODE_BASE, RETIRED_MENU_EDITS};
+    use super::super::{CODE_BASE, MENU_LOCATIONS};
     use super::*;
 
     #[test]
@@ -79,7 +79,7 @@ mod tests {
             assert_eq!(edit.replacement, target.to_le_bytes());
             // Each is one of the main menu's known locations, with its
             // original word, and no edit of the offline patch is there.
-            assert!(RETIRED_MENU_EDITS.contains(&(slot, original)));
+            assert!(MENU_LOCATIONS.contains(&(slot, original)));
             assert!(PROFILE.menu_edits.contains(&slot));
             assert!(offline::sample_edits()
                 .iter()

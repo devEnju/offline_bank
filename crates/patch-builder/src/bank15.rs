@@ -79,7 +79,7 @@ pub struct Profile {
     pub entries: &'static [&'static str],
     /// Edited regions of the original, the start-up hook's bytes included.
     pub regions: usize,
-    /// The main-menu locations (`RETIRED_MENU_EDITS`) it edits. None for a
+    /// The main-menu locations (`MENU_LOCATIONS`) it edits. None for a
     /// patch that is released: those never create the main menu.
     pub menu_edits: &'static [u32],
     /// Every edit but the start-up hook's bytes. `code` is the original.
@@ -250,10 +250,11 @@ fn checked(edits: impl Iterator<Item = (u32, u32, u32)>) -> impl Iterator<Item =
     edits.map(|(address, expected, replacement)| word(address, expected, replacement.to_le_bytes()))
 }
 
-/// Main-menu locations edited by earlier builds. They must keep their original
-/// words, but for the ones a profile names as its own (`Profile::menu_edits`):
-/// (virtual address, original little-endian word).
-pub const RETIRED_MENU_EDITS: [(u32, u32); 5] = [
+/// The main menu's locations that only the console test build may edit.
+/// Every other profile leaves them with their original words; a profile edits
+/// only the ones it names as its own (`Profile::menu_edits`): (virtual
+/// address, original little-endian word).
+pub const MENU_LOCATIONS: [(u32, u32); 5] = [
     (0x001d6554, 0xeb0000ef),
     (0x002b33a4, 0xebfc853e),
     (0x002b33d4, 0xebfc8532),
@@ -264,7 +265,7 @@ pub const RETIRED_MENU_EDITS: [(u32, u32); 5] = [
 /// Builds the complete hook set of `profile` in memory, paired with its
 /// expanded exheader. This verifies bytes and layout, not runtime readiness.
 /// No install files are written. See docs/internals.md.
-pub fn prepare_development_patch(
+pub fn prepare_patch(
     profile: &Profile,
     code: &[u8],
     exheader: &[u8],
@@ -281,7 +282,7 @@ pub fn prepare_development_patch(
     if edits.len() != profile.regions {
         return crate::fail("profile edit count changed");
     }
-    for (address, original) in RETIRED_MENU_EDITS {
+    for (address, original) in MENU_LOCATIONS {
         let offset = (address - CODE_BASE) as usize;
         let touching = edits
             .iter()
@@ -299,7 +300,7 @@ pub fn prepare_development_patch(
     if profile
         .menu_edits
         .iter()
-        .any(|address| RETIRED_MENU_EDITS.iter().all(|(known, _)| known != address))
+        .any(|address| MENU_LOCATIONS.iter().all(|(known, _)| known != address))
     {
         return crate::fail("profile names an unknown main-menu location");
     }

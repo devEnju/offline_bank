@@ -167,7 +167,7 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS};
+    use super::super::{LANGUAGE_EDITS, MENU_LOCATIONS, SCAN_FIRST_START_EDITS};
     use super::*;
     use crate::encode_arm_branch;
 
@@ -220,7 +220,7 @@ mod tests {
         let edits = native_hook_edits(targets).unwrap();
         assert_eq!(edits.len(), PROFILE.regions - 1);
         // No remaining edit touches the main menu's code or tables.
-        for (address, _) in RETIRED_MENU_EDITS {
+        for (address, _) in MENU_LOCATIONS {
             assert!(edits
                 .iter()
                 .all(|edit| edit.offset != (address - CODE_BASE) as usize));
