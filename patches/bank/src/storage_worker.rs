@@ -49,16 +49,6 @@ pub enum Job {
     },
     Close,
 }
-impl Job {
-    /// Running mutation jobs finish their durable protocol even if cancellation
-    /// was requested. Read-only jobs may discard their result at completion.
-    pub const fn cancellable(&self) -> bool {
-        matches!(
-            self,
-            Self::Open { .. } | Self::Inspect { .. } | Self::InspectAndLoad { .. }
-        )
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
@@ -160,9 +150,6 @@ mod arm {
                 poisoned: false,
                 written: None,
             }
-        }
-        fn cancellable(job: &Job) -> bool {
-            job.cancellable()
         }
         fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             // A session has ended: nothing of the Bank stays open. This is
@@ -665,15 +652,3 @@ mod arm {
 }
 #[cfg(target_arch = "arm")]
 pub(crate) use arm::BankWorker;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mutation_commands_do_not_accept_cooperative_discard() {
-        assert!(!Job::Initialize.cancellable());
-        assert!(!Job::Close.cancellable());
-        assert!(Job::Open { session: 1 }.cancellable());
-    }
-}

@@ -94,10 +94,6 @@ impl Service for Converter {
             fs::Error::diagnostic,
         ))
     }
-    // The conversion finishes the step it began.
-    fn cancellable(_: &Convert) -> bool {
-        false
-    }
 }
 
 struct Runtime {

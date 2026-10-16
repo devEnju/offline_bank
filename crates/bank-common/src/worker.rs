@@ -30,7 +30,6 @@ pub enum WorkerErrorKind {
     Operation,
     Busy,
     StaleJob,
-    Cancelled,
     Resource,
     Stopped,
 }
@@ -91,7 +90,6 @@ const CONSUMING: u32 = 6;
 struct Mailbox<T: Copy, R: Copy> {
     state: AtomicU32,
     sequence: AtomicU32,
-    cancel: AtomicU32,
     command: UnsafeCell<MaybeUninit<T>>,
     result: UnsafeCell<MaybeUninit<R>>,
 }
@@ -105,7 +103,6 @@ impl<T: Copy, R: Copy> Mailbox<T, R> {
         Self {
             state: AtomicU32::new(IDLE),
             sequence: AtomicU32::new(0),
-            cancel: AtomicU32::new(0),
             command: UnsafeCell::new(MaybeUninit::uninit()),
             result: UnsafeCell::new(MaybeUninit::uninit()),
         }
@@ -121,7 +118,6 @@ impl<T: Copy, R: Copy> Mailbox<T, R> {
             self.state.store(IDLE, Ordering::Release);
             return Err(WorkerError::control(WorkerErrorKind::StaleJob));
         };
-        self.cancel.store(0, Ordering::Relaxed);
         self.sequence.store(next, Ordering::Relaxed);
         unsafe {
             (*self.command.get()).write(command);
@@ -174,19 +170,6 @@ impl<T: Copy, R: Copy> Mailbox<T, R> {
             Err(_) => Ok(None),
         }
     }
-    fn request_cancel(&self, id: JobId) -> Result<(), WorkerError> {
-        if self.sequence.load(Ordering::Acquire) != id.0 {
-            return Err(WorkerError::control(WorkerErrorKind::StaleJob));
-        }
-        if !matches!(self.state.load(Ordering::Acquire), QUEUED | RUNNING) {
-            return Err(WorkerError::control(WorkerErrorKind::Busy));
-        }
-        self.cancel.store(id.0, Ordering::Release);
-        Ok(())
-    }
-    fn cancelled(&self, id: JobId) -> bool {
-        self.cancel.load(Ordering::Acquire) == id.0
-    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -221,10 +204,8 @@ mod arm {
         fn shared() -> &'static Shared<Self>;
         /// The state the worker thread owns, made on that thread.
         fn start() -> Self;
+        /// Runs one job to its end; nothing stops a job half way.
         fn run(&mut self, job: Self::Job, staging: &mut [u8]) -> Result<Self::Reply, WorkerError>;
-        /// A job whose result may be discarded once cancellation was asked
-        /// for. Every other job finishes what it began.
-        fn cancellable(job: &Self::Job) -> bool;
     }
 
     /// The mailbox, staging buffer and thread of a payload's one worker. A
@@ -265,7 +246,6 @@ mod arm {
     /// joins or frees it. Process lifetime owns its static memory.
     pub struct Worker<S: Service> {
         current: Option<JobId>,
-        cancellable: bool,
         thread: PhantomData<*mut ()>,
         service: PhantomData<S>,
     }
@@ -291,7 +271,6 @@ mod arm {
             }
             Ok(Self {
                 current: None,
-                cancellable: false,
                 thread: PhantomData,
                 service: PhantomData,
             })
@@ -310,7 +289,6 @@ mod arm {
             }
             let id = S::shared().mailbox.submit(job)?;
             self.current = Some(id);
-            self.cancellable = S::cancellable(&job);
             signal::<S>();
             Ok(id)
         }
@@ -338,18 +316,6 @@ mod arm {
                 return Err(WorkerError::control(WorkerErrorKind::Stopped));
             }
             Ok(None)
-        }
-        /// Cooperative cancellation only discards read-only results. A running
-        /// IPC completes normally. Mutation jobs always finish their protocol.
-        pub fn cancel(&mut self, id: JobId) -> Result<bool, WorkerError> {
-            if self.current != Some(id) {
-                return Err(WorkerError::control(WorkerErrorKind::StaleJob));
-            }
-            if !self.cancellable {
-                return Ok(false);
-            }
-            S::shared().mailbox.request_cancel(id)?;
-            Ok(true)
         }
         /// True until a terminal result has been collected. Errors such as a
         /// stale job ID never authorize releasing borrowed native owners.
@@ -381,16 +347,7 @@ mod arm {
         let mut service = S::start();
         loop {
             if let Some((id, job)) = shared.mailbox.take() {
-                let cancellable = S::cancellable(&job);
-                let cancelled = cancellable && shared.mailbox.cancelled(id);
-                let mut result = if cancelled {
-                    Err(WorkerError::control(WorkerErrorKind::Cancelled))
-                } else {
-                    service.run(job, unsafe { &mut *shared.staging.get() })
-                };
-                if cancellable && shared.mailbox.cancelled(id) {
-                    result = Err(WorkerError::control(WorkerErrorKind::Cancelled));
-                }
+                let result = service.run(job, unsafe { &mut *shared.staging.get() });
                 if shared.mailbox.finish(id, result).is_err() {
                     return;
                 }
@@ -528,18 +485,14 @@ mod tests {
         assert!(mailbox.poll(id).is_err());
     }
     #[test]
-    fn stale_job_and_cancel_cannot_affect_next_request() {
+    fn a_stale_job_cannot_affect_the_next_request() {
         let mailbox = Mailbox::<u32, u32>::new();
         let first = mailbox.submit(1).unwrap();
-        mailbox.request_cancel(first).unwrap();
-        assert!(mailbox.cancelled(first));
         mailbox.take().unwrap();
         mailbox.finish(first, 1).unwrap();
         mailbox.poll(first).unwrap();
         let next = mailbox.submit(2).unwrap();
         assert_ne!(first, next);
-        assert!(!mailbox.cancelled(next));
-        assert!(mailbox.request_cancel(first).is_err());
         assert!(mailbox.finish(first, 99).is_err());
         assert!(mailbox.poll(first).is_err());
         assert_eq!(mailbox.take(), Some((next, 2)));
@@ -563,8 +516,6 @@ mod tests {
         for _ in 0..10_000 {
             assert_eq!(mailbox.poll(id), Ok(None));
         }
-        mailbox.request_cancel(id).unwrap();
-        assert!(mailbox.cancelled(id));
         finish.wait();
         worker.join().unwrap();
         assert_eq!(mailbox.poll(id), Ok(Some(43)));

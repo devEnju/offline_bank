@@ -108,10 +108,6 @@ impl Service for Files {
             },
         }
     }
-    // Neither job is given up half way.
-    fn cancellable(_: &Job) -> bool {
-        false
-    }
 }
 fn fs_error(error: fs::Error, fault: u32) -> WorkerError {
     WorkerError::operation(fault, error.diagnostic())
