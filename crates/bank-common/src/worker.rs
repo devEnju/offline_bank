@@ -8,6 +8,7 @@
 //! runs them. The thread, the mailbox and the staging buffer are the same for
 //! every patch.
 
+use crate::fault::Fault;
 #[cfg(any(test, target_arch = "arm"))]
 use core::{
     cell::UnsafeCell,
@@ -36,18 +37,22 @@ pub enum WorkerErrorKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkerError {
     pub kind: WorkerErrorKind,
-    fault: u32,
+    fault: Fault,
     native: u32,
 }
 impl WorkerError {
-    pub const fn fault_code(self) -> u32 {
+    pub const fn fault(self) -> Fault {
         self.fault
     }
     pub const fn native_result(self) -> u32 {
         self.native
     }
-    /// A job that failed: the two numbers of the error screen.
-    pub const fn operation(fault: u32, native: u32) -> Self {
+    /// The two numbers of the error screen.
+    pub const fn numbers(self) -> [u32; 2] {
+        [self.fault as u32, self.native]
+    }
+    /// A job that failed (`Fault::with`).
+    pub const fn operation(fault: Fault, native: u32) -> Self {
         Self {
             kind: WorkerErrorKind::Operation,
             fault,
@@ -57,7 +62,7 @@ impl WorkerError {
     pub const fn control(kind: WorkerErrorKind) -> Self {
         Self {
             kind,
-            fault: 2,
+            fault: Fault::NativeObject,
             native: 0,
         }
     }
@@ -65,7 +70,7 @@ impl WorkerError {
     pub(crate) const fn resource(native: u32) -> Self {
         Self {
             kind: WorkerErrorKind::Resource,
-            fault: 2,
+            fault: Fault::NativeObject,
             native,
         }
     }
@@ -178,6 +183,13 @@ mod arm {
     use core::{marker::PhantomData, mem::transmute, sync::atomic::AtomicBool};
     use offline_core::native_blob::BLOB_SIZE;
 
+    /// The original's event (`00235c6c(event, 0)` makes one, `00234a00`
+    /// signals it, `00231e70` waits for it) and its thread creation
+    /// (`002320d4`, entered through `001211e4`).
+    const EVENT_INIT: usize = 0x0023_5c6c;
+    const EVENT_SIGNAL: usize = 0x0023_4a00;
+    const EVENT_WAIT: usize = 0x0023_1e70;
+    const CREATE_THREAD: usize = 0x0023_20d4;
     const STACK_SIZE: usize = 0x8000;
     const GUARD_SIZE: usize = 64;
     const GUARD_BYTE: u8 = 0xa7;
@@ -275,6 +287,16 @@ mod arm {
                 service: PhantomData,
             })
         }
+        /// The worker in `slot`, started on first use.
+        /// # Safety
+        /// As `start`.
+        pub unsafe fn get(slot: &mut Option<Self>) -> Result<&mut Self, WorkerError> {
+            if slot.is_none() {
+                *slot = Some(unsafe { Self::start() }?);
+            }
+            slot.as_mut()
+                .ok_or(WorkerError::control(WorkerErrorKind::Stopped))
+        }
         /// # Safety
         /// Keep everything the job borrows from the original alive and
         /// immutable until poll returns a terminal result, and protect the
@@ -317,6 +339,24 @@ mod arm {
             }
             Ok(None)
         }
+        /// One frame of the job in `job`: its reply once it is there, which
+        /// clears `job`. A poll that is uncertain while the job is still out
+        /// never ends it: everything the job borrowed stays lent, and the
+        /// next frame asks again.
+        pub fn collect(
+            &mut self,
+            job: &mut Option<JobId>,
+        ) -> Result<Option<S::Reply>, WorkerError> {
+            let id = job.ok_or(WorkerError::operation(Fault::Reentrant, 0))?;
+            match self.poll(id) {
+                Ok(None) => Ok(None),
+                Err(_) if self.active() => Ok(None),
+                result => {
+                    *job = None;
+                    result
+                }
+            }
+        }
         /// True until a terminal result has been collected. Errors such as a
         /// stale job ID never authorize releasing borrowed native owners.
         pub fn active(&self) -> bool {
@@ -357,13 +397,13 @@ mod arm {
         }
     }
     fn signal<S: Service>() {
-        let signal: unsafe extern "aapcs" fn(*mut Event) = unsafe { transmute(0x00234a00usize) };
+        let signal: unsafe extern "aapcs" fn(*mut Event) = unsafe { transmute(EVENT_SIGNAL) };
         unsafe {
             signal(S::shared().event.get());
         }
     }
     fn wait<S: Service>() {
-        let wait: unsafe extern "aapcs" fn(*mut Event) = unsafe { transmute(0x00231e70usize) };
+        let wait: unsafe extern "aapcs" fn(*mut Event) = unsafe { transmute(EVENT_WAIT) };
         unsafe {
             wait(S::shared().event.get());
         }
@@ -376,7 +416,7 @@ mod arm {
             core::ptr::write_bytes(stack, GUARD_BYTE, GUARD_SIZE);
         }
         let init: unsafe extern "aapcs" fn(*mut Event, u32) -> u32 =
-            unsafe { transmute(0x00235c6cusize) };
+            unsafe { transmute(EVENT_INIT) };
         unsafe {
             init(shared.event.get(), 0);
         }
@@ -395,7 +435,7 @@ mod arm {
             i32,
             u32,
         ) -> i32;
-        let create: Create = unsafe { transmute(0x002320d4usize) };
+        let create: Create = unsafe { transmute(CREATE_THREAD) };
         let entry: unsafe extern "aapcs" fn(*mut u8) = worker_entry::<S>;
         let code = unsafe {
             create(

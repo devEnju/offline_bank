@@ -1,7 +1,9 @@
 //! The original's task objects, as far as every patch needs them: reaching
-//! what a task owns, its busy protection and outcome, the HOME and sleep
-//! mask, and the screen with two numbers. See docs/internals.md, "Tasks and
-//! routing" and "HOME button and sleep".
+//! what a task owns, its busy protection and outcome, the router, the HOME
+//! and sleep mask, and the screen with two numbers; and the addresses of the
+//! original that more than one module uses. Addresses used in one module are
+//! named at its top. See docs/internals.md, "Tasks and routing" and "HOME
+//! button and sleep".
 
 use core::{mem::transmute, ptr::NonNull};
 
@@ -16,6 +18,26 @@ pub const TASK_REWARDS: u32 = 0x0036_19fc;
 pub const TASK_REWARD_GUARD: u32 = 0x0036_1bd8;
 /// Bank's file system session.
 pub const FS_SESSION: *const u32 = 0x0039_0100 as *const u32;
+/// The original's task router, `002a5580(manager, current)`: the next task
+/// for the one that has ended.
+pub const ROUTER: usize = 0x002a_5580;
+/// `00233a6c(save manager)`: the game object of the selected game.
+pub const SELECTED_GAME: usize = 0x0023_3a6c;
+/// `0023a754(words)`: the console's date and time as the original's packed
+/// timestamp. It keeps upper flag bits of the two words, so they start
+/// zeroed.
+pub const LOCAL_DATE: usize = 0x0023_a754;
+/// The original's code. A function pointer read from an object of the
+/// original must lie here.
+pub const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
+/// Busy protection of a task: `0025c420(task, 1, 0)` begins it,
+/// `0025c3e8(task)` ends it.
+const BEGIN_BUSY: usize = 0x0025_c420;
+const END_BUSY: usize = 0x0025_c3e8;
+/// Bits of the activity mask: `001d4d90(bit)` sets one, `00229eb4(bit)`
+/// clears it.
+const MARK_ACTIVE: usize = 0x001d_4d90;
+const MARK_IDLE: usize = 0x0022_9eb4;
 /// Set by the original main loop (0010ba04) when HOME is pressed while the
 /// activity mask is zero, and nothing else is done for the press then
 /// (0010ba7c). The loop carries the press out once the current scene is
@@ -25,6 +47,11 @@ const HOME_ACCEPTED: *mut u8 = 0x0037_2989 as *mut u8;
 /// A pointer or object of the original that is not what a hook expects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NotNative;
+impl From<NotNative> for crate::fault::Fault {
+    fn from(_: NotNative) -> Self {
+        Self::NativeObject
+    }
+}
 
 /// # Safety
 /// `base + offset` must be four readable bytes of a live native object.
@@ -78,15 +105,14 @@ impl Task {
         self.pointer(offset)
     }
     pub fn begin_busy(self) {
-        let begin: unsafe extern "aapcs" fn(*mut u8, u32, u32) =
-            unsafe { transmute(0x0025_c420usize) };
+        let begin: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe { transmute(BEGIN_BUSY) };
         unsafe {
             begin(self.raw(), 1, 0);
         }
     }
     pub fn end_busy(self) {
         if unsafe { self.raw().add(0x25).read() } != 0 {
-            let end: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x0025_c3e8usize) };
+            let end: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(END_BUSY) };
             unsafe {
                 end(self.raw());
             }
@@ -100,6 +126,44 @@ impl Task {
     }
 }
 
+/// A task that has ended, as the router hook sees it, and what the
+/// original router answered for it.
+#[derive(Clone, Copy)]
+pub struct Ended {
+    pub current: u32,
+    /// The ended task's byte `+0x30`.
+    pub outcome: u8,
+    /// The manager's flag `+0x1a`, which the original router clears.
+    pub cancelled: bool,
+    /// The original router's answer.
+    pub native: u32,
+}
+impl Ended {
+    /// Reads the ended task of `manager` (`+0x10`) and the manager's flag,
+    /// then asks the original router. `None` for a manager or task that is
+    /// not a pointer, or a task ID the factory does not know; the original
+    /// is not asked then.
+    /// # Safety
+    /// Called from the router call site with its arguments, on the main
+    /// thread.
+    pub unsafe fn route(manager: *mut u8, current: u32) -> Option<Self> {
+        checked_pointer(manager as u32).ok()?;
+        if current > 0x1d {
+            return None;
+        }
+        let task = checked_pointer(unsafe { read_word(manager, 0x10) }).ok()?;
+        let cancelled = unsafe { manager.add(0x1a).read() } != 0;
+        let outcome = unsafe { task.add(0x30).read() };
+        let router: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(ROUTER) };
+        Some(Self {
+            current,
+            outcome,
+            cancelled,
+            native: unsafe { router(manager, current) },
+        })
+    }
+}
+
 /// Sets or clears bit 1 of Bank's activity mask through the original
 /// functions. While the mask is not zero the original main loop refuses the
 /// HOME button and sleep, as it does during its own transfers.
@@ -110,11 +174,7 @@ impl Task {
 /// then on the original refuses every press itself, and the HOME Menu, and
 /// closing Bank from it, never meet a loading screen or a running job.
 pub fn storage_activity(active: bool) {
-    let address = if active {
-        0x001d_4d90usize
-    } else {
-        0x0022_9eb4
-    };
+    let address = if active { MARK_ACTIVE } else { MARK_IDLE };
     let mark: unsafe extern "aapcs" fn(u32) = unsafe { transmute(address) };
     unsafe { mark(1) };
     if active {

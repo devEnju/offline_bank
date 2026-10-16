@@ -13,6 +13,8 @@
 
 pub mod bank_files;
 pub mod bootstrap;
+pub mod exclusive;
+pub mod fault;
 pub mod fs;
 pub mod native_bank;
 pub mod numbers;

@@ -304,13 +304,86 @@ mod arm {
         FrozenBlock, GameIoDescriptor, GameKind, NativeGameError, NativePoll, PreparedImage,
         SecureValues, MAX_PREPARED_BLOCKS,
     };
+    use bank_common::task::{read_word, SELECTED_GAME, TEXT};
     use core::{marker::PhantomData, mem::transmute, ptr::NonNull};
     use offline_core::game_image::Overlay;
 
     pub const OBJECT_SIZE: usize = 0xb49d0;
     const GAME_VTABLE: u32 = 0x0036_2f88;
-    const TEXT_START: u32 = 0x0010_0000;
-    const TEXT_END: u32 = 0x0031_3910;
+    const METADATA_VTABLE: u32 = 0x0036_2d68;
+    /// `002bc460(game, index)`: block `index` of a game's save, the last
+    /// one its metadata.
+    const BLOCK: usize = 0x002b_c460;
+    /// Preparing a save: `002bc7c4(game)` rotates the secure-value pair,
+    /// `002bc4bc(game)` regenerates checksums and signatures,
+    /// `002cbea0(game, detail)` validates the result (1).
+    const ROTATE: usize = 0x002b_c7c4;
+    const PREPARE: usize = 0x002b_c4bc;
+    const VALIDATE: usize = 0x002c_bea0;
+    /// `001d4d90(bit)` sets a bit of the activity mask; bit 4 is a game save
+    /// being written, which the original clears when the writer finishes.
+    const MARK_ACTIVE: usize = 0x001d_4d90;
+    /// The original writer thread `001d37ec(writer, 15, mode, heap, game)`
+    /// and its poll `0015dc74(manager)`: 1 pending, 0 done.
+    const START_WRITER: usize = 0x001d_37ec;
+    const POLL_WRITER: usize = 0x0015_dc74;
+    /// `00229488(mount)`: the archive object of a mounted save.
+    const MOUNTED_ARCHIVE: usize = 0x0022_9488;
+    /// Activity mask byte of the original (`00372988 + 2`).
+    const ACTIVITY: *const u8 = 0x0037_298a as *const u8;
+    /// Bank's file system session.
+    const FS_SESSION: *const u32 = bank_common::task::FS_SESSION;
+
+    /// The game the save manager has selected, and its kind. `NotLoaded`
+    /// when none is.
+    /// # Safety
+    /// `manager` is the live save manager, on the main thread.
+    pub unsafe fn selected(manager: *mut u8) -> Result<(*mut u8, GameKind), NativeGameError> {
+        pointer(manager as u32)?;
+        if unsafe { manager.add(0xc8).read() } == 0 {
+            return Err(NativeGameError::NotLoaded);
+        }
+        let get: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 = unsafe { transmute(SELECTED_GAME) };
+        let game = pointer(unsafe { get(manager) } as u32)?;
+        let kind = GameKind::try_from(unsafe { game.as_ptr().add(8).read() })?;
+        Ok((game.as_ptr(), kind))
+    }
+
+    /// The game object and writer of `kind` in the save manager, checked as
+    /// a load leaves them: the game's vtable and kind, its metadata's vtable
+    /// and block count.
+    unsafe fn loaded(
+        manager: NonNull<u8>,
+        kind: GameKind,
+    ) -> Result<(NonNull<u8>, NonNull<u8>), NativeGameError> {
+        let offset = kind as usize * 12;
+        let game = pointer(unsafe { word(manager, offset + 4) })?;
+        let writer = pointer(unsafe { word(manager, offset + 8) })?;
+        (game.as_ptr() as u32)
+            .checked_add(OBJECT_SIZE as u32)
+            .ok_or(NativeGameError::AddressOverflow)?;
+        let vtable = unsafe { word(game, 0) };
+        if vtable != GAME_VTABLE {
+            return Err(NativeGameError::WrongVtable(vtable));
+        }
+        let found = unsafe { game.as_ptr().add(8).read() };
+        if found != kind as u8 {
+            return Err(NativeGameError::UnknownGame(found));
+        }
+        let metadata = pointer(unsafe { word(game, 4) })?;
+        let table = unsafe { word(metadata, 0) };
+        if table != METADATA_VTABLE {
+            return Err(NativeGameError::WrongMetadataVtable(table));
+        }
+        let actual = unsafe { word(metadata, 0x1f8) };
+        if actual != kind.data_block_count() {
+            return Err(NativeGameError::WrongBlockCount {
+                expected: kind.data_block_count(),
+                actual,
+            });
+        }
+        Ok((game, writer))
+    }
 
     /// Immutably borrows an already prepared native object and its reachable
     /// block storage. Safe code cannot start a native writer through this view.
@@ -329,14 +402,14 @@ mod arm {
         NonNull::new(value as *mut u8).ok_or(NativeGameError::NullPointer)
     }
     unsafe fn word(pointer: NonNull<u8>, offset: usize) -> u32 {
-        unsafe { pointer.as_ptr().add(offset).cast::<u32>().read() }
+        unsafe { read_word(pointer.as_ptr(), offset) }
     }
     unsafe fn pair(pointer: NonNull<u8>, offset: usize) -> u64 {
         u64::from(unsafe { word(pointer, offset) })
             | (u64::from(unsafe { word(pointer, offset + 4) }) << 32)
     }
     fn getter(address: u32) -> Result<unsafe extern "aapcs" fn(*const u8) -> u32, NativeGameError> {
-        if address & 3 != 0 || !(TEXT_START..TEXT_END).contains(&address) {
+        if address & 3 != 0 || !TEXT.contains(&address) {
             return Err(NativeGameError::InvalidGetter(address));
         }
         Ok(unsafe {
@@ -457,9 +530,9 @@ mod arm {
             pointer.as_ptr().add(offset).cast::<u32>().write(value);
         }
     }
+    type GetBlock = unsafe extern "aapcs" fn(*const u8, u32) -> u32;
     unsafe fn block_length(game: NonNull<u8>, index: u32) -> Result<u32, NativeGameError> {
-        type GetBlock = unsafe extern "aapcs" fn(*const u8, u32) -> u32;
-        let get: GetBlock = unsafe { transmute(0x002b_c460usize) };
+        let get: GetBlock = unsafe { transmute(BLOCK) };
         let block = pointer(unsafe { get(game.as_ptr(), index) })?;
         let table = pointer(unsafe { word(block, 0) })?;
         let length = getter(unsafe { word(table, 0xc) })?;
@@ -483,34 +556,8 @@ mod arm {
             (raw as u32)
                 .checked_add(0x100)
                 .ok_or(NativeGameError::AddressOverflow)?;
-            let selected = unsafe { manager.as_ptr().add(0xc8).read() };
-            let kind = GameKind::try_from(selected)?;
-            let game = pointer(unsafe { word(manager, usize::from(selected) * 12 + 4) })?;
-            let writer = pointer(unsafe { word(manager, usize::from(selected) * 12 + 8) })?;
-            (game.as_ptr() as u32)
-                .checked_add(OBJECT_SIZE as u32)
-                .ok_or(NativeGameError::AddressOverflow)?;
-            let vtable = unsafe { word(game, 0) };
-            if vtable != GAME_VTABLE {
-                return Err(NativeGameError::WrongVtable(vtable));
-            }
-            if unsafe { game.as_ptr().add(8).read() } != selected {
-                return Err(NativeGameError::UnknownGame(unsafe {
-                    game.as_ptr().add(8).read()
-                }));
-            }
-            let metadata = pointer(unsafe { word(game, 4) })?;
-            let metadata_vtable = unsafe { word(metadata, 0) };
-            if metadata_vtable != 0x0036_2d68 {
-                return Err(NativeGameError::WrongMetadataVtable(metadata_vtable));
-            }
-            let actual = unsafe { word(metadata, 0x1f8) };
-            if actual != kind.data_block_count() {
-                return Err(NativeGameError::WrongBlockCount {
-                    expected: kind.data_block_count(),
-                    actual,
-                });
-            }
+            let kind = GameKind::try_from(unsafe { manager.as_ptr().add(0xc8).read() })?;
+            let (game, writer) = unsafe { loaded(manager, kind) }?;
             let this = Self {
                 manager,
                 writer,
@@ -531,7 +578,7 @@ mod arm {
             if unsafe { word(self.writer, 0x14) } != 0
                 || unsafe { self.writer.as_ptr().add(0x11).read() } != 0
                 || unsafe { self.manager.as_ptr().add(0xfc).read() } != 0
-                || unsafe { (0x0037_298a as *const u8).read_volatile() } & 4 != 0
+                || unsafe { ACTIVITY.read_volatile() } & 4 != 0
             {
                 return Err(NativeGameError::Busy);
             }
@@ -546,14 +593,14 @@ mod arm {
             let stream = pointer(unsafe { word(self.writer, 0) })?;
             let mount = pointer(unsafe { word(stream, 8) })?;
             type Resolve = unsafe extern "aapcs" fn(*const u8) -> u32;
-            let resolve: Resolve = unsafe { transmute(0x0022_9488usize) };
+            let resolve: Resolve = unsafe { transmute(MOUNTED_ARCHIVE) };
             let archive_object = NonNull::new(unsafe { resolve(mount.as_ptr()) } as *mut u8)
                 .ok_or(NativeGameError::MissingArchive)?;
             if archive_object.as_ptr() as usize & 3 != 0 {
                 return Err(NativeGameError::UnalignedPointer);
             }
             let archive = unsafe { pair(archive_object, 8) };
-            let session = unsafe { (0x0039_0100 as *const u32).read_volatile() };
+            let session = unsafe { FS_SESSION.read_volatile() };
             if archive == 0 || session == 0 {
                 return Err(NativeGameError::MissingArchive);
             }
@@ -592,9 +639,9 @@ mod arm {
             type Rotate = unsafe extern "aapcs" fn(*mut u8) -> u64;
             type Prepare = unsafe extern "aapcs" fn(*mut u8) -> u32;
             type Validate = unsafe extern "aapcs" fn(*mut u8, *mut u32) -> u32;
-            let rotate: Rotate = unsafe { transmute(0x002b_c7c4usize) };
-            let prepare: Prepare = unsafe { transmute(0x002b_c4bcusize) };
-            let validate: Validate = unsafe { transmute(0x002c_bea0usize) };
+            let rotate: Rotate = unsafe { transmute(ROTATE) };
+            let prepare: Prepare = unsafe { transmute(PREPARE) };
+            let validate: Validate = unsafe { transmute(VALIDATE) };
             self.phase = Phase::Poisoned;
             unsafe {
                 rotate(self.game.as_ptr());
@@ -630,8 +677,8 @@ mod arm {
             self.check_idle()?;
             type Mark = unsafe extern "aapcs" fn(u8);
             type Start = unsafe extern "aapcs" fn(*mut u8, u32, u8, u32, *mut u8);
-            let mark: Mark = unsafe { transmute(0x001d_4d90usize) };
-            let start: Start = unsafe { transmute(0x001d_37ecusize) };
+            let mark: Mark = unsafe { transmute(MARK_ACTIVE) };
+            let start: Start = unsafe { transmute(START_WRITER) };
             unsafe {
                 set_word(self.manager, 0xe8, self.heap);
                 mark(4);
@@ -652,7 +699,7 @@ mod arm {
                 return Err(NativeGameError::InvalidPhase);
             }
             type Poll = unsafe extern "aapcs" fn(*mut u8) -> u32;
-            let poll: Poll = unsafe { transmute(0x0015_dc74usize) };
+            let poll: Poll = unsafe { transmute(POLL_WRITER) };
             let status = unsafe { poll(self.manager.as_ptr()) };
             if status == 1 {
                 return Ok(NativePoll::Pending);
@@ -691,32 +738,7 @@ mod arm {
             {
                 return Err(NativeGameError::Busy);
             }
-            let game = pointer(unsafe { word(manager, offset + 4) })?;
-            let writer = pointer(unsafe { word(manager, offset + 8) })?;
-            (game.as_ptr() as u32)
-                .checked_add(OBJECT_SIZE as u32)
-                .ok_or(NativeGameError::AddressOverflow)?;
-            let vtable = unsafe { word(game, 0) };
-            if vtable != GAME_VTABLE {
-                return Err(NativeGameError::WrongVtable(vtable));
-            }
-            if unsafe { game.as_ptr().add(8).read() } != kind as u8 {
-                return Err(NativeGameError::UnknownGame(unsafe {
-                    game.as_ptr().add(8).read()
-                }));
-            }
-            let metadata = pointer(unsafe { word(game, 4) })?;
-            let table = unsafe { word(metadata, 0) };
-            if table != 0x00362d68 {
-                return Err(NativeGameError::WrongMetadataVtable(table));
-            }
-            let actual = unsafe { word(metadata, 0x1f8) };
-            if actual != kind.data_block_count() {
-                return Err(NativeGameError::WrongBlockCount {
-                    expected: kind.data_block_count(),
-                    actual,
-                });
-            }
+            let (game, writer) = unsafe { loaded(manager, kind) }?;
             let session = NativeGameSession {
                 manager,
                 writer,
@@ -741,8 +763,7 @@ mod arm {
     }
     impl<'a> PreparedBlocks<'a> {
         fn next_block(&mut self) -> Result<Overlay<'a>, NativeGameError> {
-            type GetBlock = unsafe extern "aapcs" fn(*const u8, u32) -> u32;
-            let get_block: GetBlock = unsafe { transmute(0x002b_c460usize) };
+            let get_block: GetBlock = unsafe { transmute(BLOCK) };
             let block = pointer(unsafe { get_block(self.game.as_ptr(), self.index) })?;
             let vtable = pointer(unsafe { word(block, 0) })?;
             let get_length = getter(unsafe { word(vtable, 0xc) })?;
@@ -804,4 +825,4 @@ mod arm {
 }
 
 #[cfg(target_arch = "arm")]
-pub use arm::NativeGameSession;
+pub use arm::{selected, NativeGameSession};

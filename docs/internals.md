@@ -34,8 +34,9 @@ A patch for Bank is a crate of its own with its own payload, its own profile in 
 | --- | --- | --- |
 | Loaded and executable | `bootstrap`, and the builder's start-up edits | |
 | Bank's files | `fs` (access), `bank_files` and `session` (names, sizes, order of writes) | which of them it reads or writes, and when |
-| Off the main thread | `worker`: thread, mailbox, staging buffer | its jobs and what runs them (`worker::Service`) |
-| On screen | `task` (task object, HOME and sleep mask, the entry for the original's "show a message" function, the screen with two numbers), `ui` | its hooks, and which tasks they replace |
+| Off the main thread | `worker`: thread, mailbox, staging buffer, collecting a job's reply | its jobs and what runs them (`worker::Service`) |
+| On screen | `task` (task object, the router's answer, HOME and sleep mask, the entry for the original's "show a message" function, the screen with two numbers), `ui`, `fault` (the first number, the same in every patch for the same thing) | its hooks, and which tasks they replace |
+| Hooks | `exclusive`: the state a patch's hooks share, one hook at a time | the state |
 | In the builder | `bank15.rs`: identity, placement, the shared edits | a profile: its entry functions and its list of edits |
 
 **Rule: a patch writes Bank's files only through `bank-common`.** The byte formats exist once, in `offline-core`; the file names, their sizes and the order in which they are written exist once, in `bank-common`. A patch that writes a Bank has a PC test that loads the result with `BankFiles` and compares every byte. So what one patch writes, every other reads.

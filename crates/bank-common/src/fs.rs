@@ -748,6 +748,18 @@ mod native {
     use crate::bank_files::UnitFile;
     use core::{arch::asm, marker::PhantomData, mem::transmute};
 
+    /// The original's file system calls (docs/internals.md, "Filesystem
+    /// calls"). The first argument is the session or file handle.
+    const OPEN_ARCHIVE: usize = 0x0020_a468;
+    const CLOSE_ARCHIVE: usize = 0x0020_a438;
+    const CREATE_FILE: usize = 0x0016_54f8;
+    const DELETE_FILE: usize = 0x0016_5554;
+    const OPEN_FILE: usize = 0x0016_57ec;
+    const FILE_SIZE: usize = 0x0016_59ac;
+    const FILE_READ: usize = 0x0016_58c8;
+    const FILE_WRITE: usize = 0x0016_594c;
+    const FILE_CLOSE: usize = 0x0016_5920;
+
     #[repr(C)]
     struct Path {
         kind: u32,
@@ -793,7 +805,7 @@ mod native {
             };
             type Call =
                 unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_57ecusize) };
+            let call: Call = unsafe { transmute(OPEN_FILE) };
             let mut file = 0;
             result(Operation::OpenFile, unsafe {
                 call(&self.session, &mut file, 0, archive, path, 1, 0)
@@ -853,7 +865,7 @@ mod native {
             };
             let mut archive = 0;
             type Call = unsafe extern "aapcs" fn(*const u32, *mut u64, u32, Path) -> i32;
-            let call: Call = unsafe { transmute(0x0020_a468usize) };
+            let call: Call = unsafe { transmute(OPEN_ARCHIVE) };
             result(Operation::OpenArchive, unsafe {
                 call(&self.session, &mut archive, 6, path)
             })?;
@@ -864,21 +876,21 @@ mod native {
         }
         fn close_archive(&mut self, archive: u64) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, u64) -> i32;
-            let call: Call = unsafe { transmute(0x0020_a438usize) };
+            let call: Call = unsafe { transmute(CLOSE_ARCHIVE) };
             result(Operation::CloseArchive, unsafe {
                 call(&self.session, archive)
             })
         }
         fn create_file(&mut self, archive: u64, length: u64) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, u32, u64, Path, u32, u64) -> i32;
-            let call: Call = unsafe { transmute(0x0016_54f8usize) };
+            let call: Call = unsafe { transmute(CREATE_FILE) };
             result(Operation::CreateFile, unsafe {
                 call(&self.session, 0, archive, self.name(), 0, length)
             })
         }
         fn delete_file(&mut self, archive: u64) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, u32, u64, Path) -> i32;
-            let call: Call = unsafe { transmute(0x0016_5554usize) };
+            let call: Call = unsafe { transmute(DELETE_FILE) };
             result(Operation::DeleteFile, unsafe {
                 call(&self.session, 0, archive, self.name())
             })
@@ -886,7 +898,7 @@ mod native {
         fn open_file(&mut self, archive: u64) -> Result<u32, Error> {
             type Call =
                 unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_57ecusize) };
+            let call: Call = unsafe { transmute(OPEN_FILE) };
             let mut handle = 0;
             result(Operation::OpenFile, unsafe {
                 call(&self.session, &mut handle, 0, archive, self.name(), 3, 0)
@@ -898,14 +910,14 @@ mod native {
         }
         fn size(&mut self, file: u32) -> Result<u64, Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-            let call: Call = unsafe { transmute(0x0016_59acusize) };
+            let call: Call = unsafe { transmute(FILE_SIZE) };
             let mut size = 0;
             result(Operation::Size, unsafe { call(&file, &mut size) })?;
             Ok(size)
         }
         fn read(&mut self, file: u32, offset: u64, bytes: &mut [u8]) -> Result<u32, Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_58c8usize) };
+            let call: Call = unsafe { transmute(FILE_READ) };
             let mut count = 0;
             result(Operation::Read, unsafe {
                 call(
@@ -927,7 +939,7 @@ mod native {
         ) -> Result<u32, Error> {
             type Call =
                 unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_594cusize) };
+            let call: Call = unsafe { transmute(FILE_WRITE) };
             let mut count = 0;
             result(Operation::Write, unsafe {
                 call(
@@ -943,7 +955,7 @@ mod native {
         }
         fn close_file(&mut self, file: u32) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_5920usize) };
+            let call: Call = unsafe { transmute(FILE_CLOSE) };
             let close_result = result(Operation::CloseFile, unsafe { call(&file) });
             let mut code = file;
             unsafe {
