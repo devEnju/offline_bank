@@ -627,7 +627,7 @@ The original set bit 1 once for its whole online session. The patch follows the 
 
 ### Worker thread
 
-The check and the delivery run on a thread created per job through the original `svcCreateThread` wrapper `0010E250` (priority `0x31`, default processor) and ended through `0011F140`; the handle is closed with an own `svc 0x23` wrapper. The entries answer "pending" until the thread has stored its result. If no thread can be created, the job runs on the calling thread. State and a 16 KiB stack are statics of the payload; the file work keeps one 512-byte read buffer and a few journal records on it.
+The check and the delivery run on a thread created per job through the original `svcCreateThread` wrapper `0010E250` (priority `0x31`, default processor) and ended through `0011F140`. The entries answer "pending" until the thread has stored its result and ended: the thread exits on the stack the next job's thread is given, so its result is collected only once a wait on its handle (an own `svc 0x24` wrapper, timeout 0) no longer times out, and the handle is then closed with an own `svc 0x23` wrapper. If no thread can be created, the job runs on the calling thread. State and a 16 KiB stack are statics of the payload; the file work keeps one 512-byte read buffer and a few journal records on it.
 
 ### File access
 

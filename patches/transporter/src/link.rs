@@ -257,6 +257,13 @@ mod linked {
         "transporter_close_handle:",
         "svc #0x23",
         "bx lr",
+        // svc 0x24 (WaitSynchronization1) the same way: r0 the handle, the
+        // i64 timeout in r2/r3 as AAPCS aligns it.
+        ".global transporter_wait_thread",
+        "transporter_wait_thread:",
+        "push {{r4, lr}}",
+        "svc #0x24",
+        "pop {{r4, pc}}",
         ".ltorg",
         check = sym transporter_check,
         message_waits = sym transporter_message_waits,

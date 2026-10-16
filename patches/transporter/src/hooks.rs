@@ -67,6 +67,8 @@ const WORKER_PRIORITY: i32 = 0x31;
 extern "aapcs" {
     /// `svc 0x23` behind an ordinary call boundary (see link.rs).
     pub(crate) fn transporter_close_handle(handle: u32) -> i32;
+    /// `svc 0x24` for one handle, the same way.
+    fn transporter_wait_thread(handle: u32, timeout: i64) -> i32;
 }
 
 const IDLE: u32 = 0;
@@ -357,7 +359,16 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
             None
         }
         DONE => {
-            unsafe { transporter_close_handle(*STATE.handle.get()) };
+            // The thread stores its result and then exits, still on the
+            // stack the next job's thread is given. The job is collected
+            // once the thread has ended; a wait the kernel refuses tells
+            // nothing more on a later frame.
+            let handle = unsafe { *STATE.handle.get() };
+            let ended = unsafe { transporter_wait_thread(handle, 0) };
+            if ended as u32 & 0x3ff == 0x3fe {
+                return None;
+            }
+            unsafe { transporter_close_handle(handle) };
             STATE.phase.store(IDLE, Ordering::Release);
             Some(STATE.result.load(Ordering::Relaxed))
         }
