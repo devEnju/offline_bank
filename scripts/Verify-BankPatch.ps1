@@ -21,7 +21,7 @@ Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 function Assert-Check([bool]$condition, [string]$message) {
-    if (-not $condition) { throw $message }
+    if (-not $condition) { throw "Verification failed: $message" }
 }
 function U16([byte[]]$bytes,[int]$offset) { [BitConverter]::ToUInt16($bytes,$offset) }
 function U32([byte[]]$bytes,[int]$offset) { [BitConverter]::ToUInt32($bytes,$offset) }
