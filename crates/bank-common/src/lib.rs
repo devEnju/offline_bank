@@ -20,6 +20,8 @@ pub mod native_bank;
 pub mod numbers;
 #[cfg(feature = "test-build")]
 pub mod rehearsal;
+#[cfg(any(test, feature = "test-support"))]
+pub mod router;
 pub mod session;
 #[cfg(target_arch = "arm")]
 pub mod task;

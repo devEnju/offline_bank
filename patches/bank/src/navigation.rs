@@ -76,7 +76,10 @@ pub const fn loads(destination: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
+    use bank_common::router;
+    use std::vec::Vec;
 
     /// What follows an opened Bank: game selection, or in the console test
     /// build the main menu.
@@ -84,6 +87,90 @@ mod tests {
     /// What follows Back on game selection: the start screen through
     /// cleanup, or in the console test build the main menu again.
     const AFTER_BACK: u32 = if MENU { MAIN_MENU } else { CLEANUP };
+
+    /// One session from the start screen, each task ending with `outcome`,
+    /// each answer the original router's (`bank_common::router`) as the
+    /// patch changes it: the tasks that follow, up to the start screen.
+    fn session(outcome: impl Fn(u32) -> u8) -> Vec<u32> {
+        let mut current = START_SCREEN;
+        let mut seen = Vec::new();
+        while seen.len() < 20 {
+            let ended = outcome(current);
+            let next = destination(current, ended, router::next(current, ended, false), false);
+            seen.push(next);
+            if next == START_SCREEN {
+                break;
+            }
+            current = next;
+        }
+        seen
+    }
+
+    #[test]
+    fn a_session_is_the_originals_without_its_server_steps() {
+        // START, a game found, opened; "Use Pokémon Bank" in the test
+        // build's menu; a game chosen; loaded; the reward guard with nothing
+        // in the way, the claim; the boxes; Save and Quit; cleanup.
+        let seen = session(|task| match task {
+            MAIN_MENU => MENU_USE,
+            SELECT | 0xc | 0xd => 5,
+            _ => 4,
+        });
+        let mut expected = std::vec![3, OPEN];
+        if MENU {
+            expected.push(MAIN_MENU);
+        }
+        expected.extend([
+            SELECT,
+            SCENE,
+            LOAD,
+            0xc,
+            0xd,
+            0x19,
+            SAVE,
+            CLEANUP,
+            START_SCREEN,
+        ]);
+        assert_eq!(seen, expected);
+        // Back on game selection, without the menu: cleanup, then the
+        // start screen.
+        let back = session(|task| if task == SELECT { 0x13 } else { 4 });
+        if !MENU {
+            assert_eq!(back, [3, OPEN, SELECT, CLEANUP, START_SCREEN]);
+        }
+        // A save that failed (outcome 3, as after the original's message
+        // 0xB) ends the same way.
+        let failed = session(|task| match task {
+            SELECT | 0xc | 0xd => 5,
+            MAIN_MENU => MENU_USE,
+            SAVE => 3,
+            _ => 4,
+        });
+        assert_eq!(failed[failed.len() - 3..], [SAVE, CLEANUP, START_SCREEN]);
+    }
+
+    #[test]
+    fn no_answer_of_the_original_router_leads_to_its_server() {
+        // Connect, sign-in, account and service tasks, the second load and
+        // the checks of a game's last session, the release and HOME screens.
+        let never = [
+            5, 6, 8, 0xe, 0xf, 0x11, 0x12, 0x13, 0x17, 0x1a, 0x1b, 0x1c, 0x1d,
+        ];
+        for current in 0..=0x1d {
+            for outcome in 0..=u8::MAX {
+                for home in [false, true] {
+                    let native = router::next(current, outcome, home);
+                    for turn_back in [false, true] {
+                        let next = destination(current, outcome, native, turn_back);
+                        assert!(
+                            !never.contains(&next) && (MENU || next != MAIN_MENU),
+                            "{current:#x} {outcome:#x} {native:#x} -> {next:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn only_scan_opening_loading_and_saving_refuse_home() {

@@ -86,7 +86,7 @@ It lets the original run its online session and takes what the load put into the
 
 The original takes the second load only when its scan found no usable game and the user chose Pokémon HOME: the scan then ends with outcome `0x17`, the router sets the manager's byte `+0x1C` (`002a56b8`), and task 9 is followed by `0x1C` instead of the menu (`002a576c`). The load's set-up being the original's, the session has to be closed the original's way afterwards.
 
-**What the patch changes** ([navigation.rs](../patches/bank-download/src/navigation.rs), tested against a transcription of the table above):
+**What the patch changes** ([navigation.rs](../patches/bank-download/src/navigation.rs), tested against the transcription of the original router in [router.rs](../crates/bank-common/src/router.rs)):
 
 - *Task 3 checks local data before its original update runs.* The worker probes the archive without creating it, then asks `BankFiles::open` whether an offline Bank is on the card. If one is, the result is `D0AD 2`, without contacting anything. Only archive NotFound or an empty/interrupted initialization permits continuing; other inspection errors stop the download, including previous-format file sizes.
 - *Native setup runs without game detection.* With no local Bank, task 3 restarts at state 0 to prepare the archive, then the hook changes states `1..0x11` to `0x12`. This retains native first-start/save bookkeeping and prompts before connecting, while bypassing all cartridge and installed-game detection and the no-game HOME question. The native busy poll is preserved during this preparation. No scan availability byte decides whether the download proceeds.
@@ -163,7 +163,7 @@ Task object: vtable `+8` init, `+c` update, `+14` end, `+1c` busy poll; state at
 | `0xA` | Game selection | `0x10` | Load Bank |
 | `0xB` | Scene set-up | | |
 
-`navigation::destination` rewrites the original router's answer: `3 → 9`, `9 → 0xA` (original: 4), `0xA` outcome `0x13` → `0x14` (original: 4), `0xA` outcome 5 → `0xB` (as the original), `0xB → 0x10`, `0x10 → 0xC`, box-screen cancel → `0x14`, and anything outside a small allow-list → `0x14`. A host test covers every input.
+`navigation::destination` rewrites the original router's answer: `3 → 9`, `9 → 0xA` (original: 4), `0xA` outcome `0x13` → `0x14` (original: 4), `0xA` outcome 5 → `0xB` (as the original), `0xB → 0x10`, `0x10 → 0xC`, box-screen cancel → `0x14`, and anything outside a small allow-list → `0x14`. A host test covers every input, with the original router's own answers: [router.rs](../crates/bank-common/src/router.rs) transcribes `002a5580` case by case from its jump table at `002a55ac`, for the tests of all three patches for Bank.
 
 ### The console test build
 

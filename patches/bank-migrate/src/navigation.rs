@@ -28,6 +28,7 @@ pub const fn loads(destination: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bank_common::router;
 
     #[test]
     fn start_runs_the_conversion_without_scanning_games_then_returns() {
@@ -40,6 +41,22 @@ mod tests {
         // Native cleanup then selects the start screen, unchanged.
         assert_eq!(destination(CLEANUP, 3, 2), 2);
         assert!(loads(SCAN) && !loads(9) && !loads(CLEANUP) && !loads(2));
+    }
+
+    #[test]
+    fn a_start_converts_and_returns_to_the_start_screen() {
+        // With the original router's answers (`bank_common::router`).
+        for outcome in 0..=u8::MAX {
+            assert_eq!(destination(2, 4, router::next(2, 4, false)), SCAN);
+            assert_eq!(
+                destination(SCAN, outcome, router::next(SCAN, outcome, false)),
+                CLEANUP
+            );
+            assert_eq!(
+                destination(CLEANUP, outcome, router::next(CLEANUP, outcome, false)),
+                2
+            );
+        }
     }
 
     #[test]
