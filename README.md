@@ -72,7 +72,7 @@ The choice lasts until Transporter is closed. More in [docs/transporter.md](docs
 
 ### Can I get my Pokémon from the official Pokémon Bank?
 
-While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and says it succeeded. Then you put the normal patch in its place. The steps are in the `README.txt` of its zip.
+While the official service runs, yes. It ends on February 25, 2027. A release made before then ships a separate download patch. It only works when no offline Bank is on the SD card yet, and your Pokémon stay on the server as well: you start Bank with it once, it signs in as the original does, fetches your boxes into a new offline Bank and says it succeeded. Then you put the normal patch in its place. The steps are in the notes of that release and in the `README.txt` of its zip.
 
 ### Why do I need a migration between two versions?
 

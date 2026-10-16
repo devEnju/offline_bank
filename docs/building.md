@@ -173,7 +173,7 @@ In this order, stopping at the first problem, it:
 2. runs the tests, the test build's tests, Clippy and the formatting check;
 3. builds both patches from the committed sources, verifies them, and tests the verify scripts;
 4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes its migration and download zips;
-5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`;
+5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`: a table of which way each Bank goes, the guides of the zips with their numbers, how to install, and the files and hashes;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
 
 **A release that ships the migration** names the one version it converts from, the version before the Bank was last stored differently:
@@ -182,7 +182,7 @@ In this order, stopping at the first problem, it:
 ./scripts/New-Release.ps1 -Version v1.1.0 -MigrateFrom v1.0.0
 ```
 
-It then writes a second zip, `offline_bank-v1.0.0-migration.zip`: the migration patch for Bank's folder and a `README.txt` that says whose Bank it is for and what to do. The zip is named after the version it converts from, and it is for that version only. The `README.txt` of every release names the oldest Bank the version continues: the release that ships the migration is that version itself, and every later release names it in `$bankFilesSince` in the script. Guides for a release, with pictures, belong in the release on GitHub, not in this repository.
+It then writes a second zip, `offline_bank-v1.0.0-migration.zip`: the migration patch for Bank's folder and a `README.txt` with its guide. The zip is named after the version it converts from, and it is for that version only. Each guide is written once in the script and shown twice, in the zip's `README.txt` as plain text and in the notes, there with the pictures `pictures/v1.0.0-migration-converted.png` and `pictures/offline-boxes.png` from `main`; the script refuses to start without them. Which Bank goes which way comes from `$bankFormats` in the script: one line for each way the Bank has been stored, with its first version, the version its migration converts, and the size with which the patches refuse that version's Bank (error 3). A release that changes how the Bank is stored adds its line first. Guides for a release belong in the release on GitHub, not in `docs/`.
 
 **A release made while the official service runs** can ship the download:
 
@@ -190,7 +190,7 @@ It then writes a second zip, `offline_bank-v1.0.0-migration.zip`: the migration 
 ./scripts/New-Release.ps1 -Version v1.1.0 -Download
 ```
 
-It then writes one more zip, `offline_bank-download.zip`, without a version in its name: the download patch for Bank's folder and a `README.txt` with what it needs, its steps and its numbers. The guide belongs to the release, like the migration's.
+It then writes one more zip, `offline_bank-download.zip`, without a version in its name: the download patch for Bank's folder and a `README.txt` with its guide, which the notes show as well, like the migration's.
 
 Nothing is pushed or uploaded. Try the zip on a console first, then publish:
 
