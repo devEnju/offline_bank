@@ -499,7 +499,7 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 
 | Where | Role |
 | --- | --- |
-| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), entry table and assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
+| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), file access in [fs.rs](../patches/transporter/src/fs.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), entry table and assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
 | [crates/offline-core/](../crates/offline-core/src/) | `transport::deliver` and the side-file format, shared with Bank. |
 | [crates/patch-builder/](../crates/patch-builder/src/) | Host tool. The profile with every edit and its original word is [transporter15.rs](../crates/patch-builder/src/transporter15.rs). |
 
@@ -635,7 +635,7 @@ The check and the delivery run on a thread created per job through the original 
 
 ### File access
 
-Transporter's SDK wrappers: open-directly `001DF448`, read `0015930C`, write `00159390`, size `001593F0`, close `00159364`; `fs:USER` handle at `00311F80`.
+[fs.rs](../patches/transporter/src/fs.rs), through Transporter's SDK wrappers: open-directly `001DF448`, read `0015930C`, write `00159390`, size `001593F0`, close `00159364`; `fs:USER` handle at `00311F80`.
 
 - Bank's extdata: archive 6, binary path `{1, C9B, 0}`, ASCII file paths `/journal.bin`, `/journal.alt.bin`, `/mover.bin` and `/mover.alt.bin`: the two journal records and the two copies of the transport box. One pair is open at a time (`hooks::BankFiles`), so never more than two files ([Files](#files)). A file that is missing or does not open makes every read of it fail, and the check then refuses; Transporter never creates, deletes or replaces a file. Transporter's exheader grants neither: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
 - SD card: archive 9 with an empty path.

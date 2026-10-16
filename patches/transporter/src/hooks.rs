@@ -1,10 +1,14 @@
 //! The entry points called from the patched original code, the worker thread
-//! that does the file work, and the file adapter over Transporter's own SDK
-//! wrappers. The original task calls an entry every frame until it answers;
+//! that does the file work, and Bank's files as the delivery rules reach
+//! them. The original task calls an entry every frame until it answers;
 //! the main thread waits for a file operation only if no worker thread can be
 //! created, and the job then runs on it.
 
-use crate::{layout::*, navigation};
+use crate::{
+    fs::{transporter_close_handle, Archive, File, OPEN_READ_WRITE},
+    layout::*,
+    navigation,
+};
 use core::{
     cell::UnsafeCell,
     mem::transmute,
@@ -13,13 +17,6 @@ use core::{
 };
 use offline_core::{sections::TRANSPORT_SLOTS, transport, Storage, METADATA_SIZE};
 
-/// Transporter's `fs:USER` session handle.
-pub(crate) const FS_SESSION: *const u32 = 0x0031_1f80 as *const u32;
-pub(crate) const OPEN_FILE_DIRECTLY: usize = 0x001d_f448;
-pub(crate) const FILE_READ: usize = 0x0015_930c;
-pub(crate) const FILE_WRITE: usize = 0x0015_9390;
-pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
-pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
 /// The original's "show this message and wait": `(ui, message, 1)`, as the
 /// game search calls it for its own message 0 (`00246FFC`).
 const SHOW_MESSAGE: usize = 0x0019_b50c;
@@ -54,8 +51,6 @@ const BLOCK_CLEAR: usize = 0x0011_a5fc;
 /// (001044D0) carries the press out some frames later, whatever the mask
 /// says by then.
 const HOME_ACCEPTED: *mut u8 = 0x002f_49e9 as *mut u8;
-/// Flush and update the file's time, as Bank's writer does.
-pub(crate) const FLUSH_FLAGS: u32 = 0x0001_0001;
 /// The original's `svcCreateThread(out, entry, arg, stack_top, priority,
 /// processor)` and `svcExitThread()` wrappers.
 const CREATE_THREAD: usize = 0x0010_e250;
@@ -65,9 +60,8 @@ const EXIT_THREAD: usize = 0x0011_f140;
 const WORKER_PRIORITY: i32 = 0x31;
 
 extern "aapcs" {
-    /// `svc 0x23` behind an ordinary call boundary (see link.rs).
-    pub(crate) fn transporter_close_handle(handle: u32) -> i32;
-    /// `svc 0x24` for one handle, the same way.
+    /// `svc 0x24` for one handle, behind an ordinary call boundary (see
+    /// link.rs).
     fn transporter_wait_thread(handle: u32, timeout: i64) -> i32;
 }
 
@@ -112,8 +106,8 @@ static STACK: Stack = Stack(UnsafeCell::new([0; WORKER_STACK_SIZE]));
 /// A file that is missing or cannot be opened makes every read of it fail,
 /// and so the check and the delivery refuse: Transporter neither creates
 /// nor replaces a file. Bank's next Save and Quit does.
-struct File {
-    handles: [Option<u32>; 2],
+struct Pair {
+    files: [Option<File>; 2],
     written: [bool; 2],
     /// Length of each of the two files.
     len: u64,
@@ -123,157 +117,66 @@ struct File {
 /// pair at a time, so that never more than two files are open.
 struct BankFiles;
 impl transport::Files for BankFiles {
-    type Storage = File;
-    fn journal(&mut self) -> Option<File> {
-        unsafe { File::open(JOURNAL_PATHS, METADATA_SIZE as u64) }
+    type Storage = Pair;
+    fn journal(&mut self) -> Option<Pair> {
+        unsafe { Pair::open(JOURNAL_PATHS, METADATA_SIZE as u64) }
     }
-    fn mover(&mut self) -> Option<File> {
-        unsafe { File::open(MOVER_PATHS, u64::from(transport::LEN)) }
+    fn mover(&mut self) -> Option<Pair> {
+        unsafe { Pair::open(MOVER_PATHS, u64::from(transport::LEN)) }
     }
 }
-impl File {
+impl Pair {
     /// `None` when Bank's extdata or both files do not exist, access is
     /// refused, or a file is not exactly `len` bytes, the size Bank creates.
     unsafe fn open(paths: [&[u8]; 2], len: u64) -> Option<Self> {
         // Whatever was opened is closed again if this ends early.
-        let mut file = Self {
-            handles: [None; 2],
+        let mut pair = Self {
+            files: [None, None],
             written: [false; 2],
             len,
         };
-        for (handle, path) in file.handles.iter_mut().zip(paths) {
-            *handle = unsafe { Self::open_one(path, len) }.ok()?;
+        for (file, path) in pair.files.iter_mut().zip(paths) {
+            *file = unsafe { File::open(Archive::BankExtdata, path, OPEN_READ_WRITE) };
+            // One of another size is not a file of this layout.
+            if file.as_ref().is_some_and(|file| file.size() != Some(len)) {
+                return None;
+            }
         }
-        file.handles.iter().any(Option::is_some).then_some(file)
-    }
-    /// `Ok(None)` for a file that is not there or cannot be opened, `Err`
-    /// for one of another size: that is not a file of this layout.
-    unsafe fn open_one(path: &[u8], len: u64) -> Result<Option<u32>, ()> {
-        type Open = unsafe extern "aapcs" fn(
-            *const u32,
-            *mut u32,
-            u32,
-            u32,
-            u32,
-            *const u8,
-            u32,
-            u32,
-            *const u8,
-            u32,
-            u32,
-            u32,
-        ) -> i32;
-        type Size = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-        let open: Open = unsafe { transmute(OPEN_FILE_DIRECTLY) };
-        // media type SD, extdata id low and high.
-        let archive = [1u32, BANK_EXTDATA, 0];
-        let mut handle = 0;
-        let code = unsafe {
-            open(
-                FS_SESSION,
-                &mut handle,
-                0,
-                6,
-                2,
-                archive.as_ptr().cast(),
-                12,
-                3,
-                path.as_ptr(),
-                path.len() as u32,
-                3,
-                0,
-            )
-        };
-        if code < 0 || handle == 0 {
-            return Ok(None);
-        }
-        let size: Size = unsafe { transmute(FILE_SIZE) };
-        let mut length = 0;
-        if unsafe { size(&handle, &mut length) } < 0 || length != len {
-            unsafe { close(handle) };
-            return Err(());
-        }
-        Ok(Some(handle))
+        pair.files.iter().any(Option::is_some).then_some(pair)
     }
     /// The file that holds `offset..offset + length`, and where in it.
-    fn locate(&self, offset: u64, length: usize) -> Result<(usize, u32, u64), ()> {
+    fn locate(&self, offset: u64, length: usize) -> Result<(usize, &File, u64), ()> {
         let index = (offset / self.len) as usize;
         let within = offset % self.len;
-        if index >= self.handles.len() || within + length as u64 > self.len {
+        if index >= self.files.len() || within + length as u64 > self.len {
             return Err(());
         }
-        Ok((index, self.handles[index].ok_or(())?, within))
-    }
-    fn put(&mut self, handle: u32, offset: u64, bytes: &[u8], flags: u32) -> Result<(), ()> {
-        type Write =
-            unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-        let write: Write = unsafe { transmute(FILE_WRITE) };
-        let mut count = 0;
-        let code = unsafe {
-            write(
-                &handle,
-                &mut count,
-                offset,
-                bytes.as_ptr(),
-                bytes.len() as u32,
-                flags,
-            )
-        };
-        if code < 0 || count as usize != bytes.len() {
-            return Err(());
-        }
-        Ok(())
+        Ok((index, self.files[index].as_ref().ok_or(())?, within))
     }
 }
-unsafe fn close(handle: u32) {
-    type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
-    let close: Close = unsafe { transmute(FILE_CLOSE) };
-    unsafe {
-        close(&handle);
-        transporter_close_handle(handle);
-    }
-}
-impl Drop for File {
-    fn drop(&mut self) {
-        for handle in self.handles.into_iter().flatten() {
-            unsafe { close(handle) };
-        }
-    }
-}
-impl Storage for File {
+impl Storage for Pair {
     type Error = ();
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), ()> {
-        type Read = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-        let (_, handle, within) = self.locate(offset, bytes.len())?;
-        let read: Read = unsafe { transmute(FILE_READ) };
-        let mut count = 0;
-        let code = unsafe {
-            read(
-                &handle,
-                &mut count,
-                within,
-                bytes.as_mut_ptr(),
-                bytes.len() as u32,
-            )
-        };
-        if code < 0 || count as usize != bytes.len() {
-            return Err(());
-        }
-        Ok(())
+        let (_, file, within) = self.locate(offset, bytes.len())?;
+        file.read(within, bytes.as_mut_ptr(), bytes.len() as u32)
+            .then_some(())
+            .ok_or(())
     }
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), ()> {
-        let (index, handle, within) = self.locate(offset, bytes.len())?;
+        let (index, file, within) = self.locate(offset, bytes.len())?;
+        let written = file.write(within, bytes.as_ptr(), bytes.len() as u32, 0);
         self.written[index] = true;
-        self.put(handle, within, bytes, 0)
+        written.then_some(()).ok_or(())
     }
     /// Only a file that was written is flushed: the one that holds Bank's
     /// own box is never sent a write of any kind.
     fn sync(&mut self) -> Result<(), ()> {
-        let dummy = [0u8; 1];
-        for index in 0..self.handles.len() {
-            if let (Some(handle), true) = (self.handles[index], self.written[index]) {
-                self.put(handle, 0, &dummy[..0], FLUSH_FLAGS)?;
-                self.written[index] = false;
+        for (file, written) in self.files.iter().zip(&mut self.written) {
+            if let (Some(file), true) = (file, *written) {
+                if !file.flush() {
+                    return Err(());
+                }
+                *written = false;
             }
         }
         Ok(())

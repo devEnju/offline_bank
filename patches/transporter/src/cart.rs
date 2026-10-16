@@ -14,10 +14,7 @@
 //! task runs.
 
 use crate::{
-    hooks::{
-        transporter_close_handle, FILE_CLOSE, FILE_READ, FILE_SIZE, FILE_WRITE, FLUSH_FLAGS,
-        FS_SESSION, OPEN_FILE_DIRECTLY,
-    },
+    fs::{Archive, File, FLUSH_FLAGS, OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE},
     language,
     sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE},
 };
@@ -49,9 +46,6 @@ const LIST_LIMIT: usize = 0x27;
 /// Any negative value is a failure to the callers; this one is none of the
 /// codes they treat specially.
 const FAILED: i32 = -1;
-const OPEN_READ: u32 = 1;
-const OPEN_READ_WRITE: u32 = 3;
-const OPEN_WRITE_CREATE: u32 = 6;
 const COPY_CHUNK: usize = 0x8000;
 
 struct Shared<T>(UnsafeCell<T>);
@@ -67,81 +61,10 @@ fn saves() -> &'static mut Saves {
     unsafe { &mut *SAVES.0.get() }
 }
 
-/// A file on the SD card, through Transporter's own SDK wrappers.
-struct SdFile(u32);
-impl SdFile {
-    unsafe fn open(path: &[u8], flags: u32) -> Option<Self> {
-        type Open = unsafe extern "aapcs" fn(
-            *const u32,
-            *mut u32,
-            u32,
-            u32,
-            u32,
-            *const u8,
-            u32,
-            u32,
-            *const u8,
-            u32,
-            u32,
-            u32,
-        ) -> i32;
-        let open: Open = unsafe { transmute(OPEN_FILE_DIRECTLY) };
-        let empty = [0u8; 4];
-        let mut handle = 0;
-        // Archive 9 is the SD card; its archive path is empty.
-        let code = unsafe {
-            open(
-                FS_SESSION,
-                &mut handle,
-                0,
-                9,
-                1,
-                empty.as_ptr(),
-                1,
-                3,
-                path.as_ptr(),
-                path.len() as u32,
-                flags,
-                0,
-            )
-        };
-        (code >= 0 && handle != 0).then_some(Self(handle))
-    }
-    fn size(&self) -> Option<u64> {
-        type Size = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-        let size: Size = unsafe { transmute(FILE_SIZE) };
-        let mut length = 0;
-        (unsafe { size(&self.0, &mut length) } >= 0).then_some(length)
-    }
-    fn read(&self, offset: u64, bytes: *mut u8, length: u32) -> bool {
-        type Read = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-        let read: Read = unsafe { transmute(FILE_READ) };
-        let mut count = 0;
-        unsafe { read(&self.0, &mut count, offset, bytes, length) >= 0 && count == length }
-    }
-    fn write(&self, offset: u64, bytes: *const u8, length: u32, flags: u32) -> bool {
-        type Write =
-            unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-        let write: Write = unsafe { transmute(FILE_WRITE) };
-        let mut count = 0;
-        unsafe { write(&self.0, &mut count, offset, bytes, length, flags) >= 0 && count == length }
-    }
-}
-impl Drop for SdFile {
-    fn drop(&mut self) {
-        type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
-        let close: Close = unsafe { transmute(FILE_CLOSE) };
-        unsafe {
-            close(&self.0);
-            transporter_close_handle(self.0);
-        }
-    }
-}
-
 /// For a file of exactly the size of a Gen 5 save that opens for reading and
 /// writing, the two bytes at each offset. Nothing is created.
 fn identity(path: &[u8], offsets: [u64; 2]) -> Option<[[u8; 2]; 2]> {
-    let file = unsafe { SdFile::open(path, OPEN_READ_WRITE) }?;
+    let file = unsafe { File::open(Archive::Sd, path, OPEN_READ_WRITE) }?;
     if file.size() != Some(SAVE_SIZE) {
         return None;
     }
@@ -154,10 +77,10 @@ fn identity(path: &[u8], offsets: [u64; 2]) -> Option<[[u8; 2]; 2]> {
     Some(copies)
 }
 
-fn open_save(save: Save, backup: bool, flags: u32) -> Option<SdFile> {
+fn open_save(save: Save, backup: bool, flags: u32) -> Option<File> {
     let mut path = [0; PATH_CAPACITY];
     let length = save.path(backup, &mut path);
-    let file = unsafe { SdFile::open(&path[..length], flags) }?;
+    let file = unsafe { File::open(Archive::Sd, &path[..length], flags) }?;
     // The save itself must still be what the scan found.
     (backup || file.size() == Some(SAVE_SIZE)).then_some(file)
 }
