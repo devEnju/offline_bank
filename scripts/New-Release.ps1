@@ -169,6 +169,8 @@ try {
     Invoke-Build @{ Version = $(if ($Draft) { "$Version-draft" } else { $Version }) }
     if ($MigrateFrom) { Invoke-Build @{ Kind = 'migration'; Version = $MigrateFrom } }
     if ($Download) { Invoke-Build @{ Kind = 'download'; Version = $Version } }
+    # The verify scripts still refuse what they must.
+    & (Join-Path $PSScriptRoot 'Test-Verify.ps1') | Out-Host
     $titles = [ordered]@{
         $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Verified 'bank') }
         '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Verified 'transporter') }

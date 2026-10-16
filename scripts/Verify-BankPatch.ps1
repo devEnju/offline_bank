@@ -14,6 +14,8 @@ two more regions, in the main menu, which only it shows.
 [CmdletBinding()]
 param(
     [ValidateSet('bank', 'migration', 'test', 'download')][string]$Kind = 'bank',
+    # Another copy of the package or its payload (Test-Verify.ps1).
+    [string]$PackagePath = '',
     [string]$ElfPath = ''
 )
 Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
@@ -39,7 +41,7 @@ function CString([byte[]]$bytes,[int]$offset) {
 # contain is written out below.
 $package=(Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1'))[$Kind]
 if (-not $ElfPath) { $ElfPath="build/intermediate/$Kind/$($package.Crate).elf" }
-$packagePath=$package.Folder
+if (-not $PackagePath) { $PackagePath=$package.Folder }
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
     $packageName='unknown'
@@ -47,9 +49,9 @@ try {
     $manifest=Get-Content -LiteralPath (Join-Path $packagePath 'manifest.json') -Raw | ConvertFrom-Json
     [byte[]]$original=[IO.File]::ReadAllBytes((Join-Path (Get-Location) 'build/extracted/559b2b6a6fd3b001/exefs/code.bin'))
     [byte[]]$originalHeader=[IO.File]::ReadAllBytes((Join-Path (Get-Location) 'build/extracted/559b2b6a6fd3b001/exheader.bin'))
-    [byte[]]$elf=[IO.File]::ReadAllBytes((Join-Path (Get-Location) $ElfPath))
-    [byte[]]$ips=[IO.File]::ReadAllBytes((Join-Path (Get-Location) (Join-Path $packagePath 'code.ips')))
-    [byte[]]$header=[IO.File]::ReadAllBytes((Join-Path (Get-Location) (Join-Path $packagePath 'exheader.bin')))
+    [byte[]]$elf=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $ElfPath))
+    [byte[]]$ips=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $packagePath, 'code.ips'))
+    [byte[]]$header=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $packagePath, 'exheader.bin'))
     $codeHash=Hash $original
     $headerHash=Hash $originalHeader
     $elfHash=Hash $elf

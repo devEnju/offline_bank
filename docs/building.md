@@ -42,6 +42,12 @@ A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt
 
 The build script runs these itself. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed, that the start-up hook and the added memory hold exactly the bytes of the linked payload, and that `exheader.bin` differs from the original only in its three size fields. They also check that the package is the one of the current sources, by its name. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
 
+```powershell
+./scripts/Test-Verify.ps1
+```
+
+This tests the verify scripts themselves: every built package passes, and a copy of Bank's or Transporter's package with one thing changed is refused for that thing (a byte of the ELF header, the start-up hook, the payload or the exheader, an entry of the manifest, the package name). Where a change touches bytes, the copy's manifest gets the new hashes, so the refusal comes from the independent comparison. It works on copies in a temporary folder. `New-Release.ps1` runs it after its builds.
+
 ## Tests
 
 ```powershell
@@ -165,7 +171,7 @@ In this order, stopping at the first problem, it:
 
 1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the tag does not exist yet (files git does not track may lie in the folder);
 2. runs the tests, the test build's tests, Clippy and the formatting check;
-3. builds both patches from the committed sources and verifies them;
+3. builds both patches from the committed sources, verifies them, and tests the verify scripts;
 4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes its migration and download zips;
 5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.

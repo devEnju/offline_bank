@@ -10,7 +10,10 @@ into the package.
 [CmdletBinding()]
 param(
     [ValidateSet('transporter')][string]$Kind = 'transporter',
-    [string]$InputPath = ''
+    [string]$InputPath = '',
+    # Another copy of the package or its payload (Test-Verify.ps1).
+    [string]$PackagePath = '',
+    [string]$ElfPath = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -28,7 +31,7 @@ $startupCall = 0x00103D9C
 # Where the package and its payload lie (packages.psd1); what they must
 # contain is written out below.
 $package = (Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1'))[$Kind]
-$elfPath = Join-Path $projectRoot "build/intermediate/$Kind/$($package.Crate).elf"
+if (-not $ElfPath) { $ElfPath = Join-Path $projectRoot "build/intermediate/$Kind/$($package.Crate).elf" }
 
 function Assert-Check([bool]$condition, [string]$message) {
     if (-not $condition) { throw "Verification failed: $message" }
@@ -67,7 +70,7 @@ $original = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exefs/code.bin'))
 $originalHeader = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exheader.bin'))
 Assert-Check ((Hash $original) -eq $expectedCode) 'original code.bin hash'
 Assert-Check ((Hash $originalHeader) -eq $expectedExheader) 'original exheader.bin hash'
-$directory = Join-Path $projectRoot $package.Folder
+$directory = if ($PackagePath) { $PackagePath } else { Join-Path $projectRoot $package.Folder }
 $packageName = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
 Assert-Check ($packageName -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $Kind)) 'package is not the one of the current payload and profile'
 
