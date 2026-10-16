@@ -99,7 +99,7 @@ Assert-Check ((Hash $elf) -eq $manifest.source_elf_sha256) 'ELF hash equals mani
 Assert-Check ($elf[0] -eq 0x7F -and [Text.Encoding]::ASCII.GetString($elf, 1, 3) -eq 'ELF' -and $elf[4] -eq 1 -and $elf[5] -eq 1) 'ELF32 little-endian header'
 $sectionTable = U32 $elf 32
 $sectionCount = U16 $elf 48
-Assert-Check (U16 $elf 46 -eq 40) 'ELF section header size'
+Assert-Check ((U16 $elf 46) -eq 40) 'ELF section header size'
 $symbols = @{}
 $tables = 0
 for ($index = 0; $index -lt $sectionCount; $index++) {
