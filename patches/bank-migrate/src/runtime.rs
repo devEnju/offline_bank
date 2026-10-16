@@ -95,13 +95,17 @@ struct Runtime {
     numbers: Option<[u32; 2]>,
     notice: Notice,
 }
-static STATE: Exclusive<Runtime> = Exclusive::new(Runtime {
-    worker: None,
-    owner: 0,
-    job: None,
-    numbers: None,
-    notice: Notice::new(PACKAGE),
-});
+// SAFETY: the original calls the hooks, the only ones to take it, on its
+// main thread.
+static STATE: Exclusive<Runtime> = unsafe {
+    Exclusive::new(Runtime {
+        worker: None,
+        owner: 0,
+        job: None,
+        numbers: None,
+        notice: Notice::new(PACKAGE),
+    })
+};
 
 impl Runtime {
     fn worker(&mut self) -> Result<&mut Worker<Converter>, [u32; 2]> {

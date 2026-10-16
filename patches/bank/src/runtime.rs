@@ -151,26 +151,30 @@ struct ClaimProbe {
     gen7: bool,
     gifts: u32,
 }
-static STATE: Exclusive<Runtime> = Exclusive::new(Runtime {
-    worker: None,
-    game: None,
-    owner: 0,
-    step: Step::Idle,
-    job: None,
-    files_used: false,
-    closing: None,
-    baseline: None,
-    trainer: None,
-    save_dex: None,
-    fault: Fault::None,
-    native_result: 0,
-    pending: false,
-    notice: Notice::new(PACKAGE),
-    stopped: false,
-    turn_back: false,
-    rewards: RewardSession::NONE,
-    blank: None,
-});
+// SAFETY: the original calls the hooks, the only ones to take it, on its
+// main thread.
+static STATE: Exclusive<Runtime> = unsafe {
+    Exclusive::new(Runtime {
+        worker: None,
+        game: None,
+        owner: 0,
+        step: Step::Idle,
+        job: None,
+        files_used: false,
+        closing: None,
+        baseline: None,
+        trainer: None,
+        save_dex: None,
+        fault: Fault::None,
+        native_result: 0,
+        pending: false,
+        notice: Notice::new(PACKAGE),
+        stopped: false,
+        turn_back: false,
+        rewards: RewardSession::NONE,
+        blank: None,
+    })
+};
 
 /// Puts the local date where the task's session keeps the server's.
 fn local_date(task: Task) -> Result<(), Fault> {

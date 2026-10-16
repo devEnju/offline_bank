@@ -4,9 +4,27 @@
 //! another: the original's update of a task can call the task's busy poll,
 //! which a patch replaces with the same hook. A hook that finds the state
 //! taken does nothing (docs/internals.md, "Patches for Bank").
+//!
+//! The state holds pointers to the original's objects, which belong to the
+//! main thread, so it is not `Send`. That it stays on the main thread is the
+//! promise of `new`; the guard cannot leave the thread that took it.
+//!
+//! ```compile_fail
+//! fn send<T: Send>(_: T) {}
+//! // SAFETY: taken on this thread only.
+//! let state = unsafe { bank_common::exclusive::Exclusive::new(0) };
+//! send(state.take());
+//! ```
+//! ```compile_fail
+//! fn share<T: Sync>(_: &T) {}
+//! // SAFETY: taken on this thread only.
+//! let state = unsafe { bank_common::exclusive::Exclusive::new(0) };
+//! share(&state.take());
+//! ```
 
 use core::{
     cell::UnsafeCell,
+    marker::PhantomData,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -15,13 +33,17 @@ pub struct Exclusive<T> {
     taken: AtomicBool,
     value: UnsafeCell<T>,
 }
-// SAFETY: the value is reached only through `Held`, of which `taken` allows
-// one at a time. A patch's worker thread has a mailbox of its own and is
-// never given the value.
+// SAFETY: `new`'s caller promises that the state is only ever taken on one
+// thread, and `Held`, the only way to the value, cannot be sent to or shared
+// with another; `taken` allows one at a time on that thread. A patch's worker
+// thread has a mailbox of its own and is never given the value.
 unsafe impl<T> Sync for Exclusive<T> {}
 
 impl<T> Exclusive<T> {
-    pub const fn new(value: T) -> Self {
+    /// # Safety
+    /// `take` is only ever called on one thread: for a patch's hooks,
+    /// Bank's main thread, which the original calls them on.
+    pub const unsafe fn new(value: T) -> Self {
         Self {
             taken: AtomicBool::new(false),
             value: UnsafeCell::new(value),
@@ -32,12 +54,13 @@ impl<T> Exclusive<T> {
         self.taken
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
-            .map(|_| Held(self))
+            .map(|_| Held(self, PhantomData))
     }
 }
 
-/// The state while one hook holds it; dropping it lets the next one in.
-pub struct Held<'a, T>(&'a Exclusive<T>);
+/// The state while one hook holds it; dropping it lets the next one in. It
+/// is neither `Send` nor `Sync`: it stays on the thread that took it.
+pub struct Held<'a, T>(&'a Exclusive<T>, PhantomData<*mut ()>);
 impl<T> Deref for Held<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
@@ -63,7 +86,8 @@ mod tests {
 
     #[test]
     fn one_hook_at_a_time() {
-        let state = Exclusive::new(1);
+        // SAFETY: taken on this thread only.
+        let state = unsafe { Exclusive::new(1) };
         let mut held = state.take().unwrap();
         *held += 1;
         assert!(state.take().is_none());
