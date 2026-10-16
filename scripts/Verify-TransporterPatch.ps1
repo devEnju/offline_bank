@@ -218,7 +218,33 @@ for ($address = $bssStart; $address -lt $payloadAddress; $address++) {
 for ($index = $original.Length; $index -lt $expandedLength; $index++) {
     Assert-Check $written[$index] 'every added byte is written by the IPS'
 }
-# Payload: the bytes the ELF links there.
+# The ELF's loaded segments, as the IPS installs them: the start-up hook,
+# then the payload's code and its data, each byte for byte, and the rest of
+# each segment zero. Nothing of the expanded image lies outside them but the
+# former zero-initialised data checked above.
+$programTable = U32 $elf 28
+Assert-Check ((U16 $elf 42) -eq 32) 'ELF program header size'
+$loads = @()
+for ($index = 0; $index -lt (U16 $elf 44); $index++) {
+    $at = $programTable + 32 * $index
+    if ((U32 $elf $at) -ne 1) { continue }
+    $load = [pscustomobject]@{ offset = (U32 $elf ($at + 4)); address = (U32 $elf ($at + 8)); file_bytes = (U32 $elf ($at + 16)); memory_bytes = (U32 $elf ($at + 20)); flags = (U32 $elf ($at + 24)) }
+    Assert-Check ($load.address -eq (U32 $elf ($at + 12)) -and $load.file_bytes -le $load.memory_bytes -and $load.offset + $load.file_bytes -le $elf.Length) 'ELF LOAD mapping'
+    $loads += $load
+}
+$loads = @($loads | Sort-Object address)
+Assert-Check ($loads.Count -eq 3) 'ELF LOADs are the start-up hook, the payload code and its data'
+$boot, $rx, $rw = $loads
+Assert-Check ($boot.address -eq $bootstrapStart -and $boot.memory_bytes -eq $boot.file_bytes -and $boot.address + $boot.memory_bytes -eq $bootstrapEnd -and $boot.flags -eq 5) 'start-up hook LOAD'
+Assert-Check ($rx.address -eq $payloadAddress -and $rx.memory_bytes -eq $rx.file_bytes -and $rx.memory_bytes -eq $payloadCode -and $rx.flags -eq 5) 'payload code LOAD'
+Assert-Check ($rw.address -eq $payloadAddress + $payloadCode -and $rw.address + $rw.memory_bytes -eq $expandedEnd -and $rw.flags -eq 6) 'payload data LOAD'
+foreach ($load in $loads) {
+    Assert-Check ((Hash $patched ($load.address - $base) $load.file_bytes) -eq (Hash $elf $load.offset $load.file_bytes)) ("ELF LOAD bytes at {0:X8}" -f $load.address)
+    $zero = $load.memory_bytes - $load.file_bytes
+    if ($zero -gt 0) {
+        Assert-Check ((Hash $patched ($load.address - $base + $load.file_bytes) $zero) -eq (Hash ([byte[]]::new($zero)))) ("ELF zero-initialised bytes at {0:X8}" -f $load.address)
+    }
+}
 $text = [Text.Encoding]::ASCII.GetString($patched, $payloadAddress - $base, $payloadCode)
 Assert-Check ($text.Contains('/mover.bin') -and $text.Contains('/mover.alt.bin')) 'payload names /mover.bin and /mover.alt.bin'
 Assert-Check ($text.Contains('/roms/nds/saves/POKEMON_')) 'payload names the SD save folder'
@@ -258,6 +284,7 @@ $report = [ordered]@{
         'original read-only data and data unchanged',
         'former zero-initialised data written as zero; every added byte written',
         'every entry function is a global ARM function of the start-up hook or the payload code',
+        'the start-up hook, payload code and payload data are the ELF LOAD bytes, the rest of each segment zero',
         'only exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image',
         'manifest hashes match'
     )
