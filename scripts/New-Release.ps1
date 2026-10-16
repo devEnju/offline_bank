@@ -130,6 +130,7 @@ Push-Location -LiteralPath $projectRoot
 try {
     # 2. Tests.
     Invoke-Checked 'tests' { cargo +stable test --workspace --locked --offline --quiet }
+    Invoke-Checked 'test-build tests' { cargo +stable test -p bank-common -p bank-payload --features test-build --release --locked --offline --quiet }
     Invoke-Checked 'lint' { cargo +stable clippy --workspace --all-targets --locked --offline --quiet -- -D warnings }
     Invoke-Checked 'formatting' { cargo +stable fmt --all -- --check }
 

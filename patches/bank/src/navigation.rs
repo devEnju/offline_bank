@@ -225,13 +225,9 @@ mod tests {
         // Native cleanup then selects the start screen, unchanged.
         assert_eq!(destination(CLEANUP, 3, START_SCREEN, false), START_SCREEN);
         assert_eq!(destination(START_SCREEN, 4, 3, false), 3);
-        // Repeated cycles follow the same route every time.
-        for _ in 0..3 {
-            assert_eq!(destination(3, 4, 5, false), OPEN);
-            assert_eq!(destination(3, 0x17, 5, false), CLEANUP);
-            assert_eq!(destination(OPEN, 4, MAIN_MENU, false), AFTER_OPEN);
-            assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), AFTER_BACK);
-        }
+        // From the start screen the Bank opens again, or the session ends.
+        assert_eq!(destination(3, 4, 5, false), OPEN);
+        assert_eq!(destination(3, 0x17, 5, false), CLEANUP);
     }
 
     #[test]

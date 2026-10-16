@@ -85,10 +85,10 @@ This builds and verifies it into `build/test/` (`Verify-BankPatch.ps1 -Kind test
 
 The buttons, and the runs to make with them, are in [testing.md](testing.md#an-interrupted-save-and-quit). "(before)" and "(after)" stop Save and Quit at a fixed point and test what the next start decides ([bank.md](bank.md#if-save-and-quit-is-interrupted)); the plain "Use Pokémon Bank" of the same package settles what they left. "(record)" and "(boxes)" write for a while before they save, which gives a real power cut a long time to land inside a write; a stop cannot produce a half-written file.
 
-The PC tests run the same loops under a simulated cut at every write:
+The PC tests run the same loops under a simulated cut at every write, and the test build's routing through the main menu:
 
 ```powershell
-cargo +stable test -p bank-common --features test-build --release --locked --offline
+cargo +stable test -p bank-common -p bank-payload --features test-build --release --locked --offline
 ```
 
 ## Other patches for Bank
@@ -164,7 +164,7 @@ One command makes it. You choose the version:
 In this order, stopping at the first problem, it:
 
 1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the tag does not exist yet (files git does not track may lie in the folder);
-2. runs the tests, Clippy and the formatting check;
+2. runs the tests, the test build's tests, Clippy and the formatting check;
 3. builds both patches from the committed sources and verifies them;
 4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes its migration and download zips;
 5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`;

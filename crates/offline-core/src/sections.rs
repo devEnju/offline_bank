@@ -343,38 +343,64 @@ mod tests {
         }
     }
 
-    /// Builds a stored record with `species`, shuffled and encrypted by `key`.
+    /// Stored-block order for each of the 24 orders, written independently of
+    /// `BLOCK_POSITION`: entry `[order][position]` is the block stored there.
+    const ORDERS: [&[u8; 4]; 24] = [
+        b"ABCD", b"ABDC", b"ACBD", b"ACDB", b"ADBC", b"ADCB", b"BACD", b"BADC", b"BCAD", b"BCDA",
+        b"BDAC", b"BDCA", b"CABD", b"CADB", b"CBAD", b"CBDA", b"CDAB", b"CDBA", b"DABC", b"DACB",
+        b"DBAC", b"DBCA", b"DCAB", b"DCBA",
+    ];
+
+    /// A stored record of the plain blocks A..D, shuffled and encrypted by
+    /// `key` the way the games do.
+    fn stored(key: u32, plain: &[u16; 112]) -> [u8; RECORD_SIZE] {
+        let order = ORDERS[(((key >> 13) & 31) % 24) as usize];
+        let mut out = [0u8; RECORD_SIZE];
+        out[..4].copy_from_slice(&key.to_le_bytes());
+        let mut seed = key;
+        for (position, &block) in order.iter().enumerate() {
+            let block = usize::from(block - b'A');
+            for (index, &word) in plain[block * 28..block * 28 + 28].iter().enumerate() {
+                seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
+                let at = 8 + (position * 28 + index) * 2;
+                out[at..at + 2].copy_from_slice(&(word ^ (seed >> 16) as u16).to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// `base` with `shuffle` in the key's order field, bits 13..18.
+    fn key(base: u32, shuffle: u32) -> u32 {
+        (base & !(31 << 13)) | (shuffle << 13)
+    }
+
+    /// The 32 values of the order field reach each of the 24 orders.
+    fn every_order(base: u32) -> impl Iterator<Item = u32> {
+        let keys = (0..32).map(move |shuffle| key(base, shuffle));
+        let mut seen = [false; 24];
+        for key in keys.clone() {
+            seen[(((key >> 13) & 31) % 24) as usize] = true;
+        }
+        assert!(seen.iter().all(|&order| order));
+        keys
+    }
+
+    /// A stored record with `species`.
     fn record(key: u32, species: u16) -> [u8; RECORD_SIZE] {
         let mut plain = [0u16; 112];
         plain[0] = species;
         plain[30] = 0x1111; // other blocks hold unrelated nonzero data
         plain[60] = 0x2222;
         plain[90] = 0x3333;
-        let shuffle = (((key >> 13) & 31) % 24) as usize;
-        let mut stored = [0u16; 112];
-        for block in 0..4 {
-            let position = usize::from(BLOCK_POSITION[shuffle * 4 + block]);
-            stored[position * 28..position * 28 + 28]
-                .copy_from_slice(&plain[block * 28..block * 28 + 28]);
-        }
-        let mut out = [0u8; RECORD_SIZE];
-        out[..4].copy_from_slice(&key.to_le_bytes());
-        let mut seed = key;
-        for (index, word) in stored.iter().enumerate() {
-            seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
-            out[8 + index * 2..10 + index * 2]
-                .copy_from_slice(&(word ^ (seed >> 16) as u16).to_le_bytes());
-        }
-        out
+        stored(key, &plain)
     }
 
     #[test]
     fn species_is_found_for_every_block_order() {
-        for shuffle in 0..32u32 {
-            let key = 0x1234_0000 | (shuffle << 13) | 0x155;
-            assert_eq!(stored_species(&record(key, 0)), 0, "shuffle {shuffle}");
-            assert_eq!(stored_species(&record(key, 151)), 151, "shuffle {shuffle}");
-            assert_eq!(stored_species(&record(key, 807)), 807, "shuffle {shuffle}");
+        for key in every_order(0x1234_0155) {
+            assert_eq!(stored_species(&record(key, 0)), 0, "key {key:#x}");
+            assert_eq!(stored_species(&record(key, 151)), 151, "key {key:#x}");
+            assert_eq!(stored_species(&record(key, 807)), 807, "key {key:#x}");
         }
     }
 
@@ -390,40 +416,24 @@ mod tests {
         plain[9] = (identity.0 >> 16) as u16;
         plain[30] = other;
         plain[90] = other;
-        let shuffle = (((key >> 13) & 31) % 24) as usize;
-        let mut stored = [0u16; 112];
-        for block in 0..4 {
-            let position = usize::from(BLOCK_POSITION[shuffle * 4 + block]);
-            stored[position * 28..position * 28 + 28]
-                .copy_from_slice(&plain[block * 28..block * 28 + 28]);
-        }
-        let mut out = [0u8; RECORD_SIZE];
-        out[..4].copy_from_slice(&key.to_le_bytes());
-        let mut seed = key;
-        for (index, word) in stored.iter().enumerate() {
-            seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
-            out[8 + index * 2..10 + index * 2]
-                .copy_from_slice(&(word ^ (seed >> 16) as u16).to_le_bytes());
-        }
-        out
+        stored(key, &plain)
     }
 
     #[test]
     fn identity_is_found_for_every_block_order_and_ignores_everything_else() {
-        for shuffle in 0..32u32 {
-            let key = 0x4321_0000 | (shuffle << 13) | 0x0aa;
+        for key in every_order(0x4321_00aa) {
             let identity = (0x89ab_cdef, 0x1234, 0x5678);
             let expected = Some([key, 0x89ab_cdef, 0x5678_1234]);
             assert_eq!(
                 stored_identity(&pokemon(key, 25, identity, 0)),
                 expected,
-                "shuffle {shuffle}"
+                "key {key:#x}"
             );
             // Evolved, levelled, given an item: the same Pokémon.
             assert_eq!(
                 stored_identity(&pokemon(key, 26, identity, 0x7e57)),
                 expected,
-                "shuffle {shuffle}"
+                "key {key:#x}"
             );
             // An empty slot is nobody, whatever else it holds.
             assert_eq!(stored_identity(&pokemon(key, 0, identity, 9)), None);

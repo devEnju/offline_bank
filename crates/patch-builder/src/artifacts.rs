@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_is_last_and_failure_keeps_incomplete_output() {
+    fn the_writer_stops_at_a_failed_file_and_keeps_what_it_wrote() {
         let temp = Temp::new();
         let directory = temp.0.join("output");
         // Duplicate name deliberately simulates a collision after one write.
@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_output_contains_exact_pair_and_completion_marker() {
+    fn the_writer_writes_every_file_it_is_given_with_its_bytes() {
         let temp = Temp::new();
         let directory = temp.0.join("output");
         let files: [(&str, &[u8]); 4] = [
