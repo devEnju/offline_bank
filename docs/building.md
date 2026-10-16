@@ -52,6 +52,13 @@ cargo +stable fmt --all -- --check
 
 The tests run on the PC and cover the storage format, a power cut injected at every write of a save, Miles rules, routing, deliveries into the transport box, the SD-save rules, and the builder. What only a console can show is in [testing.md](testing.md).
 
+One test needs a file from your own copy of Transporter and is ignored in a normal run: the language screen's layout, `Turtle_lang_select_lower.bclyt`, which the patch changes into a Back button ([internals.md](internals.md)). Name it and run the test on its own:
+
+```powershell
+$env:TRANSPORTER_LANGUAGE_LAYOUT = 'path/to/Turtle_lang_select_lower.bclyt'
+cargo +stable test -p transporter-payload --locked --offline the_real_layout -- --ignored
+```
+
 ### CRC throughput on the host
 
 The checksum integration tests compare the table implementation with the original bitwise calculation, including exhaustive one-byte and two-byte inputs and streamed native bodies. The throughput benchmark is ignored by normal test runs; invoke it explicitly, twice with the host otherwise idle:
@@ -100,7 +107,7 @@ This builds it into `build/migration/` and verifies it (`Verify-BankPatch.ps1 -K
 
 After START, migration checks existing local extdata before any cartridge or installed-game detection; neither is run. A missing archive gives `0000600D 00000000` without creating one. The presence or absence of a game never decides whether conversion runs.
 
-It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs` with its line in `profile.rs`, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted.
+It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate with its entry in the workspace's `Cargo.toml`, `bank15/migrate.rs` with its `mod` line in `bank15.rs` and its line in `profile.rs`, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted; the next cargo command without `--locked` then updates `Cargo.lock`.
 
 This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with the version/package label and two numbers. `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. Its PC tests cover interrupted conversions; the console checks are in [testing.md](testing.md#a-release-with-a-migration), the user's steps in the package's README.
 
@@ -129,7 +136,7 @@ Local inspection and file writing use the original preparation message and power
 
 A message of the original on the way (no connection, maintenance, the server locked for a while) leads back to its start screen as it always did; nothing is written then.
 
-Nothing depends on it: when the service has ended, the crate, `bank15/download.rs` with its line in `profile.rs`, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted.
+Nothing depends on it: when the service has ended, the crate with its entry in the workspace's `Cargo.toml`, `bank15/download.rs` with its `mod` line in `bank15.rs` and its line in `profile.rs`, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted; the next cargo command without `--locked` then updates `Cargo.lock`.
 
 ## Release
 

@@ -16,7 +16,7 @@ pub use artifacts::{build, Artifacts};
 pub use formats::*;
 pub use hash::{hex, sha256};
 pub use ips::{build_ips, encode_arm_branch, CheckedEdit};
-pub use profile::{prepare_patch, profile, Profile, Program, PROFILES};
+pub use profile::{prepare_patch, profile, PreparedPatch, Profile, Program, PROFILES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);

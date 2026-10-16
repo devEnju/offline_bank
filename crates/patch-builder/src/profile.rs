@@ -69,6 +69,13 @@ pub fn profile(name: &str) -> Result<&'static Profile> {
         .ok_or_else(|| Error(format!("unknown package kind: {name}")))
 }
 
+/// A package in memory: the paired IPS and exheader, and the payload they
+/// were made from.
+pub struct PreparedPatch {
+    pub placement: PreparedPlacement,
+    pub payload: PayloadElf,
+}
+
 /// Checks the input pair, the linked payload and every edit, then builds
 /// the paired IPS and exheader in memory. Nothing is written.
 pub fn prepare_patch(
@@ -76,7 +83,7 @@ pub fn prepare_patch(
     code: &[u8],
     exheader: &[u8],
     elf: &[u8],
-) -> Result<PreparedPlacement> {
+) -> Result<PreparedPatch> {
     let program = profile.program;
     if code.len() != program.code_length || sha256(code) != program.identity.code_sha256 {
         return fail(format!("code.bin is not the reviewed {}", program.label));
@@ -88,17 +95,17 @@ pub fn prepare_patch(
         return fail("profile edit count changed");
     }
     (program.check)(code, profile, &payload, &edits)?;
-    let prepared = prepare_expanded_data(
+    let placement = prepare_expanded_data(
         code,
         exheader,
         &program.identity,
         &payload.linked_payload(),
         &edits,
     )?;
-    if prepared.layout().payload_address != program.contract.payload {
+    if placement.layout().payload_address != program.contract.payload {
         return fail("payload placement differs from the reviewed address");
     }
-    Ok(prepared)
+    Ok(PreparedPatch { placement, payload })
 }
 
 #[cfg(test)]

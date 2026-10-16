@@ -5,7 +5,7 @@
 //! The manifest is written last. A failed write leaves an incomplete directory
 //! for inspection; the builder never replaces or deletes existing output.
 
-use crate::{elf::inspect_payload_elf, hex, prepare_patch, sha256, Error, Profile, Result};
+use crate::{hex, prepare_patch, sha256, Error, PreparedPatch, Profile, Result};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -29,8 +29,10 @@ pub fn build(
     output: &Path,
 ) -> Result<Artifacts> {
     let program = profile.program;
-    let prepared = prepare_patch(profile, code, exheader, elf)?;
-    let parsed = inspect_payload_elf(program.contract, elf, profile.entries)?;
+    let PreparedPatch {
+        placement: prepared,
+        payload: parsed,
+    } = prepare_patch(profile, code, exheader, elf)?;
     let exports = parsed
         .entries
         .iter()
