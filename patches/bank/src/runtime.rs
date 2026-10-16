@@ -1052,15 +1052,15 @@ impl Runtime {
 #[no_mangle]
 pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -> u32 {
     let Some(mut guard) = Guard::acquire() else {
-        return 0x18;
+        return crate::navigation::CLEANUP;
     };
     let state = guard.state();
     if checked_pointer(manager as u32).is_err() || current > 0x1d {
-        return 0x18;
+        return crate::navigation::CLEANUP;
     }
     let task = unsafe { read_word(manager, 0x10) } as *mut u8;
     if checked_pointer(task as u32).is_err() {
-        return 0x18;
+        return crate::navigation::CLEANUP;
     }
     let cancelled = unsafe { manager.add(0x1a).read() } != 0;
     let outcome = unsafe { task.add(0x30).read() };
@@ -1121,7 +1121,7 @@ pub unsafe extern "aapcs" fn bank_offline_load(raw: *mut u8) -> u32 {
         return 1;
     };
     let Some(mut guard) = Guard::acquire() else {
-        return task.finish(false);
+        return 0;
     };
     let state = guard.state();
     if state.fault != Fault::None {

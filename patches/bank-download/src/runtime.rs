@@ -283,7 +283,7 @@ pub unsafe extern "aapcs" fn bank_download_next(manager: *mut u8, current: u32) 
         unsafe { transmute(0x002a_5580usize) };
     let native = unsafe { original(manager, current) };
     let Some(mut guard) = Guard::acquire() else {
-        return native;
+        return navigation::CLEANUP;
     };
     let state = guard.state();
     let destination = navigation::destination(current, native, state.stage);
@@ -446,7 +446,7 @@ pub unsafe extern "aapcs" fn bank_download_save(raw: *mut u8) -> u32 {
         return cancel(raw);
     };
     let Some(mut guard) = Guard::acquire() else {
-        return cancel(raw);
+        return 0;
     };
     let state = guard.state();
     if state.numbers.is_none() {
