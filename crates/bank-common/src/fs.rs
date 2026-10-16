@@ -470,6 +470,9 @@ impl<R: Reach> Storage for Split<R> {
     type Error = Error;
 
     fn read(&mut self, mut offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
+        // A closed container reads nothing, not even the zeros of an
+        // absent unit.
+        self.archive()?;
         let mut done = 0;
         while done < bytes.len() {
             let (index, start) = self.locate(offset)?;
@@ -515,6 +518,7 @@ impl<R: Reach> Storage for Split<R> {
         if let Some(error) = self.unflushed.take() {
             return Err(error);
         }
+        self.archive()?;
         if let Some((_, file, written)) = &mut self.open {
             if *written {
                 file.sync()?;
@@ -525,6 +529,7 @@ impl<R: Reach> Storage for Split<R> {
     }
 
     fn recreate(&mut self, offset: u64, length: u64) -> Result<(), Error> {
+        let archive = self.archive()?;
         let (index, start) = self.locate(offset)?;
         let unit = self.files[index];
         if start != offset || unit.len != length {
@@ -536,7 +541,6 @@ impl<R: Reach> Storage for Split<R> {
             self.open = None;
         }
         self.units[index] = Unit::Unreadable;
-        let archive = self.archive()?;
         remove_in(&mut self.reach.api(&unit)?, archive)?;
         self.units[index] = Unit::Absent;
         Ok(())
@@ -1580,11 +1584,15 @@ mod split_tests {
         let mut split = open(&card);
         split.close().unwrap();
         assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
-        // Closed: nothing is opened again behind the caller's back.
+        // Closed: nothing is opened again behind the caller's back, and
+        // nothing reads as zeros.
         let mut all = [0xff; 15];
-        split.read(0, &mut all).unwrap();
-        assert_eq!(all, [0; 15]);
+        assert_eq!(split.read(0, &mut all), Err(Error::Closed));
+        assert_eq!(all, [0xff; 15]);
         assert_eq!(split.write(0, b"x"), Err(Error::Closed));
+        assert_eq!(split.sync(), Err(Error::Closed));
+        assert_eq!(split.recreate(0, 4), Err(Error::Closed));
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
     }
 
     #[test]
