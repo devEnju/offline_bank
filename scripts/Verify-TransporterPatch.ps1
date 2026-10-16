@@ -253,6 +253,17 @@ foreach ($load in $loads) {
         Assert-Check ((Hash $patched ($load.address - $base + $load.file_bytes) $zero) -eq (Hash ([byte[]]::new($zero)))) ("ELF zero-initialised bytes at {0:X8}" -f $load.address)
     }
 }
+# The manifest's placement, payload hash and entry functions, against the
+# ELF and the patched image.
+$payloadImageLength = $rw.address + $rw.file_bytes - $rx.address
+Assert-Check ((Hash $patched ($rx.address - $base) $payloadImageLength) -eq $manifest.payload_image_sha256) 'payload image hash equals manifest'
+$placement = $manifest.placement
+Assert-Check ($placement.payload_file_offset -eq $rx.address - $base -and $placement.payload_rw_address -eq $rw.address -and $placement.payload_rw_bytes -eq $rw.memory_bytes -and $placement.bootstrap_address -eq $boot.address -and $placement.bootstrap_bytes -eq $boot.file_bytes) 'manifest placement'
+$entryNames = @($allowed.Values | Where-Object { $_ -is [string] } | ForEach-Object { $_.Split(':')[1] } | Where-Object { $_ -like 'transporter_*' } | Sort-Object -Unique)
+Assert-Check ($entryNames.Count -eq 22 -and $manifest.runtime_exports -eq $entryNames.Count -and @($manifest.exports.psobject.Properties).Count -eq $entryNames.Count) 'manifest entry count'
+foreach ($name in $entryNames) {
+    Assert-Check ($manifest.exports.$name -eq $symbols[$name].value) "manifest export $name"
+}
 $text = [Text.Encoding]::ASCII.GetString($patched, $payloadAddress - $base, $payloadCode)
 Assert-Check ($text.Contains('/mover.bin') -and $text.Contains('/mover.alt.bin')) 'payload names /mover.bin and /mover.alt.bin'
 Assert-Check ($text.Contains('/roms/nds/saves/POKEMON_')) 'payload names the SD save folder'
@@ -293,6 +304,7 @@ $report = [ordered]@{
         'former zero-initialised data written as zero; every added byte written',
         'every entry function is a global ARM function of the start-up hook or the payload code',
         'the start-up hook, payload code and payload data are the ELF LOAD bytes, the rest of each segment zero',
+        'manifest placement, payload hash and entry functions match the ELF and the patched image',
         'only exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image',
         'manifest hashes match'
     )
