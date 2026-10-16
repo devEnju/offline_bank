@@ -22,12 +22,12 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version must look like v1.0.0: $Version" }
 if ($Draft -and $Publish) { throw 'A draft cannot be published.' }
 
-# The first version that stores the Bank the way this one does. A Bank last
-# used with an older version is not continued by a newer one; a release
-# from this version on can ship the migration for the version before it.
-# The release that ships the migration is that first version itself; every
-# later one names it here.
-$bankFilesSince = ''
+# The first released version that stores the Bank the way this one does. A
+# Bank last used with an older version is not continued by a newer one; a
+# release from this version on can ship the migration for the version before
+# it. The release that first ships a migration is that version itself, and
+# fills it in when this is empty; once it is released, it is named here.
+$bankFilesSince = 'v0.5.0'
 if ($MigrateFrom) {
     if ($MigrateFrom -notmatch '^v\d+\.\d+\.\d+$') { throw "MigrateFrom must look like v1.0.0: $MigrateFrom" }
     if ($Publish) { throw '-Publish finds the migration zip of the earlier run by itself.' }

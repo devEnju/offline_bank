@@ -53,11 +53,11 @@ You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS) v10.0 or late
 3. Hold SELECT while powering on and switch on *Enable game patching*.
 4. Start Bank once before using Transporter.
 
-The two files of a title only work as a pair; never mix files from different releases. The guides for [Bank](docs/bank.md#install) and [Transporter](docs/transporter.md#install) have the details, a checklist, and troubleshooting.
+The two files of a title only work as a pair; never mix files from different releases. The guides for [Bank](docs/bank.md#install) and [Transporter](docs/transporter.md#install) have the details and troubleshooting.
 
 ## Documentation
 
-- [docs/bank.md](docs/bank.md) and [docs/transporter.md](docs/transporter.md): using each patch. What changes, install, checklist, troubleshooting, limits.
+- [docs/bank.md](docs/bank.md) and [docs/transporter.md](docs/transporter.md): using each patch. What changes, install, troubleshooting, limits.
 - [docs/internals.md](docs/internals.md): how they work, in three parts: Bank, storage, Transporter.
 - [docs/building.md](docs/building.md): building from source, verifying, and packing a release.
 - [docs/testing.md](docs/testing.md): the checks that need a console, as steps and what is expected to be seen.

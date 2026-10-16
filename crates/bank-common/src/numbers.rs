@@ -1,8 +1,7 @@
 //! What a patch does to a message of the original for its last screen: the
-//! cut after its first part, or what follows that part, the line of two
-//! numbers with the line above it
-//! that says which version and package shows them, and the page that
-//! follows.
+//! cut after its first part, or what follows that part; the line of two
+//! numbers, with the line above it that says which version and package shows
+//! them; and the page that follows.
 //!
 //! A message is the original's own text in UTF-16 units. A line feed ends a
 //! line; a control code is the unit `0x10`, the number of units that follow,

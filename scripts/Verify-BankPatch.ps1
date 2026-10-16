@@ -176,9 +176,9 @@ try {
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
         $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game',$true)
     }
-    # Main-menu locations edited by earlier packages. They must stay original,
-    # but for the one the test build edits to show the menu (further down).
-    $retired=@(
+    # The main menu's locations that only the console test build may edit.
+    # Every other package leaves them with their original words.
+    $menuLocations=@(
         @(0x1d6554,0xeb0000efL),
         @(0x2b33a4,0xebfc853eL),
         @(0x2b33d4,0xebfc8532L),
@@ -337,7 +337,7 @@ try {
             Assert-Check ((Hash $patched ($load.address-0x100000+$load.file_bytes) $bss) -eq (Hash ([byte[]]::new($bss)))) 'ELF BSS bytes'
         }
     }
-    foreach($location in $retired) {
+    foreach($location in $menuLocations) {
         $offset=$location[0]-0x100000
         Assert-Check ((U32 $original $offset) -eq $location[1]) ('Original menu word '+$location[0].ToString('x8'))
         if ($menuEdits -contains $location[0]) { continue }
@@ -383,7 +383,7 @@ try {
         ips_sha256=(Hash $ips); paired_exheader_sha256=(Hash $header)
         ips_records=$records; native_regions=$regions; runtime_exports=$exportNames.Count
         system_call_wrappers=$wrapperNames.Count
-        original_main_menu_locations=@($retired | Where-Object { $menuEdits -notcontains $_[0] } | ForEach-Object { $_[0].ToString('x8') })
+        original_main_menu_locations=@($menuLocations | Where-Object { $menuEdits -notcontains $_[0] } | ForEach-Object { $_[0].ToString('x8') })
         expanded_code_bytes=$expandedSize; expanded_code_sha256=$patchedHash
         initial_extension_fill='a5'; elf_loads=$loads
         checks=@('original inputs unchanged','all IPS records bounded and disjoint','extension fully initialized from nonzero memory','native bytes preserved outside the allowed regions of this patch','the main-menu locations this patch does not name equal the original executable and receive no IPS record','no menu wrapper symbol and no entry function of another patch is linked; five system-call wrappers are in RX memory','all branch and pointer targets match independently parsed ELF symbols','all ELF LOAD file and BSS bytes match','former native BSS and alignment gap zeroed','only paired exheader fields 0x34/0x38/0x3c changed','paired allocation exactly covers expanded image','manifest hashes, exports, placement, and status match')

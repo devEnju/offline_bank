@@ -201,14 +201,15 @@ After A the original's line "Press HOME to return to the HOME Menu" appears with
 
 ```text
 Press HOME to return to the HOME Menu
-v0.4.0
+v1.2.3
 XXXXXXXX YYYYYYYY
 ```
 
-The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). A migration shows the version it converts from, as in `v0.4.0-migration`. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
+The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). A migration shows the version it converts from, as in `v1.2.3-migration`. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
 
 | First number | Step |
 | --- | --- |
+| `1`, `2` | Bank itself: one of its objects is not what the patch expects, or the patch's background thread cannot be used |
 | `3`, `4` | Opening or creating the files |
 | `5` | The stored data is not valid |
 | `6` | Console clock |
@@ -226,7 +227,7 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
 | `77000000` | Bank's filesystem session changed between two opens. |
 | `79000000` | A file that is needed exists but cannot be opened. |
-| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows. |
+| `7A00ffpp` | A problem with one of the files. `ff`: 0 boxes, 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows, 5 not ready: the boxes are not open, or a save is still in progress. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
 
 **Starting over with an empty Bank.** This deletes every Pokémon stored in the offline Bank.
