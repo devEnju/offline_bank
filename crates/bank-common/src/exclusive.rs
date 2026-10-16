@@ -6,8 +6,9 @@
 //! taken does nothing (docs/internals.md, "Patches for Bank").
 //!
 //! The state holds pointers to the original's objects, which belong to the
-//! main thread, so it is not `Send`. That it stays on the main thread is the
-//! promise of `new`; the guard cannot leave the thread that took it.
+//! main thread, so it is not `Send`. That it is used on that thread alone is
+//! the promise of `new`: one thread takes it, and that thread is the one its
+//! contents belong to. The guard cannot leave the thread that took it.
 //!
 //! ```compile_fail
 //! fn send<T: Send>(_: T) {}
@@ -34,15 +35,21 @@ pub struct Exclusive<T> {
     value: UnsafeCell<T>,
 }
 // SAFETY: `new`'s caller promises that the state is only ever taken on one
-// thread, and `Held`, the only way to the value, cannot be sent to or shared
-// with another; `taken` allows one at a time on that thread. A patch's worker
+// thread, the one its contents belong to, and `Held`, the only way to the
+// value, cannot be sent to or shared with another; `taken` allows one at a
+// time on that thread. So the value, and whatever it refers to, is only used
+// where it may be. A patch's worker
 // thread has a mailbox of its own and is never given the value.
 unsafe impl<T> Sync for Exclusive<T> {}
 
 impl<T> Exclusive<T> {
     /// # Safety
-    /// `take` is only ever called on one thread: for a patch's hooks,
-    /// Bank's main thread, which the original calls them on.
+    /// `take` is only ever called on one thread, and that thread is the one
+    /// the contents of `value` belong to: whatever it holds or refers to that
+    /// is not `Send` or not `Sync` may be used there and is used nowhere
+    /// else while the state can be taken. For a patch's hooks this is
+    /// Bank's main thread, which the original calls them on and which owns
+    /// the original's objects the state points to.
     pub const unsafe fn new(value: T) -> Self {
         Self {
             taken: AtomicBool::new(false),

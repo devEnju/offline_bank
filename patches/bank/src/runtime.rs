@@ -152,7 +152,7 @@ struct ClaimProbe {
     gifts: u32,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
-// main thread.
+// main thread, which owns the original's objects the state points to.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
         worker: None,
