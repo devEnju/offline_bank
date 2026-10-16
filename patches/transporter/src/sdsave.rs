@@ -17,6 +17,8 @@
 //! (`Save::identifies`): the original checks a save's layout, not which game
 //! of a pair or which language it belongs to.
 
+use crate::language;
+
 /// Exact size of a Gen 5 save.
 pub const SAVE_SIZE: u64 = 0x8_0000;
 /// Longest path built here, with terminator.
@@ -24,11 +26,6 @@ pub const PATH_CAPACITY: usize = 48;
 /// At most this many saves are offered: one per game, in the one language
 /// that is listed. The original list holds 40 entries.
 pub const MAX_SAVES: usize = GAMES.len();
-/// Language letters of the game code the original accepts (`00243568`).
-pub const LANGUAGES: [u8; 7] = *b"JOFIDSK";
-
-/// The save's own language byte for each of `LANGUAGES`.
-const LANGUAGE_IDS: [u8; 7] = [1, 2, 3, 4, 5, 7, 8];
 /// Trainer block of a save copy, where the original reads the trainer's name
 /// and ID (`0019A994`, `0019A970`); the language byte and the game byte
 /// follow each other at `+0x1E`.
@@ -90,7 +87,7 @@ pub fn is_gen5_code(code: [u8; 4]) -> bool {
     code[0] == b'I'
         && code[1] == b'R'
         && GAMES.iter().any(|game| game.letter == code[2])
-        && LANGUAGES.contains(&code[3])
+        && language::id_of_letter(code[3]).is_some()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,10 +127,8 @@ impl Save {
     /// says nothing (never written); at least one copy has to say it, and no
     /// copy may say another game or language.
     pub fn identifies(self, copies: [[u8; 2]; 2]) -> bool {
-        let language = LANGUAGES
-            .iter()
-            .position(|&letter| letter == self.language)
-            .map(|index| LANGUAGE_IDS[index]);
+        // The save's language byte is the language id.
+        let language = language::id_of_letter(self.language);
         let wanted = [language.unwrap_or(0), self.info().version];
         let mut named = false;
         for copy in copies {
@@ -354,6 +349,7 @@ impl Saves {
 mod tests {
     extern crate std;
     use super::*;
+    use crate::language::GAME_LANGUAGES;
     use std::{string::String, vec, vec::Vec};
 
     fn text(save: Save, backup: bool) -> String {
@@ -374,7 +370,7 @@ mod tests {
     }
     /// The language and game bytes in both copies of a save of this game.
     fn bytes_of(save: Save) -> [[u8; 2]; 2] {
-        let language = LANGUAGE_IDS[LANGUAGES.iter().position(|&l| l == save.language).unwrap()];
+        let language = language::id_of_letter(save.language).unwrap();
         [[language, GAMES[save.game as usize].version]; 2]
     }
     /// The save a present file is by its name, so that its bytes match it.
@@ -397,7 +393,7 @@ mod tests {
         // German White, White 2 and Black 2 are the names confirmed on a
         // console. Revision 01 only for the Japanese Black 2 and White 2.
         let mut names = Vec::new();
-        for language in LANGUAGES {
+        for (_, language) in GAME_LANGUAGES {
             for game in 0..GAMES.len() as u8 {
                 names.push(text(save(game, language), false));
             }
@@ -465,7 +461,7 @@ mod tests {
         assert!(save(1, b'D').identifies([[5, 20], [5, 20]]));
         assert!(save(3, b'D').identifies([[5, 22], [5, 22]]));
         for (game, version) in [(0, 21), (1, 20), (2, 23), (3, 22)] {
-            for (letter, language) in LANGUAGES.into_iter().zip(LANGUAGE_IDS) {
+            for (language, letter) in GAME_LANGUAGES {
                 assert!(save(game, letter).identifies([[language, version]; 2]));
             }
         }

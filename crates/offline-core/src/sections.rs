@@ -17,20 +17,19 @@
 //!
 //! Loading is a read into place; saving is the reverse. Nothing is converted.
 
-use crate::native_blob::BLOB_SIZE;
+use crate::native_blob::{BlobError, NativeBlobView, BLOB_SIZE, BOX_COUNT};
 use core::ops::Range;
 
 pub const TRANSPORT_SLOTS: usize = 30;
 pub const RECORD_SIZE: usize = 0xE8;
 pub const TRANSPORT_RECORDS: Range<usize> = 0xAAF14..0xACA44;
 pub const TRANSPORT_TAGS: Range<usize> = 0xAD5FC..0xAD61A;
-pub const DEX: Range<usize> = 0xAD61C..0xB4A9C;
-/// The native whole-Miles field, in the main file as the body has it; the
-/// remainder below one Mile and the day of the last redemption are in the
-/// body as well (`native_blob`).
-pub const MILES: Range<usize> = 0x170..0x174;
-/// The native reward date: the date and time up to which Miles are counted.
-pub const REWARD_DATE: Range<usize> = 0x160..0x166;
+/// The trainer and adventure records, one of `0x44` bytes per game version.
+pub const RECORDS: Range<usize> = 0xAD61C..0xAD83C;
+/// The Pokédex: eight version regions and what is derived from them.
+pub const POKEDEX: Range<usize> = 0xAD83C..0xB4A9C;
+/// The records and the Pokédex together, what a game brings into the Bank.
+pub const DEX: Range<usize> = RECORDS.start..POKEDEX.end;
 
 pub const TRANSPORT_SIZE: usize = TRANSPORT_SLOTS * RECORD_SIZE + TRANSPORT_SLOTS;
 /// Body ranges kept in the main file, in order: everything Bank needs that
@@ -55,9 +54,12 @@ pub const BANK_SIZE: usize = BLOB_SIZE - TRANSPORT_SIZE - MAIN_SIZE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SectionError {
-    WrongSize { expected: usize, actual: usize },
-    UnsupportedFormat(u16),
-    UnexpectedBoxCount(u16),
+    WrongSize {
+        expected: usize,
+        actual: usize,
+    },
+    /// The header is not the format and box count of this layout.
+    Header(BlobError),
 }
 
 fn sized(actual: usize, expected: usize) -> Result<(), SectionError> {
@@ -105,18 +107,13 @@ pub fn validate_bank(payload: &[u8]) -> Result<(), SectionError> {
     sized(payload.len(), BANK_SIZE)
 }
 
-/// Checks the header of an assembled body: native format marker, 100 boxes.
-/// The header is the first range of the main file.
+/// Checks the header of an assembled body as `NativeBlobView` does: native
+/// format marker, 100 boxes. The header is the first range of the main file.
 pub fn validate_header(body: &[u8]) -> Result<(), SectionError> {
     sized(body.len(), BLOB_SIZE)?;
-    let word = |at: usize| u16::from_le_bytes([body[at], body[at + 1]]);
-    if word(0x15C) != 2 {
-        return Err(SectionError::UnsupportedFormat(word(0x15C)));
-    }
-    if word(0x15E) != 100 {
-        return Err(SectionError::UnexpectedBoxCount(word(0x15E)));
-    }
-    Ok(())
+    NativeBlobView::parse_layout(body)
+        .map(|_| ())
+        .map_err(SectionError::Header)
 }
 
 /// The main ranges of `body` as separate slices, in order.
@@ -136,21 +133,31 @@ const BLOCK_POSITION: [u8; 96] = [
     2, 3, 0, 1, 3, 2, 0, 1, 1, 2, 3, 0, 1, 3, 2, 0, 2, 1, 3, 0, 3, 1, 2, 0, 2, 3, 1, 0, 3, 2, 1, 0,
 ];
 
-/// Species of a stored record; zero means the slot is empty. Decrypts only the
-/// one word needed, with the generator the games encrypt records with.
-pub fn stored_species(record: &[u8; RECORD_SIZE]) -> u16 {
+/// The first `N` words of block A of a stored record, decrypted: the block
+/// that starts with the species. Decrypts only as far as needed, with the
+/// generator the games encrypt records with.
+fn block_a<const N: usize>(record: &[u8; RECORD_SIZE]) -> [u16; N] {
     let key = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
     // `% 24` on a value below 32, without a division routine.
     let shuffle = (key >> 13) & 31;
     let shuffle = if shuffle >= 24 { shuffle - 24 } else { shuffle };
-    let block = usize::from(BLOCK_POSITION[shuffle as usize * 4]);
-    let word = block * 28;
+    let first = usize::from(BLOCK_POSITION[shuffle as usize * 4]) * 28;
+    let mut plain = [0u16; N];
     let mut seed = key;
-    for _ in 0..=word {
+    for word in 0..first + N {
         seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
+        if word >= first {
+            let at = 8 + word * 2;
+            plain[word - first] =
+                u16::from_le_bytes([record[at], record[at + 1]]) ^ (seed >> 16) as u16;
+        }
     }
-    let at = 8 + word * 2;
-    u16::from_le_bytes([record[at], record[at + 1]]) ^ (seed >> 16) as u16
+    plain
+}
+
+/// Species of a stored record; zero means the slot is empty.
+pub fn stored_species(record: &[u8; RECORD_SIZE]) -> u16 {
+    block_a::<1>(record)[0]
 }
 
 /// What makes one Pokémon that Pokémon wherever its record is stored and
@@ -162,38 +169,25 @@ pub type Identity = [u32; 3];
 /// fields besides the encryption constant lie in the block that starts with
 /// the species (words 2, 3 and 8..10 of it).
 pub fn stored_identity(record: &[u8; RECORD_SIZE]) -> Option<Identity> {
-    let key = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
-    let shuffle = (key >> 13) & 31;
-    let shuffle = if shuffle >= 24 { shuffle - 24 } else { shuffle };
-    let first = usize::from(BLOCK_POSITION[shuffle as usize * 4]) * 28;
-    let mut plain = [0u16; 10];
-    let mut seed = key;
-    for word in 0..first + plain.len() {
-        seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
-        if word >= first {
-            let at = 8 + word * 2;
-            plain[word - first] =
-                u16::from_le_bytes([record[at], record[at + 1]]) ^ (seed >> 16) as u16;
-        }
-    }
+    let plain = block_a::<10>(record);
     if plain[0] == 0 {
         return None;
     }
     Some([
-        key,
+        u32::from_le_bytes([record[0], record[1], record[2], record[3]]),
         u32::from(plain[8]) | u32::from(plain[9]) << 16,
         u32::from(plain[2]) | u32::from(plain[3]) << 16,
     ])
 }
 
-/// The 100 boxes: 30 records each, then the box's name and index. They
-/// begin at `BOXES_START` in a body and at 0 in a Bank file payload.
-pub const BOXES: usize = 100;
+/// The boxes (`native_blob::BOX_COUNT`): 30 records each, then the box's
+/// name and index. They begin at `BOXES_START` in a body and at 0 in a Bank
+/// file payload.
 pub const BOX_SLOTS: usize = 30;
 const BOXES_START: usize = 0x17C;
 const BOX_STRIDE: usize = 0x1B56;
 /// Most Pokémon one Bank snapshot holds: its boxes and the transport box.
-pub const HELD: usize = BOXES * BOX_SLOTS + TRANSPORT_SLOTS;
+pub const HELD: usize = BOX_COUNT * BOX_SLOTS + TRANSPORT_SLOTS;
 
 /// Appends the identity of every occupied record among whole stored records
 /// to `out[count..]` and returns the new count. Records beyond the room in
@@ -216,7 +210,7 @@ pub fn box_identities(
     mut count: usize,
 ) -> Result<usize, SectionError> {
     sized(payload.len(), BANK_SIZE)?;
-    for index in 0..BOXES {
+    for index in 0..BOX_COUNT {
         let at = index * BOX_STRIDE;
         count = identities(&payload[at..at + BOX_SLOTS * RECORD_SIZE], out, count);
     }
@@ -276,8 +270,10 @@ mod tests {
         }
         assert!(covered.iter().all(|count| *count == 1));
         // The Miles state and the Pokédex are in the main file.
-        const { assert!(REWARD_DATE.end <= MAIN_RANGES[0].end) };
-        const { assert!(MILES.end <= MAIN_RANGES[0].end) };
+        use crate::native_blob::{MILES_OFFSET, REWARD_DATE_OFFSET};
+        const { assert!(REWARD_DATE_OFFSET + 6 <= MAIN_RANGES[0].end) };
+        const { assert!(MILES_OFFSET + 4 <= MAIN_RANGES[0].end) };
+        assert_eq!((RECORDS.len(), POKEDEX.len()), (8 * 0x44, 0x7260));
         const { assert!(MAIN_RANGES[1].start <= DEX.start) };
         const { assert!(DEX.end <= MAIN_RANGES[1].end) };
         const { assert!(crate::native_blob::FRACTION_OFFSET + 2 <= MAIN_RANGES[0].end) };
@@ -326,13 +322,13 @@ mod tests {
         work[0x15C] = 9;
         assert_eq!(
             validate_header(&work),
-            Err(SectionError::UnsupportedFormat(9))
+            Err(SectionError::Header(BlobError::UnsupportedFormat(9)))
         );
         work[0x15C] = 2;
         work[0x15E] = 99;
         assert_eq!(
             validate_header(&work),
-            Err(SectionError::UnexpectedBoxCount(99))
+            Err(SectionError::Header(BlobError::UnexpectedBoxCount(99)))
         );
         compact(&mut work).unwrap();
         validate_bank(&work[..BANK_SIZE]).unwrap();
@@ -448,7 +444,10 @@ mod tests {
 
     #[test]
     fn the_boxes_end_where_the_transport_box_begins_and_all_slots_are_read() {
-        assert_eq!(BOXES_START + BOXES * BOX_STRIDE, TRANSPORT_RECORDS.start);
+        assert_eq!(
+            BOXES_START + BOX_COUNT * BOX_STRIDE,
+            TRANSPORT_RECORDS.start
+        );
         assert_eq!(BOX_STRIDE, BOX_SLOTS * RECORD_SIZE + 0x24 + 2);
         assert_eq!(HELD, 3030);
 
@@ -457,7 +456,7 @@ mod tests {
         work[0x15E..0x160].copy_from_slice(&100u16.to_le_bytes());
         // Every slot holds an encrypted empty record, as in a real Bank,
         // and the box names hold bytes that are not records.
-        for index in 0..BOXES {
+        for index in 0..BOX_COUNT {
             let at = BOXES_START + index * BOX_STRIDE;
             for slot in 0..BOX_SLOTS {
                 let key = (index * 64 + slot) as u32 | 0x5000_0000;

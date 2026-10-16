@@ -7,7 +7,7 @@ const METADATA_MAGIC: &[u8; 3] = b"BKJ";
 const MOST_HELD: u8 = 30;
 /// The games a save can be with, in the order of their number in the record
 /// (1 to 8): X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon.
-const TITLES: [u64; 8] = [
+pub const GAME_TITLES: [u64; 8] = [
     0x0004_0000_0005_5d00,
     0x0004_0000_0005_5e00,
     0x0004_0000_0011_c400,
@@ -235,7 +235,7 @@ impl Metadata {
             }
             Phase::Clean(current)
         } else {
-            let title_id = *TITLES
+            let title_id = *GAME_TITLES
                 .get(usize::from(bytes[8] >> 4).wrapping_sub(1))
                 .ok_or(FormatError::InvalidGameIdentity)?;
             Phase::Prepared(PendingTransfer {
@@ -260,7 +260,7 @@ impl Metadata {
 
 /// The number of a game in the record, 1 to 8.
 fn game_number(title_id: u64) -> Result<u8, FormatError> {
-    TITLES
+    GAME_TITLES
         .iter()
         .position(|title| *title == title_id)
         .map(|index| index as u8 + 1)

@@ -5,7 +5,7 @@
 //! created, and the job then runs on it.
 
 use crate::{
-    fs::{transporter_close_handle, Archive, File, OPEN_READ_WRITE},
+    fs::{terminated, transporter_close_handle, Archive, File, OPEN_READ_WRITE},
     layout::*,
     navigation,
 };
@@ -15,7 +15,7 @@ use core::{
     slice,
     sync::atomic::{AtomicU32, Ordering},
 };
-use offline_core::{sections::TRANSPORT_SLOTS, transport, Storage, METADATA_SIZE};
+use offline_core::{files, sections::TRANSPORT_SLOTS, transport, Storage, METADATA_SIZE};
 
 /// The original's "show this message and wait": `(ui, message, 1)`, as the
 /// game search calls it for its own message 0 (`00246FFC`).
@@ -119,24 +119,25 @@ struct BankFiles;
 impl transport::Files for BankFiles {
     type Storage = Pair;
     fn journal(&mut self) -> Option<Pair> {
-        unsafe { Pair::open(JOURNAL_PATHS, METADATA_SIZE as u64) }
+        unsafe { Pair::open(files::JOURNAL, METADATA_SIZE as u64) }
     }
     fn mover(&mut self) -> Option<Pair> {
-        unsafe { Pair::open(MOVER_PATHS, u64::from(transport::LEN)) }
+        unsafe { Pair::open(files::MOVER, u64::from(transport::LEN)) }
     }
 }
 impl Pair {
     /// `None` when Bank's extdata or both files do not exist, access is
     /// refused, or a file is not exactly `len` bytes, the size Bank creates.
-    unsafe fn open(paths: [&[u8]; 2], len: u64) -> Option<Self> {
+    unsafe fn open(names: [&str; 2], len: u64) -> Option<Self> {
         // Whatever was opened is closed again if this ends early.
         let mut pair = Self {
             files: [None, None],
             written: [false; 2],
             len,
         };
-        for (file, path) in pair.files.iter_mut().zip(paths) {
-            *file = unsafe { File::open(Archive::BankExtdata, path, OPEN_READ_WRITE) };
+        for (file, name) in pair.files.iter_mut().zip(names) {
+            let (path, length) = terminated(name);
+            *file = unsafe { File::open(Archive::BankExtdata, &path[..length], OPEN_READ_WRITE) };
             // One of another size is not a file of this layout.
             if file.as_ref().is_some_and(|file| file.size() != Some(len)) {
                 return None;

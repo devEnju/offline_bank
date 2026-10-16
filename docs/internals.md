@@ -331,7 +331,7 @@ All files are in SD extdata archive `0x00000C9B` (created by the original with r
 
 The three lengths add up to the body's `BB518`. Each file exists in two copies. What ties a copy to a save is [the journal](#the-journal): one record of 140 bytes, kept twice.
 
-**Every copy and every record is a file of its own** ([bank_files.rs](../crates/bank-common/src/bank_files.rs), `FileName::units`). The code addresses them as three containers, each a range of fixed layout:
+**Every copy and every record is a file of its own** ([bank_files.rs](../crates/bank-common/src/bank_files.rs), `FileName::units`; the names are in [files.rs](../crates/offline-core/src/files.rs), which Transporter uses too). The code addresses them as three containers, each a range of fixed layout:
 
 | Container | Length | Files, in the order of the layout |
 | --- | --- | --- |
@@ -637,7 +637,7 @@ The check and the delivery run on a thread created per job through the original 
 
 [fs.rs](../patches/transporter/src/fs.rs), through Transporter's SDK wrappers: open-directly `001DF448`, read `0015930C`, write `00159390`, size `001593F0`, close `00159364`; `fs:USER` handle at `00311F80`.
 
-- Bank's extdata: archive 6, binary path `{1, C9B, 0}`, ASCII file paths `/journal.bin`, `/journal.alt.bin`, `/mover.bin` and `/mover.alt.bin`: the two journal records and the two copies of the transport box. One pair is open at a time (`hooks::BankFiles`), so never more than two files ([Files](#files)). A file that is missing or does not open makes every read of it fail, and the check then refuses; Transporter never creates, deletes or replaces a file. Transporter's exheader grants neither: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
+- Bank's extdata: archive 6, binary path `{1, C9B, 0}`, ASCII file paths `/journal.bin`, `/journal.alt.bin`, `/mover.bin` and `/mover.alt.bin` (`offline_core::files`, Bank's own names): the two journal records and the two copies of the transport box. One pair is open at a time (`hooks::BankFiles`), so never more than two files ([Files](#files)). A file that is missing or does not open makes every read of it fail, and the check then refuses; Transporter never creates, deletes or replaces a file. Transporter's exheader grants neither: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
 - SD card: archive 9 with an empty path.
 
 ### Cartridge and game list

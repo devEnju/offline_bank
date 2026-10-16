@@ -33,18 +33,10 @@ impl TryFrom<u8> for GameKind {
 }
 impl GameKind {
     /// Identifies the game title, not a particular cartridge or trainer save.
+    /// The titles are the journal's (`offline_core::GAME_TITLES`), in the
+    /// order of the kinds.
     pub const fn title_id(self) -> u64 {
-        let unique = match self {
-            Self::X => 0x55d,
-            Self::Y => 0x55e,
-            Self::OmegaRuby => 0x11c4,
-            Self::AlphaSapphire => 0x11c5,
-            Self::Sun => 0x1648,
-            Self::Moon => 0x175e,
-            Self::UltraSun => 0x1b50,
-            Self::UltraMoon => 0x1b51,
-        };
-        0x0004_0000_0000_0000 | (unique << 8)
+        offline_core::GAME_TITLES[self as usize - 1]
     }
     /// Native constructor's data-block count, excluding the final metadata block.
     pub const fn data_block_count(self) -> u32 {

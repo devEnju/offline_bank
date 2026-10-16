@@ -19,6 +19,7 @@
 
 use crate::session::{self, BankSession};
 use offline_core::{
+    files,
     moved::{self, Moved},
     native_blob::BLOB_SIZE,
     pair::{Pair, PairError},
@@ -62,19 +63,20 @@ pub const MAIN: u64 = MAIN_SIZE as u64;
 pub const MOVER: u64 = transport::LEN as u64;
 /// In the order of the container's layout: the journal records, then the
 /// copies of the Bank file.
+/// The names are `offline_core::files`, which Transporter reaches too.
 static BANK_UNITS: [UnitFile; 4] = [
-    UnitFile::new("/journal.bin", RECORD),
-    UnitFile::new("/journal.alt.bin", RECORD),
-    UnitFile::new("/bank.bin", SNAPSHOT),
-    UnitFile::new("/bank.alt.bin", SNAPSHOT),
+    UnitFile::new(files::JOURNAL[0], RECORD),
+    UnitFile::new(files::JOURNAL[1], RECORD),
+    UnitFile::new(files::BANK[0], SNAPSHOT),
+    UnitFile::new(files::BANK[1], SNAPSHOT),
 ];
 static MAIN_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/main.bin", MAIN),
-    UnitFile::new("/main.alt.bin", MAIN),
+    UnitFile::new(files::MAIN[0], MAIN),
+    UnitFile::new(files::MAIN[1], MAIN),
 ];
 static TRANSPORT_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/mover.bin", MOVER),
-    UnitFile::new("/mover.alt.bin", MOVER),
+    UnitFile::new(files::MOVER[0], MOVER),
+    UnitFile::new(files::MOVER[1], MOVER),
 ];
 
 impl FileName {
@@ -500,7 +502,12 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::testing::*;
-    use offline_core::sections::{BANK_RANGES, DEX, MILES, REWARD_DATE};
+    use offline_core::{
+        native_blob::{MILES_OFFSET, REWARD_DATE_OFFSET},
+        sections::{BANK_RANGES, DEX},
+    };
+    const MILES: core::ops::Range<usize> = MILES_OFFSET..MILES_OFFSET + 4;
+    const REWARD_DATE: core::ops::Range<usize> = REWARD_DATE_OFFSET..REWARD_DATE_OFFSET + 6;
     use std::{boxed::Box, collections::BTreeSet, format, vec, vec::Vec};
 
     /// Opens after a reboot, resolving a pending save from the observed game.

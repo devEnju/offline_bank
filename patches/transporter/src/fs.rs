@@ -29,6 +29,15 @@ extern "aapcs" {
     pub(crate) fn transporter_close_handle(handle: u32) -> i32;
 }
 
+/// `name` with the terminator the SDK wrappers expect, and its length with
+/// it. Bank's file names are short (`offline_core::files`).
+pub(crate) fn terminated(name: &str) -> ([u8; 20], usize) {
+    let mut path = [0; 20];
+    let length = name.len().min(path.len() - 1);
+    path[..length].copy_from_slice(&name.as_bytes()[..length]);
+    (path, length + 1)
+}
+
 /// The archive a file lies in.
 #[derive(Clone, Copy)]
 pub(crate) enum Archive {

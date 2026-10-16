@@ -70,12 +70,10 @@ pub const DELIVER_PENDING: u32 = 2;
 /// it, far less than this.
 pub const WORKER_STACK_SIZE: usize = 0x4000;
 
-/// Bank's extdata and, inside it, the files Transporter reads and writes:
-/// the two journal records and the two copies of the transport box, each
-/// pair in Bank's order.
+/// Bank's extdata. The files Transporter reads and writes in it, the two
+/// journal records and the two copies of the transport box, are named in
+/// `offline_core::files`, as Bank names them.
 pub const BANK_EXTDATA: u32 = 0x0000_0C9B;
-pub const JOURNAL_PATHS: [&[u8]; 2] = [b"/journal.bin\0", b"/journal.alt.bin\0"];
-pub const MOVER_PATHS: [&[u8]; 2] = [b"/mover.bin\0", b"/mover.alt.bin\0"];
 
 #[cfg(test)]
 mod tests {
@@ -97,18 +95,5 @@ mod tests {
         assert_eq!(refusal_message(Refusal::NotReady), MESSAGE_OPEN_BANK);
         // The worker reports "go on" as 0, which no message may be.
         assert_eq!((MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY), (3, 5));
-    }
-
-    #[test]
-    fn the_paths_are_the_ones_bank_uses_and_fit_the_name_limit() {
-        assert_eq!(
-            JOURNAL_PATHS,
-            [&b"/journal.bin\0"[..], b"/journal.alt.bin\0"]
-        );
-        assert_eq!(MOVER_PATHS, [&b"/mover.bin\0"[..], b"/mover.alt.bin\0"]);
-        for path in JOURNAL_PATHS.into_iter().chain(MOVER_PATHS) {
-            assert_eq!(path.last(), Some(&0));
-            assert!(path.len() - 2 <= 16);
-        }
     }
 }

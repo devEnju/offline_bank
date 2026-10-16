@@ -65,8 +65,29 @@ pub const HIDDEN_Y: i32 = 1000;
 /// thread by the language screen, read there and by the cartridge task.
 static FILTER: AtomicU8 = AtomicU8::new(0);
 
+/// The languages Gen 1, 2 and 5 games exist in: the original's language id,
+/// which is also the language byte of a Gen 5 save, and the last letter of a
+/// Gen 5 game code (`00243568`).
+pub const GAME_LANGUAGES: [(u8, u8); 7] = [
+    (1, b'J'),
+    (2, b'O'),
+    (3, b'F'),
+    (4, b'I'),
+    (5, b'D'),
+    (7, b'S'),
+    (8, b'K'),
+];
+
 fn is_game_language(id: u8) -> bool {
-    matches!(id, 1..=5 | 7 | 8)
+    GAME_LANGUAGES.iter().any(|&(known, _)| known == id)
+}
+
+/// The language id of a game-code letter, if games exist in it.
+pub fn id_of_letter(letter: u8) -> Option<u8> {
+    GAME_LANGUAGES
+        .iter()
+        .find(|&&(_, known)| known == letter)
+        .map(|&(id, _)| id)
 }
 
 /// A language id games exist in; anything else becomes English, which is
@@ -79,17 +100,14 @@ pub fn normalise(id: u8) -> u8 {
     }
 }
 
-/// The language letter of a Gen 5 game code (`00243568`).
+/// The language letter of a Gen 5 game code; English for a language games
+/// do not exist in.
 pub fn letter(id: u8) -> u8 {
-    match normalise(id) {
-        1 => b'J',
-        3 => b'F',
-        4 => b'I',
-        5 => b'D',
-        7 => b'S',
-        8 => b'K',
-        _ => b'O',
-    }
+    let id = normalise(id);
+    GAME_LANGUAGES
+        .iter()
+        .find(|&&(known, _)| known == id)
+        .map_or(b'O', |&(_, letter)| letter)
 }
 
 /// What a choice of `chosen` (0: none yet) means while the screens are in
@@ -175,7 +193,7 @@ pub fn y_float(y: i32) -> f32 {
 }
 
 #[cfg(target_arch = "arm")]
-mod hooks {
+mod native {
     use super::*;
     use crate::lytpatch;
     use core::{mem::transmute, slice};
@@ -378,19 +396,22 @@ mod hooks {
     }
 }
 #[cfg(target_arch = "arm")]
-pub use hooks::*;
+pub use native::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdsave::LANGUAGES;
 
     #[test]
     fn every_game_language_has_its_letter_and_the_others_become_english() {
         // Ids in the order of the letters the original accepts.
         let ids = [1u8, 2, 3, 4, 5, 7, 8];
         let letters: [u8; 7] = ids.map(letter);
-        assert_eq!(letters, LANGUAGES);
+        assert_eq!(&letters, b"JOFIDSK");
+        for (id, letter) in GAME_LANGUAGES {
+            assert_eq!(id_of_letter(letter), Some(id));
+        }
+        assert_eq!(id_of_letter(b'E'), None);
         for id in ids {
             assert_eq!(normalise(id), id);
         }

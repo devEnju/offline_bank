@@ -60,6 +60,7 @@
 //! separately verified native secure-value/backup policy. A complete rollback of
 //! all local records also needs an external monotonic reference to be detectable.
 
+pub mod files;
 pub mod game_image;
 pub mod moved;
 pub mod native_blob;
@@ -76,7 +77,7 @@ mod store;
 pub use checksum::{crc32, Crc32};
 pub use format::{
     decide_recovery, Fingerprint, FormatError, GameIdentity, Metadata, Part, PendingTransfer,
-    Phase, RecoveryDecision, Save, Sides, Slot, METADATA_SIZE, SCHEMA_VERSION,
+    Phase, RecoveryDecision, Save, Sides, Slot, GAME_TITLES, METADATA_SIZE, SCHEMA_VERSION,
 };
 pub use hash::{Sha256, Sha256Error};
 pub use store::{may_deliver, BankStore, Head, Journal, Layout, Reconciled, Storage, StoreError};

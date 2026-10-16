@@ -13,12 +13,16 @@
 //! in the records screen only, as in the original. No function in this
 //! module writes a game file or the offline Bank store.
 
-use offline_core::{crc32, native_blob::BLOB_SIZE};
+use offline_core::{
+    crc32,
+    native_blob::BLOB_SIZE,
+    sections::{POKEDEX, RECORDS},
+};
 
-pub const RECORDS_OFFSET: usize = 0xAD61C;
+pub const RECORDS_OFFSET: usize = RECORDS.start;
+/// One trainer and adventure record per game version.
 pub const RECORD_SIZE: usize = 0x44;
-pub const DEX_OFFSET: usize = 0xAD83C;
-pub const DEX_SIZE: usize = 0x7260;
+pub const DEX_OFFSET: usize = POKEDEX.start;
 pub const VALIDITY_OFFSET: usize = DEX_OFFSET + 0x7254;
 const FAMILY_OFFSETS: [usize; 9] = [
     8, 0x6A8, 0xD48, 0x1F18, 0x30E8, 0x4060, 0x4FE0, 0x5F58, 0x6F18,
