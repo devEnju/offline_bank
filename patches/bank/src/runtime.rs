@@ -343,8 +343,9 @@ impl Runtime {
         let Some(worker) = self.worker.as_mut() else {
             return;
         };
-        // No job is out, so a refusal means the worker thread is gone: then
-        // nothing can close the files and nothing is reading or writing them.
+        // No job is out, so nothing is reading or writing the files. If the
+        // worker refuses the close (its thread has ended, a wait on it
+        // failed, or its mailbox is not free), nothing was handed over:
         // `files_closed` answers true, and the files stay `Used`, so the
         // next session's end asks again.
         if let Ok(id) = unsafe { worker.submit(Job::Close) } {
