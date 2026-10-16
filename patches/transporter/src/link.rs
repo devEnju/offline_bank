@@ -344,53 +344,6 @@ mod linked {
         shiny_keeps_gender = sym transporter_shiny_keeps_gender,
     );
 
-    // Byte-wise memory routines, kept from the builds that had to fit 3.6 KB:
-    // they are the ones that have run on a console.
-    core::arch::global_asm!(
-        ".section .text.transporter_mem,\"ax\",%progbits",
-        ".arm",
-        ".global memcpy, __aeabi_memcpy, __aeabi_memcpy4, __aeabi_memcpy8",
-        ".global memset, __aeabi_memset, __aeabi_memset4, __aeabi_memset8",
-        ".global __aeabi_memclr, __aeabi_memclr4, __aeabi_memclr8, memcmp",
-        "memcpy:",
-        "__aeabi_memcpy:",
-        "__aeabi_memcpy4:",
-        "__aeabi_memcpy8:",
-        "mov r3, r0",
-        "1: subs r2, r2, #1",
-        "bxlo lr",
-        "ldrb r12, [r1], #1",
-        "strb r12, [r3], #1",
-        "b 1b",
-        "memset:",
-        "mov r3, r0",
-        "2: subs r2, r2, #1",
-        "bxlo lr",
-        "strb r1, [r3], #1",
-        "b 2b",
-        "__aeabi_memclr:",
-        "__aeabi_memclr4:",
-        "__aeabi_memclr8:",
-        "mov r2, #0",
-        "__aeabi_memset:",
-        "__aeabi_memset4:",
-        "__aeabi_memset8:",
-        "3: subs r1, r1, #1",
-        "bxlo lr",
-        "strb r2, [r0], #1",
-        "b 3b",
-        "memcmp:",
-        "mov r3, r0",
-        "4: subs r2, r2, #1",
-        "movlo r0, #0",
-        "bxlo lr",
-        "ldrb r0, [r3], #1",
-        "ldrb r12, [r1], #1",
-        "subs r0, r0, r12",
-        "beq 4b",
-        "bx lr",
-    );
-
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
         // A panic cannot fall through into removing Pokémon from the game.

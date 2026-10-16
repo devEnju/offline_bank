@@ -28,14 +28,14 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $toolchain = 'nightly-2026-10-03'
 
 # Each kind: the program it patches, the crate and linker script of its
-# payload, cargo features and profile, its folder, and its verify script.
+# payload, its cargo features, its folder, and its verify script.
 # The test build is the Bank crate with a feature, in folders of its own.
 $packages = @{
-    'bank'        = @{ Program = 'bank'; Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Features = @(); Profile = 'release'; Output = 'build/binary/bank'; Verify = 'Verify-BankPatch.ps1' }
-    'transporter' = @{ Program = 'transporter'; Crate = 'transporter-payload'; Linker = 'patches/transporter/link/transporter15.ld'; Features = @(); Profile = 'transporter'; Output = 'build/binary/transporter'; Verify = 'Verify-TransporterPatch.ps1' }
-    'test'        = @{ Program = 'bank'; Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Features = @('test-build'); Profile = 'release'; Output = 'build/test'; Verify = 'Verify-BankPatch.ps1' }
-    'migration'   = @{ Program = 'bank'; Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Features = @(); Profile = 'release'; Output = 'build/migration'; Verify = 'Verify-BankPatch.ps1' }
-    'download'    = @{ Program = 'bank'; Crate = 'bank-download-payload'; Linker = 'patches/bank-download/link/bank15-download.ld'; Features = @(); Profile = 'release'; Output = 'build/download'; Verify = 'Verify-BankPatch.ps1' }
+    'bank'        = @{ Program = 'bank'; Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Features = @(); Output = 'build/binary/bank'; Verify = 'Verify-BankPatch.ps1' }
+    'transporter' = @{ Program = 'transporter'; Crate = 'transporter-payload'; Linker = 'patches/transporter/link/transporter15.ld'; Features = @(); Output = 'build/binary/transporter'; Verify = 'Verify-TransporterPatch.ps1' }
+    'test'        = @{ Program = 'bank'; Crate = 'bank-payload'; Linker = 'patches/bank/link/bank15.ld'; Features = @('test-build'); Output = 'build/test'; Verify = 'Verify-BankPatch.ps1' }
+    'migration'   = @{ Program = 'bank'; Crate = 'bank-migrate-payload'; Linker = 'patches/bank-migrate/link/bank15-migrate.ld'; Features = @(); Output = 'build/migration'; Verify = 'Verify-BankPatch.ps1' }
+    'download'    = @{ Program = 'bank'; Crate = 'bank-download-payload'; Linker = 'patches/bank-download/link/bank15-download.ld'; Features = @(); Output = 'build/download'; Verify = 'Verify-BankPatch.ps1' }
 }
 $cias = @{ 'bank' = $BankCiaPath; 'transporter' = $TransporterCiaPath }
 
@@ -72,9 +72,9 @@ function Build-Payload([string]$kind, $package) {
     $versionBefore = $env:OFFLINE_BANK_VERSION
     try {
         $env:OFFLINE_BANK_VERSION = if ($Version -and $package.Program -eq 'bank') { $Version } else { $null }
-        Invoke-Native 'Payload link' { cargo "+$toolchain" rustc --locked --offline -p $package.Crate --bin "$($package.Crate)-link" --features $features --profile $package.Profile --target targets/armv6k-3ds.json -Z json-target-spec -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem -- -C "link-arg=$linkerArgument" -C "link-arg=$mapArgument" -C link-arg=--build-id=none -C link-arg=--fatal-warnings -C link-arg=-zmax-page-size=4096 --remap-path-prefix "$projectRoot=/offline_bank" }
+        Invoke-Native 'Payload link' { cargo "+$toolchain" rustc --locked --offline -p $package.Crate --bin "$($package.Crate)-link" --features $features --release --target targets/armv6k-3ds.json -Z json-target-spec -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem -- -C "link-arg=$linkerArgument" -C "link-arg=$mapArgument" -C link-arg=--build-id=none -C link-arg=--fatal-warnings -C link-arg=-zmax-page-size=4096 --remap-path-prefix "$projectRoot=/offline_bank" }
     } finally { $env:OFFLINE_BANK_VERSION = $versionBefore }
-    $linked = Join-Path $projectRoot "target/armv6k-3ds/$($package.Profile)/$($package.Crate)-link"
+    $linked = Join-Path $projectRoot "target/armv6k-3ds/release/$($package.Crate)-link"
     if (-not (Test-Path -LiteralPath $linked -PathType Leaf)) { throw "Missing linked ELF: $linked" }
     Copy-Item -LiteralPath $linked -Destination $elfPath -Force
     Invoke-Native 'Payload inspection' { cargo +stable run --locked --offline --quiet -p patch-builder -- inspect-payload $kind $elfPath }

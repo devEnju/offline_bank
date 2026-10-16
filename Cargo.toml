@@ -13,8 +13,3 @@ lto = true
 codegen-units = 1
 panic = "abort"
 overflow-checks = true
-
-# The Transporter hooks keep the settings of the builds that ran on a console.
-[profile.transporter]
-inherits = "release"
-overflow-checks = false
