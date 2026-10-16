@@ -172,8 +172,8 @@ pub fn identity(
 }
 
 /// The kind of copy a transaction was made with, if its binding is one of
-/// this form. A binding of another form, as other versions of the patch
-/// wrote, does not come out of its own first 28 bytes again.
+/// this form. A binding of another form, such as a whole hash, does not
+/// come out of its own first 28 bytes again.
 pub fn bound(pending: &PendingTransfer) -> Result<Medium, Error> {
     for medium in [Medium::Cartridge, Medium::Installed] {
         let made = identity(
@@ -300,15 +300,14 @@ mod tests {
             damaged.game.save_identity[at] ^= 1;
             damaged
         });
-        // The bindings other versions of the patch wrote, a whole hash
-        // without a kind of copy and then with one: a save they left in
-        // progress is theirs to finish.
-        let earlier = [
+        // Bindings of another form: a whole hash, without a kind of copy
+        // and with one.
+        let other_forms = [
             &b"Bank offline game transaction v1\0"[..],
             b"Bank offline game transaction v2\0",
         ]
         .map(|version| {
-            let mut earlier = pending(Medium::Cartridge);
+            let mut other = pending(Medium::Cartridge);
             let mut hash = Sha256::new();
             hash.update(version).unwrap();
             hash.update(&TITLE.to_le_bytes()).unwrap();
@@ -317,15 +316,15 @@ mod tests {
             if version[31] == b'2' {
                 hash.update(&[Medium::Cartridge as u8]).unwrap();
             }
-            earlier.game.save_identity = hash.finalize();
-            earlier
+            other.game.save_identity = hash.finalize();
+            other
         });
         let mut other = [2; 32];
         other[31] ^= 1;
         for made in KINDS {
             assert_eq!(bound(&pending(made)), Ok(made));
         }
-        for pending in damaged.into_iter().chain(earlier) {
+        for pending in damaged.into_iter().chain(other_forms) {
             // Also when no game is there to show the kind of copy.
             assert_eq!(bound(&pending), Err(Error::InvalidBinding));
             for found in KINDS {

@@ -795,8 +795,8 @@ impl Runtime {
                     None => return Err(Fault::StorageInvalid),
                 }
                 self.pending = false;
-                // The skipped main-menu initializer used to end the loading
-                // panel. Game selection starts from the validated Bank instead.
+                // The original's main-menu initializer, which is skipped,
+                // ends the loading panel; game selection does not.
                 let ui = task.ui()?;
                 unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
                 Ok(self.complete(task))

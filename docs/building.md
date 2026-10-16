@@ -175,7 +175,7 @@ It then writes a second zip, `offline_bank-v1.0.0-migration.zip`: the migration 
 **A release made while the official service runs** can ship the download:
 
 ```powershell
-./scripts/New-Release.ps1 -Version v0.3.1 -Download
+./scripts/New-Release.ps1 -Version v1.1.0 -Download
 ```
 
 It then writes one more zip, `offline_bank-download.zip`, without a version in its name: the download patch for Bank's folder and a `README.txt` with what it needs, its steps and its numbers. The guide belongs to the release, like the migration's.
