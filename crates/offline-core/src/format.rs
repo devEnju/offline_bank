@@ -320,47 +320,25 @@ fn validate(phase: &Phase, delivery: Option<u32>) -> Result<(), FormatError> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GameObservation {
-    Missing,
-    Present {
-        game: GameIdentity,
-        fingerprint: Fingerprint,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecoveryBlock {
-    MissingGame,
-    DifferentGame,
-    ModifiedGame,
-}
-
+/// Which save of a save in progress becomes current.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryDecision {
     KeepBefore,
     CommitAfter,
-    Blocked(RecoveryBlock),
 }
 
-/// Decides from evidence only; never edits storage or the game.
-pub fn decide_recovery(pending: &PendingTransfer, observed: GameObservation) -> RecoveryDecision {
-    match observed {
-        GameObservation::Missing => RecoveryDecision::Blocked(RecoveryBlock::MissingGame),
-        GameObservation::Present { game, .. } if game != pending.game => {
-            RecoveryDecision::Blocked(RecoveryBlock::DifferentGame)
-        }
-        GameObservation::Present { fingerprint, .. }
-            if fingerprint == pending.before_fingerprint =>
-        {
-            RecoveryDecision::KeepBefore
-        }
-        GameObservation::Present { fingerprint, .. }
-            if fingerprint == pending.after_fingerprint =>
-        {
-            RecoveryDecision::CommitAfter
-        }
-        GameObservation::Present { .. } => RecoveryDecision::Blocked(RecoveryBlock::ModifiedGame),
+/// The save whose image the game's save is, by its fingerprint; `None` for
+/// neither image. Never edits storage or the game.
+pub fn decide_recovery(
+    pending: &PendingTransfer,
+    fingerprint: Fingerprint,
+) -> Option<RecoveryDecision> {
+    if fingerprint == pending.before_fingerprint {
+        Some(RecoveryDecision::KeepBefore)
+    } else if fingerprint == pending.after_fingerprint {
+        Some(RecoveryDecision::CommitAfter)
+    } else {
+        None
     }
 }
 

@@ -7,7 +7,7 @@ use offline_core::{
     native_blob::BLOB_SIZE,
     sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
     transport::{self, Delivery},
-    Fingerprint, GameIdentity, GameObservation, Storage,
+    Fingerprint, GameIdentity, Storage,
 };
 use std::{
     cell::RefCell,
@@ -300,12 +300,6 @@ pub const GAME: GameIdentity = GameIdentity {
 };
 pub const BEFORE: Fingerprint = [1; 32];
 pub const AFTER: Fingerprint = [2; 32];
-pub fn observed(fingerprint: Fingerprint) -> GameObservation {
-    GameObservation::Present {
-        game: GAME,
-        fingerprint,
-    }
-}
 
 /// A stored record whose species word decrypts to `species` (block A first,
 /// shuffle value 0).

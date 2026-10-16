@@ -1,7 +1,6 @@
 use crate::{
     checksum::Crc32, decide_recovery, format::zero, Fingerprint, FormatError, GameIdentity,
-    GameObservation, Metadata, Part, PendingTransfer, Phase, RecoveryBlock, RecoveryDecision, Save,
-    Sides, Slot, METADATA_SIZE,
+    Metadata, Part, PendingTransfer, Phase, RecoveryDecision, Save, Sides, Slot, METADATA_SIZE,
 };
 
 /// Exact I/O on one preallocated container. A successful sync must make all
@@ -33,9 +32,6 @@ pub struct Layout {
 impl Layout {
     pub const fn new(capacity: u32) -> Self {
         Self { capacity }
-    }
-    pub const fn capacity(self) -> u32 {
-        self.capacity
     }
     pub const fn file_len(self) -> u64 {
         (METADATA_SIZE as u64 * 2) + 2 * self.snapshot_len()
@@ -78,7 +74,8 @@ pub enum StoreError<E> {
     PayloadChecksum,
     PendingRecovery,
     NoPendingTransfer,
-    RecoveryBlocked(RecoveryBlock),
+    /// The game's save is neither image of the save in progress.
+    NeitherImage,
     StaleHead,
     CounterExhausted,
     BufferTooSmall {
@@ -246,8 +243,6 @@ pub struct Journal<S> {
 }
 
 impl<S: Storage> Journal<S> {
-    pub const LEN: u64 = METADATA_SIZE as u64 * 2;
-
     pub fn new(storage: S) -> Self {
         Self { storage }
     }
@@ -330,45 +325,22 @@ impl<S: Storage> BankStore<S> {
     pub fn into_inner(self) -> S {
         self.storage
     }
-    pub fn layout(&self) -> Layout {
-        self.layout
-    }
 
-    /// Inspects both journal records and checks every copy of the Bank file
-    /// the selected state names against its checksum.
+    /// The record in force, from both journal records. The copies of the
+    /// Bank file it names are checked by the single pass of `read_current`
+    /// or `read_pending`, so a load reads every payload byte once.
     pub fn inspect(&mut self) -> Result<Head, StoreError<S::Error>> {
-        self.select(true)
-    }
-
-    fn select(&mut self, payloads: bool) -> Result<Head, StoreError<S::Error>> {
-        let head = match records(&mut self.storage)? {
-            Records::Current(head) => head,
-            Records::BothEmpty if self.zero_filled() => return Err(StoreError::Uninitialized),
+        match records(&mut self.storage)? {
+            Records::Current(head) => Ok(head),
+            Records::BothEmpty if self.zero_filled() => Err(StoreError::Uninitialized),
             // An initialization writes one record after the other into
             // empty units: until the first one is durable at least one of
             // them is still empty.
             Records::BothEmpty | Records::OneEmpty if self.only_a_first_copy() => {
-                return Err(StoreError::NeverPublished);
+                Err(StoreError::NeverPublished)
             }
-            _ => return Err(StoreError::NoValidMetadata),
-        };
-        if payloads {
-            match head.metadata.phase {
-                Phase::Clean(current) => self.validate(current.bank)?,
-                Phase::Prepared(pending) => {
-                    self.validate(pending.before.bank)?;
-                    self.validate(pending.after.bank)?;
-                }
-            }
+            _ => Err(StoreError::NoValidMetadata),
         }
-        Ok(head)
-    }
-
-    /// Like `inspect`, but checks only the journal. The payload itself is
-    /// verified by the single pass of `read_current`, so a load reads every
-    /// payload byte once.
-    pub fn inspect_quick(&mut self) -> Result<Head, StoreError<S::Error>> {
-        self.select(false)
     }
 
     /// Explicitly initializes a newly created, completely zero-filled file.
@@ -411,7 +383,7 @@ impl<S: Storage> BankStore<S> {
         payload: &[u8],
         sides: Sides,
     ) -> Result<Head, StoreError<S::Error>> {
-        match self.select(false) {
+        match self.inspect() {
             Err(StoreError::Uninitialized) => return self.initialize_new(payload, sides),
             Err(StoreError::NeverPublished) => {}
             Ok(_) => return Err(StoreError::AlreadyContainsData),
@@ -425,31 +397,6 @@ impl<S: Storage> BankStore<S> {
                 .map_err(StoreError::Io)?;
         }
         self.initialize_new(payload, sides)
-    }
-
-    /// Commits changes involving ONLY the Bank file, such as box names.
-    /// This method must never be used for transfers or rewards that edit a game.
-    pub fn commit_bank_only(
-        &mut self,
-        head: &Head,
-        payload: &[u8],
-    ) -> Result<Head, StoreError<S::Error>> {
-        let head = self.check_head(head)?;
-        let current = match head.phase() {
-            Phase::Clean(current) => current,
-            Phase::Prepared(_) => return Err(StoreError::PendingRecovery),
-        };
-        let sequence = next_sequence(&head)?;
-        let bank = self.write_snapshot(current.bank.slot.other(), payload)?;
-        publish(
-            &mut self.storage,
-            head.preferred,
-            Metadata {
-                sequence,
-                phase: Phase::Clean(Save { bank, ..current }),
-                ..head.metadata
-            },
-        )
     }
 
     /// Durably prepares both metadata replicas before returning success.
@@ -508,26 +455,25 @@ impl<S: Storage> BankStore<S> {
         publish(&mut self.storage, head.preferred, metadata)
     }
 
-    /// Resolves a prepared transfer after reading and identifying the actual game
-    /// save. Blocks without writes if the save is missing, different, or modified.
+    /// Resolves a prepared transfer by the fingerprint of the game's actual
+    /// save, which is one of its two images or is refused without writes.
     /// A save that becomes current has taken the delivery that waited, and the
     /// same record says so: the delivery cannot be taken twice. A save that is
     /// undone leaves it waiting.
     pub fn reconcile(
         &mut self,
         head: &Head,
-        observed: GameObservation,
+        fingerprint: Fingerprint,
     ) -> Result<Reconciled, StoreError<S::Error>> {
         let head = self.check_head(head)?;
         let pending = match head.phase() {
             Phase::Prepared(pending) => pending,
             Phase::Clean(_) => return Err(StoreError::NoPendingTransfer),
         };
-        let decision = decide_recovery(&pending, observed);
+        let decision = decide_recovery(&pending, fingerprint).ok_or(StoreError::NeitherImage)?;
         let (selected, delivery) = match decision {
             RecoveryDecision::KeepBefore => (pending.before, head.metadata.delivery),
             RecoveryDecision::CommitAfter => (pending.after, None),
-            RecoveryDecision::Blocked(reason) => return Err(StoreError::RecoveryBlocked(reason)),
         };
         let sequence = next_sequence(&head)?;
         let head = publish(
@@ -633,7 +579,7 @@ impl<S: Storage> BankStore<S> {
     }
 
     fn check_head(&mut self, expected: &Head) -> Result<Head, StoreError<S::Error>> {
-        let actual = self.inspect_quick()?;
+        let actual = self.inspect()?;
         if actual.metadata != expected.metadata {
             return Err(StoreError::StaleHead);
         }

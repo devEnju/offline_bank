@@ -521,10 +521,7 @@ mod tests {
             prepared.layout().payload_address,
             crate::bank15::PAYLOAD_ADDRESS
         );
-        assert_eq!(
-            prepared.layout().payload_file_offset,
-            crate::bank15::PAYLOAD_FILE_OFFSET
-        );
+        assert_eq!(prepared.layout().payload_file_offset, 0x2fb000);
         assert_eq!(prepared.layout().expanded_code_size, 0x2fd000);
     }
 }

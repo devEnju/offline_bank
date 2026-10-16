@@ -9,8 +9,8 @@
 
 use offline_core::{
     sections::{self, SectionError, BANK_SIZE},
-    BankStore, Fingerprint, GameIdentity, GameObservation, Head, Layout, Metadata, Phase,
-    RecoveryDecision, Save, Sides, Storage, StoreError,
+    BankStore, Fingerprint, GameIdentity, Head, Layout, Metadata, Phase, RecoveryDecision, Save,
+    Sides, Storage, StoreError,
 };
 
 pub const BANK_LAYOUT: Layout = Layout::new(BANK_SIZE as u32);
@@ -41,7 +41,7 @@ impl<S: Storage> BankSession<S> {
     /// single pass.
     pub fn open_existing(storage: S) -> Result<Self, Error<S::Error>> {
         let mut store = BankStore::new(storage, BANK_LAYOUT);
-        let head = store.inspect_quick().map_err(Error::Storage)?;
+        let head = store.inspect().map_err(Error::Storage)?;
         Ok(Self {
             store,
             head,
@@ -193,15 +193,15 @@ impl<S: Storage> BankSession<S> {
         Ok(self.head.phase())
     }
 
-    /// `observed` must come from identifying and reading the actual game save,
-    /// after its native writer/commit has completed or during startup recovery.
+    /// `fingerprint` must come from reading the actual game save, after its
+    /// native writer/commit has completed or during startup recovery.
     /// Call read_bank afterwards, including when recovery chooses the old Bank.
     pub fn reconcile_game(
         &mut self,
-        observed: GameObservation,
+        fingerprint: Fingerprint,
     ) -> Result<RecoveryDecision, Error<S::Error>> {
         self.ensure_usable()?;
-        let result = self.store.reconcile(&self.head, observed);
+        let result = self.store.reconcile(&self.head, fingerprint);
         let reconciled = self.storage_result(result)?;
         self.head = reconciled.head;
         self.loaded = false;
@@ -402,12 +402,7 @@ mod tests {
         // Rolled back: the old save and payload are current again.
         let mut rolled = BankSession::open_existing(Memory::with(bytes.clone())).unwrap();
         assert_eq!(
-            rolled
-                .reconcile_game(GameObservation::Present {
-                    game: GAME,
-                    fingerprint: [1; 32]
-                })
-                .unwrap(),
+            rolled.reconcile_game([1; 32]).unwrap(),
             RecoveryDecision::KeepBefore
         );
         assert_eq!(rolled.read_bank(&mut staging), Ok(before));
@@ -416,12 +411,7 @@ mod tests {
         // Committed: the prepared save and payload become current.
         let mut committed = BankSession::open_existing(Memory::with(bytes)).unwrap();
         assert_eq!(
-            committed
-                .reconcile_game(GameObservation::Present {
-                    game: GAME,
-                    fingerprint: [2; 32]
-                })
-                .unwrap(),
+            committed.reconcile_game([2; 32]).unwrap(),
             RecoveryDecision::CommitAfter
         );
         assert_eq!(committed.read_bank(&mut staging), Ok(after));

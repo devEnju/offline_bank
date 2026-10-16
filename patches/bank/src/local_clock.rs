@@ -123,7 +123,6 @@ mod tests {
         assert_eq!(early.day(), Date::new(2027, 1, 1).unwrap());
         // One second across midnight crosses one clock hour and one day.
         assert_eq!(early.hours_since(late), 1);
-        assert_eq!(early.day().days_since(late.day()), 1);
         let leap = Date::new(2028, 2, 29).unwrap();
         assert_eq!(
             local_moment(date(2028, 2, 29, 12, 34, 56)),

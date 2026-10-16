@@ -137,7 +137,7 @@ const BLOCK_POSITION: [u8; 96] = [
 ];
 
 /// Species of a stored record; zero means the slot is empty. Decrypts only the
-/// one word needed, with the same generator as `stored_pokemon_checksum`.
+/// one word needed, with the generator the games encrypt records with.
 pub fn stored_species(record: &[u8; RECORD_SIZE]) -> u16 {
     let key = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
     // `% 24` on a value below 32, without a division routine.

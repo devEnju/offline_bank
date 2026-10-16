@@ -103,7 +103,7 @@ mod arm {
         moved,
         native_blob::NativeBlobView,
         sections::{Identity, HELD},
-        GameObservation, PendingTransfer, Storage,
+        PendingTransfer, Storage,
     };
 
     /// A game's secure value on the console, slot 0x1000:
@@ -187,16 +187,9 @@ mod arm {
         }
         /// Resolves the save in progress from a game save that is one of
         /// its two images.
-        fn reconcile(
-            &mut self,
-            pending: &PendingTransfer,
-            evidence: &GameEvidence,
-        ) -> Result<RecoveryDecision, WorkerError> {
+        fn reconcile(&mut self, evidence: &GameEvidence) -> Result<RecoveryDecision, WorkerError> {
             self.files
-                .reconcile(GameObservation::Present {
-                    game: pending.game,
-                    fingerprint: evidence.fingerprint,
-                })
+                .reconcile(evidence.fingerprint)
                 .map_err(|e| Fault::JournalRecovery.files(e))
         }
         /// Resolves the save in progress from what it moved, toward the
@@ -237,12 +230,6 @@ mod arm {
             evidence: Option<GameEvidence>,
             decision: RecoveryDecision,
         ) -> Result<Reply, WorkerError> {
-            if !matches!(
-                decision,
-                RecoveryDecision::KeepBefore | RecoveryDecision::CommitAfter
-            ) {
-                return Err(Fault::JournalRecovery.with(0));
-            }
             let loaded = self.read_bank(staging)?;
             Ok(Reply::BankReady {
                 evidence,
@@ -348,11 +335,11 @@ mod arm {
                     let decision = match matched {
                         Match::Before => {
                             require_secure(game, evidence.secure.current)?;
-                            Some(self.reconcile(&pending, &evidence)?)
+                            Some(self.reconcile(&evidence)?)
                         }
                         Match::After => {
                             finish_secure(game, evidence.secure)?;
-                            Some(self.reconcile(&pending, &evidence)?)
+                            Some(self.reconcile(&evidence)?)
                         }
                         // A save that is neither image, on the kind of
                         // copy the save in progress was made with: the game

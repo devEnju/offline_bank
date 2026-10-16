@@ -466,7 +466,7 @@ The two lists are compared as multisets ([moved.rs](../crates/offline-core/src/m
 
 The first two rows cannot lose a Pokémon whichever way the game's save went, and the third cannot lose the Miles of a claim. The last row has no such answer: after a commit, if the game's save had not been written, the withdrawn Pokémon are in neither place.
 
-- The chosen save is made current through `reconcile` with that image's fingerprint (`BankFiles::reconcile_as`); `decide_recovery` itself is unchanged.
+- The chosen save is made current through `reconcile` with that image's fingerprint (`BankFiles::reconcile_as`): the journal makes a save current only with one of its two images, and refuses any other fingerprint.
 - No secure value is checked or changed in the last three rows of the first table. If a game that was not there holds the after-image and the cut came before the original writer advanced the platform value, that value is one step behind; the next load of that game advances it (`finish_secure` in `Job::InspectAndLoad`).
 - Right after Bank's own write (`Job::Finalize`), a game file that does not carry the prepared secure pair is fault `11`; the journal stays in progress and the next start settles it by the table.
 
