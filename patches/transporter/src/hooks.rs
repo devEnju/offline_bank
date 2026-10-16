@@ -8,6 +8,7 @@ use crate::{
     fs::{terminated, transporter_close_handle, Archive, File, OPEN_READ_WRITE},
     layout::*,
     navigation,
+    thread::{self, Wait},
 };
 use core::{
     cell::UnsafeCell,
@@ -68,6 +69,9 @@ extern "aapcs" {
 const IDLE: u32 = 0;
 const RUNNING: u32 = 1;
 const DONE: u32 = 2;
+/// A wait on a worker thread was refused, so it may still be on the stack:
+/// no thread is created any more, and every job runs on the calling thread.
+const INLINE: u32 = 3;
 const JOB_CHECK: u32 = 0;
 const JOB_DELIVER: u32 = 1;
 
@@ -236,7 +240,8 @@ unsafe extern "aapcs" fn worker(_: u32) {
 }
 
 /// Starts `job` on the first call and answers `None` until it is finished.
-/// If no thread can be created the job runs here, as it did before.
+/// If no thread can be created, or none may be any more (`INLINE`), the job
+/// runs here.
 unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
     type Create = unsafe extern "aapcs" fn(
         *mut u32,
@@ -265,17 +270,20 @@ unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
         DONE => {
             // The thread stores its result and then exits, still on the
             // stack the next job's thread is given. The job is collected
-            // once the thread has ended; a wait the kernel refuses tells
-            // nothing more on a later frame.
+            // once the thread has ended. A wait the kernel refuses tells
+            // nothing more on a later frame: the result is collected, and
+            // the stack is never given to a thread again.
             let handle = unsafe { *STATE.handle.get() };
-            let ended = unsafe { transporter_wait_thread(handle, 0) };
-            if ended as u32 & 0x3ff == 0x3fe {
-                return None;
-            }
+            let next = match thread::wait(unsafe { transporter_wait_thread(handle, 0) }) {
+                Wait::Running => return None,
+                Wait::Ended => IDLE,
+                Wait::Unknown => INLINE,
+            };
             unsafe { transporter_close_handle(handle) };
-            STATE.phase.store(IDLE, Ordering::Release);
+            STATE.phase.store(next, Ordering::Release);
             Some(STATE.result.load(Ordering::Relaxed))
         }
+        INLINE => Some(unsafe { work(job, task) }),
         _ => None,
     }
 }

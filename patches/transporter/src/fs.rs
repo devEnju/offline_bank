@@ -94,7 +94,7 @@ impl File {
                 0,
             )
         };
-        (code >= 0 && handle != 0).then_some(Self(handle))
+        (code >= 0 && handle != 0).then(|| Self(handle))
     }
     pub(crate) fn size(&self) -> Option<u64> {
         type Size = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
