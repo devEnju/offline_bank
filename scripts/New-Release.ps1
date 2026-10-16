@@ -134,7 +134,7 @@ try {
     Invoke-Checked 'formatting' { cargo +stable fmt --all -- --check }
 
     # 3. The patches, built from these sources and independently verified.
-    # Each build script replaces the package of its kind in its folder
+    # Build-Patches.ps1 replaces the package of each kind in its folder
     # (build/binary/bank and build/binary/transporter, build/<kind> for the others),
     # writes its name into PACKAGE.txt (Get-PackageId.ps1: the hash of its
     # compiled code and of the builder's profile with the edits of the
@@ -161,20 +161,18 @@ try {
     # A package for Bank says its version on its error and result screens.
     # Of a draft, the offline package says so too. The migration says the
     # version it converts from, as its zip is named.
-    function Get-Package([string]$kind, [string]$title) {
-        $shown = if ($kind -eq 'transporter') { @{} }
-            elseif ($kind -eq 'migration') { @{ Version = $MigrateFrom } }
-            elseif ($Draft -and $kind -eq 'bank') { @{ Version = "$Version-draft" } }
-            else { @{ Version = $Version } }
-        & (Join-Path $PSScriptRoot "Build-${title}Patch.ps1") @shown | Out-Host
-        return Get-Verified $kind
+    function Invoke-Build([hashtable]$arguments) {
+        & (Join-Path $PSScriptRoot 'Build-Patches.ps1') @arguments | Out-Host
     }
+    Invoke-Build @{ Version = $(if ($Draft) { "$Version-draft" } else { $Version }) }
+    if ($MigrateFrom) { Invoke-Build @{ Kind = 'migration'; Version = $MigrateFrom } }
+    if ($Download) { Invoke-Build @{ Kind = 'download'; Version = $Version } }
     $titles = [ordered]@{
-        $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Package 'bank' 'Bank') }
-        '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Package 'transporter' 'Transporter') }
+        $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Verified 'bank') }
+        '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Verified 'transporter') }
     }
-    $migration = if ($MigrateFrom) { Get-Package 'migration' 'BankMigration' }
-    $downloaded = if ($Download) { Get-Package 'download' 'BankDownload' }
+    $migration = if ($MigrateFrom) { Get-Verified 'migration' }
+    $downloaded = if ($Download) { Get-Verified 'download' }
 
     # 4. The zips, each laid out for the root of the SD card.
     $stage = Join-Path $releaseRoot $name

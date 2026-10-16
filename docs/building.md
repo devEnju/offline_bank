@@ -19,29 +19,28 @@ The builder identifies the inputs by hash and refuses any other version. The exp
 ## Build
 
 ```powershell
-./scripts/Build-BankPatch.ps1
-./scripts/Build-TransporterPatch.ps1
+./scripts/Build-Patches.ps1
 ```
 
-Each script unpacks its CIA, compiles the injected code, writes a package, and verifies it:
+This builds the two patches of a release, Bank's and Transporter's, one after the other with the same steps: it unpacks the CIA, compiles the injected code, writes a package, and verifies it:
 
 ```text
 build/binary/bank/           code.ips, exheader.bin, manifest.json, report.md, verification.json, PACKAGE.txt
 build/binary/transporter/    the same
 ```
 
-**The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). The version is given to the build: every build script for Bank takes `-Version v1.2.3` (or `v1.2.3-draft`) and compiles it into the payload, and `New-Release.ps1` passes its own, with `-draft` for the offline package of a draft; the migration gets the version it converts from (`-MigrateFrom`), as its zip is named: `v1.0.0-migration`. A package built without it says `dev`. The version is part of the compiled code, so it is part of the package's name too.
+**The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). The version is given to the build: `Build-Patches.ps1` takes `-Version v1.2.3` (or `v1.2.3-draft`) and compiles it into every package for Bank, and `New-Release.ps1` passes its own, with `-draft` for the offline package of a draft; the migration gets the version it converts from (`-MigrateFrom`), as its zip is named: `v1.0.0-migration`. A package built without it says `dev`. The version is part of the compiled code, so it is part of the package's name too.
 
-A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way, each into a folder beside `binary`: the test package into `build/test/`, the migration into `build/migration/`, the download into `build/download/` (all below).
+A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way with `-Kind`, each into a folder beside `binary`: `-Kind test` into `build/test/`, `-Kind migration` into `build/migration/`, `-Kind download` into `build/download/` (all below).
 
 ## Verify
 
 ```powershell
-./scripts/Verify-BankPatch.ps1
+./scripts/Verify-BankPatch.ps1 [-Kind bank|test|migration|download]
 ./scripts/Verify-TransporterPatch.ps1
 ```
 
-The build scripts run these themselves. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed, that the start-up hook and the added memory hold exactly the bytes of the linked payload, and that `exheader.bin` differs from the original only in its three size fields. They also check that the package is the one of the current sources, by its name. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
+The build script runs these itself. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed, that the start-up hook and the added memory hold exactly the bytes of the linked payload, and that `exheader.bin` differs from the original only in its three size fields. They also check that the package is the one of the current sources, by its name. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
 
 ## Tests
 
@@ -68,10 +67,10 @@ It uses the workspace's release settings, warms up both implementations, and rep
 Recovery after a power cut cannot be triggered on demand on a console, so one extra Bank package exists for rehearsing it. It is built behind a cargo feature that is off by default and is never part of a release.
 
 ```powershell
-./scripts/Build-BankTestPatches.ps1
+./scripts/Build-Patches.ps1 -Kind test
 ```
 
-This builds and verifies it into `build/test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
+This builds and verifies it into `build/test/` (`Verify-BankPatch.ps1 -Kind test`). Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
 
 - After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. All five buttons say "Use Pokémon Bank" in the console's language, and the four rehearsals have a word in brackets behind it, the same in every language. Back on the game selection leads to the menu again.
 - The reward dialogs never come, and nothing is claimed, so that a run is short.
@@ -87,21 +86,21 @@ cargo +stable test -p bank-common --features test-build --release --locked --off
 
 ## Other patches for Bank
 
-Two patches do one thing each and are not the offline patch. Each has its own crate, builder profile and script, and nothing depends on either.
+Two patches do one thing each and are not the offline patch. Each has its own crate and builder profile, and nothing depends on either.
 
 ### The migration from the previous release
 
 The release before this one stored the Bank differently ([internals.md](internals.md#files)). The step from the one to the other has a patch of its own, [patches/bank-migrate](../patches/bank-migrate/src/), which converts the Bank and does nothing else ([internals.md](internals.md#patches-for-bank)). It holds the only code that reads the earlier files: that release's storage code, frozen in [previous/](../patches/bank-migrate/src/previous/). The offline patch has no code for the earlier files.
 
 ```powershell
-./scripts/Build-BankMigrationPatch.ps1
+./scripts/Build-Patches.ps1 -Kind migration
 ```
 
 This builds it into `build/migration/` and verifies it (`Verify-BankPatch.ps1 -Kind migration`). Its PC tests run with the others; among them a cut at every step of the conversion.
 
 After START, migration checks existing local extdata before any cartridge or installed-game detection; neither is run. A missing archive gives `0000600D 00000000` without creating one. The presence or absence of a game never decides whether conversion runs.
 
-It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs`, the script, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+It belongs to that one step and ships with the releases that follow it while users of the previous release are expected ([Release](#release)). Nothing depends on it: when the step is behind, the crate, `bank15/migrate.rs` with its line in `profile.rs`, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted.
 
 This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and one migration patch of this shape converts the Bank of the version before. During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with the version/package label and two numbers. `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. Its PC tests cover interrupted conversions; the console checks are in [testing.md](testing.md#a-release-with-a-migration), the user's steps in the package's README.
 
@@ -110,7 +109,7 @@ This is the form for every change of how the Bank is stored: the patches read on
 While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)). It needs no game: it takes the load the original made for Pokémon HOME, which reads and saves none.
 
 ```powershell
-./scripts/Build-BankDownloadPatch.ps1
+./scripts/Build-Patches.ps1 -Kind download
 ```
 
 This builds it into `build/download/` and verifies it (`Verify-BankPatch.ps1 -Kind download`). Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
@@ -130,7 +129,7 @@ Local inspection and file writing use the original preparation message and power
 
 A message of the original on the way (no connection, maintenance, the server locked for a while) leads back to its start screen as it always did; nothing is written then.
 
-Nothing depends on it: when the service has ended, the crate, `bank15/download.rs`, the script, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-BankPayload.ps1` and `New-Release.ps1` can be deleted.
+Nothing depends on it: when the service has ended, the crate, `bank15/download.rs` with its line in `profile.rs`, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted.
 
 ## Release
 

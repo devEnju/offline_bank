@@ -1,11 +1,17 @@
+<#
+Independent check of the Transporter patch package in build/binary/transporter.
+This script shares no code with patch-builder: it applies code.ips itself,
+reads the entry functions from the linked ELF's symbols, and compares the
+result with the original executable and exheader. Writes verification.json
+into the package.
+
+-Kind is as for Verify-BankPatch.ps1; Transporter has one package.
+#>
 [CmdletBinding()]
 param(
+    [ValidateSet('transporter')][string]$Kind = 'transporter',
     [string]$InputPath = ''
 )
-# Independent check of the Transporter patch package in build/binary/transporter. Shares no code with the
-# builder: it applies code.ips itself, reads the entry functions from the
-# linked ELF's symbols, and compares the result with the original executable
-# and exheader. Writes verification.json into the package.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -174,9 +180,9 @@ foreach ($address in $allowed.Keys) {
     $new = Get-Word $patched $address
     $want = $allowed[$address]
     if ($want -is [string]) {
-        $kind, $target = $want.Split(':')
-        $top = @{ 'b' = 0xEA; 'bl' = 0xEB }[$kind]
-        Assert-Check (($new -shr 24) -eq $top) ("{0:X8} is not '$kind'" -f $address)
+        $branch, $target = $want.Split(':')
+        $top = @{ 'b' = 0xEA; 'bl' = 0xEB }[$branch]
+        Assert-Check (($new -shr 24) -eq $top) ("{0:X8} is not '$branch'" -f $address)
         if ($target -like 'transporter_*') {
             # An entry function: a global ARM function of the start-up hook
             # or of the payload's code pages.

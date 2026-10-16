@@ -36,7 +36,7 @@ function CString([byte[]]$bytes,[int]$offset) {
     [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
 }
 $crate=@{bank='bank';migration='bank-migrate';test='bank';download='bank-download'}[$Kind]
-if (-not $ElfPath) { $ElfPath="build/intermediate/$kind/$crate-payload.elf" }
+if (-not $ElfPath) { $ElfPath="build/intermediate/$Kind/$crate-payload.elf" }
 $packagePath=if($Kind -eq 'bank'){'build/binary/bank'}else{"build/$kind"}
 $reportPath=Join-Path $packagePath 'verification.json'
 try {
@@ -56,7 +56,7 @@ try {
     Assert-Check ($original.Length -eq 0x2ac000 -and $originalHeader.Length -eq 0x800) 'Original input lengths'
     Assert-Check ($manifest.source_code_sha256 -eq $codeHash -and $manifest.source_exheader_sha256 -eq $headerHash) 'Manifest input hashes'
     Assert-Check ($manifest.source_elf_sha256 -eq $elfHash) 'Manifest ELF hash'
-    Assert-Check ($packageName -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) 'Package is not the one of the current payload and profile'
+    Assert-Check ($packageName -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $Kind)) 'Package is not the one of the current payload and profile'
     Assert-Check ($manifest.patch -eq $Kind) 'Manifest names another patch'
     Assert-Check ($manifest.title_id -eq '00040000000c9b00' -and $manifest.tmd_version -eq 6272 -and $manifest.remaster_version -eq 6) 'Manifest version'
     foreach($name in @('code.ips','exheader.bin')) {
