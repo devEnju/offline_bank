@@ -126,8 +126,8 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 
 ## Limits
 
-- **A duplicate after a power cut.** The delivery is written before the Pokémon are removed from the game. If the power fails exactly between the two, they are in Bank and still in the game. The original prevented this with the server's help; the patch does not.
-- **Wording of refusals.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them. Which of them it is shows when Bank is opened: Bank solves it or says it with its own numbers.
+- **A duplicate after a power cut, by design.** The delivery is written before the Pokémon are removed from the game. If the power fails exactly between the two, they are in Bank and still in the game. The original prevented this with the server's help. The patch keeps this order on purpose: it can duplicate a Pokémon but never lose one, the same choice Bank makes for an interrupted save that moved Pokémon one way.
+- **Wording of refusals, by design.** The original app has no text for "Bank is not set up" or "Bank's data cannot be read". Everything that is not "Pokémon in the way" uses its "did not complete correctly… open Pokémon Bank" message, whose advice fits all of them. Transporter shows no error numbers: every refusal and failed delivery concerns Bank's files, and Bank, once opened, solves it or says it with its own numbers.
 - **Access to Bank's data and to the SD card.** Transporter's own header grants neither. Luma3DS gives every application full filesystem access, which is what makes both work; this needs Luma3DS v10.0 or later.
 - **Saves on the SD card.** Only the one name per game and language in the table [above](#blackwhite-saves-on-the-sd-card) is looked for, one save per game in the chosen language. The search adds a short moment to the loading screen.
 - **Language of the screens.** It can no longer be changed inside Transporter; it is the console's.
