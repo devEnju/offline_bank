@@ -91,14 +91,8 @@ struct Runtime {
     owner: usize,
     step: Step,
     job: Option<JobId>,
-    /// A job was given to the worker since the files were last closed.
-    files_used: bool,
-    /// The job that closes the files at the end of a session, until its
-    /// reply is collected.
-    closing: Option<JobId>,
-    baseline: Option<GameEvidence>,
-    /// Whose game the loaded one is, read with `baseline`.
-    trainer: Option<Trainer>,
+    files: Files,
+    baseline: Option<Baseline>,
     save_dex: Option<crate::dex::Evidence>,
     fault: Fault,
     native_result: u32,
@@ -113,6 +107,27 @@ struct Runtime {
     /// the freshly constructed Bank before the first restore.
     blank: Option<([u8; RECORD_SIZE], u8)>,
 }
+/// The Bank's files between sessions.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Files {
+    /// No job was given to the worker since they were last closed.
+    Closed,
+    /// A job was given to the worker since they were last closed.
+    Used,
+    /// The job that closes them at the end of a session, until its reply is
+    /// collected.
+    Closing(JobId),
+}
+
+/// The game the Bank was loaded with, as it was then or after the last
+/// save: a save in progress is bound to both.
+#[derive(Clone, Copy)]
+struct Baseline {
+    evidence: GameEvidence,
+    /// Whose game it is.
+    trainer: Trainer,
+}
+
 /// Provisional reward state of the loaded session. Only a verified Save and
 /// Quit makes any of it durable; a new load or a cancellation replaces it.
 #[derive(Clone, Copy)]
@@ -160,10 +175,8 @@ static STATE: Exclusive<Runtime> = unsafe {
         owner: 0,
         step: Step::Idle,
         job: None,
-        files_used: false,
-        closing: None,
+        files: Files::Closed,
         baseline: None,
-        trainer: None,
         save_dex: None,
         fault: Fault::None,
         native_result: 0,
@@ -317,14 +330,14 @@ impl Runtime {
         self.owner = task.raw() as usize;
         self.step = step;
         self.job = Some(id);
-        self.files_used = true;
+        self.files = Files::Used;
         Ok(())
     }
     /// A session ends: the worker closes the Bank's files, so that nothing
     /// of them is open on the start screen, where HOME works and Bank can be
     /// closed. The next session opens them as a first one does.
     fn close_files(&mut self) {
-        if !self.files_used || self.job.is_some() || self.closing.is_some() {
+        if self.files != Files::Used || self.job.is_some() {
             return;
         }
         let Some(worker) = self.worker.as_mut() else {
@@ -332,22 +345,29 @@ impl Runtime {
         };
         // No job is out, so a refusal means the worker thread is gone: then
         // nothing can close the files and nothing is reading or writing them.
-        // `files_closed` answers true, and `files_used` stays set, so the
+        // `files_closed` answers true, and the files stay `Used`, so the
         // next session's end asks again.
         if let Ok(id) = unsafe { worker.submit(Job::Close) } {
-            self.closing = Some(id);
-            self.files_used = false;
+            self.files = Files::Closing(id);
         }
     }
     /// Collects the reply of `close_files`. False while it is still out.
     fn files_closed(&mut self) -> bool {
-        let (Some(_), Some(worker)) = (self.closing, self.worker.as_mut()) else {
-            self.closing = None;
+        let Files::Closing(id) = self.files else {
+            return true;
+        };
+        let Some(worker) = self.worker.as_mut() else {
+            self.files = Files::Closed;
             return true;
         };
         // What closing returned changes nothing here: a file that could not
         // be closed shows when the next session opens it.
-        !matches!(worker.collect(&mut self.closing), Ok(None))
+        let mut job = Some(id);
+        let out = matches!(worker.collect(&mut job), Ok(None));
+        if job.is_none() {
+            self.files = Files::Closed;
+        }
+        !out
     }
     fn poll(&mut self, task: Task) -> Result<Option<Reply>, Fault> {
         if self.owner != task.raw() as usize {
@@ -696,7 +716,6 @@ impl Runtime {
             task.begin_busy();
             unsafe { write_word(task.raw(), 0x10, 1) };
             self.baseline = None;
-            self.trainer = None;
             self.rewards = RewardSession::NONE;
             if opening {
                 self.capture_blank(task)?;
@@ -822,8 +841,10 @@ impl Runtime {
                     unsafe { crate::dex::trainer(task.pointer(8)?, task.bank_pointer()?) }
                         .map_err(|_| Fault::NativeObject)?;
                 self.restore_bank(task, loaded, false)?;
-                self.baseline = Some(evidence);
-                self.trainer = Some(Trainer::of_game(&name, id, gen7));
+                self.baseline = Some(Baseline {
+                    evidence,
+                    trainer: Trainer::of_game(&name, id, gen7),
+                });
                 self.pending = false;
                 let (game, bank) = counts(task)?;
                 let coordinator = task.pointer(8)?;
@@ -897,7 +918,7 @@ impl Runtime {
                 // the start screen. Of its message only the advice about
                 // the card is shown; its first part names a server. The
                 // changes made in memory go with the session.
-                if !self.baseline.ok_or(Fault::GameRead)?.cartridge {
+                if !self.baseline.ok_or(Fault::GameRead)?.evidence.cartridge {
                     return Err(Fault::GameRead);
                 }
                 let ui = task.ui()?;
@@ -910,7 +931,10 @@ impl Runtime {
                 Ok(None)
             }
             (Step::SaveInspect, Reply::Inspected(original)) => {
-                let baseline = self.baseline.ok_or(Fault::GameRead)?;
+                let Baseline {
+                    evidence: baseline,
+                    trainer,
+                } = self.baseline.ok_or(Fault::GameRead)?;
                 if baseline.title != original.title || baseline.fingerprint != original.fingerprint
                 {
                     return Err(Fault::GameChanged);
@@ -926,7 +950,6 @@ impl Runtime {
                 if !self.rewards.settled {
                     return Err(Fault::RewardState);
                 }
-                let trainer = self.trainer.ok_or(Fault::GameRead)?;
                 // A game the Bank knows already, with the same trainer,
                 // brings its records and Pokédex along with the save.
                 unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
@@ -965,7 +988,11 @@ impl Runtime {
                 },
             ) => {
                 self.restore_bank(task, loaded, true)?;
-                self.baseline = Some(evidence);
+                // The saved game is the one the session goes on with.
+                self.baseline = self.baseline.map(|baseline| Baseline {
+                    evidence,
+                    ..baseline
+                });
                 self.pending = false;
                 self.begin_rewards(task)?;
                 // The original's ending of a successful save: its sound and
