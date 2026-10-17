@@ -1565,4 +1565,31 @@ mod tests {
             assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
         }
     }
+
+    /// The files of the current journal version, by name and length. A
+    /// change here is a new version of the stored files: raise
+    /// offline-core's version to the next whole number, and give the
+    /// migration a folder for the files as they were (docs/building.md).
+    #[test]
+    fn the_files_are_those_of_this_journal_version() {
+        assert_eq!(offline_core::SCHEMA_VERSION, 1);
+        let files: Vec<(&str, u64)> = [FileName::Bank, FileName::Main, FileName::Transport]
+            .into_iter()
+            .flat_map(FileName::units)
+            .map(|unit| (unit.path, unit.len))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("/journal.bin", 140),
+                ("/journal.alt.bin", 140),
+                ("/bank.bin", 729_800),
+                ("/bank.alt.bin", 729_800),
+                ("/main.bin", 30_466),
+                ("/main.alt.bin", 30_466),
+                ("/mover.bin", 6_990),
+                ("/mover.alt.bin", 6_990),
+            ]
+        );
+    }
 }

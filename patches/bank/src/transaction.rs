@@ -401,4 +401,26 @@ mod tests {
         assert_eq!(Trainer::of_game(&short, 1, false).name[..2], [0x41, 0]);
         assert_eq!(gen6.name, [0x41; NAME]);
     }
+
+    /// A save in progress as v0.5.0 recorded it (offline-core's
+    /// `tests/journal.rs`, where every release of this journal version adds
+    /// its own). The binding of each is one of this form.
+    #[test]
+    fn every_save_in_progress_a_release_of_this_journal_version_recorded_binds() {
+        let records = [(
+            "v0.5.0",
+            "424b4a010300000013180002606ec39112c569f89adde7d8d5bea0d0aa861fd28f435e8196be08cd41005300480000000000000000000000000000000000000039300000389bdfc501010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202ef3896b9",
+        )];
+        for (release, hex) in records {
+            let bytes: std::vec::Vec<u8> = (0..hex.len() / 2)
+                .map(|at| u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16).unwrap())
+                .collect();
+            let record = offline_core::Metadata::decode(&bytes).expect(release);
+            let offline_core::Phase::Prepared(pending) = record.phase else {
+                panic!("{release}: no save in progress");
+            };
+            assert_eq!(bound(&pending), Ok(Medium::Cartridge), "{release}");
+            assert_eq!(Trainer::of(&pending.game), named("ASH", 12345), "{release}");
+        }
+    }
 }

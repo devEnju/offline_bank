@@ -188,6 +188,8 @@ In this order, stopping at the first problem, it:
 5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`: a table of which way each Bank goes, the guides of the zips with their numbers, how to install, and the files and hashes;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
 
+**After a release** its journal records join the tests of the stored files' version, so that every later release of that version has to read them: at rest, with a delivery waiting, and with a save in progress, as `offline-core/tests/journal.rs` describes. They are taken from the release's tag with a temporary test in a git worktree of it, and added to `RELEASES` there and, the save in progress, to the test of `transaction.rs` that binds them.
+
 **What ships beside the patches** is decided by the script, as long as `scripts/packages.psd1` lists the package:
 
 | Zip | Ships | Afterwards |

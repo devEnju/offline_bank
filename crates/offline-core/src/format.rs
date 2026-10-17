@@ -1,6 +1,21 @@
 use crate::crc32;
 
-pub const SCHEMA_VERSION: u8 = 1;
+/// The journal version, in byte 3 of every record: the major number of this
+/// crate's version in its `Cargo.toml`, the version of the stored files.
+pub const SCHEMA_VERSION: u8 = major(env!("CARGO_PKG_VERSION_MAJOR"));
+const fn major(digits: &str) -> u8 {
+    let digits = digits.as_bytes();
+    assert!(!digits.is_empty());
+    let mut value: u32 = 0;
+    let mut at = 0;
+    while at < digits.len() {
+        assert!(digits[at].is_ascii_digit());
+        value = value * 10 + (digits[at] - b'0') as u32;
+        assert!(value <= u8::MAX as u32);
+        at += 1;
+    }
+    value as u8
+}
 pub const METADATA_SIZE: usize = 140;
 const METADATA_MAGIC: &[u8; 3] = b"BKJ";
 /// Most Pokémon the transport box holds.

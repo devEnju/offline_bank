@@ -8,7 +8,7 @@
 //! initializer, a filesystem adapter, and fingerprints of the complete game
 //! save transaction. This crate neither patches Bank nor edits game saves.
 //!
-//! # Stored format (version 1)
+//! # Stored format (version 1: the major number of this crate's version)
 //!
 //! The Bank is the native body cut into three files (`sections`): the Bank
 //! file with the boxes, the main file, and the transport box. Each exists in
