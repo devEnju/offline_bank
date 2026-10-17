@@ -1,4 +1,4 @@
-//! The migration patch: converts the Bank of the previous release and does
+//! The migration patch: converts a Bank an earlier release stored and does
 //! nothing else. Task 3 runs the conversion without its native game scan.
 
 use super::{

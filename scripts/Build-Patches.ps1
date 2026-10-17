@@ -4,7 +4,7 @@ Builds packages and checks each with its verify script (docs/building.md).
 Without -Kind it builds the two patches of a release, Bank's into
 build/binary/bank and Transporter's into build/binary/transporter. -Kind
 builds one of the other packages for Bank instead: the console test build
-(test, build/test), the migration from the previous release (migration,
+(test, build/test), the migration from earlier releases (migration,
 build/migration), or the download from the official server (download,
 build/download).
 

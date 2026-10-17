@@ -1,4 +1,4 @@
-//! Frozen: the record the previous release kept in its rewards side file.
+//! Frozen: the record v0.4.0 kept in its rewards side file.
 //! Only the migration reads it.
 //!
 //! 16 bytes: the remainder in Pokémon-hours as a u16 at 4, and the day of the

@@ -7,14 +7,16 @@
 //! runs it again, which is safe, and finds a converted Bank.
 
 use crate::{
-    migrate::{self, Card, Done},
+    migrate::{self, Card, Done, PACKAGE},
     navigation,
+    source::Source,
 };
 use bank_common::{
     bank_files::{ExtFiles, UnitFile},
     exclusive::Exclusive,
     fault::Fault,
     fs::{self, ExtdataStorage},
+    numbers::VERSION,
     task::{storage_activity, write_word, Ended, Notice, Task, FS_SESSION, TASK_SCAN},
     ui,
     worker::{JobId, Service, Shared, Worker, WorkerError},
@@ -43,7 +45,8 @@ impl Card for ExtFiles {
 }
 
 /// The one job: convert what is in the extdata of this session. Its reply
-/// is the two numbers to show.
+/// is the two numbers to show, and the way the Bank was stored that it
+/// found.
 #[derive(Clone, Copy)]
 struct Convert {
     session: u32,
@@ -52,7 +55,7 @@ struct Converter;
 static SHARED: Shared<Converter> = Shared::new();
 impl Service for Converter {
     type Job = Convert;
-    type Reply = [u32; 2];
+    type Reply = ([u32; 2], Option<Source>);
     // The worker alone; this patch starts no other thread.
     const THREADS: i64 = 1;
     fn shared() -> &'static Shared<Self> {
@@ -61,7 +64,7 @@ impl Service for Converter {
     fn start() -> Self {
         Self
     }
-    fn run(&mut self, job: Convert, staging: &mut [u8]) -> Result<[u32; 2], WorkerError> {
+    fn run(&mut self, job: Convert, staging: &mut [u8]) -> Result<Self::Reply, WorkerError> {
         if job.session == 0 {
             // Bank's own FS session is not initialized yet.
             return Err(Fault::StorageOpen.with(0x7800_0000));
@@ -69,21 +72,23 @@ impl Service for Converter {
         // The old files cannot be read: the numbers of that step.
         match unsafe { ExtdataStorage::archive_exists(job.session) } {
             Ok(true) => {}
-            Ok(false) => return Ok([migrate::DONE, Done::NoBank as u32]),
+            Ok(false) => return Ok(([migrate::DONE, Done::NoBank as u32], None)),
             Err(error) => {
-                return Ok([
-                    migrate::FAILED + migrate::Step::ReadOld as u32,
-                    error.diagnostic(),
-                ])
+                return Ok((
+                    [
+                        migrate::FAILED + migrate::Step::ReadOld as u32,
+                        error.diagnostic(),
+                    ],
+                    None,
+                ))
             }
         }
         let mut files = ExtFiles {
             session: job.session,
         };
-        Ok(migrate::numbers(
-            migrate::run(&mut files, staging),
-            fs::Error::diagnostic,
-        ))
+        let report = migrate::run(&mut files, staging);
+        let numbers = migrate::numbers(report.result, fs::Error::diagnostic);
+        Ok((numbers, report.source))
     }
 }
 
@@ -112,7 +117,10 @@ impl Runtime {
         unsafe { Worker::get(&mut self.worker) }.map_err(WorkerError::numbers)
     }
     /// One frame of the utility task. `Ok(None)` while the conversion runs.
-    unsafe fn open(&mut self, task: Task) -> Result<Option<[u32; 2]>, [u32; 2]> {
+    unsafe fn open(
+        &mut self,
+        task: Task,
+    ) -> Result<Option<<Converter as Service>::Reply>, [u32; 2]> {
         if self.job.is_none() {
             let panel = task.ui().map_err(|_| NATIVE)?;
             unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
@@ -187,7 +195,14 @@ pub unsafe extern "aapcs" fn bank_migrate_scan(raw: *mut u8) -> u32 {
     if state.numbers.is_none() {
         match unsafe { state.open(task) } {
             Ok(None) => return 0,
-            Ok(Some(numbers)) | Err(numbers) => state.numbers = Some(numbers),
+            Ok(Some((numbers, source))) => {
+                // The line above the numbers names the way converted.
+                if let Some(label) = migrate::label(source, VERSION) {
+                    state.notice.relabel(label);
+                }
+                state.numbers = Some(numbers);
+            }
+            Err(numbers) => state.numbers = Some(numbers),
         }
     }
     let [first, second] = state.numbers.unwrap_or(NATIVE);
@@ -196,10 +211,6 @@ pub unsafe extern "aapcs" fn bank_migrate_scan(raw: *mut u8) -> u32 {
     // this patch. Bank is closed from the HOME Menu.
     state.notice.done(task, first, second)
 }
-
-/// The patch's name: behind "Ver. 1.5" on the start screen, and behind the
-/// version on the result screen.
-const PACKAGE: &[u8] = b"-migration";
 
 /// Replaces the start screen's call that writes its version line
 /// (002b49c4): the line says which patch runs.

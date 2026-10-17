@@ -240,6 +240,12 @@ impl Notice {
             label: crate::numbers::Label::of(suffix),
         }
     }
+    /// Shows `label` above the numbers instead of the package's own, for a
+    /// result that says more than the package: the migration names the way
+    /// the Bank was stored that it converted.
+    pub fn relabel(&mut self, label: crate::numbers::Label) {
+        self.label = label;
+    }
     /// One frame of the task's update after an error. The result is the
     /// update's own: 0, as nothing ends this screen but closing Bank. Only a
     /// screen that could not be shown finishes the task as failed.

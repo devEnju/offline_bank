@@ -1,4 +1,4 @@
-//! Frozen: the previous release's `transport.rs`. Only the migration reads it.
+//! Frozen: v0.4.0's `transport.rs`. Only the migration reads it.
 //! Rules for the transport-box file shared with a patched Poké Transporter.
 //!
 //! The file is a `sidecar` with two slots. A slot's payload is the native

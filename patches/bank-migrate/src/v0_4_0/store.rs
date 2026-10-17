@@ -1,4 +1,4 @@
-//! Frozen: the previous release's `store.rs`. Only the migration reads it.
+//! Frozen: v0.4.0's `store.rs`. Only the migration reads it.
 use super::{
     checksum::Crc32, decide_recovery, format::zero, Fingerprint, FormatError, GameIdentity,
     GameObservation, Metadata, PendingTransfer, Phase, RecoveryBlock, RecoveryDecision, Slot,

@@ -112,17 +112,19 @@ Cut the power three to five times for each row: pull the SD card if the model al
 | Test package, **(record)** and then **(boxes)**: move one Pokémon, Save and Quit, cut the power about five seconds in. Reopen; then save again and reopen. | Bank opens with the boxes from before the save. The next save completes and persists. |
 | Normal packages: confirm a Gen 5 transfer, cut the power as soon as the moving screen appears. Open Bank, then look at Box 1 in the game. | The transport box is empty or holds every Pokémon of Box 1, never some. With an empty transport box all are still in the game; with a full one they may be in both places. After Bank saves the transport box empty, Transporter lists games again. |
 
-## A release with a migration
+## The migration
 
-Start from a Bank last used with the previous release, and keep a backup of it: after the conversion the previous release cannot open it.
+Once with a Bank last used with v0.2.1 and once with one last used with v0.4.0, each from a backup: after the conversion those releases cannot open it. Note the Miles and the date of the last Save and Quit before.
 
 | Check | Expected |
 | --- | --- |
-| New Bank, before converting: START. | The error screen with `00000003` and the refused file's size; nothing changed. |
+| New Bank, before converting: START. | The error screen with `00000003` and `00164C54` (v0.2.1) or `000000C0` (v0.4.0); nothing changed. |
 | New Transporter, before converting: START. | The "did not complete correctly… open Pokémon Bank" message, then the title. No game list. |
-| Migration package: START, also with no game present. | Preparation text, then the HOME line with "-migration" and `0000600D 00000001`. No game scan or game selection. |
-| Close Bank from HOME, reopen with the migration, START. | `0000600D 00000002`. |
-| New Bank and Transporter. | Boxes, Pokédex, Miles and transport box as before; a transfer works. |
+| Migration package: START, also with no game present. | Preparation text, then the HOME line with "v0.2.1-" or "v0.4.0-" and the release's version, and `0000600D 00000001`. No game scan or game selection. |
+| Close Bank from HOME, reopen with the migration, START. | The HOME line with "-migration" behind the release's version, and `0000600D 00000002`. |
+| New Bank and Transporter. | Boxes, Pokédex and transport box as before; a transfer works. |
+| Miles at the first opening with a game. | The balance from before, and what the days since the last Save and Quit earn on top: Pokémon in the Bank ÷ 30 per day. From v0.2.1, also the day of that save counts from its start. |
+| Save and Quit, reopen. | The same boxes and Miles. |
 
 ## The download
 

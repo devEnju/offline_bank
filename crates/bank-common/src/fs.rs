@@ -1585,6 +1585,12 @@ mod split_tests {
         // It is not replaced either: whoever asks never gets that far.
         assert_eq!(card.files.borrow()["/two.bin"].bytes.len(), 7);
         assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
+        // Files that are not there before it do not hide it: the error
+        // screen shows its size, as for the Bank file of v0.2.1 behind the
+        // journal records it does not have.
+        card.files.borrow_mut().remove("/one.bin");
+        let error = Split::open(card.clone(), &FILES).err().unwrap();
+        assert_eq!(error.diagnostic(), 7);
 
         let card = self::card();
         *card.archive_fails.borrow_mut() = true;

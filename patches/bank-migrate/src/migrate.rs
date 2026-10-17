@@ -1,12 +1,12 @@
-//! One-time conversion of the Bank the previous release stored.
+//! One-time conversion of a Bank an earlier release stored.
 //!
-//! The previous release keeps the Bank in ten files: the journal and the
-//! boxes, the Pokédex, the transport box and a rewards record, each twice.
-//! Its files are read here with its own code (`previous`), assembled into
-//! the one native body they are cut from, and written as a Bank of the
-//! current files through `BankFiles`, the way the offline patch creates one.
-//! What that release kept in its rewards record goes into the body on the
-//! way. Most of the new files have the names of old ones, which is why the
+//! Earlier releases stored the Bank in two other ways (`Source`): in four
+//! files up to v0.2.1, and in ten from v0.3.0 to v0.4.0. Whichever is there
+//! is read with the code of the release that wrote it (`v0_2_1`, `v0_4_0`),
+//! assembled into the one native body, and written as a Bank of the current
+//! files through `BankFiles`, the way the offline patch creates one. What
+//! those releases kept in their rewards record goes into the body on the
+//! way. Some of the new files have the names of old ones, which is why the
 //! new files are first written under temporary names.
 //!
 //! Only this patch knows the earlier files, and it does nothing else: it
@@ -14,35 +14,33 @@
 //!
 //! The steps, each safe to interrupt:
 //!
-//! 1. *Stage.* The old Bank is loaded the way the previous release loads
-//!    it. It must be at rest: a save in progress, or a Pokédex or transport
-//!    box that release would repair at its next save, are that release's to
-//!    settle. Its body is written as a new Bank under temporary names, which
-//!    is then loaded and must be the same body. Only then a marker file is
-//!    created. Until the marker exists the old files are untouched, and a
-//!    start begins again.
-//! 2. *Finish.* With the marker, the temporary files are the Bank, and at
-//!    every start they must load as one before anything is removed. The old
-//!    files are removed, the final files are written from the temporary ones
-//!    (the journal records last) and compared, and must load as the same
-//!    Bank; then the marker is removed, and then the temporary files.
+//! 1. *Stage.* The old Bank is loaded the way its release loads it. It must
+//!    be at rest: a save in progress, or a Pokédex or transport box that
+//!    release would repair at its next save, are that release's to settle.
+//!    Its body is written as a new Bank under temporary names, which is then
+//!    loaded and must be the same body. Only then a marker file is created,
+//!    which names the release. Until the marker exists the old files are
+//!    untouched, and a start begins again.
+//! 2. *Finish.* With the marker, the temporary files are the Bank, whatever
+//!    they were made from, and at every start they must load as one before
+//!    anything is removed. The files of both earlier ways are removed, the
+//!    final files are written from the temporary ones (the journal records
+//!    last) and compared, and must load as the same Bank; then the marker is
+//!    removed, and then the temporary files.
 
-use crate::previous::{self, bank_files as old};
+use crate::{source::Source, v0_4_0::bank_files as old};
 use bank_common::{
     bank_files::{self, BankFiles, FileName, Files, UnitFile, MAIN, MOVER, RECORD, SNAPSHOT},
+    numbers::Label,
     session,
 };
-use offline_core::{
-    crc32,
-    native_blob::{self, BLOB_SIZE, FRACTION_OFFSET},
-    Phase, Storage, StoreError,
-};
+use offline_core::{crc32, native_blob::BLOB_SIZE, Phase, Storage, StoreError};
 
 /// First number of the result screen when nothing went wrong; the second
 /// number is the `Done`.
 pub const DONE: u32 = 0x600d;
-/// First number when the old Bank is not at rest: the previous release has
-/// to settle it first.
+/// First number when the old Bank is not at rest: the release that stored
+/// it has to settle it first.
 pub const REFUSED: u32 = 0xbad;
 /// First number of a failed step, plus the `Step`.
 pub const FAILED: u32 = 0xba0;
@@ -83,7 +81,7 @@ pub enum Step {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cause<E> {
     Io(E),
-    /// The files do not load as a Bank.
+    /// The files do not load as a Bank, or hold a Bank of both earlier ways.
     Damaged,
     /// A copy does not read back as what was copied, or the copies do not
     /// load as the Bank the old files held.
@@ -97,10 +95,17 @@ pub enum Stopped<E> {
     /// The old Bank has a save in progress. Nothing was changed.
     InProgress,
     /// The old Bank has no Pokédex or no transport box for its current
-    /// save, which the previous release repairs at its next Save and Quit.
-    /// Nothing was changed.
+    /// save, which its release repairs at its next Save and Quit. Nothing
+    /// was changed.
     Unsettled,
     Failed(Step, Cause<E>),
+}
+
+/// What a run did, and the way of storing it found, when it found one.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Report<E> {
+    pub source: Option<Source>,
+    pub result: Result<Done, Stopped<E>>,
 }
 
 /// The two numbers of the result screen. `diagnostic` gives the console's
@@ -122,27 +127,32 @@ pub fn numbers<E>(result: Result<Done, Stopped<E>>, diagnostic: impl Fn(E) -> u3
     }
 }
 
+/// The patch's name: behind "Ver. 1.5" on the start screen, and behind the
+/// version on the result screen when no earlier Bank was found.
+pub const PACKAGE: &[u8] = b"-migration";
+
+/// The line above the numbers. For a Bank of an earlier way, that way and
+/// the release converting it, as "v0.2.1-0.6.0" (`version` without its "v");
+/// otherwise the version and the package, as "v0.6.0-migration". `None` for
+/// a version that makes no label.
+pub fn label(source: Option<Source>, version: &[u8]) -> Option<Label> {
+    let Some(source) = source else {
+        return Label::new(version, PACKAGE);
+    };
+    let version = version.strip_prefix(b"v").unwrap_or(version);
+    let mut suffix = [0; Label::ROOM];
+    let part = suffix.get_mut(1..1 + version.len())?;
+    part.copy_from_slice(version);
+    suffix[0] = b'-';
+    Label::new(source.tag(), &suffix[..1 + version.len()])
+}
+
 const fn single(path: &'static str, len: u64) -> [UnitFile; 1] {
     [UnitFile::new(path, len)]
 }
 /// The current containers in the order they are put in place: the Bank
 /// last, because its journal is what makes a Bank exist.
 const ORDER: [FileName; 3] = [FileName::Main, FileName::Transport, FileName::Bank];
-/// The previous release's containers.
-const PREVIOUS: [old::FileName; 4] = [
-    old::FileName::Dex,
-    old::FileName::Rewards,
-    old::FileName::Transport,
-    old::FileName::Bank,
-];
-/// Whether a Bank of the previous release is there: one of its journal
-/// records, which have another size than the current ones. Its other
-/// files say nothing: some it can do without, and the rest have the names
-/// of current ones.
-fn previous_bank<C: Card>(card: &mut C) -> Result<bool, C::Error> {
-    let records = &old::FileName::Bank.units()[..2];
-    Ok(card.exists(&records[..1])? || card.exists(&records[1..])?)
-}
 static TEMPORARY_BANK: [UnitFile; 4] = [
     UnitFile::new("/m0.tmp", RECORD),
     UnitFile::new("/m1.tmp", RECORD),
@@ -157,6 +167,9 @@ static TEMPORARY_TRANSPORT: [UnitFile; 2] = [
     UnitFile::new("/m6.tmp", MOVER),
     UnitFile::new("/m7.tmp", MOVER),
 ];
+/// Says that the temporary files are a whole Bank, and which way it was
+/// stored before: the tag of the `Source` in ASCII, zero after it. All
+/// zero, as the release before this one left it, names none.
 static MARKER: [UnitFile; 1] = single("/migrate.ok", 16);
 
 fn temporary(file: FileName) -> &'static [UnitFile] {
@@ -175,9 +188,21 @@ fn io<E>(step: Step) -> impl Fn(E) -> Stopped<E> {
 
 /// Converts what is there, or goes on where an interrupted run stopped.
 /// `buffer` is working room of at least one native Bank body.
-pub fn run<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<Done, C> {
-    if !card.exists(&MARKER).map_err(io(Step::ReadOld))? {
-        if !previous_bank(card).map_err(io(Step::ReadOld))? {
+pub fn run<C: Card>(card: &mut C, buffer: &mut [u8]) -> Report<C::Error> {
+    let mut source = None;
+    let result = convert(card, buffer, &mut source);
+    Report { source, result }
+}
+
+fn convert<C: Card>(
+    card: &mut C,
+    buffer: &mut [u8],
+    source: &mut Option<Source>,
+) -> Outcome<Done, C> {
+    if card.exists(&MARKER).map_err(io(Step::ReadOld))? {
+        *source = marked(card);
+    } else {
+        let Some(found) = find(card)? else {
             // What a finished run may have left when it was cut at its end.
             for file in ORDER {
                 card.remove(temporary(file)).map_err(io(Step::WriteNew))?;
@@ -190,16 +215,48 @@ pub fn run<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<Done, C> {
             } else {
                 Done::NoBank
             });
-        }
-        stage(card, buffer)?;
+        };
+        *source = Some(found);
+        stage(card, buffer, found)?;
     }
     finish(card, buffer)?;
     Ok(Done::Converted)
 }
 
+/// The earlier way the Bank on the card is stored in, if any. Files of both
+/// are no Bank either of them wrote, and nothing is done with them.
+fn find<C: Card>(card: &mut C) -> Outcome<Option<Source>, C> {
+    let mut found = None;
+    for source in Source::ALL {
+        if source.there(card).map_err(io(Step::ReadOld))? {
+            if found.is_some() {
+                return Err(Stopped::Failed(Step::ReadOld, Cause::Damaged));
+            }
+            found = Some(source);
+        }
+    }
+    Ok(found)
+}
+
+/// The marker's content for `source`.
+fn mark(source: Source) -> [u8; 16] {
+    let mut out = [0; 16];
+    out[..source.tag().len()].copy_from_slice(source.tag());
+    out
+}
+/// The way the marker names, read for the result screen only.
+fn marked<C: Card>(card: &mut C) -> Option<Source> {
+    let mut marker = card.open(&MARKER).ok()??;
+    let mut bytes = [0; 16];
+    marker.read(0, &mut bytes).ok()?;
+    Source::ALL
+        .into_iter()
+        .find(|&source| mark(source) == bytes)
+}
+
 /// A card whose files are only read: every write is refused.
-struct ReadOnly<S>(S);
-enum Guarded<E> {
+pub(crate) struct ReadOnly<S>(S);
+pub(crate) enum Guarded<E> {
     Io(E),
     ReadOnly,
 }
@@ -218,12 +275,21 @@ impl<S: Storage> Storage for ReadOnly<S> {
         Err(Guarded::ReadOnly)
     }
 }
-/// The previous release's files, only read.
-struct Previous<'a, C: Card>(&'a mut C);
-impl<C: Card> old::Files for Previous<'_, C> {
+/// The files of an earlier way, only read: its containers as the frozen
+/// code knows them, each made of the files `units` gives it.
+pub(crate) struct Earlier<'a, C: Card> {
+    card: &'a mut C,
+    units: fn(old::FileName) -> &'static [UnitFile],
+}
+impl<'a, C: Card> Earlier<'a, C> {
+    pub(crate) fn new(card: &'a mut C, units: fn(old::FileName) -> &'static [UnitFile]) -> Self {
+        Self { card, units }
+    }
+}
+impl<C: Card> old::Files for Earlier<'_, C> {
     type Storage = ReadOnly<C::Storage>;
     fn open(&mut self, file: old::FileName) -> Result<Option<Self::Storage>, Guarded<C::Error>> {
-        let found = self.0.open(file.units()).map_err(Guarded::Io)?;
+        let found = self.card.open((self.units)(file)).map_err(Guarded::Io)?;
         Ok(found.map(ReadOnly))
     }
     fn create(&mut self, _: old::FileName) -> Result<Self::Storage, Guarded<C::Error>> {
@@ -273,21 +339,6 @@ fn load<F: Files>(
     Ok(crc32(body))
 }
 
-/// Why the previous release's code could not read its Bank.
-fn unread<E>(step: Step) -> impl Fn(old::Error<Guarded<E>>) -> Stopped<E> {
-    move |error| {
-        Stopped::Failed(
-            step,
-            match error {
-                old::Error::Io(Guarded::Io(error))
-                | old::Error::Bank(previous::session::Error::Storage(previous::StoreError::Io(
-                    Guarded::Io(error),
-                ))) => Cause::Io(error),
-                _ => Cause::Damaged,
-            },
-        )
-    }
-}
 /// Why the current code could not write or read the new Bank.
 fn unwritten<E>(step: Step) -> impl Fn(bank_files::Error<E>) -> Stopped<E> {
     move |error| {
@@ -304,39 +355,17 @@ fn unwritten<E>(step: Step) -> impl Fn(bank_files::Error<E>) -> Stopped<E> {
     }
 }
 
-/// Gives the body the unused places as a new Bank has them
-/// (`native_blob::clear_unused`): nothing the server put into a downloaded
-/// Bank, and no day of a redemption. Of the previous release's rewards
-/// record the remainder goes into the body, as a u16.
-fn into_body(body: &mut [u8], record: previous::rewards::Record) {
-    native_blob::clear_unused(body);
-    body[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&record.fraction.to_le_bytes());
-}
-
 /// Reads the old Bank into one native body, writes that body as a new Bank
 /// under temporary names, and marks it complete. The old files are only read.
-fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
+fn stage<C: Card>(card: &mut C, buffer: &mut [u8], source: Source) -> Outcome<(), C> {
     let read = Step::ReadOld;
     let write = Step::WriteTemporary;
     let Some(body) = buffer.get_mut(..BLOB_SIZE) else {
         return Err(Stopped::Failed(read, Cause::Damaged));
     };
-    // The Bank the old files hold, read with the code that wrote them.
-    let mut bank = old::BankFiles::new(Previous(card));
-    match bank.open().map_err(unread(read))? {
-        Some(previous::Phase::Clean(_)) => {}
-        Some(previous::Phase::Prepared(_)) => return Err(Stopped::InProgress),
-        None => return Err(Stopped::Failed(read, Cause::Damaged)),
-    }
-    let loaded = bank.read(body).map_err(unread(read))?;
-    drop(bank);
-    // The previous release fills these from the running Bank and writes them
-    // at its next save. Only it can; a waiting delivery it has taken.
-    if loaded.dex_missing || loaded.transport_missing {
-        return Err(Stopped::Unsettled);
-    }
-    // What it kept beside the body now lives in the body.
-    into_body(body, loaded.rewards);
+    // The Bank the old files hold, read with the code that wrote them, as
+    // the current release keeps it.
+    source.read(card, body)?;
     let converted = crc32(body);
 
     for file in ORDER {
@@ -353,7 +382,9 @@ fn stage<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
         return Err(Stopped::Failed(write, Cause::Mismatch));
     }
     card.remove(&MARKER).map_err(io(write))?;
-    card.create(&MARKER).map_err(io(write))?;
+    let mut marker = card.create(&MARKER).map_err(io(write))?;
+    marker.write(0, &mark(source)).map_err(io(write))?;
+    marker.sync().map_err(io(write))?;
     Ok(())
 }
 
@@ -367,8 +398,11 @@ fn finish<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<(), C> {
         return Err(Stopped::Failed(read, Cause::Damaged));
     };
     let converted = load(Temporary(card), body, read)?;
-    for file in PREVIOUS {
-        card.remove(file.units()).map_err(io(Step::RemoveOld))?;
+    // Whichever way it was stored before: what is not there is not removed.
+    for source in Source::ALL {
+        for files in source.files() {
+            card.remove(files).map_err(io(Step::RemoveOld))?;
+        }
     }
     for file in ORDER {
         card.remove(file.units()).map_err(io(write))?;
@@ -467,9 +501,12 @@ fn same<S: Storage>(
 mod tests {
     extern crate std;
     use super::*;
+    use crate::v0_4_0::{self, into_body};
     use bank_common::testing::body;
-    use offline_core::sections::{TRANSPORT_RECORDS, TRANSPORT_TAGS};
-    use previous::rewards::Record;
+    use offline_core::{
+        native_blob::{self, FRACTION_OFFSET},
+        sections::{TRANSPORT_RECORDS, TRANSPORT_TAGS},
+    };
     use std::{
         cell::RefCell,
         collections::{BTreeMap, BTreeSet},
@@ -477,6 +514,7 @@ mod tests {
         vec,
         vec::Vec,
     };
+    use v0_4_0::rewards::Record;
 
     /// The card, by path. A file that is in `unreadable` was left by an
     /// interrupted write: it is there, but nothing in it reads or writes.
@@ -710,7 +748,7 @@ mod tests {
             self.0.create(file.units())
         }
     }
-    /// The card as the previous release uses it.
+    /// The card as v0.4.0 uses it.
     struct Before(Sd);
     impl old::Files for Before {
         type Storage = Open;
@@ -722,7 +760,7 @@ mod tests {
         }
     }
 
-    const GAME: previous::GameIdentity = previous::GameIdentity {
+    const GAME: v0_4_0::GameIdentity = v0_4_0::GameIdentity {
         title_id: 0x0004_0000_0005_5e00,
         save_identity: [7; 32],
     };
@@ -741,22 +779,22 @@ mod tests {
         into_body(&mut body, record);
         body
     }
-    /// A Bank of the previous release on `card`, created and never saved.
+    /// A Bank of v0.4.0 on `card`, created and never saved.
     fn created(card: &Sd, first: &[u8]) {
         let mut bank = old::BankFiles::new(Before(card.clone()));
         assert!(matches!(bank.open(), Ok(None)));
         bank.initialize(&mut first.to_vec()).unwrap();
     }
-    /// One Save and Quit of the previous release, up to the game's write.
+    /// One Save and Quit of v0.4.0, up to the game's write.
     fn prepared(card: &Sd, saved: &[u8], record: Record) -> old::BankFiles<Before> {
         let mut bank = old::BankFiles::new(Before(card.clone()));
-        assert!(matches!(bank.open(), Ok(Some(previous::Phase::Clean(_)))));
+        assert!(matches!(bank.open(), Ok(Some(v0_4_0::Phase::Clean(_)))));
         bank.read(&mut vec![0; BLOB_SIZE]).unwrap();
         bank.prepare(&mut saved.to_vec(), record, GAME, [1; 32], [2; 32])
             .unwrap();
         bank
     }
-    /// A card with a Bank the previous release created and saved once, and
+    /// A card with a Bank v0.4.0 created and saved once, and
     /// the body the current release has to load from it.
     fn used(console: bool) -> (Sd, Vec<u8>) {
         let card = Sd::default();
@@ -764,7 +802,7 @@ mod tests {
         created(&card, &body(0x31, 0x44, 0));
         let saved = body(0x52, 0x66, 3);
         let mut bank = prepared(&card, &saved, kept());
-        bank.reconcile(previous::GameObservation::Present {
+        bank.reconcile(v0_4_0::GameObservation::Present {
             game: GAME,
             fingerprint: [2; 32],
         })
@@ -784,8 +822,85 @@ mod tests {
         assert!(!loaded.transport_missing);
         Some(staging)
     }
-    fn convert(card: &Sd) -> Result<Done, Stopped<()>> {
+    /// Puts `bytes` into the rewards slot of the current save on `card`, a
+    /// card of v0.4.0's files.
+    fn write_record(card: &Sd, bytes: [u8; 16]) {
+        let mut file = v0_4_0::sidecar::Sidecar::new(
+            card.clone()
+                .open(old::FileName::Rewards.units())
+                .unwrap()
+                .unwrap(),
+            v0_4_0::rewards::FILE,
+        );
+        let slots = file.slots().unwrap();
+        // The slot of the current save: the later of the two.
+        let generation = |index: &usize| {
+            let tag = slots[*index].and_then(|slot| slot.tag);
+            tag.map(|tag| tag.generation)
+        };
+        let index = (0..slots.len()).max_by_key(generation).unwrap();
+        let slot = slots[index].unwrap();
+        file.write(index, slot.tag, slot.aux, slot.count, &[&bytes])
+            .unwrap();
+    }
+    /// The same Bank as v0.2.1 stores it: each container one file, its
+    /// units one after the other. A unit that is not there is a void slot.
+    fn as_v0_2_1(card: &Sd) -> Sd {
+        let files = card.files();
+        let joined = Sd::default();
+        let mut state = joined.0.borrow_mut();
+        state.console = card.0.borrow().console;
+        for (file, path) in [
+            (old::FileName::Bank, "/bank.bin"),
+            (old::FileName::Dex, "/dex.bin"),
+            (old::FileName::Transport, "/transport.bin"),
+            (old::FileName::Rewards, "/rewards.bin"),
+        ] {
+            let units = file.units();
+            if units.iter().all(|unit| !files.contains_key(unit.path)) {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            for unit in units {
+                match files.get(unit.path) {
+                    Some(unit) => bytes.extend_from_slice(unit),
+                    None => bytes.resize(bytes.len() + unit.len as usize, 0),
+                }
+            }
+            state.files.insert(path, bytes);
+        }
+        drop(state);
+        joined
+    }
+    /// A record as v0.2.1 lays it out, written here byte by byte: the
+    /// balance, state 1, the thirtieths, the count, the day accounted through.
+    fn record_of_v0_2_1(balance: u32, fraction: u8, count: u16, day: (u16, u8, u8)) -> [u8; 16] {
+        let mut out = [0; 16];
+        out[..4].copy_from_slice(&balance.to_le_bytes());
+        out[4] = 1;
+        out[5] = fraction;
+        out[6..8].copy_from_slice(&count.to_le_bytes());
+        out[8..10].copy_from_slice(&day.0.to_le_bytes());
+        out[10] = day.1;
+        out[11] = day.2;
+        out
+    }
+    /// A card with a Bank v0.2.1 created and saved once, and the body the
+    /// current release has to load from it.
+    fn used_v0_2_1(console: bool) -> (Sd, Vec<u8>) {
+        let (card, _) = used(console);
+        let bytes = record_of_v0_2_1(1234, 17, 90, (2026, 10, 6));
+        write_record(&card, bytes);
+        let mut expected = body(0x52, 0x66, 3);
+        let stored = crate::v0_2_1::rewards::Stored::decode(&bytes).unwrap();
+        crate::v0_2_1::into_body(&mut expected, stored);
+        (as_v0_2_1(&card.restarted(None)), expected)
+    }
+    fn report(card: &Sd) -> Report<()> {
         run(&mut card.clone(), &mut vec![0; BLOB_SIZE])
+    }
+    fn convert(card: &Sd) -> Result<Done, Stopped<()>> {
+        report(card).result
     }
     /// Nothing but the current release's files is on `card`.
     fn only_the_new_files(card: &Sd) -> bool {
@@ -802,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bank_of_the_previous_release_becomes_the_same_bank_with_its_miles_in_the_body() {
+    fn a_bank_of_v0_4_0_becomes_the_same_bank_with_its_miles_in_the_body() {
         for console in [false, true] {
             let (card, body) = used(console);
             // Ten files: every one of its containers twice.
@@ -849,14 +964,14 @@ mod tests {
         let card = Sd::default();
         created(&card, &body(0x31, 0x44, 0));
         let delivered = body(0, 0, 4);
-        let mut file = previous::sidecar::Sidecar::new(
+        let mut file = v0_4_0::sidecar::Sidecar::new(
             card.clone()
                 .open(old::FileName::Transport.units())
                 .unwrap()
                 .unwrap(),
-            previous::transport::KIND,
+            v0_4_0::transport::KIND,
         );
-        previous::transport::deliver(
+        v0_4_0::transport::deliver(
             &mut file,
             &delivered[TRANSPORT_RECORDS],
             &delivered[TRANSPORT_TAGS],
@@ -871,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bank_that_is_not_at_rest_is_left_to_the_previous_release() {
+    fn a_bank_of_v0_4_0_that_is_not_at_rest_is_left_to_that_release() {
         // A save in progress.
         let card = Sd::default();
         created(&card, &body(0x31, 0x44, 0));
@@ -918,43 +1033,85 @@ mod tests {
         assert!(card.files() == files);
     }
 
+    /// Cuts the conversion of `card` at every operation in turn, and has
+    /// the next start go on from there; some of those are cut again.
+    fn cut_everywhere(card: &Sd, body: &[u8], source: Source) {
+        let whole = card.restarted(Some(usize::MAX));
+        assert_eq!(
+            report(&whole),
+            Report {
+                source: Some(source),
+                result: Ok(Done::Converted)
+            }
+        );
+        let total = whole.0.borrow().operations;
+        assert!(total > 40);
+        let reference = whole.files();
+        let before = card.files();
+        let mut resumed = 0;
+        for cut in 0..total {
+            let cut_card = card.restarted(Some(cut));
+            assert!(convert(&cut_card).is_err(), "cut {cut}");
+            let after = cut_card.restarted(None);
+            let marker = after.files().get(MARKER[0].path).cloned();
+            let expected = match marker {
+                Some(bytes) => {
+                    resumed += 1;
+                    let readable = !after.0.borrow().unreadable.contains(MARKER[0].path);
+                    (readable && bytes[..] == mark(source)).then_some(source)
+                }
+                None if source.there(&mut after.clone()).unwrap() => {
+                    // Until the marker exists the old files are untouched.
+                    for unit in source.files().into_iter().flatten() {
+                        let path = unit.path;
+                        assert!(
+                            after.files().get(path) == before.get(path),
+                            "cut {cut}: {path}"
+                        );
+                    }
+                    Some(source)
+                }
+                None => None,
+            };
+            // The next start finishes it, whatever the cut left.
+            let done = report(&after);
+            assert!(
+                matches!(done.result, Ok(Done::Converted | Done::AlreadyNew)),
+                "cut {cut}: {done:?}"
+            );
+            assert_eq!(done.source, expected, "cut {cut}");
+            assert!(after.files() == reference, "cut {cut}: files differ");
+            assert!(after.0.borrow().unreadable.is_empty(), "cut {cut}");
+            assert!(current(&after).unwrap() == body, "cut {cut}");
+        }
+        // Some cuts fell after the marker: those went on, not again.
+        assert!(resumed > 10);
+        // A start that goes on is cut too, and the one after it finishes.
+        for first in (0..total).step_by(7) {
+            for second in (0..total).step_by(11) {
+                let cut_card = card.restarted(Some(first));
+                assert!(convert(&cut_card).is_err());
+                let again = cut_card.restarted(Some(second));
+                let _ = convert(&again);
+                let last = again.restarted(None);
+                let done = convert(&last);
+                assert!(
+                    matches!(done, Ok(Done::Converted | Done::AlreadyNew)),
+                    "cuts {first}, {second}: {done:?}"
+                );
+                assert!(last.files() == reference, "cuts {first}, {second}");
+                assert!(current(&last).unwrap() == body, "cuts {first}, {second}");
+            }
+        }
+    }
+
     #[test]
     fn a_cut_at_every_step_of_the_conversion_is_finished_by_the_next_start() {
         for console in [false, true] {
             let (card, body) = used(console);
-            let whole = card.restarted(Some(usize::MAX));
-            assert_eq!(convert(&whole), Ok(Done::Converted));
-            let total = whole.0.borrow().operations;
-            assert!(total > 40);
-            let reference = whole.files();
-            let mut resumed = 0;
-            for cut in 0..total {
-                let cut_card = card.restarted(Some(cut));
-                assert!(convert(&cut_card).is_err(), "cut {cut}");
-                let after = cut_card.restarted(None);
-                if after.0.borrow().files.contains_key(MARKER[0].path) {
-                    resumed += 1;
-                } else if previous_bank(&mut after.clone()).unwrap() {
-                    // Until the marker exists the old Bank is whole.
-                    let mut bank = old::BankFiles::new(Before(after.clone()));
-                    assert!(matches!(bank.open(), Ok(Some(previous::Phase::Clean(_)))));
-                    let mut staging = vec![0; BLOB_SIZE];
-                    let loaded = bank.read(&mut staging).unwrap();
-                    assert_eq!(loaded.rewards, kept(), "cut {cut}");
-                    assert!(with_record(staging, kept()) == body, "cut {cut}");
-                }
-                // The next start finishes it, whatever the cut left.
-                let done = convert(&after);
-                assert!(
-                    matches!(done, Ok(Done::Converted | Done::AlreadyNew)),
-                    "cut {cut}: {done:?}"
-                );
-                assert!(after.files() == reference, "cut {cut}: files differ");
-                assert!(after.0.borrow().unreadable.is_empty(), "cut {cut}");
-                assert!(current(&after).unwrap() == body, "cut {cut}");
-            }
-            // Some cuts fell after the marker: those went on, not again.
-            assert!(resumed > 10);
+            cut_everywhere(&card, &body, Source::V0_4_0);
+            let (card, body) = used_v0_2_1(console);
+            cut_everywhere(&card, &body, Source::V0_2_1);
         }
     }
 
@@ -967,40 +1124,23 @@ mod tests {
         let mut saved = body(0x52, 0x66, 3);
         saved[0x170..0x174].fill(0);
         let mut bank = prepared(&card, &saved, kept());
-        bank.reconcile(previous::GameObservation::Present {
+        bank.reconcile(v0_4_0::GameObservation::Present {
             game: GAME,
             fingerprint: [2; 32],
         })
         .unwrap();
         bank.tidy_transport().unwrap();
         drop(bank);
-        let mut earlier = previous::rewards::encode(kept());
+        let mut earlier = v0_4_0::rewards::encode(kept());
         earlier[..4].copy_from_slice(&1234u32.to_le_bytes());
-        let mut file = previous::sidecar::Sidecar::new(
-            card.clone()
-                .open(old::FileName::Rewards.units())
-                .unwrap()
-                .unwrap(),
-            previous::rewards::FILE,
-        );
-        let slots = file.slots().unwrap();
-        // The slot of the current save: the later of the two.
-        let generation = |index: &usize| {
-            let tag = slots[*index].and_then(|slot| slot.tag);
-            tag.map(|tag| tag.generation)
-        };
-        let index = (0..slots.len()).max_by_key(generation).unwrap();
-        let slot = slots[index].unwrap();
-        file.write(index, slot.tag, slot.aux, slot.count, &[&earlier])
-            .unwrap();
-        drop(file);
+        write_record(&card, earlier);
         let card = card.restarted(None);
         assert_eq!(convert(&card), Ok(Done::Converted));
         let mut expected = with_record(saved, kept());
         expected[0x170..0x174].copy_from_slice(&1234u32.to_le_bytes());
         assert!(current(&card).unwrap() == expected);
         // A record of that release itself adds nothing.
-        assert_eq!(previous::rewards::balance_beside(7, &[0; 16]), None);
+        assert_eq!(v0_4_0::rewards::balance_beside(7, &[0; 16]), None);
     }
 
     #[test]
@@ -1019,7 +1159,7 @@ mod tests {
     fn a_run_that_goes_on_removes_nothing_unless_the_temporary_bank_still_loads() {
         let buffer = &mut vec![0; BLOB_SIZE];
         let (staged, body) = used(false);
-        stage(&mut staged.clone(), buffer).unwrap();
+        stage(&mut staged.clone(), buffer, Source::V0_4_0).unwrap();
         let damage = |change: &dyn Fn(&mut State)| {
             let card = staged.restarted(None);
             change(&mut card.0.borrow_mut());
@@ -1061,7 +1201,7 @@ mod tests {
             // The old Bank is still there, whole.
             assert!(card.files() == files);
             let mut bank = old::BankFiles::new(Before(card.clone()));
-            assert!(matches!(bank.open(), Ok(Some(previous::Phase::Clean(_)))));
+            assert!(matches!(bank.open(), Ok(Some(v0_4_0::Phase::Clean(_)))));
             let mut staging = vec![0; BLOB_SIZE];
             bank.read(&mut staging).unwrap();
             assert!(with_record(staging, kept()) == body);
@@ -1107,5 +1247,208 @@ mod tests {
         let files = card.files();
         assert_eq!(convert(&card), Ok(Done::AlreadyNew));
         assert!(card.files() == files);
+    }
+
+    #[test]
+    fn a_bank_of_v0_2_1_becomes_the_same_bank_with_its_miles_in_the_body() {
+        for console in [false, true] {
+            let (card, body) = used_v0_2_1(console);
+            // Four files: one per container.
+            assert_eq!(card.files().len(), 4);
+            assert_eq!(
+                report(&card),
+                Report {
+                    source: Some(Source::V0_2_1),
+                    result: Ok(Done::Converted)
+                }
+            );
+            assert!(only_the_new_files(&card));
+            assert!(card.0.borrow().unreadable.is_empty());
+            assert!(current(&card).unwrap() == body);
+            // The record's balance and thirtieths are in the body.
+            let view = native_blob::NativeBlobView::parse_layout(&body).unwrap();
+            assert_eq!(view.miles(), 1234);
+            assert_eq!(view.rewards().fraction, 17 * 24);
+            // A second run finds nothing to do and changes nothing.
+            let files = card.files();
+            assert_eq!(
+                report(&card),
+                Report {
+                    source: None,
+                    result: Ok(Done::AlreadyNew)
+                }
+            );
+            assert!(card.files() == files);
+        }
+    }
+
+    #[test]
+    fn a_bank_of_v0_2_1_that_was_never_saved_is_converted_too() {
+        let card = Sd::default();
+        let first = body(0x31, 0x44, 2);
+        created(&card, &first);
+        let card = as_v0_2_1(&card);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        assert!(only_the_new_files(&card));
+        // No Miles and no record yet: nothing paid until the first save.
+        let mut expected = first;
+        crate::v0_2_1::into_body(&mut expected, crate::v0_2_1::rewards::Stored::NONE);
+        assert!(current(&card).unwrap() == expected);
+    }
+
+    #[test]
+    fn a_damaged_spare_half_of_the_bank_file_of_v0_2_1_is_not_needed() {
+        let (card, body) = used_v0_2_1(false);
+        let records = 2 * old::RECORD as usize;
+        let snapshot = old::SNAPSHOT as usize;
+        let mut converted = 0;
+        for start in [records, records + snapshot] {
+            let torn = card.restarted(None);
+            let middle = start + snapshot / 2;
+            torn.0
+                .borrow_mut()
+                .torn
+                .push(("/bank.bin", middle..middle + 512));
+            let files = torn.files();
+            match convert(&torn) {
+                Ok(Done::Converted) => {
+                    converted += 1;
+                    assert!(only_the_new_files(&torn));
+                    assert!(current(&torn).unwrap() == body);
+                }
+                Err(Stopped::Failed(Step::ReadOld, Cause::Io(()))) => {
+                    assert!(torn.files() == files)
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // The half of the current save is needed; the other is not.
+        assert_eq!(converted, 1);
+    }
+
+    #[test]
+    fn a_bank_of_v0_2_1_that_is_not_at_rest_is_left_to_that_release() {
+        let refused = |card: &Sd, stopped| {
+            let files = card.files();
+            assert_eq!(
+                report(card),
+                Report {
+                    source: Some(Source::V0_2_1),
+                    result: Err(stopped)
+                }
+            );
+            assert!(card.files() == files);
+        };
+        let card = Sd::default();
+        created(&card, &body(0x31, 0x44, 0));
+        drop(prepared(&card, &body(0x52, 0x66, 1), kept()));
+        refused(&as_v0_2_1(&card), Stopped::InProgress);
+        for container in [old::FileName::Dex, old::FileName::Transport] {
+            let (card, _) = used(false);
+            for unit in container.units() {
+                card.0.borrow_mut().files.remove(unit.path);
+            }
+            refused(&as_v0_2_1(&card), Stopped::Unsettled);
+        }
+    }
+
+    #[test]
+    fn files_of_both_earlier_ways_are_left_as_they_are() {
+        let (card, _) = used_v0_2_1(false);
+        let (other, _) = used(false);
+        for unit in &old::FileName::Bank.units()[..2] {
+            let bytes = other.files()[unit.path].clone();
+            card.0.borrow_mut().files.insert(unit.path, bytes);
+        }
+        let files = card.files();
+        assert_eq!(
+            report(&card),
+            Report {
+                source: None,
+                result: Err(Stopped::Failed(Step::ReadOld, Cause::Damaged))
+            }
+        );
+        assert!(card.files() == files);
+    }
+
+    #[test]
+    fn a_cut_run_of_the_migration_v0_4_0_shipped_is_left_as_it_is() {
+        // That migration cut the files of v0.2.1 into those of v0.3.0, under
+        // the same marker and temporary names, with the lengths of v0.3.0.
+        let (card, _) = used_v0_2_1(false);
+        let (split, _) = used(false);
+        let units = [
+            old::FileName::Bank,
+            old::FileName::Dex,
+            old::FileName::Transport,
+            old::FileName::Rewards,
+        ]
+        .map(old::FileName::units)
+        .concat();
+        let names = [
+            "/m0.tmp", "/m1.tmp", "/m2.tmp", "/m3.tmp", "/m4.tmp", "/m5.tmp", "/m6.tmp", "/m7.tmp",
+            "/m8.tmp", "/m9.tmp",
+        ];
+        {
+            let mut state = card.0.borrow_mut();
+            state.files.insert(MARKER[0].path, vec![0; 16]);
+            for (name, unit) in names.into_iter().zip(&units) {
+                state.files.insert(name, split.files()[unit.path].clone());
+            }
+            // Its finish had begun.
+            state.files.remove("/dex.bin");
+        }
+        let files = card.files();
+        assert_eq!(
+            report(&card),
+            Report {
+                source: None,
+                result: Err(Stopped::Failed(Step::WriteTemporary, Cause::Io(())))
+            }
+        );
+        assert!(card.files() == files);
+    }
+
+    #[test]
+    fn a_cut_run_of_the_migration_v0_5_0_shipped_is_finished() {
+        let (card, body) = used(false);
+        stage(&mut card.clone(), &mut vec![0; BLOB_SIZE], Source::V0_4_0).unwrap();
+        // That release's marker names no way of storing.
+        card.0
+            .borrow_mut()
+            .files
+            .insert(MARKER[0].path, vec![0; 16]);
+        assert_eq!(
+            report(&card),
+            Report {
+                source: None,
+                result: Ok(Done::Converted)
+            }
+        );
+        assert!(only_the_new_files(&card));
+        assert!(current(&card).unwrap() == body);
+    }
+
+    #[test]
+    fn the_line_names_the_way_converted_and_the_release() {
+        let text = |source, version: &[u8]| {
+            let label: Label = label(source, version)?;
+            Some(std::string::String::from_utf16(label.units()).unwrap())
+        };
+        let v0_2_1 = Some(Source::V0_2_1);
+        let v0_4_0 = Some(Source::V0_4_0);
+        assert_eq!(text(v0_2_1, b"v0.6.0").as_deref(), Some("v0.2.1-0.6.0"));
+        assert_eq!(text(v0_4_0, b"v0.6.0").as_deref(), Some("v0.4.0-0.6.0"));
+        assert_eq!(
+            text(v0_4_0, b"v0.6.0-draft").as_deref(),
+            Some("v0.4.0-0.6.0-draft")
+        );
+        assert_eq!(text(v0_2_1, b"dev").as_deref(), Some("v0.2.1-dev"));
+        assert_eq!(text(None, b"v0.6.0").as_deref(), Some("v0.6.0-migration"));
+        assert_eq!(text(None, b"dev").as_deref(), Some("dev-migration"));
+        // The longest version that fits behind a tag, and what does not.
+        assert!(text(v0_2_1, &[b'1'; 24]).is_some());
+        assert_eq!(text(v0_2_1, &[b'1'; 25]), None);
+        assert_eq!(text(v0_2_1, b"v0.6.0 x"), None);
     }
 }
