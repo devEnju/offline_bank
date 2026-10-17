@@ -4,21 +4,21 @@
 //! snapshots), `/dex.bin`, `/transport.bin` and `/rewards.bin` (two slots
 //! each). The containers are those of v0.3.0 to v0.4.0 byte for byte; those
 //! releases cut each into a file per unit. So they are read with v0.4.0's
-//! frozen code (`v0_4_0`), each container as the one file it is here. Only
-//! the rewards record means something else: v0.2.1's own (`rewards`).
+//! frozen code (`v0_4_0::Containers`, `v0_4_0::settled`), each container as
+//! the one file it is here. Only the rewards record means something else:
+//! v0.2.1's own (`rewards`).
 #![allow(dead_code)]
 
 pub mod rewards;
 
 use crate::{
-    migrate::{Card, Earlier, Stopped},
-    v0_4_0::{self, bank_files::FileName},
+    migrate::{Card, Stopped},
+    source,
+    target::{self, Miles},
+    v0_4_0::{self, bank_files::FileName, Containers},
 };
 use bank_common::bank_files::UnitFile;
-use offline_core::{
-    native_blob::{self, FRACTION_OFFSET, MILES_OFFSET, REWARD_DATE_OFFSET},
-    rewards::{Date, Moment, UNIT},
-};
+use offline_core::rewards::{Date, Moment, UNIT};
 use rewards::{Stored, DIVISOR};
 
 // The lengths are v0.2.1's own (`session::BANK_LAYOUT.file_len()` and each
@@ -37,57 +37,76 @@ fn units(file: FileName) -> &'static [UnitFile] {
     }
 }
 
-/// Its files, the Bank last.
-pub(crate) fn files() -> [&'static [UnitFile]; 4] {
-    [&DEX, &REWARDS, &TRANSPORT, &BANK]
-}
+pub(crate) struct Way;
+impl source::Way for Way {
+    const TAG: &'static [u8] = b"v0.2.1";
 
-/// Whether such a Bank is there: its Bank file, which holds its journal. A
-/// current `/bank.bin` has another size.
-pub(crate) fn there<C: Card>(card: &mut C) -> Result<bool, C::Error> {
-    card.exists(&BANK)
-}
+    /// Its Bank file, which holds its journal. A current `/bank.bin` has
+    /// another size.
+    fn there<C: Card>(card: &mut C) -> Result<bool, C::Error> {
+        card.exists(&BANK)
+    }
 
-pub(crate) fn read<C: Card>(card: &mut C, body: &mut [u8]) -> Result<(), Stopped<C::Error>> {
-    let loaded = v0_4_0::settled(Earlier::new(card, units), body)?;
-    // A record v0.2.1 does not read is none to it: no Miles, no record.
-    let stored = loaded
-        .record
-        .and_then(|bytes| Stored::decode(&bytes))
-        .unwrap_or(Stored::NONE);
-    into_body(body, stored);
-    Ok(())
-}
+    fn read<C: Card>(card: &mut C, body: &mut [u8]) -> Result<(), Stopped<C::Error>> {
+        let loaded = v0_4_0::settled(Containers::new(card, units), body)?;
+        // A record v0.2.1 does not read is none to it: no Miles, no record.
+        let stored = loaded
+            .record
+            .and_then(|bytes| Stored::decode(&bytes))
+            .unwrap_or(Stored::NONE);
+        into_body(body, stored);
+        Ok(())
+    }
 
-/// Gives the body the unused places as a new Bank has them
-/// (`native_blob::clear_unused`) and the Miles as the current release keeps
-/// them. The balance is the record's: v0.2.1 kept zero in the body. Accrual
-/// goes on from the start of the day the record is accounted through, and
-/// its thirtieths become Pokémon-hours. Without a record v0.2.1 paid nothing
-/// until the first save, which the current release does for a body without
-/// a date.
-pub(crate) fn into_body(body: &mut [u8], stored: Stored) {
-    native_blob::clear_unused(body);
-    body[MILES_OFFSET..MILES_OFFSET + 4].copy_from_slice(&stored.balance.to_le_bytes());
-    let date = &mut body[REWARD_DATE_OFFSET..REWARD_DATE_OFFSET + Moment::NATIVE_SIZE];
-    date.fill(0);
-    let Some(record) = stored.accounting else {
-        return;
-    };
-    let through = record.accounted_through();
-    let start = Date::new(through.year(), through.month(), through.day())
-        .and_then(|day| Moment::new(day, 0, 0));
-    if let Ok(start) = start {
-        date.copy_from_slice(&start.to_native());
-        let fraction = (record.fraction() * (UNIT / DIVISOR)) as u16;
-        body[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&fraction.to_le_bytes());
+    fn remove<C: Card>(card: &mut C) -> Result<(), C::Error> {
+        for files in [&DEX, &REWARDS, &TRANSPORT, &BANK] {
+            card.remove(files)?;
+        }
+        Ok(())
     }
 }
 
+/// The Miles as v0.2.1 kept them, as the target keeps them. The balance is
+/// the record's: v0.2.1 kept zero in the body. Accrual goes on from the
+/// start of the day the record is accounted through, and its thirtieths
+/// become Pokémon-hours. Without a record v0.2.1 paid nothing until the
+/// first save, which the current release does for a body without a date.
+pub(crate) fn into_body(body: &mut [u8], stored: Stored) {
+    let start = stored.accounting.and_then(|record| {
+        let through = record.accounted_through();
+        let day = Date::new(through.year(), through.month(), through.day()).ok()?;
+        Some((record, Moment::new(day, 0, 0).ok()?))
+    });
+    let miles = match start {
+        Some((record, start)) => Miles {
+            balance: stored.balance,
+            from: start.to_native(),
+            remainder: (record.fraction() * (UNIT / DIVISOR)) as u16,
+        },
+        None => Miles {
+            balance: stored.balance,
+            from: Miles::NO_DATE,
+            remainder: 0,
+        },
+    };
+    target::into_body(body, miles);
+}
+
+/// Banks of this way for the tests: v0.4.0's, joined into single files.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    extern crate std;
     use super::*;
-    use crate::v0_4_0::{rewards::FILE, sections::DEX_FILE, session::BANK_LAYOUT, transport};
+    use crate::{
+        migrate::{Cause, Done, Step},
+        testing::{convert, current, only_the_target_files, Fixtures, Sd},
+        v0_4_0::{
+            rewards::FILE, sections::DEX_FILE, session::BANK_LAYOUT, tests as before, transport,
+        },
+    };
+    use bank_common::testing::body;
+    use offline_core::native_blob::{self, MILES_OFFSET, REWARD_DATE_OFFSET};
+    use std::vec::Vec;
 
     #[test]
     fn its_files_have_the_lengths_of_v0_2_1() {
@@ -258,5 +277,116 @@ mod tests {
         );
         assert_eq!(miles(&body).0, 40);
         assert_eq!(miles(&body).1, None);
+    }
+    pub(crate) const FIXTURES: Fixtures = Fixtures {
+        used,
+        in_progress,
+        unsettled,
+    };
+
+    /// The same Bank as v0.2.1 stores it: each container one file, its
+    /// units one after the other. A unit that is not there is a void slot.
+    pub(crate) fn as_v0_2_1(card: &Sd) -> Sd {
+        let files = card.files();
+        let joined = Sd::default();
+        let mut state = joined.0.borrow_mut();
+        state.console = card.0.borrow().console;
+        for file in [
+            FileName::Bank,
+            FileName::Dex,
+            FileName::Transport,
+            FileName::Rewards,
+        ] {
+            let split = file.units();
+            if split.iter().all(|unit| !files.contains_key(unit.path)) {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            for unit in split {
+                match files.get(unit.path) {
+                    Some(unit) => bytes.extend_from_slice(unit),
+                    None => bytes.resize(bytes.len() + unit.len as usize, 0),
+                }
+            }
+            state.files.insert(units(file)[0].path, bytes);
+        }
+        drop(state);
+        joined
+    }
+    /// A card with a Bank v0.2.1 created and saved once, and the body the
+    /// current release has to load from it.
+    pub(crate) fn used(console: bool) -> (Sd, Vec<u8>) {
+        let (card, _) = before::used(console);
+        let bytes = record(1234, 17, 90, (2026, 10, 6));
+        before::write_record(&card, bytes);
+        let mut expected = before::saved();
+        into_body(&mut expected, Stored::decode(&bytes).unwrap());
+        (as_v0_2_1(&card.restarted(None)), expected)
+    }
+    fn in_progress() -> Sd {
+        as_v0_2_1(&(before::FIXTURES.in_progress)())
+    }
+    fn unsettled() -> Vec<Sd> {
+        (before::FIXTURES.unsettled)()
+            .iter()
+            .map(as_v0_2_1)
+            .collect()
+    }
+
+    #[test]
+    fn its_record_goes_into_the_body() {
+        let (card, body) = used(false);
+        // Four files: one per container.
+        assert_eq!(card.files().len(), 4);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        assert!(current(&card).unwrap() == body);
+        // The record's balance and thirtieths are in the body.
+        let view = native_blob::NativeBlobView::parse_layout(&body).unwrap();
+        assert_eq!(view.miles(), 1234);
+        assert_eq!(view.rewards().fraction, 17 * 24);
+    }
+
+    #[test]
+    fn a_bank_that_was_never_saved_is_converted_too() {
+        let card = Sd::default();
+        let first = body(0x31, 0x44, 2);
+        before::created(&card, &first);
+        let card = as_v0_2_1(&card);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        assert!(only_the_target_files(&card));
+        // No Miles and no record yet: nothing paid until the first save.
+        let mut expected = first;
+        into_body(&mut expected, Stored::NONE);
+        assert!(current(&card).unwrap() == expected);
+    }
+
+    #[test]
+    fn a_damaged_spare_half_of_the_bank_file_is_not_needed() {
+        let (card, body) = used(false);
+        let records = 2 * v0_4_0::bank_files::RECORD as usize;
+        let snapshot = v0_4_0::bank_files::SNAPSHOT as usize;
+        let mut converted = 0;
+        for start in [records, records + snapshot] {
+            let torn = card.restarted(None);
+            let middle = start + snapshot / 2;
+            torn.0
+                .borrow_mut()
+                .torn
+                .push((BANK[0].path, middle..middle + 512));
+            let files = torn.files();
+            match convert(&torn) {
+                Ok(Done::Converted) => {
+                    converted += 1;
+                    assert!(only_the_target_files(&torn));
+                    assert!(current(&torn).unwrap() == body);
+                }
+                Err(Stopped::Failed(Step::ReadOld, Cause::Io(()))) => {
+                    assert!(torn.files() == files)
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // The half of the current save is needed; the other is not.
+        assert_eq!(converted, 1);
     }
 }

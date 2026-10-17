@@ -7,7 +7,7 @@
 //! its files with the code that wrote them, whatever the shared crates
 //! become. What writes is kept as that release has it, for the tests, which
 //! make a Bank of that release with it. The containers are v0.2.1's too, so
-//! `v0_2_1` reads with them as well.
+//! `v0_2_1` reads with them as well (`Containers`, `settled`).
 //!
 //! Its rewards record means what v0.4.0 reads in it (`rewards`). A v0.3.x
 //! Bank, in the same files, is read as v0.4.0 read one.
@@ -39,44 +39,80 @@ pub use format::{
 };
 pub use store::{BankStore, Head, Layout, Reconciled, StoreError};
 
-use crate::migrate::{Card, Cause, Earlier, Guarded, Step, Stopped};
+use crate::{
+    migrate::{Card, Cause, Guarded, ReadOnly, Step, Stopped},
+    source,
+    target::{self, Miles},
+};
 use bank_common::bank_files::UnitFile;
 use bank_files::{BankFiles, FileName, Files, Loaded};
-use offline_core::native_blob::{clear_unused, FRACTION_OFFSET};
 
-/// Its files, the Bank last.
-pub(crate) fn files() -> [&'static [UnitFile]; 4] {
-    [
-        FileName::Dex,
-        FileName::Rewards,
-        FileName::Transport,
-        FileName::Bank,
-    ]
-    .map(FileName::units)
+/// Its containers, the Bank last.
+const CONTAINERS: [FileName; 4] = [
+    FileName::Dex,
+    FileName::Rewards,
+    FileName::Transport,
+    FileName::Bank,
+];
+
+pub(crate) struct Way;
+impl source::Way for Way {
+    const TAG: &'static [u8] = b"v0.4.0";
+
+    /// One of its journal records, which have another size than the current
+    /// ones. Its other files say nothing: some it can do without, and the
+    /// rest have the names of current ones.
+    fn there<C: Card>(card: &mut C) -> Result<bool, C::Error> {
+        let records = &FileName::Bank.units()[..2];
+        Ok(card.exists(&records[..1])? || card.exists(&records[1..])?)
+    }
+
+    fn read<C: Card>(card: &mut C, body: &mut [u8]) -> Result<(), Stopped<C::Error>> {
+        let loaded = settled(Containers::new(card, FileName::units), body)?;
+        into_body(body, loaded.rewards);
+        Ok(())
+    }
+
+    fn remove<C: Card>(card: &mut C) -> Result<(), C::Error> {
+        for file in CONTAINERS {
+            card.remove(file.units())?;
+        }
+        Ok(())
+    }
 }
 
-/// Whether such a Bank is there: one of its journal records, which have
-/// another size than the current ones. Its other files say nothing: some it
-/// can do without, and the rest have the names of current ones.
-pub(crate) fn there<C: Card>(card: &mut C) -> Result<bool, C::Error> {
-    let records = &FileName::Bank.units()[..2];
-    Ok(card.exists(&records[..1])? || card.exists(&records[1..])?)
-}
-
-pub(crate) fn read<C: Card>(card: &mut C, body: &mut [u8]) -> Result<(), Stopped<C::Error>> {
-    let loaded = settled(Earlier::new(card, FileName::units), body)?;
-    into_body(body, loaded.rewards);
-    Ok(())
-}
-
-/// Gives the body the unused places as a new Bank has them
-/// (`native_blob::clear_unused`): nothing the server put into a downloaded
-/// Bank, and no day of a redemption. Of the record the remainder goes into
-/// the body, as a u16. The balance is already there: v0.4.0's load adds the
-/// one v0.3.1 kept in the record (`rewards::balance_beside`).
+/// The balance and the date stay as the body has them: v0.4.0's load adds
+/// the balance v0.3.1 kept in the record (`rewards::balance_beside`). Of the
+/// record the remainder goes into the body; the day of a redemption is not
+/// kept.
 pub(crate) fn into_body(body: &mut [u8], record: rewards::Record) {
-    clear_unused(body);
-    body[FRACTION_OFFSET..FRACTION_OFFSET + 2].copy_from_slice(&record.fraction.to_le_bytes());
+    let miles = Miles {
+        remainder: record.fraction,
+        ..Miles::in_body(body)
+    };
+    target::into_body(body, miles);
+}
+
+/// The containers as this code knows them, each made of the files `units`
+/// gives it, only read.
+pub(crate) struct Containers<'a, C: Card> {
+    card: &'a mut C,
+    units: fn(FileName) -> &'static [UnitFile],
+}
+impl<'a, C: Card> Containers<'a, C> {
+    pub(crate) fn new(card: &'a mut C, units: fn(FileName) -> &'static [UnitFile]) -> Self {
+        Self { card, units }
+    }
+}
+impl<C: Card> Files for Containers<'_, C> {
+    type Storage = ReadOnly<C::Storage>;
+    fn open(&mut self, file: FileName) -> Result<Option<Self::Storage>, Guarded<C::Error>> {
+        let found = self.card.open((self.units)(file)).map_err(Guarded::Io)?;
+        Ok(found.map(ReadOnly))
+    }
+    fn create(&mut self, _: FileName) -> Result<Self::Storage, Guarded<C::Error>> {
+        Err(Guarded::ReadOnly)
+    }
 }
 
 /// Loads the Bank in `files` with this code into `body`, as one native body,
@@ -116,5 +152,251 @@ fn unread<E>(step: Step) -> impl Fn(bank_files::Error<Guarded<E>>) -> Stopped<E>
                 _ => Cause::Damaged,
             },
         )
+    }
+}
+
+/// Banks of this way for the tests, made with this code.
+#[cfg(test)]
+pub(crate) mod tests {
+    extern crate std;
+    use super::*;
+    use crate::{
+        migrate::Done,
+        testing::{convert, current, only_the_target_files, Fixtures, Open, Sd},
+    };
+    use bank_common::testing::body;
+    use offline_core::{
+        native_blob::{self as current_blob, BLOB_SIZE, FRACTION_OFFSET},
+        sections::{TRANSPORT_RECORDS, TRANSPORT_TAGS},
+    };
+    use rewards::Record;
+    use std::{vec, vec::Vec};
+
+    pub(crate) const FIXTURES: Fixtures = Fixtures {
+        used,
+        in_progress,
+        unsettled,
+    };
+
+    /// The card as v0.4.0 uses it.
+    pub(crate) struct Before(pub(crate) Sd);
+    impl Files for Before {
+        type Storage = Open;
+        fn open(&mut self, file: FileName) -> Result<Option<Open>, ()> {
+            self.0.open(file.units())
+        }
+        fn create(&mut self, file: FileName) -> Result<Open, ()> {
+            self.0.create(file.units())
+        }
+    }
+
+    pub(crate) const GAME: GameIdentity = GameIdentity {
+        title_id: 0x0004_0000_0005_5e00,
+        save_identity: [7; 32],
+    };
+    pub(crate) fn kept() -> Record {
+        Record {
+            fraction: 321,
+            redeemed: Some((2026, 10, 6)),
+        }
+    }
+    /// `body` with the record where the current release keeps it.
+    pub(crate) fn with_record(mut body: Vec<u8>, record: Record) -> Vec<u8> {
+        into_body(&mut body, record);
+        body
+    }
+    /// A Bank of v0.4.0 on `card`, created and never saved.
+    pub(crate) fn created(card: &Sd, first: &[u8]) {
+        let mut bank = BankFiles::new(Before(card.clone()));
+        assert!(matches!(bank.open(), Ok(None)));
+        bank.initialize(&mut first.to_vec()).unwrap();
+    }
+    /// One Save and Quit of v0.4.0, up to the game's write.
+    pub(crate) fn prepared(card: &Sd, saved: &[u8], record: Record) -> BankFiles<Before> {
+        let mut bank = BankFiles::new(Before(card.clone()));
+        assert!(matches!(bank.open(), Ok(Some(Phase::Clean(_)))));
+        bank.read(&mut vec![0; BLOB_SIZE]).unwrap();
+        bank.prepare(&mut saved.to_vec(), record, GAME, [1; 32], [2; 32])
+            .unwrap();
+        bank
+    }
+    /// The body `used` saves.
+    pub(crate) fn saved() -> Vec<u8> {
+        body(0x52, 0x66, 3)
+    }
+    /// A card with a Bank v0.4.0 created and saved once with `saved()`, and
+    /// the body the current release has to load from it.
+    pub(crate) fn used(console: bool) -> (Sd, Vec<u8>) {
+        let card = Sd::default();
+        card.0.borrow_mut().console = console;
+        created(&card, &body(0x31, 0x44, 0));
+        let mut bank = prepared(&card, &saved(), kept());
+        bank.reconcile(GameObservation::Present {
+            game: GAME,
+            fingerprint: [2; 32],
+        })
+        .unwrap();
+        bank.tidy_transport().unwrap();
+        drop(bank);
+        (card.restarted(None), with_record(saved(), kept()))
+    }
+    fn in_progress() -> Sd {
+        let card = Sd::default();
+        created(&card, &body(0x31, 0x44, 0));
+        drop(prepared(&card, &body(0x52, 0x66, 1), kept()));
+        card
+    }
+    /// Without a Pokédex, and without a transport box, for the current save:
+    /// v0.4.0 writes them at its next Save and Quit.
+    fn unsettled() -> Vec<Sd> {
+        [FileName::Dex, FileName::Transport]
+            .into_iter()
+            .map(|container| {
+                let (card, _) = used(false);
+                for unit in container.units() {
+                    card.0.borrow_mut().files.remove(unit.path);
+                }
+                card
+            })
+            .collect()
+    }
+    /// Puts `bytes` into the rewards slot of the current save on `card`.
+    pub(crate) fn write_record(card: &Sd, bytes: [u8; 16]) {
+        let mut file = sidecar::Sidecar::new(
+            card.clone()
+                .open(FileName::Rewards.units())
+                .unwrap()
+                .unwrap(),
+            rewards::FILE,
+        );
+        let slots = file.slots().unwrap();
+        // The slot of the current save: the later of the two.
+        let generation = |index: &usize| {
+            let tag = slots[*index].and_then(|slot| slot.tag);
+            tag.map(|tag| tag.generation)
+        };
+        let index = (0..slots.len()).max_by_key(generation).unwrap();
+        let slot = slots[index].unwrap();
+        file.write(index, slot.tag, slot.aux, slot.count, &[&bytes])
+            .unwrap();
+    }
+
+    #[test]
+    fn its_record_goes_into_the_body_without_the_day_of_a_redemption() {
+        let (card, body) = used(false);
+        // Ten files: every one of its containers twice.
+        assert_eq!(card.files().len(), 10);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        assert!(current(&card).unwrap() == body);
+        let view = current_blob::NativeBlobView::parse_layout(&body).unwrap();
+        let now = offline_core::rewards::Record {
+            fraction: 321,
+            redeemed: None,
+        };
+        assert_eq!(view.rewards(), now);
+        // The unused places are as in a new Bank, but for the remainder.
+        for range in current_blob::UNUSED {
+            for at in range {
+                let fraction = FRACTION_OFFSET..FRACTION_OFFSET + 2;
+                assert!(fraction.contains(&at) || body[at] == 0, "{at:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bank_that_was_never_saved_is_converted_too() {
+        let card = Sd::default();
+        let first = body(0x31, 0x44, 2);
+        created(&card, &first);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        assert!(only_the_target_files(&card));
+        // Its rewards record is "none": no remainder, never redeemed.
+        assert!(current(&card).unwrap() == with_record(first, Record::NONE));
+    }
+
+    #[test]
+    fn a_waiting_delivery_is_taken_into_the_transport_box() {
+        let card = Sd::default();
+        created(&card, &body(0x31, 0x44, 0));
+        let delivered = body(0, 0, 4);
+        let mut file = sidecar::Sidecar::new(
+            card.clone()
+                .open(FileName::Transport.units())
+                .unwrap()
+                .unwrap(),
+            transport::KIND,
+        );
+        transport::deliver(
+            &mut file,
+            &delivered[TRANSPORT_RECORDS],
+            &delivered[TRANSPORT_TAGS],
+        )
+        .unwrap();
+        drop(file);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        let mut expected = with_record(body(0x31, 0x44, 0), Record::NONE);
+        expected[TRANSPORT_RECORDS].copy_from_slice(&delivered[TRANSPORT_RECORDS]);
+        expected[TRANSPORT_TAGS].copy_from_slice(&delivered[TRANSPORT_TAGS]);
+        assert!(current(&card).unwrap() == expected);
+    }
+
+    #[test]
+    fn a_damaged_bank_is_left_as_it_is() {
+        let (card, _) = used(false);
+        // Both journal records gone: nothing says which boxes are current.
+        for unit in &FileName::Bank.units()[..2] {
+            card.0
+                .borrow_mut()
+                .files
+                .get_mut(unit.path)
+                .unwrap()
+                .fill(0xa5);
+        }
+        let files = card.files();
+        assert_eq!(
+            convert(&card),
+            Err(Stopped::Failed(Step::ReadOld, Cause::Damaged))
+        );
+        assert!(card.files() == files);
+    }
+
+    #[test]
+    fn a_balance_that_v0_3_1_kept_in_its_record_comes_along() {
+        // v0.3.1 wrote zero into the body and the balance into the first
+        // four bytes of its record; the release after it reads both.
+        let card = Sd::default();
+        created(&card, &body(0x31, 0x44, 0));
+        let mut saved = saved();
+        saved[0x170..0x174].fill(0);
+        let mut bank = prepared(&card, &saved, kept());
+        bank.reconcile(GameObservation::Present {
+            game: GAME,
+            fingerprint: [2; 32],
+        })
+        .unwrap();
+        bank.tidy_transport().unwrap();
+        drop(bank);
+        let mut earlier = rewards::encode(kept());
+        earlier[..4].copy_from_slice(&1234u32.to_le_bytes());
+        write_record(&card, earlier);
+        let card = card.restarted(None);
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        let mut expected = with_record(saved, kept());
+        expected[0x170..0x174].copy_from_slice(&1234u32.to_le_bytes());
+        assert!(current(&card).unwrap() == expected);
+        // A record of that release itself adds nothing.
+        assert_eq!(rewards::balance_beside(7, &[0; 16]), None);
+    }
+
+    #[test]
+    fn a_bank_without_rewards_files_is_converted_as_that_release_reads_it() {
+        let (card, body) = used(false);
+        for unit in FileName::Rewards.units() {
+            card.0.borrow_mut().files.remove(unit.path);
+        }
+        assert_eq!(convert(&card), Ok(Done::Converted));
+        assert!(only_the_target_files(&card));
+        // No remainder, never redeemed.
+        assert!(current(&card).unwrap() == with_record(body, Record::NONE));
     }
 }

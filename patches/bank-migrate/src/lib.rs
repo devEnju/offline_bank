@@ -15,6 +15,9 @@
 pub mod migrate;
 pub mod navigation;
 pub mod source;
+mod target;
+#[cfg(test)]
+mod testing;
 mod v0_2_1;
 mod v0_4_0;
 
