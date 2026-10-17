@@ -1,7 +1,8 @@
 #![no_std]
 //! What every patch for Bank 1.5 shares: the start-up hook, Bank's files in
-//! its extdata and the order they are written in, the worker thread, and the
-//! original's task objects and dialogs. Nothing here changes what Bank does;
+//! its extdata and the order they are written in, Bank's side of the worker
+//! thread (`patch_common::worker`), and the original's task objects and
+//! dialogs. Nothing here changes what Bank does;
 //! a patch adds that (docs/internals.md, "Patches for Bank").
 //!
 //! A patch writes Bank's files only through this crate, so every patch
@@ -13,7 +14,6 @@
 
 pub mod bank_files;
 pub mod bootstrap;
-pub mod exclusive;
 pub mod fault;
 pub mod fs;
 pub mod native_bank;
@@ -30,6 +30,3 @@ pub mod testing;
 #[cfg(target_arch = "arm")]
 pub mod ui;
 pub mod worker;
-
-#[cfg(any(test, target_arch = "arm"))]
-mod kernel;

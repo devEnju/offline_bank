@@ -95,16 +95,17 @@ mod arm {
         bank_files::{self, BankFiles, ExtFiles},
         fault::Fault,
         fs::GameMainReader,
-        worker::{Service, Shared, Worker, WorkerError, WorkerErrorKind},
+        worker::{Bank15, WorkerError, WorkerErrorKind},
     };
     use core::{cell::UnsafeCell, mem::transmute};
     use offline_core::{
         game_image::{fingerprint_image, fingerprint_images, Overlay},
         moved,
-        native_blob::NativeBlobView,
+        native_blob::{NativeBlobView, BLOB_SIZE},
         sections::{Identity, HELD},
         PendingTransfer, Storage,
     };
+    use patch_common::worker::{Service, Shared, Worker};
 
     /// A game's secure value on the console, slot 0x1000:
     /// `0016578c(session, first, second, value, archive, slot)` reads it
@@ -120,7 +121,7 @@ mod arm {
     unsafe impl Sync for Held {}
     static HELD_LISTS: Held = Held(UnsafeCell::new([[[0; 3]; HELD]; 2]));
 
-    static SHARED: Shared<StorageWorker> = Shared::new();
+    static SHARED: Shared<StorageWorker> = Shared::new([0; BLOB_SIZE]);
     /// The worker of the offline patch.
     pub(crate) type BankWorker = Worker<StorageWorker>;
 
@@ -134,8 +135,11 @@ mod arm {
         written: Option<SecureValues>,
     }
     impl Service for StorageWorker {
+        type Program = Bank15;
         type Job = Job;
         type Reply = Reply;
+        type Error = WorkerError;
+        type Staging = [u8; BLOB_SIZE];
         // This worker plus the retained native game writer.
         const THREADS: i64 = 2;
         fn shared() -> &'static Shared<Self> {

@@ -7,6 +7,7 @@ name = "bank-common"
 version = "0.5.0"
 dependencies = [
  "offline-core",
+ "patch-common",
 ]
 
 [[package]]
@@ -15,6 +16,7 @@ version = "0.5.0"
 dependencies = [
  "bank-common",
  "offline-core",
+ "patch-common",
 ]
 
 [[package]]
@@ -23,6 +25,7 @@ version = "0.5.0"
 dependencies = [
  "bank-common",
  "offline-core",
+ "patch-common",
 ]
 
 [[package]]
@@ -31,6 +34,7 @@ version = "0.5.0"
 dependencies = [
  "bank-common",
  "offline-core",
+ "patch-common",
 ]
 
 [[package]]
@@ -44,6 +48,10 @@ dependencies = [
  "offline-core",
  "transporter-payload",
 ]
+
+[[package]]
+name = "patch-common"
+version = "0.5.0"
 
 [[package]]
 name = "transporter-payload"

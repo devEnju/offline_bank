@@ -133,7 +133,7 @@ try {
     foreach($name in @('bank_test_menu_chosen','bank_test_menu_update')) {
         Assert-Check (($Kind -eq 'test') -eq $symbols.ContainsKey($name)) ('Menu entry of the test build '+$name)
     }
-    $wrapperNames=@('bank_svc_close_handle','bank_svc_wait_thread','bank_svc_get_resource_limit','bank_svc_get_resource_limit_values','bank_svc_get_resource_current_values')
+    $wrapperNames=@('patch_svc_close_handle','patch_svc_wait_thread','patch_svc_get_resource_limit','patch_svc_get_resource_limit_values','patch_svc_get_resource_current_values')
     foreach($name in $wrapperNames) {
         Assert-Check ($symbols.ContainsKey($name)) ('Missing system-call wrapper '+$name)
         $symbol=$symbols[$name]

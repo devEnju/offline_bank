@@ -13,7 +13,6 @@ use crate::{
 };
 use bank_common::{
     bank_files::{self, ExtFiles},
-    exclusive::Exclusive,
     fault::Fault,
     fs,
     native_bank::NativeBank,
@@ -22,9 +21,14 @@ use bank_common::{
         TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN,
     },
     ui,
-    worker::{JobId, Service, Shared, Worker, WorkerError},
+    worker::{Bank15, WorkerError},
 };
 use core::mem::transmute;
+use offline_core::native_blob::BLOB_SIZE;
+use patch_common::{
+    exclusive::Exclusive,
+    worker::{JobId, Service, Shared, Worker},
+};
 
 /// The numbers when a hook itself could not go on: a native object was not
 /// what it expects.
@@ -57,10 +61,13 @@ enum Reply {
     Written,
 }
 struct Files;
-static SHARED: Shared<Files> = Shared::new();
+static SHARED: Shared<Files> = Shared::new([0; BLOB_SIZE]);
 impl Service for Files {
+    type Program = Bank15;
     type Job = Job;
     type Reply = Reply;
+    type Error = WorkerError;
+    type Staging = [u8; BLOB_SIZE];
     // The worker alone; this patch starts no other thread.
     const THREADS: i64 = 1;
     fn shared() -> &'static Shared<Self> {

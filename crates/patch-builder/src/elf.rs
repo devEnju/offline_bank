@@ -423,7 +423,7 @@ pub fn inspect_payload_elf(
                     let actual = le32(elf, add(offset, index * 4)?)?;
                     // Both canonical ARM encodings restore the sole saved PC
                     // and advance SP by four. No other instruction varies.
-                    let equivalent_pop = name == "bank_svc_get_resource_limit"
+                    let equivalent_pop = name == "patch_svc_get_resource_limit"
                         && index == words.len() - 1
                         && actual == 0xe8bd8000;
                     if actual != *expected && !equivalent_pop {
@@ -711,12 +711,12 @@ mod tests {
             ("__bank_payload_rx_size", 0x1000, 0, 0x10, 0xfff1),
             ("__bank_payload_end", 0x3fd000, 0, 0x10, 0xfff1),
             ("__bank_original_app_init", 0x10494c, 0, 0x10, 0xfff1),
-            ("bank_svc_close_handle", 0x3fb100, 12, 0x12, 2),
-            ("bank_svc_wait_thread", 0x3fb120, 12, 0x12, 2),
-            ("bank_svc_get_resource_limit", 0x3fb140, 24, 0x12, 2),
-            ("bank_svc_get_resource_limit_values", 0x3fb160, 12, 0x12, 2),
+            ("patch_svc_close_handle", 0x3fb100, 12, 0x12, 2),
+            ("patch_svc_wait_thread", 0x3fb120, 12, 0x12, 2),
+            ("patch_svc_get_resource_limit", 0x3fb140, 24, 0x12, 2),
+            ("patch_svc_get_resource_limit_values", 0x3fb160, 12, 0x12, 2),
             (
-                "bank_svc_get_resource_current_values",
+                "patch_svc_get_resource_current_values",
                 0x3fb180,
                 12,
                 0x12,

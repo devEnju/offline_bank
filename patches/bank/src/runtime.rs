@@ -14,7 +14,6 @@ use crate::{
 };
 use bank_common::{
     bank_files::Loaded,
-    exclusive::Exclusive,
     fault::Fault,
     native_bank::NativeBank,
     task::{
@@ -22,7 +21,7 @@ use bank_common::{
         LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
         TEXT,
     },
-    worker::{JobId, Worker, WorkerError},
+    worker::WorkerError,
 };
 use core::mem::transmute;
 use offline_core::{
@@ -30,6 +29,10 @@ use offline_core::{
     rewards::{self, Currency, Dialog, Entry, Moment, Receipt, RewardError},
     sections::{RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
     Phase, RecoveryDecision,
+};
+use patch_common::{
+    exclusive::Exclusive,
+    worker::{JobId, Worker},
 };
 
 /// `001d5ec0(helper)`: the Pokémon in the Bank's hundred boxes, with the

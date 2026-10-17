@@ -13,13 +13,17 @@ use crate::{
 };
 use bank_common::{
     bank_files::{ExtFiles, UnitFile},
-    exclusive::Exclusive,
     fault::Fault,
     fs::{self, ExtdataStorage},
     numbers::VERSION,
     task::{storage_activity, write_word, Ended, Notice, Task, FS_SESSION, TASK_SCAN},
     ui,
-    worker::{JobId, Service, Shared, Worker, WorkerError},
+    worker::{Bank15, WorkerError},
+};
+use offline_core::native_blob::BLOB_SIZE;
+use patch_common::{
+    exclusive::Exclusive,
+    worker::{JobId, Service, Shared, Worker},
 };
 
 /// The numbers when the hook itself could not go on: a native object was
@@ -52,10 +56,13 @@ struct Convert {
     session: u32,
 }
 struct Converter;
-static SHARED: Shared<Converter> = Shared::new();
+static SHARED: Shared<Converter> = Shared::new([0; BLOB_SIZE]);
 impl Service for Converter {
+    type Program = Bank15;
     type Job = Convert;
     type Reply = ([u32; 2], Option<Source>);
+    type Error = WorkerError;
+    type Staging = [u8; BLOB_SIZE];
     // The worker alone; this patch starts no other thread.
     const THREADS: i64 = 1;
     fn shared() -> &'static Shared<Self> {

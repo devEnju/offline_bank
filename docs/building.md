@@ -231,7 +231,8 @@ patches/bank/           the offline patch for Bank
 patches/bank-migrate/   the migration patch for Bank, from earlier releases
 patches/bank-download/  the download patch for Bank, from the official server
 patches/transporter/    code injected into Transporter
-crates/bank-common/     what every patch for Bank shares: files, worker thread, dialogs
+crates/bank-common/     what every patch for Bank shares: files, Bank's side of the worker, dialogs
+crates/patch-common/    what the patches of Bank and Transporter both use: the worker thread
 crates/offline-core/    storage format and hand-over rules, shared by all patches
 crates/patch-builder/   host tool that checks the inputs and emits the patches
 targets/                ARM target description

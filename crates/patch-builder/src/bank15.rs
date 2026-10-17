@@ -48,25 +48,25 @@ pub const CONTRACT: crate::elf::Contract = crate::elf::Contract {
     original_app_init: 0x0010_494c,
     wrappers: &[
         (
-            "bank_svc_close_handle",
+            "patch_svc_close_handle",
             &[0xe92d4010, 0xef000023, 0xe8bd8010],
         ),
         (
-            "bank_svc_wait_thread",
+            "patch_svc_wait_thread",
             &[0xe92d4010, 0xef000024, 0xe8bd8010],
         ),
         (
-            "bank_svc_get_resource_limit",
+            "patch_svc_get_resource_limit",
             &[
                 0xe92d4001, 0xef000038, 0xe59d2000, 0xe5821000, 0xe28dd004, 0xe49df004,
             ],
         ),
         (
-            "bank_svc_get_resource_limit_values",
+            "patch_svc_get_resource_limit_values",
             &[0xe92d4010, 0xef000039, 0xe8bd8010],
         ),
         (
-            "bank_svc_get_resource_current_values",
+            "patch_svc_get_resource_current_values",
             &[0xe92d4010, 0xef00003a, 0xe8bd8010],
         ),
     ],

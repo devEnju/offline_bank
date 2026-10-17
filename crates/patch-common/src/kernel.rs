@@ -67,26 +67,26 @@ mod arm {
     global_asm!(
         ".syntax unified",
         ".arm",
-        ".section .text.bank.kernel, \"ax\", %progbits",
+        ".section .text.patch.kernel, \"ax\", %progbits",
         ".align 2",
-        ".global bank_svc_close_handle",
-        ".type bank_svc_close_handle, %function",
-        "bank_svc_close_handle:",
+        ".global patch_svc_close_handle",
+        ".type patch_svc_close_handle, %function",
+        "patch_svc_close_handle:",
         "push {{r4, lr}}",
         "svc #0x23",
         "pop {{r4, pc}}",
-        ".size bank_svc_close_handle, .-bank_svc_close_handle",
-        ".global bank_svc_wait_thread",
-        ".type bank_svc_wait_thread, %function",
-        "bank_svc_wait_thread:",
+        ".size patch_svc_close_handle, .-patch_svc_close_handle",
+        ".global patch_svc_wait_thread",
+        ".type patch_svc_wait_thread, %function",
+        "patch_svc_wait_thread:",
         "push {{r4, lr}}",
         // AAPCS aligns the i64 timeout in r2/r3; r1 is unused.
         "svc #0x24",
         "pop {{r4, pc}}",
-        ".size bank_svc_wait_thread, .-bank_svc_wait_thread",
-        ".global bank_svc_get_resource_limit",
-        ".type bank_svc_get_resource_limit, %function",
-        "bank_svc_get_resource_limit:",
+        ".size patch_svc_wait_thread, .-patch_svc_wait_thread",
+        ".global patch_svc_get_resource_limit",
+        ".type patch_svc_get_resource_limit, %function",
+        "patch_svc_get_resource_limit:",
         // SVC38 takes the process in r1, then returns Result in r0 and the
         // acquired handle in r1. Preserve the caller's out-pointer on stack.
         "push {{r0, lr}}",
@@ -95,41 +95,41 @@ mod arm {
         "str r1, [r2]",
         "add sp, sp, #4",
         "pop {{pc}}",
-        ".size bank_svc_get_resource_limit, .-bank_svc_get_resource_limit",
-        ".global bank_svc_get_resource_limit_values",
-        ".type bank_svc_get_resource_limit_values, %function",
-        "bank_svc_get_resource_limit_values:",
+        ".size patch_svc_get_resource_limit, .-patch_svc_get_resource_limit",
+        ".global patch_svc_get_resource_limit_values",
+        ".type patch_svc_get_resource_limit_values, %function",
+        "patch_svc_get_resource_limit_values:",
         "push {{r4, lr}}",
         // r0=values*, r1=resource handle, r2=names*, r3=name count.
         "svc #0x39",
         "pop {{r4, pc}}",
-        ".size bank_svc_get_resource_limit_values, .-bank_svc_get_resource_limit_values",
-        ".global bank_svc_get_resource_current_values",
-        ".type bank_svc_get_resource_current_values, %function",
-        "bank_svc_get_resource_current_values:",
+        ".size patch_svc_get_resource_limit_values, .-patch_svc_get_resource_limit_values",
+        ".global patch_svc_get_resource_current_values",
+        ".type patch_svc_get_resource_current_values, %function",
+        "patch_svc_get_resource_current_values:",
         "push {{r4, lr}}",
         "svc #0x3a",
         "pop {{r4, pc}}",
-        ".size bank_svc_get_resource_current_values, .-bank_svc_get_resource_current_values",
+        ".size patch_svc_get_resource_current_values, .-patch_svc_get_resource_current_values",
     );
 
     unsafe extern "aapcs" {
         /// Closes the supplied real native kernel handle.
-        #[link_name = "bank_svc_close_handle"]
+        #[link_name = "patch_svc_close_handle"]
         pub(crate) fn close_handle(handle: u32) -> i32;
         /// Poll with timeout0; a positive timeout may block the calling thread.
-        #[link_name = "bank_svc_wait_thread"]
+        #[link_name = "patch_svc_wait_thread"]
         pub(crate) fn wait_thread(handle: u32, timeout: i64) -> i32;
-        #[link_name = "bank_svc_get_resource_limit"]
+        #[link_name = "patch_svc_get_resource_limit"]
         fn get_resource_limit(output: *mut u32, process: u32) -> i32;
-        #[link_name = "bank_svc_get_resource_limit_values"]
+        #[link_name = "patch_svc_get_resource_limit_values"]
         fn get_resource_limit_values(
             values: *mut i64,
             resource: u32,
             names: *const u32,
             count: i32,
         ) -> i32;
-        #[link_name = "bank_svc_get_resource_current_values"]
+        #[link_name = "patch_svc_get_resource_current_values"]
         fn get_resource_current_values(
             values: *mut i64,
             resource: u32,

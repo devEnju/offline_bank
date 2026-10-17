@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 offline-core = { path = "../offline-core" }
+patch-common = { path = "../patch-common" }
 
 [features]
 # The console test build with its rehearsals of an interrupted Save and Quit

@@ -13,13 +13,13 @@
 //! ```compile_fail
 //! fn send<T: Send>(_: T) {}
 //! // SAFETY: taken on this thread only.
-//! let state = unsafe { bank_common::exclusive::Exclusive::new(0) };
+//! let state = unsafe { patch_common::exclusive::Exclusive::new(0) };
 //! send(state.take());
 //! ```
 //! ```compile_fail
 //! fn share<T: Sync>(_: &T) {}
 //! // SAFETY: taken on this thread only.
-//! let state = unsafe { bank_common::exclusive::Exclusive::new(0) };
+//! let state = unsafe { patch_common::exclusive::Exclusive::new(0) };
 //! share(&state.take());
 //! ```
 
