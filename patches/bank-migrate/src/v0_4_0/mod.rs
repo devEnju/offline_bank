@@ -10,10 +10,13 @@
 //! `v0_2_1` reads with them as well (`Containers`, `settled`).
 //!
 //! Its rewards record means what v0.4.0 reads in it (`rewards`). A v0.3.x
-//! Bank, in the same files, is read as v0.4.0 read one.
+//! Bank, in the same files, is read as v0.4.0 read one. A save in progress
+//! that v0.3.0 began is bound in a form v0.4.0 does not read (`binding`);
+//! the migration writes it in v0.4.0's, so that v0.4.0 settles it.
 #![allow(dead_code, unused_imports, clippy::enum_variant_names)]
 
 pub mod bank_files;
+pub mod binding;
 pub mod rewards;
 pub mod sections;
 pub mod session;
@@ -58,6 +61,8 @@ const CONTAINERS: [FileName; 4] = [
 pub(crate) struct Way;
 impl source::Way for Way {
     const TAG: &'static [u8] = b"v0.4.0";
+    /// Its `/journal.bin`, a record of another length.
+    const REFUSED: u32 = 0xc0;
 
     /// One of its journal records, which have another size than the current
     /// ones. Its other files say nothing: some it can do without, and the
@@ -78,6 +83,32 @@ impl source::Way for Way {
             card.remove(file.units())?;
         }
         Ok(())
+    }
+
+    /// A save in progress that v0.3.0 began, whose binding v0.4.0 does not
+    /// read, is published once more with the binding v0.4.0 gives it
+    /// (`binding::as_v3`), the way v0.4.0 publishes a record
+    /// (`BankStore::rebind`). Its snapshots and side files stay as they are.
+    fn ready_for_its_release<C: Card>(card: &mut C) -> Result<(), C::Error> {
+        let Some(storage) = card.open(FileName::Bank.units())? else {
+            return Ok(());
+        };
+        let mut store = BankStore::new(storage, session::BANK_LAYOUT);
+        let head = match store.inspect() {
+            Ok(head) => head,
+            Err(StoreError::Io(error)) => return Err(error),
+            Err(_) => return Ok(()),
+        };
+        let Phase::Prepared(pending) = head.phase() else {
+            return Ok(());
+        };
+        let Some(game) = binding::as_v3(&pending) else {
+            return Ok(());
+        };
+        match store.rebind(&head, game) {
+            Err(StoreError::Io(error)) => Err(error),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -398,5 +429,149 @@ pub(crate) mod tests {
         assert!(only_the_target_files(&card));
         // No remainder, never redeemed.
         assert!(current(&card).unwrap() == with_record(body, Record::NONE));
+    }
+
+    /// The save in progress on `card` and the head it is in.
+    fn journal(card: &Sd) -> (Head, PendingTransfer) {
+        let storage = card.clone().open(FileName::Bank.units()).unwrap().unwrap();
+        let head = BankStore::new(storage, session::BANK_LAYOUT)
+            .inspect()
+            .unwrap();
+        let Phase::Prepared(pending) = head.phase() else {
+            panic!("no save in progress");
+        };
+        (head, pending)
+    }
+    /// The save in progress on `card` bound by `game`, written the way the
+    /// release writes its records.
+    fn bound_by(card: &Sd, game: GameIdentity) {
+        let storage = card.clone().open(FileName::Bank.units()).unwrap().unwrap();
+        let mut store = BankStore::new(storage, session::BANK_LAYOUT);
+        let head = store.inspect().unwrap();
+        store.rebind(&head, game).unwrap();
+    }
+    /// v0.3.0's binding, written out here from its `transaction.rs`: a whole
+    /// SHA-256 over the title, both fingerprints and the kind of copy.
+    fn of_v0_3_0(pending: &PendingTransfer, medium: u8) -> GameIdentity {
+        let mut hash = offline_core::Sha256::new();
+        hash.update(b"Bank offline game transaction v2\0").unwrap();
+        hash.update(&pending.game.title_id.to_le_bytes()).unwrap();
+        hash.update(&pending.before_fingerprint).unwrap();
+        hash.update(&pending.after_fingerprint).unwrap();
+        hash.update(&[medium]).unwrap();
+        GameIdentity {
+            title_id: pending.game.title_id,
+            save_identity: hash.finalize(),
+        }
+    }
+    /// A card with a save in progress that v0.3.0 began on `medium`.
+    fn begun_by_v0_3_0(medium: u8) -> Sd {
+        let card = in_progress();
+        let (_, pending) = journal(&card);
+        bound_by(&card, of_v0_3_0(&pending, medium));
+        card.restarted(None)
+    }
+    /// Everything on `card` but the two journal records.
+    fn all_but_the_journal(card: &Sd) -> std::collections::BTreeMap<&'static str, Vec<u8>> {
+        let mut files = card.files();
+        for unit in &FileName::Bank.units()[..2] {
+            files.remove(unit.path);
+        }
+        files
+    }
+
+    #[test]
+    fn a_save_in_progress_of_v0_3_0_is_bound_as_v0_4_0_binds_one() {
+        for (medium, kind) in [
+            (0, binding::Medium::Cartridge),
+            (1, binding::Medium::Installed),
+        ] {
+            let card = begun_by_v0_3_0(medium);
+            let (_, before) = journal(&card);
+            assert_eq!(binding::bound(&before), None, "v0.4.0 does not read it");
+            let others = all_but_the_journal(&card);
+            assert_eq!(
+                crate::testing::report(&card),
+                crate::migrate::Report {
+                    source: Some(crate::source::Source::V0_4_0),
+                    result: Err(Stopped::InProgress)
+                }
+            );
+            // The same save in progress, bound as v0.4.0 binds one, for the
+            // kind of copy it was made with and without a trainer.
+            let (_, after) = journal(&card);
+            assert_eq!(binding::bound(&after), Some(kind));
+            assert_eq!(binding::trainer(&after.game), ([0; binding::NAME], 0));
+            assert_eq!(
+                after,
+                PendingTransfer {
+                    game: after.game,
+                    ..before
+                }
+            );
+            assert!(all_but_the_journal(&card) == others);
+            // Once is enough: the next run finds it as v0.4.0 reads it.
+            let files = card.files();
+            assert_eq!(crate::testing::convert(&card), Err(Stopped::InProgress));
+            assert!(card.files() == files);
+        }
+    }
+
+    #[test]
+    fn a_save_in_progress_v0_4_0_reads_or_does_not_know_is_left_as_it_is() {
+        // Bound as v0.3.1 to v0.4.0 bind one.
+        let card = in_progress();
+        let (_, pending) = journal(&card);
+        let v3 = binding::v3(
+            pending.game.title_id,
+            pending.before_fingerprint,
+            pending.after_fingerprint,
+            binding::Medium::Cartridge,
+            [0x41; binding::NAME],
+            12345,
+        )
+        .unwrap();
+        bound_by(&card, v3);
+        // And the fixture's own, which is neither form.
+        for card in [card.restarted(None), in_progress()] {
+            let files = card.files();
+            assert_eq!(crate::testing::convert(&card), Err(Stopped::InProgress));
+            assert!(card.files() == files);
+        }
+    }
+
+    #[test]
+    fn a_cut_while_the_record_is_written_leaves_the_one_before() {
+        for console in [false, true] {
+            let card = begun_by_v0_3_0(1);
+            card.0.borrow_mut().console = console;
+            let (_, before) = journal(&card);
+            let whole = card.restarted(Some(usize::MAX));
+            let _ = crate::testing::convert(&whole);
+            let total = whole.0.borrow().operations;
+            let mut rewritten = 0;
+            for cut in 0..total {
+                let cut_card = card.restarted(Some(cut));
+                let _ = crate::testing::convert(&cut_card);
+                let after = cut_card.restarted(None);
+                // Always one whole record: the one before, or the new one.
+                let (_, now) = journal(&after);
+                if binding::bound(&now).is_some() {
+                    rewritten += 1;
+                } else {
+                    assert_eq!(now, before, "cut {cut}");
+                }
+                // The next start gets it to v0.4.0's form either way.
+                assert_eq!(crate::testing::convert(&after), Err(Stopped::InProgress));
+                let (_, last) = journal(&after);
+                assert_eq!(
+                    binding::bound(&last),
+                    Some(binding::Medium::Installed),
+                    "cut {cut}"
+                );
+            }
+            // Some cuts fell after the first record was whole.
+            assert!(rewritten > 0);
+        }
     }
 }

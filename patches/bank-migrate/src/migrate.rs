@@ -246,7 +246,15 @@ fn stage<C: Card>(card: &mut C, buffer: &mut [u8], source: Source) -> Outcome<()
     let Some(body) = buffer.get_mut(..BLOB_SIZE) else {
         return Err(Stopped::Failed(Step::ReadOld, Cause::Damaged));
     };
-    source.read(card, body)?;
+    if let Err(stopped) = source.read(card, body) {
+        // A save in progress is settled by the last release of its way;
+        // where an earlier one recorded it otherwise, it is made one that
+        // release reads.
+        if matches!(stopped, Stopped::InProgress) {
+            source.ready_for_its_release(card).map_err(io(write))?;
+        }
+        return Err(stopped);
+    }
     target::write_temporary(card, body)?;
     card.remove(&MARKER).map_err(io(write))?;
     let mut marker = card.create(&MARKER).map_err(io(write))?;
@@ -313,6 +321,25 @@ mod tests {
                 );
                 assert!(card.files() == files, "{source:?}");
             }
+        }
+    }
+
+    #[test]
+    fn the_current_release_refuses_a_bank_of_every_earlier_way_with_its_number() {
+        // As the file layer opens the Bank container: files that are not
+        // there are passed over, and the first one of another length stops
+        // it, with its length as the second number of error 3.
+        for source in Source::ALL {
+            let (card, _) = (source.fixtures().used)(false);
+            let files = card.files();
+            let unit = FileName::Bank
+                .units()
+                .iter()
+                .find(|unit| files.contains_key(unit.path))
+                .unwrap();
+            let len = files[unit.path].len() as u64;
+            assert_ne!(len, unit.len, "{source:?}");
+            assert_eq!(len, u64::from(source.refused()), "{source:?}");
         }
     }
 

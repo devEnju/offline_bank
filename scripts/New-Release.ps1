@@ -25,21 +25,7 @@ $release = 'v' + @($workspace.packages | Where-Object { $_.name -eq 'bank-payloa
 if ($release -notmatch '^v\d+\.\d+\.\d+$') { throw "The version in Cargo.toml must look like 1.0.0: $release" }
 $Version = if ($Draft) { 'draft' } else { $release }
 
-# Each change of how the Bank is stored, oldest first. Since: the first
-# version that stores it the new way; a Bank last used with an older version
-# is not continued by a newer one. From: the last version that stored it the
-# way before, and the name of that way's folder in the migration; its release
-# stays published, for whoever has to settle a Bank with it. Size: the second
-# number of error 3 with which the patches refuse a Bank of From (the size of
-# the first of its files they open). A release that changes how the Bank is
-# stored adds its line, and the migration its folder, before it is made.
-$bankFormats = @(
-    [pscustomobject]@{ Since = 'v0.3.0'; From = 'v0.2.1'; Size = '00164C54' }
-    [pscustomobject]@{ Since = 'v0.5.0'; From = 'v0.4.0'; Size = '000000C0' }
-)
-$bankFilesSince = $bankFormats[-1].Since
 function ConvertTo-Version([string]$tag) { return [version]$tag.Substring(1) }
-if ((ConvertTo-Version $release) -lt (ConvertTo-Version $bankFilesSince)) { throw "$release is older than the last way the Bank is stored ($bankFilesSince)." }
 
 # What ships beside the two patches: every package for Bank that
 # packages.psd1 lists and whose time has not passed.
@@ -56,6 +42,20 @@ if (-not $Publish) {
     if ($Download -and (Get-Date).Date -gt $ended) {
         throw "The official service ended on $serviceEnds. Remove the download first (docs/building.md#the-download-from-the-official-server)."
     }
+}
+# The earlier ways of storing the Bank, oldest first, as only the migration
+# knows them (its `ways` binary): the last release of each, whose release
+# stays published for whoever has to settle a Bank with it, and the second
+# number of error 3 with which this release refuses such a Bank.
+$bankFormats = @()
+if ($Migrate) {
+    $ways = & cargo +stable run --quiet --locked --offline --manifest-path $manifest -p bank-migrate-payload --bin ways
+    if ($LASTEXITCODE -ne 0) { throw "The migration's list of earlier ways failed: $LASTEXITCODE" }
+    $bankFormats = @($ways | ForEach-Object {
+            $from, $size = $_ -split ' '
+            [pscustomobject]@{ From = $from; Size = $size }
+        })
+    if (-not $bankFormats.Count) { throw 'The migration names no earlier way.' }
 }
 $suffix = if ($Draft) { '-draft' } else { '' }
 $name = "offline_bank-$Version"
@@ -359,7 +359,7 @@ try {
     $install = "Install ${Version}: extract $name.zip from this release and copy its luma folder to the root of the SD card."
     # Each earlier way of storing is known by the last release of it.
     $lastOfEach = @($bankFormats | ForEach-Object { $_.From })
-    $earlier = "$($lastOfEach[-1]) or before"
+    $earlier = if ($lastOfEach.Count) { "$($lastOfEach[-1]) or before" } else { '' }
     # Without the migration, a Bank stored an earlier way goes through the
     # last release that shipped it.
     $migratedBy = if ($Migrate) { '' } else {
@@ -371,11 +371,10 @@ try {
     $routes.Add(@('Never used the offline patch', "[Install $Version]($installing)"))
     foreach ($format in $bankFormats) {
         $have = "An offline Bank from $($format.From) or before"
-        if ($Migrate) {
-            $routes.Add(@($have, "[Convert it first]($coming), then install $Version", "convert it first with $migrationName.zip from this release, then install $Version"))
-        } else {
-            $routes.Add(@($have, "Convert it first with the migration of the $migratedBy, then install $Version"))
-        }
+        $routes.Add(@($have, "[Convert it first]($coming), then install $Version", "convert it first with $migrationName.zip from this release, then install $Version"))
+    }
+    if (-not $Migrate) {
+        $routes.Add(@('An offline Bank of an earlier release', "Convert it first with the migration of the $migratedBy, then install $Version"))
     }
     $routes.Add(@('An offline Bank from every other version', "[Install $Version]($installing)"))
     if ($Download) {
@@ -385,13 +384,12 @@ try {
     # What Bank says when the Bank on the SD card is not continued.
     $errors = @{
         Head = @('First number', 'Meaning', 'What to do')
-        Rows = @($bankFormats | ForEach-Object {
-                $unconverted = @("``00000003`` (with ``$($_.Size)``)", "The Bank is from $($_.From) or before and not converted yet.")
-                , $(if ($Migrate) {
-                        $unconverted + @("[Convert it first]($coming).", "Convert it first with $migrationName.zip.")
-                    } else {
-                        $unconverted + @("Convert it first with the migration of the $migratedBy.")
+        Rows = $(if ($Migrate) {
+                @($bankFormats | ForEach-Object {
+                        , @("``00000003`` (with ``$($_.Size)``)", "The Bank is from $($_.From) or before and not converted yet.", "[Convert it first]($coming).", "Convert it first with $migrationName.zip.")
                     })
+            } else {
+                @(, @('`00000003`', 'The Bank is from an earlier release and not converted yet.', "Convert it first with the migration of the $migratedBy."))
             })
     }
 

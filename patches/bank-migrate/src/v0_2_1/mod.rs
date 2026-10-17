@@ -40,6 +40,8 @@ fn units(file: FileName) -> &'static [UnitFile] {
 pub(crate) struct Way;
 impl source::Way for Way {
     const TAG: &'static [u8] = b"v0.2.1";
+    /// Its `/bank.bin`: the current release finds no journal record.
+    const REFUSED: u32 = 0x16_4c54;
 
     /// Its Bank file, which holds its journal. A current `/bank.bin` has
     /// another size.

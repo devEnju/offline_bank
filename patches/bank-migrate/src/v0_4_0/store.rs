@@ -324,6 +324,34 @@ impl<S: Storage> BankStore<S> {
         Ok(Reconciled { head, decision })
     }
 
+    /// Not of that release: publishes the save in progress of `head` once
+    /// more, bound to its game by `game`, the way `reconcile` publishes a
+    /// decision. The migration gives a save in progress of v0.3.0 the binding
+    /// v0.4.0 reads with it (`super::binding`).
+    pub fn rebind(
+        &mut self,
+        head: &Head,
+        game: GameIdentity,
+    ) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        let Phase::Prepared(pending) = head.phase() else {
+            return Err(StoreError::NoPendingTransfer);
+        };
+        let sequence = head
+            .metadata
+            .sequence
+            .checked_add(1)
+            .ok_or(StoreError::CounterExhausted)?;
+        self.publish(
+            head.preferred,
+            Metadata {
+                sequence,
+                capacity: self.layout.capacity,
+                phase: Phase::Prepared(PendingTransfer { game, ..pending }),
+            },
+        )
+    }
+
     /// Reads the visible payload only when there is no unresolved transaction.
     /// The full payload is checksummed again after reading into the caller's buffer.
     pub fn read_current(

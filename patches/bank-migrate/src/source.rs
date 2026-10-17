@@ -13,6 +13,10 @@ pub(crate) trait Way {
     /// The last release that stored the Bank this way, as the result screen
     /// and the marker name it.
     const TAG: &'static [u8];
+    /// The second number of error 3 with which the current release refuses
+    /// a Bank of this way: the length of the first of the current Bank
+    /// files it finds there.
+    const REFUSED: u32;
     /// Whether a Bank stored this way is on the card. Nothing is written.
     fn there<C: Card>(card: &mut C) -> Result<bool, C::Error>;
     /// Reads that Bank into `body` and finishes the body for the target
@@ -22,6 +26,14 @@ pub(crate) trait Way {
     /// Removes those of its files that are there. Some have the names of
     /// current files.
     fn remove<C: Card>(card: &mut C) -> Result<(), C::Error>;
+    /// Makes a save in progress that `read` refused one that the last
+    /// release of this way settles, where an earlier release recorded it in
+    /// a form that one does not read. Only the journal is written, as that
+    /// release writes it; nothing else is touched, and a save in progress it
+    /// already reads is left as it is. Without such a form, nothing.
+    fn ready_for_its_release<C: Card>(_card: &mut C) -> Result<(), C::Error> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +51,13 @@ impl Source {
         match self {
             Self::V0_2_1 => <v0_2_1::Way as Way>::TAG,
             Self::V0_4_0 => <v0_4_0::Way as Way>::TAG,
+        }
+    }
+
+    pub const fn refused(self) -> u32 {
+        match self {
+            Self::V0_2_1 => <v0_2_1::Way as Way>::REFUSED,
+            Self::V0_4_0 => <v0_4_0::Way as Way>::REFUSED,
         }
     }
 
@@ -64,6 +83,13 @@ impl Source {
         match self {
             Self::V0_2_1 => <v0_2_1::Way as Way>::remove(card),
             Self::V0_4_0 => <v0_4_0::Way as Way>::remove(card),
+        }
+    }
+
+    pub(crate) fn ready_for_its_release<C: Card>(self, card: &mut C) -> Result<(), C::Error> {
+        match self {
+            Self::V0_2_1 => <v0_2_1::Way as Way>::ready_for_its_release(card),
+            Self::V0_4_0 => <v0_4_0::Way as Way>::ready_for_its_release(card),
         }
     }
 

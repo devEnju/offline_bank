@@ -191,7 +191,7 @@ The message only comes for a Save and Quit that was cut off. A cartridge taken o
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
-**After updating the patch.** A Save and Quit that was interrupted is finished by the version it was made with, or by one that records a save in progress the same way; a version that records it differently shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
+**After updating the patch.** A Save and Quit that was interrupted is finished by any later release that stores the Bank the same way. A Bank that a release stored in an earlier way needs the migration, which finishes no save in progress itself: it says so (`00000BAD 00000007`), and the last release of that way finishes it, v0.2.1 for a Bank from v0.2.1 or before and v0.4.0 for one from v0.4.0 or before. A save in progress that v0.3.0 began is recorded in a form v0.4.0 does not read; the migration writes it in v0.4.0's form first, so that v0.4.0 finishes it too. If the game is not inserted then, v0.4.0's message names no trainer, because v0.3.0 did not record one.
 
 ## Troubleshooting
 

@@ -125,6 +125,8 @@ Once with a Bank last used with v0.2.1 and once with one last used with v0.4.0, 
 | New Bank and Transporter. | Boxes, Pokédex and transport box as before; a transfer works. |
 | Miles at the first opening with a game. | The balance from before, and what the days since the last Save and Quit earn on top: Pokémon in the Bank ÷ 30 per day. From v0.2.1, also the day of that save counts from its start. |
 | Save and Quit, reopen. | The same boxes and Miles. |
+| A Bank of v0.3.0 with a save in progress (v0.3.0, a cut during Save and Quit), then the migration. | `00000BAD 00000007`. |
+| v0.4.0 with the game, START. | v0.4.0 finishes the save as it finishes its own; without the game its message names no trainer. Then the migration converts (`0000600D 00000001`). |
 
 ## The download
 
