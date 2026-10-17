@@ -16,9 +16,14 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $manifest = Join-Path $projectRoot 'Cargo.toml'
-$workspace = (& cargo +stable metadata --no-deps --format-version 1 --offline --locked --manifest-path $manifest) | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed: $LASTEXITCODE" }
-$release = 'v' + @($workspace.packages | Where-Object { $_.name -eq 'bank-payload' })[0].version
+# The version under [workspace.package], the one every crate but offline-core takes.
+$section = ''
+$release = $null
+foreach ($line in Get-Content -LiteralPath $manifest) {
+    if ($line -match '^\s*\[([^\]]+)\]') { $section = $Matches[1] }
+    elseif ($section -eq 'workspace.package' -and $line -match '^\s*version\s*=\s*"([^"]+)"') { $release = 'v' + $Matches[1] }
+}
+if (-not $release) { throw 'Cargo.toml has no version under [workspace.package].' }
 if ($release -notmatch '^v\d+\.\d+\.\d+$') { throw "The version in Cargo.toml must look like 1.0.0: $release" }
 $Version = $release
 
@@ -40,20 +45,39 @@ if (-not $Publish) {
         throw "The official service ended on $serviceEnds. Remove the download first (docs/building.md#the-download-from-the-official-server)."
     }
 }
+# What the guides of the migration and the download quote, from the code
+# that shows it (each crate's `<crate>-guide` binary): the patch's name, and each
+# result by name with its numbers.
+function Get-Guide([string]$crate) {
+    $lines = & cargo +stable run --quiet --locked --offline --manifest-path $manifest -p $crate --bin "$crate-guide"
+    if ($LASTEXITCODE -ne 0) { throw "The guide facts of $crate failed: $LASTEXITCODE" }
+    $facts = @{}
+    $ways = [Collections.Generic.List[object]]::new()
+    foreach ($line in $lines) {
+        $key, $rest = $line -split ' ', 2
+        if ($key -eq 'way') {
+            $from, $size = $rest -split ' '
+            $ways.Add([pscustomobject]@{ From = $from; Size = $size })
+        } else {
+            $facts[$key] = $rest
+        }
+    }
+    $facts['ways'] = $ways.ToArray()
+    return $facts
+}
+# Shown as the console shows it: two numbers, or only a first one.
+function Format-Numbers([string]$numbers) { return '`' + $numbers + '`' }
 # The earlier ways of storing the Bank, oldest first, as only the migration
-# knows them (its `ways` binary): the last release of each, whose release
-# stays published for whoever has to settle a Bank with it, and the second
-# number of error 3 with which this release refuses such a Bank.
+# knows them: the last release of each, whose release stays published for
+# whoever has to settle a Bank with it, and the second number of error 3
+# with which this release refuses such a Bank.
 $bankFormats = @()
 if ($Migrate) {
-    $ways = & cargo +stable run --quiet --locked --offline --manifest-path $manifest -p bank-migrate-payload --bin ways
-    if ($LASTEXITCODE -ne 0) { throw "The migration's list of earlier ways failed: $LASTEXITCODE" }
-    $bankFormats = @($ways | ForEach-Object {
-            $from, $size = $_ -split ' '
-            [pscustomobject]@{ From = $from; Size = $size }
-        })
+    $migrationFacts = Get-Guide 'bank-migrate-payload'
+    $bankFormats = @($migrationFacts.ways)
     if (-not $bankFormats.Count) { throw 'The migration names no earlier way.' }
 }
+$downloadFacts = if ($Download) { Get-Guide 'bank-download-payload' }
 $name = "offline_bank-$Version"
 # A release lies in a folder of its own, named for its version.
 $releaseRoot = Join-Path $projectRoot "build/release/$Version"
@@ -66,7 +90,6 @@ $migrationName = if ($Migrate) { 'offline_bank-migration' } else { '' }
 $migrationZip = if ($Migrate) { Join-Path $releaseRoot "$migrationName.zip" } else { '' }
 $downloadName = if ($Download) { 'offline_bank-download' } else { '' }
 $downloadZip = if ($Download) { Join-Path $releaseRoot "$downloadName.zip" } else { '' }
-$bankTitle = '00040000000C9B00'
 # The release notes link to other releases and to the pictures on main.
 $repository = 'https://github.com/devEnju/offline_bank'
 $disclaimer = @(
@@ -185,7 +208,9 @@ try {
                 throw "Package $kind/${id}: $file changed after verification."
             }
         }
-        return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
+        # The title its folder on the SD card is named for, as the builder wrote it.
+        $title = (Get-Content -LiteralPath (Join-Path $directory 'manifest.json') -Raw | ConvertFrom-Json).title_id.ToUpperInvariant()
+        return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files; Title = $title }
     }
     # A package for Bank says the release's version on its error and result
     # screens. The migration puts the version of the Bank it converted in front.
@@ -198,9 +223,11 @@ try {
     if ($Download) { Invoke-Build @{ Kind = 'download' } }
     # The verify scripts still refuse what they must.
     & (Join-Path $PSScriptRoot 'Test-Verify.ps1') | Out-Host
+    $bank = Get-Verified 'bank'
+    $transporter = Get-Verified 'transporter'
     $titles = [ordered]@{
-        $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Verified 'bank') }
-        '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Verified 'transporter') }
+        $bank.Title        = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = $bank }
+        $transporter.Title = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = $transporter }
     }
     $migration = if ($Migrate) { Get-Verified 'migration' }
     $downloaded = if ($Download) { Get-Verified 'download' }
@@ -392,22 +419,22 @@ try {
             @{ P = "``$migrationName.zip`` converts a Bank that was last used with $earlier, once, and does nothing else. After converting, that release cannot open the Bank any more; the backup of step 1 is the only way back." }
             @{ Step = 'Back up Bank''s extra data with [Checkpoint](https://github.com/BernardoGiordano/Checkpoint); for Bank, press X there to switch to extdata.' }
             @{ Step = "Extract ``$migrationName.zip`` and copy its ``luma`` folder to the root of the SD card." }
-            @{ Step = 'Start Pokémon Bank. The start screen says "Ver. 1.5-migration".' }
+            @{ Step = "Start Pokémon Bank. The start screen says `"Ver. 1.5$($migrationFacts.package)`"." }
             @{
                 Step    = "Press START. After preparation three lines appear: `"Press HOME to return to the HOME Menu`", the version your Bank is from with this one, as ``$($lastOfEach[-1])-$($Version.TrimStart('v'))``, and two numbers. The Bank itself does not open."
-                Picture = (@($lastOfEach | ForEach-Object { "![The console showing a Bank of $_ converted, with 0000600D 00000001]($repository/blob/main/pictures/$_-migration-converted.png)" }) -join ' ')
+                Picture = (@($lastOfEach | ForEach-Object { "![The console showing a Bank of $_ converted, with $($migrationFacts.converted)]($repository/blob/main/pictures/$_-migration-converted.png)" }) -join ' ')
             }
             @{
                 Step  = 'Look up the numbers:'
                 Table = @{
                     Head = @('You see', 'Meaning', 'What to do')
                     Rows = @(
-                        , @('`0000600D 00000001`', 'Converted.', 'Go on with step 6.')
-                        , @('`0000600D 00000002`', 'Already converted.', 'Go on with step 6.')
-                        , @('`0000600D 00000000`', 'No Bank was found.', "Go on with step 6; $Version creates one.")
-                        , @('`00000BAD 00000007`', 'A Save and Quit was interrupted.', "$settleWith; start Bank once, then begin again at step 2.")
-                        , @('`00000BAD 00000008`', 'The Bank needs a Save and Quit first.', "$settleWith; open Bank with a game, Save and Quit, then begin again at step 2.")
-                        , @('`00000BA1` to `00000BA4`', 'A step failed.', 'Start Bank again with the migration files; that is always safe. If it keeps happening, restore your backup and report the version line and both numbers.')
+                        , @((Format-Numbers $migrationFacts.converted), 'Converted.', 'Go on with step 6.')
+                        , @((Format-Numbers $migrationFacts.already), 'Already converted.', 'Go on with step 6.')
+                        , @((Format-Numbers $migrationFacts.none), 'No Bank was found.', "Go on with step 6; $Version creates one.")
+                        , @((Format-Numbers $migrationFacts['in-progress']), 'A Save and Quit was interrupted.', "$settleWith; start Bank once, then begin again at step 2.")
+                        , @((Format-Numbers $migrationFacts.unsettled), 'The Bank needs a Save and Quit first.', "$settleWith; open Bank with a game, Save and Quit, then begin again at step 2.")
+                        , @("$((Format-Numbers ($migrationFacts.failed -split ' ')[0])) to $((Format-Numbers ($migrationFacts.failed -split ' ')[1]))", 'A step failed.', 'Start Bank again with the migration files; that is always safe. If it keeps happening, restore your backup and report the version line and both numbers.')
                     )
                 }
             }
@@ -434,16 +461,16 @@ try {
             }
             @{ Step = 'Back up Bank''s extra data and your game saves with [Checkpoint](https://github.com/BernardoGiordano/Checkpoint); for Bank, press X there to switch to extdata.' }
             @{ Step = "Extract ``$downloadName.zip`` and copy its ``luma`` folder to the root of the SD card." }
-            @{ Step = 'Start Pokémon Bank. The start screen says "Ver. 1.5-download".' }
-            @{ Step = "Press START. It connects as the original does; there is no menu and nothing to choose. After the loading screens three lines appear: `"Press HOME to return to the HOME Menu`", ``$Version-download``, and two numbers. The Bank itself does not open." }
+            @{ Step = "Start Pokémon Bank. The start screen says `"Ver. 1.5$($downloadFacts.package)`"." }
+            @{ Step = "Press START. It connects as the original does; there is no menu and nothing to choose. After the loading screens three lines appear: `"Press HOME to return to the HOME Menu`", ``$Version$($downloadFacts.package)``, and two numbers. The Bank itself does not open." }
             @{
                 Step  = 'Look up the numbers:'
                 Table = @{
                     Head = @('You see', 'Meaning', 'What to do')
                     Rows = @(
-                        , @('`0000D0AD 00000001`', 'Downloaded.', 'Go on with step 6.')
-                        , @('`0000D0AD 00000002`', 'An offline Bank is already on the SD card. Nothing was contacted or changed.', 'Go on with step 6.')
-                        , @('`00000BAD 00000001`', 'The server holds no Bank for this console. Nothing was created or changed.', "Go on with step 6; $Version creates a Bank.")
+                        , @((Format-Numbers $downloadFacts.downloaded), 'Downloaded.', 'Go on with step 6.')
+                        , @((Format-Numbers $downloadFacts.present), 'An offline Bank is already on the SD card. Nothing was contacted or changed.', 'Go on with step 6.')
+                        , @((Format-Numbers $downloadFacts['no-bank']), 'The server holds no Bank for this console. Nothing was created or changed.', "Go on with step 6; $Version creates a Bank.")
                         , @('Other numbers', 'Writing failed.', 'Start Bank again with the download files; that is always safe. If it keeps happening, report the version line and both numbers.')
                         , @('A message of the original, then its start screen', 'No connection, maintenance, or the server is locked for a while. Nothing was written.', 'Try again later.')
                     )
@@ -495,7 +522,7 @@ try {
         $steps = Get-Readme "Pokemon Bank Offline Patch: migration from $earlier to $Version"
         $steps.AddRange([string[]](ConvertTo-Text $migrationGuide))
         $steps.Add('')
-        Add-Files $migrationStage $bankTitle $migration "Pokemon Bank 1.5, migration from $earlier" "$migrationName.zip" $steps
+        Add-Files $migrationStage $migration.Title $migration "Pokemon Bank 1.5, migration from $earlier" "$migrationName.zip" $steps
         [IO.File]::WriteAllLines((Join-Path $migrationStage 'README.txt'), $steps)
         [IO.Compression.ZipFile]::CreateFromDirectory($migrationStage, $migrationZip)
         Remove-Item -LiteralPath $migrationStage -Recurse
@@ -504,7 +531,7 @@ try {
         $steps = Get-Readme "Pokemon Bank Offline Patch: download from the official server, for $Version"
         $steps.AddRange([string[]](ConvertTo-Text $downloadGuide))
         $steps.Add('')
-        Add-Files $downloadStage $bankTitle $downloaded 'Pokemon Bank 1.5, download from the official server' "$downloadName.zip" $steps
+        Add-Files $downloadStage $downloaded.Title $downloaded 'Pokemon Bank 1.5, download from the official server' "$downloadName.zip" $steps
         [IO.File]::WriteAllLines((Join-Path $downloadStage 'README.txt'), $steps)
         [IO.Compression.ZipFile]::CreateFromDirectory($downloadStage, $downloadZip)
         Remove-Item -LiteralPath $downloadStage -Recurse
@@ -547,8 +574,8 @@ try {
     $notes.Add('| --- | --- |')
     $notes.Add("| Built | $date |")
     $notes.Add("| Commit | ``$source`` |")
-    $notes.Add("| Bank package | ``$($titles[$bankTitle].Package.Name)`` |")
-    $notes.Add("| Transporter package | ``$($titles['00040000000C9C00'].Package.Name)`` |")
+    $notes.Add("| Bank package | ``$($bank.Name)`` |")
+    $notes.Add("| Transporter package | ``$($transporter.Name)`` |")
     $notes.Add("| ``$name.zip`` | ``$(Get-Sha256 $zip)`` |")
     if ($Migrate) {
         $notes.Add("| Migration package | ``$($migration.Name)`` |")

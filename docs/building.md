@@ -5,7 +5,7 @@ How to build the two patches from source, check them, and make a release. Everyt
 ## Requirements
 
 - Windows with PowerShell 7.
-- Rust: the stable toolchain and `nightly-2026-10-03` with `rust-src` (the nightly builds the ARM code).
+- Rust: the stable toolchain and the nightly that `rust-toolchain.toml` pins, with `rust-src` (the nightly builds the ARM code; `Build-Patches.ps1` reads its name from there).
 - Your own decrypted update CIAs in `input/`, and `ctrtool.exe` in `tools/`. Both folders are git-ignored.
 
   ```text
@@ -125,7 +125,7 @@ This is the form for every change of how the Bank is stored: the patches read on
 2. Its variant in `Source`, with an arm in each `match`; the compiler names every place.
 3. `target.rs` follows the new files. It takes names and sizes from `bank-common`, so mostly only `ORDER` and the temporary names change.
 4. If `target::Miles` or the unused places of a new Bank change, every folder's `read` is reviewed and its tests run again: freezing a reader fixes what it reads, not what it writes into.
-5. Its picture in `pictures/`. The release notes take the way from the migration itself (`ways`, below).
+5. Its picture in `pictures/`. The release notes take the way from the migration itself (`bank-migrate-payload-guide`, below).
 
 During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with a label and two numbers; the label names the way converted and the release, as "v0.2.1-1.2.3". `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. Its PC tests cover interrupted conversions; the console checks are in [testing.md](testing.md#the-migration), the user's steps in the package's README.
 
@@ -199,7 +199,7 @@ In this order, stopping at the first problem, it:
 
 Each holds its patch for Bank's folder and a `README.txt` with its guide. Neither name carries a version: the migration converts a Bank of whichever earlier way it finds, and the download belongs to the official service. Each guide is written once in the script and shown twice, in the zip's `README.txt` as plain text and in the notes, there with pictures from `main`: `pictures/<version>-migration-converted.png` for each earlier way, and `pictures/offline-boxes.png`. A release refuses to start without them.
 
-Which Bank goes which way comes from the migration alone: its binary `ways` (`cargo +stable run -p bank-migrate-payload --bin ways`) prints each earlier way as the last release of it and the second number of error 3 with which the release refuses such a Bank, as `v0.2.1 00164C54`. The notes have a row for each: "An offline Bank from v0.2.1 or before", "… from v0.4.0 or before", then "… from every other version", and an error row for each number. Nothing else in the project knows the earlier ways; without the migration, one row and one error line point to the migration of the last release below v1.0.0.
+Which Bank goes which way comes from the migration alone: its binary `bank-migrate-payload-guide` (`cargo +stable run -p bank-migrate-payload --bin bank-migrate-payload-guide`) prints each earlier way as the last release of it and the second number of error 3 with which the release refuses such a Bank, as `way v0.2.1 00164C54`. It also prints the patch's name and every result number the guide quotes, by name, as `converted 0000600D 00000001`; the download's `bank-download-payload-guide` does the same for it. So the numbers in the notes are the code's own, and the package titles come from each package's `manifest.json`, as the builder wrote them. The notes have a row for each: "An offline Bank from v0.2.1 or before", "… from v0.4.0 or before", then "… from every other version", and an error row for each number. Nothing else in the project knows the earlier ways; without the migration, one row and one error line point to the migration of the last release below v1.0.0.
 
 The last release of each earlier way, v0.2.1 and v0.4.0, stays on GitHub for good: the migration's guide links it for whoever has to settle a Bank with it before converting (`00000BAD 00000007` and `00000008`). Guides for a release belong in the release on GitHub, not in `docs/`.
 

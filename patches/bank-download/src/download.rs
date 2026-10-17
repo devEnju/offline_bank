@@ -15,6 +15,9 @@ pub const PRESENT: u32 = 2;
 pub const REFUSED: u32 = 0xbad;
 /// Second number: the server holds no Bank, and the patch creates none.
 pub const NO_BANK_ON_SERVER: u32 = 1;
+/// The patch's name: behind "Ver. 1.5" on the start screen, and behind the
+/// version on the result screen.
+pub const PACKAGE: &[u8] = b"-download";
 
 type Outcome<T, F> = Result<T, bank_files::Error<<<F as Files>::Storage as Storage>::Error>>;
 

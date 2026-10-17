@@ -27,7 +27,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$toolchain = 'nightly-2026-10-03'
+# The nightly that builds the ARM code is the one rust-toolchain.toml pins.
+$pinned = Select-String -LiteralPath (Join-Path $projectRoot 'rust-toolchain.toml') -Pattern '^channel\s*=\s*"([^"]+)"'
+if (-not $pinned) { throw 'rust-toolchain.toml names no channel.' }
+$toolchain = $pinned.Matches[0].Groups[1].Value
 
 $packages = Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1')
 $cias = @{ 'bank' = $BankCiaPath; 'transporter' = $TransporterCiaPath }

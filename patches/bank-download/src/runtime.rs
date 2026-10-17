@@ -8,7 +8,7 @@
 //! ends as cancelled, which the original answers by leaving without saving.
 
 use crate::{
-    download::{self, DONE, NO_BANK_ON_SERVER, PRESENT, REFUSED, WRITTEN},
+    download::{self, DONE, NO_BANK_ON_SERVER, PACKAGE, PRESENT, REFUSED, WRITTEN},
     navigation::{self, Stage},
 };
 use bank_common::{
@@ -389,10 +389,6 @@ pub unsafe extern "aapcs" fn bank_download_save(raw: *mut u8) -> u32 {
     state.owner = 0;
     cancel(raw)
 }
-
-/// The patch's name: behind "Ver. 1.5" on the start screen, and behind the
-/// version on the result screen.
-const PACKAGE: &[u8] = b"-download";
 
 /// Replaces the start screen's call that writes its version line
 /// (002b49c4): the line says which patch runs.
