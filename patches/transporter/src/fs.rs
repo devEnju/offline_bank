@@ -7,6 +7,7 @@
 
 use crate::layout::BANK_EXTDATA;
 use core::mem::transmute;
+use patch_common::kernel::close_handle;
 
 /// Transporter's `fs:USER` session handle.
 const FS_SESSION: *const u32 = 0x0031_1f80 as *const u32;
@@ -23,11 +24,6 @@ pub(crate) const FLUSH_FLAGS: u32 = 0x0001_0001;
 pub(crate) const OPEN_READ: u32 = 1;
 pub(crate) const OPEN_READ_WRITE: u32 = 3;
 pub(crate) const OPEN_WRITE_CREATE: u32 = 6;
-
-extern "aapcs" {
-    /// `svc 0x23` behind an ordinary call boundary (see link.rs).
-    pub(crate) fn transporter_close_handle(handle: u32) -> i32;
-}
 
 /// `name` with the terminator the SDK wrappers expect, and its length with
 /// it. Bank's file names are short (`offline_core::files`).
@@ -128,7 +124,7 @@ impl Drop for File {
         let close: Close = unsafe { transmute(FILE_CLOSE) };
         unsafe {
             close(&self.0);
-            transporter_close_handle(self.0);
+            close_handle(self.0);
         }
     }
 }

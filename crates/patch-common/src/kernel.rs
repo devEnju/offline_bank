@@ -116,7 +116,7 @@ mod arm {
     unsafe extern "aapcs" {
         /// Closes the supplied real native kernel handle.
         #[link_name = "patch_svc_close_handle"]
-        pub(crate) fn close_handle(handle: u32) -> i32;
+        pub fn close_handle(handle: u32) -> i32;
         /// Poll with timeout0; a positive timeout may block the calling thread.
         #[link_name = "patch_svc_wait_thread"]
         pub(crate) fn wait_thread(handle: u32, timeout: i64) -> i32;
@@ -161,6 +161,8 @@ mod arm {
     }
 }
 
+#[cfg(target_arch = "arm")]
+pub use arm::close_handle;
 #[cfg(target_arch = "arm")]
 pub(crate) use arm::{check_thread_capacity, wait_thread};
 

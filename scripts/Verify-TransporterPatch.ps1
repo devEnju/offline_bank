@@ -69,6 +69,10 @@ if (-not $InputPath) {
 $original = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exefs/code.bin'))
 $originalHeader = [IO.File]::ReadAllBytes((Join-Path $InputPath 'exheader.bin'))
 Assert-Check ((Hash $original) -eq $expectedCode) 'original code.bin hash'
+# SDK CreateThread (001E3F58) adds 0x20 to the worker's SDK argument before SVC 08.
+foreach ($check in @(@(0x1E3FC8, 0xE3550020L), @(0x1E3FD0, 0x92850020L), @(0x1E3FD8, 0x9A000008L), @(0x1E3FE4, 0xE3500027L), @(0x1E3FE8, 0x92800018L), @(0x1E3FF8, 0xE3500040L), @(0x1E3FFC, 0x83E00000L), @(0x1E403C, 0xAEF62B00L), @(0x1E4040, 0x93725B00L))) {
+    Assert-Check ([BitConverter]::ToUInt32($original, $check[0] - 0x100000) -eq $check[1]) 'Native SDK thread-priority conversion'
+}
 Assert-Check ((Hash $originalHeader) -eq $expectedExheader) 'original exheader.bin hash'
 $directory = if ($PackagePath) { $PackagePath } else { Join-Path $projectRoot $package.Folder }
 $packageName = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()

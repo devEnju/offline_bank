@@ -8,4 +8,4 @@ pub mod exclusive;
 pub mod worker;
 
 #[cfg(any(test, target_arch = "arm"))]
-mod kernel;
+pub mod kernel;

@@ -65,11 +65,6 @@ pub const DELIVER_FAILED: u32 = 0;
 pub const DELIVER_DONE: u32 = 1;
 pub const DELIVER_PENDING: u32 = 2;
 
-/// Stack of the worker thread, in the payload's own zero-initialised data.
-/// The file work keeps one 512-byte read buffer and a few journal records on
-/// it, far less than this.
-pub const WORKER_STACK_SIZE: usize = 0x4000;
-
 /// Bank's extdata. The files Transporter reads and writes in it, the two
 /// journal records and the two copies of the transport box, are named in
 /// `offline_core::files`, as Bank names them.

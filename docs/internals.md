@@ -533,8 +533,9 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 
 | Where | Role |
 | --- | --- |
-| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs), file access in [fs.rs](../patches/transporter/src/fs.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), the assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
+| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs) on the worker of [storage_worker.rs](../patches/transporter/src/storage_worker.rs), file access in [fs.rs](../patches/transporter/src/fs.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), the assembly stubs in [link.rs](../patches/transporter/src/link.rs), start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
 | [crates/offline-core/](../crates/offline-core/src/) | `transport::deliver` and the side-file format, shared with Bank. |
+| [crates/patch-common/](../crates/patch-common/src/) | The worker thread, its kernel calls and the hooks' shared state, shared with Bank. |
 | [crates/patch-builder/](../crates/patch-builder/src/) | Host tool, the same as for Bank. [transporter15.rs](../crates/patch-builder/src/transporter15.rs) holds the program and its one profile, with every edit and its original word. |
 
 ### Edits to the original
@@ -665,7 +666,14 @@ The original set bit 1 once for its whole online session. The patch follows the 
 
 ### Worker thread
 
-The check and the delivery run on a thread created per job through the original `svcCreateThread` wrapper `0010E250` (priority `0x31`, default processor) and ended through `0011F140`. The entries answer "pending" until the thread has stored its result and ended: the thread exits on the stack the next job's thread is given, so its result is collected only once a wait on its handle (an own `svc 0x24` wrapper, timeout 0) no longer times out, and the handle is then closed with an own `svc 0x23` wrapper. A wait the kernel refuses leaves it unknown whether the thread has ended: its result is collected, and from then on no thread is created and every job runs on the calling thread ([thread.rs](../patches/transporter/src/thread.rs), which decides each step for the hooks). If no thread can be created, the job runs on the calling thread too. State and a 16 KiB stack are statics of the payload; the file work keeps one 512-byte read buffer and a few journal records on it.
+The check and the delivery run on the same worker as Bank's patches ([Worker thread](#worker-thread) of Bank): `patch-common`'s thread and mailbox, with Transporter's SDK from [storage_worker.rs](../patches/transporter/src/storage_worker.rs) (`Transporter15`). Its SDK is the same code as Bank's: thread creation `001E3F58`, whose trampoline `0011F100` initializes native TLS and ends the thread through `svcExitThread` (`0011F140`), the delegate `0011F098`/`0011F0B4`/`0011F0A8`, and the event `001E6404`/`001E5220`/`001E3CF4`; the builder and the verify script check its priority conversion (`001E3FC8`..`001E4040`), which turns the SDK argument `0x11` into kernel priority `0x31`. The first START starts the thread; it waits for jobs until Transporter is closed, and no job ends it. The main thread owns every object of the original: the delivery entry copies the transport box into the worker's staging buffer (6,990 bytes) before it hands over the job, and the check needs nothing. The entries answer "pending" until the reply is collected; the main thread never runs a job and never waits for the worker.
+
+| The worker | The check | The delivery |
+| --- | --- | --- |
+| cannot be started (no room for a thread, or the SDK refuses), or has ended | message 3, "open Pokémon Bank" | failed: message `0x0B`, nothing removed from the game |
+| cannot say whether it still runs (the kernel refuses the wait on it) | stays pending, as in Bank: the job keeps what it holds, the screen keeps its indicator, HOME and sleep stay refused | the same |
+
+Stack 32 KiB with a guard pattern, as in Bank; the file work keeps one 512-byte read buffer and a few journal records on it. The worker is the payload's only thread (`THREADS = 1`); the original's cartridge thread ran beside the per-job thread before as it runs beside this one.
 
 ### File access
 

@@ -277,23 +277,7 @@ mod linked {
         "pop {{r0-r3, r12, lr}}",
         "moveq r0, #0x14",
         "bx lr",
-        // svc 0x23 (CloseHandle) behind an ordinary call boundary.
         ".size transporter_slot, .-transporter_slot",
-        ".global transporter_close_handle",
-        ".type transporter_close_handle, %function",
-        "transporter_close_handle:",
-        "svc #0x23",
-        "bx lr",
-        // svc 0x24 (WaitSynchronization1) the same way: r0 the handle, the
-        // i64 timeout in r2/r3 as AAPCS aligns it.
-        ".size transporter_close_handle, .-transporter_close_handle",
-        ".global transporter_wait_thread",
-        ".type transporter_wait_thread, %function",
-        "transporter_wait_thread:",
-        "push {{r4, lr}}",
-        "svc #0x24",
-        "pop {{r4, pc}}",
-        ".size transporter_wait_thread, .-transporter_wait_thread",
         ".ltorg",
         check = sym transporter_check,
         message_waits = sym transporter_message_waits,

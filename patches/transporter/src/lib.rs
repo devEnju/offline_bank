@@ -28,7 +28,7 @@ pub mod legacy_shiny;
 pub mod lytpatch;
 pub mod navigation;
 pub mod sdsave;
-pub mod thread;
+pub mod storage_worker;
 
 pub mod bootstrap;
 

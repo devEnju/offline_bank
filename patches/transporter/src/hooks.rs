@@ -1,22 +1,16 @@
-//! The entry points called from the patched original code, the worker thread
-//! that does the file work, and Bank's files as the delivery rules reach
-//! them. The original task calls an entry every frame until it answers;
-//! the main thread waits for a file operation only if no worker thread can be
-//! created, and the job then runs on it.
+//! The entry points called from the patched original code. The original
+//! task calls an entry every frame until it answers. The file work runs on
+//! the patch's one worker thread (`storage_worker`), which the first START
+//! starts; the main thread never waits for it.
 
 use crate::{
-    fs::{terminated, transporter_close_handle, Archive, File, OPEN_READ_WRITE},
     layout::*,
     navigation,
-    thread::{self, DONE, IDLE, RUNNING},
+    storage_worker::{DeliveryWorker, Failed, Job, Reply},
 };
-use core::{
-    cell::UnsafeCell,
-    mem::transmute,
-    slice,
-    sync::atomic::{AtomicU32, Ordering},
-};
-use offline_core::{files, sections::TRANSPORT_SLOTS, transport, Storage, METADATA_SIZE};
+use core::{mem::transmute, slice};
+use offline_core::sections::TRANSPORT_SLOTS;
+use patch_common::{exclusive::Exclusive, worker::JobId};
 
 /// The original's "show this message and wait": `(ui, message, 1)`, as the
 /// game search calls it for its own message 0 (`00246FFC`).
@@ -52,137 +46,59 @@ const BLOCK_CLEAR: usize = 0x0011_a5fc;
 /// (001044D0) carries the press out some frames later, whatever the mask
 /// says by then.
 const HOME_ACCEPTED: *mut u8 = 0x002f_49e9 as *mut u8;
-/// The original's `svcCreateThread(out, entry, arg, stack_top, priority,
-/// processor)` and `svcExitThread()` wrappers.
-const CREATE_THREAD: usize = 0x0010_e250;
-const EXIT_THREAD: usize = 0x0011_f140;
-/// One below the main thread, so the worker runs while the main thread waits
-/// for the next frame.
-const WORKER_PRIORITY: i32 = 0x31;
-
-extern "aapcs" {
-    /// `svc 0x24` for one handle, behind an ordinary call boundary (see
-    /// link.rs).
-    fn transporter_wait_thread(handle: u32, timeout: i64) -> i32;
+/// The worker and the job it has out. Only the main thread takes it.
+struct Runtime {
+    worker: Option<DeliveryWorker>,
+    job: Option<(JobId, Job)>,
 }
-
-const JOB_CHECK: u32 = 0;
-const JOB_DELIVER: u32 = 1;
-
-/// Worker state. Only the main thread starts and collects a job; while one
-/// runs, the worker reads `task` and `job` and writes the two atomics.
-#[repr(C)]
-struct Shared {
-    phase: AtomicU32,
-    result: AtomicU32,
-    handle: UnsafeCell<u32>,
-    task: UnsafeCell<*const u8>,
-    job: UnsafeCell<u32>,
-}
-// SAFETY: see the access rule above; `phase` orders every hand-over.
-unsafe impl Sync for Shared {}
-static STATE: Shared = Shared {
-    phase: AtomicU32::new(IDLE),
-    result: AtomicU32::new(0),
-    handle: UnsafeCell::new(0),
-    task: UnsafeCell::new(core::ptr::null()),
-    job: UnsafeCell::new(0),
+// SAFETY: the original calls the hooks, the only ones to take it, on its
+// main thread.
+static STATE: Exclusive<Runtime> = unsafe {
+    Exclusive::new(Runtime {
+        worker: None,
+        job: None,
+    })
 };
 
-#[repr(C, align(8))]
-struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
-// SAFETY: used only as the stack of the one worker thread.
-unsafe impl Sync for Stack {}
-static STACK: Stack = Stack(UnsafeCell::new([0; WORKER_STACK_SIZE]));
-
-/// A pair of files in Bank's extdata, open for reading and writing and
-/// addressed as one range: the two journal records, or the two copies of
-/// the transport box. Bank keeps each in a file of its own, because the
-/// console leaves a file that was being written unreadable when the power
-/// fails.
-///
-/// A file that is missing or cannot be opened makes every read of it fail,
-/// and so the check and the delivery refuse: Transporter neither creates
-/// nor replaces a file. Bank's next Save and Quit does.
-struct Pair {
-    files: [Option<File>; 2],
-    written: [bool; 2],
-    /// Length of each of the two files.
-    len: u64,
-}
-
-/// Bank's files as the delivery rules reach them (`transport::Files`): one
-/// pair at a time, so that never more than two files are open.
-struct BankFiles;
-impl transport::Files for BankFiles {
-    type Storage = Pair;
-    fn journal(&mut self) -> Option<Pair> {
-        unsafe { Pair::open(files::JOURNAL, METADATA_SIZE as u64) }
-    }
-    fn mover(&mut self) -> Option<Pair> {
-        unsafe { Pair::open(files::MOVER, u64::from(transport::LEN)) }
-    }
-}
-impl Pair {
-    /// `None` when Bank's extdata or both files do not exist, access is
-    /// refused, or a file is not exactly `len` bytes, the size Bank creates.
-    unsafe fn open(names: [&str; 2], len: u64) -> Option<Self> {
-        // Whatever was opened is closed again if this ends early.
-        let mut pair = Self {
-            files: [None, None],
-            written: [false; 2],
-            len,
-        };
-        for (file, name) in pair.files.iter_mut().zip(names) {
-            let (path, length) = terminated(name);
-            *file = unsafe { File::open(Archive::BankExtdata, &path[..length], OPEN_READ_WRITE) };
-            // One of another size is not a file of this layout.
-            if file.as_ref().is_some_and(|file| file.size() != Some(len)) {
-                return None;
+impl Runtime {
+    /// One frame of `kind`: on the first the worker is started if it is not
+    /// yet and `stage` hands it what the job needs, then its reply. `None`
+    /// while it runs. A job whose worker cannot say whether it is still
+    /// running stays out: what it holds stays lent, and the next frame asks
+    /// again.
+    unsafe fn step(
+        &mut self,
+        kind: Job,
+        stage: impl FnOnce(&mut DeliveryWorker) -> Option<()>,
+    ) -> Option<Result<Reply, Failed>> {
+        let Some((id, out)) = self.job else {
+            let worker = match unsafe { DeliveryWorker::get(&mut self.worker) } {
+                Ok(worker) => worker,
+                Err(failed) => return Some(Err(failed)),
+            };
+            if stage(worker).is_none() {
+                return Some(Err(Failed));
             }
-        }
-        pair.files.iter().any(Option::is_some).then_some(pair)
-    }
-    /// The file that holds `offset..offset + length`, and where in it.
-    fn locate(&self, offset: u64, length: usize) -> Result<(usize, &File, u64), ()> {
-        let index = (offset / self.len) as usize;
-        let within = offset % self.len;
-        if index >= self.files.len() || within + length as u64 > self.len {
-            return Err(());
-        }
-        Ok((index, self.files[index].as_ref().ok_or(())?, within))
-    }
-}
-impl Storage for Pair {
-    type Error = ();
-    fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), ()> {
-        let (_, file, within) = self.locate(offset, bytes.len())?;
-        file.read(within, bytes.as_mut_ptr(), bytes.len() as u32)
-            .then_some(())
-            .ok_or(())
-    }
-    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), ()> {
-        let (index, file, within) = self.locate(offset, bytes.len())?;
-        let written = file.write(within, bytes.as_ptr(), bytes.len() as u32, 0);
-        self.written[index] = true;
-        written.then_some(()).ok_or(())
-    }
-    /// Only a file that was written is flushed: the one that holds Bank's
-    /// own box is never sent a write of any kind.
-    fn sync(&mut self) -> Result<(), ()> {
-        for (file, written) in self.files.iter().zip(&mut self.written) {
-            if let (Some(file), true) = (file, *written) {
-                if !file.flush() {
-                    return Err(());
+            return match unsafe { worker.submit(kind) } {
+                Ok(id) => {
+                    self.job = Some((id, kind));
+                    None
                 }
-                *written = false;
-            }
+                Err(failed) => Some(Err(failed)),
+            };
+        };
+        // The check and the delivery are steps of their own and never
+        // overlap; a reply is only ever the job's that asked for it.
+        if out != kind {
+            return Some(Err(Failed));
         }
-        Ok(())
-    }
-    /// Transporter replaces no file of Bank's.
-    fn recreate(&mut self, _: u64, _: u64) -> Result<(), ()> {
-        Err(())
+        let worker = self.worker.as_mut()?;
+        let mut job = Some(id);
+        let polled = worker.collect(&mut job);
+        if job.is_none() {
+            self.job = None;
+        }
+        polled.transpose()
     }
 }
 
@@ -207,69 +123,6 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
             slice::from_raw_parts(body.add(RECORDS_OFFSET), RECORDS_LEN),
             slice::from_raw_parts(body.add(TAGS_OFFSET), TRANSPORT_SLOTS),
         ))
-    }
-}
-
-/// The file work of one job. Runs on the worker thread. The check answers
-/// the message to show, or 0 for none; the delivery answers 1 when it is
-/// written.
-unsafe fn work(job: u32, task: *const u8) -> u32 {
-    if job == JOB_CHECK {
-        return transport::check(&mut BankFiles)
-            .err()
-            .map_or(0, refusal_message);
-    }
-    let Some((records, tags)) = (unsafe { native_box(task) }) else {
-        return 0;
-    };
-    u32::from(transport::deliver(&mut BankFiles, records, tags).is_ok())
-}
-
-unsafe extern "aapcs" fn worker(_: u32) {
-    let result = unsafe { work(*STATE.job.get(), *STATE.task.get()) };
-    STATE.result.store(result, Ordering::Relaxed);
-    STATE.phase.store(DONE, Ordering::Release);
-    let exit: unsafe extern "aapcs" fn() = unsafe { transmute(EXIT_THREAD) };
-    unsafe { exit() };
-}
-
-/// Starts `job` on the first call and answers `None` until it is finished.
-/// Carries out `thread::step`; if no thread can be created, the job runs
-/// here.
-unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
-    type Create = unsafe extern "aapcs" fn(
-        *mut u32,
-        unsafe extern "aapcs" fn(u32),
-        u32,
-        usize,
-        i32,
-        i32,
-    ) -> i32;
-    let handle = unsafe { *STATE.handle.get() };
-    let phase = STATE.phase.load(Ordering::Acquire);
-    match thread::step(phase, || unsafe { transporter_wait_thread(handle, 0) }) {
-        thread::Step::Start => {
-            unsafe {
-                *STATE.task.get() = task;
-                *STATE.job.get() = job;
-            }
-            STATE.phase.store(RUNNING, Ordering::Release);
-            let create: Create = unsafe { transmute(CREATE_THREAD) };
-            let top = STACK.0.get() as usize + WORKER_STACK_SIZE;
-            let code = unsafe { create(STATE.handle.get(), worker, 0, top, WORKER_PRIORITY, -2) };
-            if code < 0 {
-                STATE.phase.store(IDLE, Ordering::Release);
-                return Some(unsafe { work(job, task) });
-            }
-            None
-        }
-        thread::Step::Collect(next) => {
-            unsafe { transporter_close_handle(handle) };
-            STATE.phase.store(next, Ordering::Release);
-            Some(STATE.result.load(Ordering::Relaxed))
-        }
-        thread::Step::Here => Some(unsafe { work(job, task) }),
-        thread::Step::Pending => None,
     }
 }
 
@@ -346,7 +199,14 @@ pub unsafe extern "aapcs" fn transporter_list_ready() {
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    match unsafe { step(task, JOB_CHECK) } {
+    let answer = {
+        let Some(mut state) = STATE.take() else {
+            return SEARCH_PENDING;
+        };
+        unsafe { state.step(Job::Check, |_| Some(())) }
+    };
+    // A worker that failed refuses as a file that does not read does.
+    match answer.map(|reply| reply.unwrap_or(MESSAGE_OPEN_BANK)) {
         None => SEARCH_PENDING,
         Some(0) => SEARCH_GO,
         Some(message) => {
@@ -381,9 +241,23 @@ unsafe fn show(task: *const u8, message: u32) -> bool {
 /// the live task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
-    match unsafe { step(task, JOB_DELIVER) } {
+    let Some(mut state) = STATE.take() else {
+        return DELIVER_PENDING;
+    };
+    // The transport box goes to the worker in its staging buffer, copied
+    // here: the worker touches no object of the original.
+    let answer = unsafe {
+        state.step(Job::Deliver, |worker| {
+            let (records, tags) = native_box(task)?;
+            let staging = worker.staging_mut().ok()?;
+            staging[..RECORDS_LEN].copy_from_slice(records);
+            staging[RECORDS_LEN..].copy_from_slice(tags);
+            Some(())
+        })
+    };
+    match answer {
         None => DELIVER_PENDING,
-        Some(1) => DELIVER_DONE,
+        Some(Ok(1)) => DELIVER_DONE,
         Some(_) => DELIVER_FAILED,
     }
 }

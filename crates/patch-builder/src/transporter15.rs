@@ -77,13 +77,7 @@ pub const CONTRACT: Contract = Contract {
     bootstrap_end: BOOTSTRAP_LIMIT,
     payload: PAYLOAD_ADDRESS,
     original_app_init: ORIGINAL_APP_INIT,
-    wrappers: &[
-        ("transporter_close_handle", &[0xef00_0023, 0xe12f_ff1e]),
-        (
-            "transporter_wait_thread",
-            &[0xe92d_4010, 0xef00_0024, 0xe8bd_8010],
-        ),
-    ],
+    wrappers: crate::elf::KERNEL_WRAPPERS,
 };
 
 /// The entry functions the patched sites branch to, by name; the first is
@@ -307,9 +301,30 @@ fn word_edit(
     })
 }
 
-/// What Transporter relies on beyond its edited words: the game list, and
-/// the layout check, which must begin with the instruction it stands in for.
+// SDK CreateThread's priority conversion (`001E3F58`, the same code as
+// Bank's), including its encoded-priority literals. The worker passes SDK
+// 0x11, which this code turns into kernel 0x31.
+const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
+    (0x001e_3fc8, 0xe355_0020),
+    (0x001e_3fd0, 0x9285_0020),
+    (0x001e_3fd8, 0x9a00_0008),
+    (0x001e_3fe4, 0xe350_0027),
+    (0x001e_3fe8, 0x9280_0018),
+    (0x001e_3ff8, 0xe350_0040),
+    (0x001e_3ffc, 0x83e0_0000),
+    (0x001e_403c, 0xaef6_2b00),
+    (0x001e_4040, 0x9372_5b00),
+];
+
+/// What Transporter relies on beyond its edited words: the SDK's conversion
+/// of the worker's thread priority, the game list, and the layout check,
+/// which must begin with the instruction it stands in for.
 fn check(code: &[u8], _: &Profile, payload: &PayloadElf, _: &[CheckedEdit]) -> Result<()> {
+    for (address, expected) in SDK_PRIORITY_CODE {
+        if le32(code, (address - CODE_BASE) as usize)? != expected {
+            return fail("SDK thread-priority conversion is not the reviewed code");
+        }
+    }
     check_game_list(code)?;
     let check = payload.export("transporter_layout_check")?;
     let at = check

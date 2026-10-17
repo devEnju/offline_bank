@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 offline-core = { path = "../../crates/offline-core" }
+patch-common = { path = "../../crates/patch-common" }
 
 [lib]
 crate-type = ["rlib"]
