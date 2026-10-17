@@ -610,11 +610,7 @@ mod tests {
             let tag = core::str::from_utf8(source.tag()).unwrap();
             let some = Some(source);
             assert_eq!(text(some, b"v0.6.0"), Some(std::format!("{tag}-0.6.0")));
-            assert_eq!(
-                text(some, b"v0.6.0-draft"),
-                Some(std::format!("{tag}-0.6.0-draft"))
-            );
-            assert_eq!(text(some, b"dev"), Some(std::format!("{tag}-dev")));
+            assert_eq!(text(some, b"draft"), Some(std::format!("{tag}-draft")));
             // The longest version that fits behind the tag, and what does not.
             let room = Label::ROOM - tag.len() - 1;
             assert!(text(some, &vec![b'1'; room]).is_some());
@@ -630,6 +626,6 @@ mod tests {
             );
         }
         assert_eq!(text(None, b"v0.6.0").as_deref(), Some("v0.6.0-migration"));
-        assert_eq!(text(None, b"dev").as_deref(), Some("dev-migration"));
+        assert_eq!(text(None, b"draft").as_deref(), Some("draft-migration"));
     }
 }

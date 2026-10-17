@@ -29,7 +29,9 @@ build/binary/bank/           code.ips, exheader.bin, manifest.json, report.md, v
 build/binary/transporter/    the same
 ```
 
-**The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). The version is given to the build: `Build-Patches.ps1` takes `-Version v1.2.3` (or `v1.2.3-draft`) and compiles it into every package for Bank, and `New-Release.ps1` passes its own, with `-draft` for the offline package and the migration of a draft. The migration puts the version of the Bank it converted in front, as `v0.2.1-1.2.3`. A package built without it says `dev`. The version is part of the compiled code, so it is part of the package's name too.
+**The version.** The version of a release is the workspace's, `version` under `[workspace.package]` in `Cargo.toml`; every crate but `offline-core` takes it (`version.workspace = true`). It changes only with a release: the release commit sets the new number there and in `Cargo.lock` (`cargo +stable update --workspace --offline`). `offline-core` has a version of its own, that of the stored files.
+
+**The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). Only a release has a version there: `New-Release.ps1` builds with `Build-Patches.ps1 -Release`, and the payload then compiles the version from `Cargo.toml` in (`numbers::VERSION`, through `OFFLINE_BANK_RELEASE`), as `v1.2.3`. Every other build is a draft and says `draft`: one built by hand, the console test build (`draft-test`), and the zips of `New-Release.ps1 -Draft`. The migration puts the version of the Bank it converted in front, as `v0.2.1-1.2.3` or `v0.2.1-draft`. The version is part of the compiled code, so it is part of the package's name too.
 
 A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way with `-Kind`, each into a folder beside `binary`: `-Kind test` into `build/test/`, `-Kind migration` into `build/migration/`, `-Kind download` into `build/download/` (all below). Each kind's crate, linker script, features, profile files and folder are listed once, in `scripts/packages.psd1`, which every script reads.
 
@@ -171,15 +173,15 @@ offline_bank-v1.0.0.zip
             └── exheader.bin
 ```
 
-One command makes it. You choose the version:
+One command makes it, for the version in `Cargo.toml`. A release commit sets that first, to the number of the release, in `Cargo.toml` and `Cargo.lock`:
 
 ```powershell
-./scripts/New-Release.ps1 -Version v1.0.0
+./scripts/New-Release.ps1
 ```
 
 In this order, stopping at the first problem, it:
 
-1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the tag does not exist yet (files git does not track may lie in the folder);
+1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the version is newer than every tag (files git does not track may lie in the folder);
 2. runs the tests, the test build's tests, Clippy and the formatting check;
 3. builds both patches, and the migration and the download while they ship (below), from the committed sources, verifies them, and tests the verify scripts;
 4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes the migration and download zips;
@@ -202,12 +204,12 @@ The last release of each earlier way, v0.2.1 and v0.4.0, stays on GitHub for goo
 Nothing is pushed or uploaded. Try the zip on a console first, then publish:
 
 ```powershell
-./scripts/New-Release.ps1 -Version v1.0.0 -Publish
+./scripts/New-Release.ps1 -Publish
 ```
 
 This pushes the tag and creates the GitHub release with the zip, the migration and download zips the notes name, and the notes through the `gh` tool. It refuses if a zip changed since its notes were written. By hand instead: `git push origin v1.0.0`, then on GitHub draft a new release for that tag, paste the notes file and attach the zip.
 
-To withdraw a version before it is published, delete the local tag (`git tag -d v1.0.0`) and its folder in `build/release/`. `-Draft` packs the working tree as it is for your own testing: no tag, and the zip is marked as a draft.
+To withdraw a version before it is published, delete the local tag (`git tag -d v1.0.0`) and its folder in `build/release/`. `-Draft` packs the working tree as it is for your own testing: no tag and no version; its folder is `build/release/draft/`, its zips are `offline_bank-draft.zip` and the migration and download zips with `-draft`, and every package in them says `draft`.
 
 **Tracing a version.** The zip's `README.txt`, the release notes and the tag message all carry the same facts: the version, the date, the full commit hash, the two package names, and the SHA-256 of each patch file (the notes and the tag also that of the zip).
 

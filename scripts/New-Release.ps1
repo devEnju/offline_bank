@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$Version,
     [switch]$Draft,
     [switch]$Publish
 )
@@ -11,12 +10,20 @@ param(
 # the official service runs, each as long as packages.psd1 lists it.
 # Nothing leaves this machine unless -Publish is given, which pushes the tag
 # and creates the GitHub release from the zips made by an earlier run.
-# -Draft packs the working tree as it is for testing: no tag, marked as draft.
+# -Draft packs the working tree as it is for testing: no tag, and no version:
+# everything in it is called "draft".
+# The version of a release is the workspace's in Cargo.toml; a release commit
+# sets it there and in Cargo.lock (docs/building.md).
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version must look like v1.0.0: $Version" }
 if ($Draft -and $Publish) { throw 'A draft cannot be published.' }
+$manifest = Join-Path $projectRoot 'Cargo.toml'
+$workspace = (& cargo +stable metadata --no-deps --format-version 1 --offline --locked --manifest-path $manifest) | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed: $LASTEXITCODE" }
+$release = 'v' + @($workspace.packages | Where-Object { $_.name -eq 'bank-payload' })[0].version
+if ($release -notmatch '^v\d+\.\d+\.\d+$') { throw "The version in Cargo.toml must look like 1.0.0: $release" }
+$Version = if ($Draft) { 'draft' } else { $release }
 
 # Each change of how the Bank is stored, oldest first. Since: the first
 # version that stores it the new way; a Bank last used with an older version
@@ -32,7 +39,7 @@ $bankFormats = @(
 )
 $bankFilesSince = $bankFormats[-1].Since
 function ConvertTo-Version([string]$tag) { return [version]$tag.Substring(1) }
-if ((ConvertTo-Version $Version) -lt (ConvertTo-Version $bankFilesSince)) { throw "$Version is older than the last way the Bank is stored ($bankFilesSince)." }
+if ((ConvertTo-Version $release) -lt (ConvertTo-Version $bankFilesSince)) { throw "$release is older than the last way the Bank is stored ($bankFilesSince)." }
 
 # What ships beside the two patches: every package for Bank that
 # packages.psd1 lists and whose time has not passed.
@@ -42,7 +49,7 @@ $Download = $packages.ContainsKey('download')
 # The day the official service ends, in its own time zone.
 $serviceEnds = 'February 25, 2027'
 if (-not $Publish) {
-    if ($Migrate -and (ConvertTo-Version $Version) -ge [version]'1.0.0') {
+    if ($Migrate -and (ConvertTo-Version $release) -ge [version]'1.0.0') {
         throw "Releases from v1.0.0 on ship no migration. Remove it first (docs/building.md#the-migration-from-earlier-releases)."
     }
     $ended = [datetime]::ParseExact($serviceEnds, 'MMMM d, yyyy', [Globalization.CultureInfo]::InvariantCulture)
@@ -51,9 +58,9 @@ if (-not $Publish) {
     }
 }
 $suffix = if ($Draft) { '-draft' } else { '' }
-$name = "offline_bank-$Version$suffix"
+$name = "offline_bank-$Version"
 # A release lies in a folder of its own, named for its version.
-$releaseRoot = Join-Path $projectRoot "build/release/$Version$suffix"
+$releaseRoot = Join-Path $projectRoot "build/release/$Version"
 $zip = Join-Path $releaseRoot "$name.zip"
 $notesPath = Join-Path $releaseRoot "$name.md"
 # The zips beside the patches have no version in their names: the migration
@@ -144,7 +151,11 @@ if (-not $Draft) {
     # Files git does not track may lie in the folder; a tracked file must be as committed.
     if (Invoke-Git status --porcelain --untracked-files=no) { throw 'There are uncommitted changes. Commit them, or use -Draft for a test build.' }
     & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$Version" | Out-Null
-    if ($LASTEXITCODE -eq 0) { throw "Tag $Version already exists." }
+    if ($LASTEXITCODE -eq 0) { throw "Tag $Version already exists. Set the new version in Cargo.toml and Cargo.lock first." }
+    $newest = @(Invoke-Git tag -l 'v*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Sort-Object { ConvertTo-Version $_ })
+    if ($newest.Count -and (ConvertTo-Version $Version) -le (ConvertTo-Version $newest[-1])) {
+        throw "$Version is not newer than $($newest[-1]). Set the new version in Cargo.toml and Cargo.lock first."
+    }
     foreach ($path in @($zip, $notesPath, $migrationZip, $downloadZip) | Where-Object { $_ }) {
         if (Test-Path -LiteralPath $path) { throw "Output already exists and will not be replaced: $path" }
     }
@@ -183,16 +194,16 @@ try {
         }
         return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
     }
-    # A package for Bank says its version on its error and result screens.
-    # Of a draft, the offline package and the migration say so too; the
-    # migration puts the version of the Bank it converted in front.
+    # A package for Bank says its version on its error and result screens:
+    # the release's, or "draft" for a draft. The migration puts the version
+    # of the Bank it converted in front.
     function Invoke-Build([hashtable]$arguments) {
+        if (-not $Draft) { $arguments.Release = $true }
         & (Join-Path $PSScriptRoot 'Build-Patches.ps1') @arguments | Out-Host
     }
-    $built = if ($Draft) { "$Version-draft" } else { $Version }
-    Invoke-Build @{ Version = $built }
-    if ($Migrate) { Invoke-Build @{ Kind = 'migration'; Version = $built } }
-    if ($Download) { Invoke-Build @{ Kind = 'download'; Version = $Version } }
+    Invoke-Build @{}
+    if ($Migrate) { Invoke-Build @{ Kind = 'migration' } }
+    if ($Download) { Invoke-Build @{ Kind = 'download' } }
     # The verify scripts still refuse what they must.
     & (Join-Path $PSScriptRoot 'Test-Verify.ps1') | Out-Host
     $titles = [ordered]@{
@@ -394,7 +405,7 @@ try {
             @{ Step = "Extract ``$migrationName.zip`` and copy its ``luma`` folder to the root of the SD card." }
             @{ Step = 'Start Pokémon Bank. The start screen says "Ver. 1.5-migration".' }
             @{
-                Step    = "Press START. After preparation three lines appear: `"Press HOME to return to the HOME Menu`", the version your Bank is from with this one, as ``$($lastOfEach[-1])-$($Version.Substring(1))``, and two numbers. The Bank itself does not open."
+                Step    = "Press START. After preparation three lines appear: `"Press HOME to return to the HOME Menu`", the version your Bank is from with this one, as ``$($lastOfEach[-1])-$($Version.TrimStart('v'))``, and two numbers. The Bank itself does not open."
                 Picture = (@($lastOfEach | ForEach-Object { "![The console showing a Bank of $_ converted, with 0000600D 00000001]($repository/blob/main/pictures/$_-migration-converted.png)" }) -join ' ')
             }
             @{
@@ -512,7 +523,7 @@ try {
 
     # 5. Release notes: the same guides, and everything needed to trace this version.
     $notes = [Collections.Generic.List[string]]::new()
-    $notes.Add("Pokémon Bank and Transporter Offline Patch $Version" + $(if ($Draft) { ' (draft)' }))
+    $notes.Add("Pokémon Bank and Transporter Offline Patch $Version")
     $notes.Add('')
     $notes.Add('## Which part is for you')
     $notes.Add('')
@@ -586,7 +597,7 @@ if ($Draft) {
     Write-Host "Tag:     $Version on $commit (local; nothing was pushed)"
     Write-Host ''
     Write-Host 'Next: test the zips on a console. Then either'
-    Write-Host "  ./scripts/New-Release.ps1 -Version $Version -Publish"
+    Write-Host "  ./scripts/New-Release.ps1 -Publish"
     Write-Host "or push the tag (git push origin $Version) and upload the zips and the notes by hand."
     Write-Host "To withdraw before publishing: git tag -d $Version, and delete the files."
 }

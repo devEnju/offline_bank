@@ -27,13 +27,16 @@ pub fn page_end(text: &[u16], pages: usize) -> Option<usize> {
     boundaries(text, pages).0
 }
 
-/// The version this package was built as: the release script names it
-/// (`OFFLINE_BANK_VERSION`, docs/building.md). A package built without one
-/// is nobody's release.
-pub const VERSION: &[u8] = match option_env!("OFFLINE_BANK_VERSION") {
-    Some(version) => version.as_bytes(),
-    None => b"dev",
+/// The version this package was built as. A release (`OFFLINE_BANK_RELEASE`,
+/// which `Build-Patches.ps1 -Release` sets, docs/building.md) has the
+/// workspace's version from `Cargo.toml`; every other build is a draft and
+/// has none.
+pub const VERSION: &[u8] = match option_env!("OFFLINE_BANK_RELEASE") {
+    Some(_) => concat!("v", env!("CARGO_PKG_VERSION")).as_bytes(),
+    None => DRAFT,
 };
+/// What a build that is no release says in place of a version.
+pub const DRAFT: &[u8] = b"draft";
 
 /// The line above the numbers: the version and, behind it, the package's
 /// own suffix, as in "v1.2.3-test". For whoever reports the numbers.
@@ -75,7 +78,7 @@ impl Label {
     pub const fn of(suffix: &[u8]) -> Self {
         match Self::new(VERSION, suffix) {
             Some(label) => label,
-            None => panic!("OFFLINE_BANK_VERSION with this suffix is not a label"),
+            None => panic!("the version with this suffix is not a label"),
         }
     }
 
@@ -348,18 +351,21 @@ mod tests {
             text(Label::new(b"v0.4.0", b"-test").unwrap()),
             "v0.4.0-test"
         );
+        assert_eq!(text(Label::new(b"v10.20.30", b"").unwrap()), "v10.20.30");
         assert_eq!(
-            text(Label::new(b"v10.20.30-draft", b"").unwrap()),
-            "v10.20.30-draft"
+            text(Label::new(DRAFT, b"-migration").unwrap()),
+            "draft-migration"
         );
-        assert_eq!(
-            text(Label::new(b"dev", b"-migration").unwrap()),
-            "dev-migration"
-        );
-        // This build's own: the version it was given, or "dev".
+        // This build's own: a draft, as every build of the tests is, or the
+        // version from Cargo.toml for a release.
+        let own = match option_env!("OFFLINE_BANK_RELEASE") {
+            Some(_) => std::format!("v{}", env!("CARGO_PKG_VERSION")),
+            None => String::from("draft"),
+        };
+        assert_eq!(VERSION, own.as_bytes());
         assert_eq!(
             text(Label::of(b"-download")),
-            std::format!("{}-download", String::from_utf8(VERSION.to_vec()).unwrap())
+            std::format!("{own}-download")
         );
         // Nothing else is a label: only what every language's font has,
         // on one line, and never without a version.
