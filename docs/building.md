@@ -29,7 +29,7 @@ build/binary/bank/           code.ips, exheader.bin, manifest.json, report.md, v
 build/binary/transporter/    the same
 ```
 
-**The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). The version is given to the build: `Build-Patches.ps1` takes `-Version v1.2.3` (or `v1.2.3-draft`) and compiles it into every package for Bank, and `New-Release.ps1` passes its own, with `-draft` for the offline package of a draft; the migration gets the version it converts from (`-MigrateFrom`), as its zip is named: `v1.0.0-migration`. A package built without it says `dev`. The version is part of the compiled code, so it is part of the package's name too.
+**The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). The version is given to the build: `Build-Patches.ps1` takes `-Version v1.2.3` (or `v1.2.3-draft`) and compiles it into every package for Bank, and `New-Release.ps1` passes its own, with `-draft` for the offline package and the migration of a draft. The migration puts the version of the Bank it converted in front, as `v0.2.1-1.2.3`. A package built without it says `dev`. The version is part of the compiled code, so it is part of the package's name too.
 
 A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way with `-Kind`, each into a folder beside `binary`: `-Kind test` into `build/test/`, `-Kind migration` into `build/migration/`, `-Kind download` into `build/download/` (all below). Each kind's crate, linker script, features, profile files and folder are listed once, in `scripts/packages.psd1`, which every script reads.
 
@@ -113,7 +113,7 @@ This builds it into `build/migration/` and verifies it (`Verify-BankPatch.ps1 -K
 
 After START, migration checks existing local extdata before any cartridge or installed-game detection; neither is run. A missing archive gives `0000600D 00000000` without creating one. The presence or absence of a game never decides whether conversion runs.
 
-It ships with the releases that follow while users of the earlier releases are expected ([Release](#release)). Nothing depends on it: when that is behind, the crate with its entry in the workspace's `Cargo.toml`, `bank15/migrate.rs` with its `mod` line in `bank15.rs` and its line in `profile.rs`, its entry in `scripts/packages.psd1`, and the migration lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted; the next cargo command without `--locked` then updates `Cargo.lock`.
+Every release below v1.0.0 ships it ([Release](#release)). Nothing depends on it: before v1.0.0, the crate with its entry in the workspace's `Cargo.toml`, `bank15/migrate.rs` with its `mod` line in `bank15.rs` and its line in `profile.rs`, its entry in `scripts/packages.psd1`, and the migration lines of `Verify-BankPatch.ps1`, `Test-Verify.ps1`, `Get-PackageId.ps1` and `Build-Patches.ps1` are deleted; the next cargo command without `--locked` then updates `Cargo.lock`. `New-Release.ps1` then points a Bank of an earlier way to the migration of the last release below v1.0.0.
 
 This is the form for every change of how the Bank is stored: the patches read only the current files and refuse earlier ones, and the migration patch gets a folder for the way the Bank was stored until then, named for the last release that stored it so, which reads it and assembles the current body (`Source` in [source.rs](../patches/bank-migrate/src/source.rs)). Each folder converts straight into the current files. When the current files change, every folder's conversion is reviewed and tested again: freezing a reader fixes what it reads, not what it writes into. During conversion it shows the original preparation message and power-off warning. Every result stays under the original's line about the HOME Menu, with a label and two numbers; the label names the way converted and the release, as "v0.2.1-1.2.3". `0000600D 00000001` means converted; no success message, sound or A press comes before it. Close Bank from HOME before switching packages. Its PC tests cover interrupted conversions; the console checks are in [testing.md](testing.md#the-migration), the user's steps in the package's README.
 
@@ -142,7 +142,7 @@ Local inspection and file writing use the original preparation message and power
 
 A message of the original on the way (no connection, maintenance, the server locked for a while) leads back to its start screen as it always did; nothing is written then.
 
-Nothing depends on it: when the service has ended, the crate with its entry in the workspace's `Cargo.toml`, `bank15/download.rs` with its `mod` line in `bank15.rs` and its line in `profile.rs`, its entry in `scripts/packages.psd1`, and the download lines of `Verify-BankPatch.ps1`, `Get-PackageId.ps1`, `Build-Patches.ps1` and `New-Release.ps1` can be deleted; the next cargo command without `--locked` then updates `Cargo.lock`.
+Every release ships it until the service ends ([Release](#release)). Nothing depends on it: when the service has ended, the crate with its entry in the workspace's `Cargo.toml`, `bank15/download.rs` with its `mod` line in `bank15.rs` and its line in `profile.rs`, its entry in `scripts/packages.psd1`, and the download lines of `Verify-BankPatch.ps1`, `Test-Verify.ps1`, `Get-PackageId.ps1` and `Build-Patches.ps1` are deleted; the next cargo command without `--locked` then updates `Cargo.lock`. `New-Release.ps1` then leaves the download out of the notes by itself.
 
 ## Release
 
@@ -171,26 +171,23 @@ In this order, stopping at the first problem, it:
 
 1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the tag does not exist yet (files git does not track may lie in the folder);
 2. runs the tests, the test build's tests, Clippy and the formatting check;
-3. builds both patches from the committed sources, verifies them, and tests the verify scripts;
-4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes its migration and download zips;
+3. builds both patches, and the migration and the download while they ship (below), from the committed sources, verifies them, and tests the verify scripts;
+4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes the migration and download zips;
 5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`: a table of which way each Bank goes, the guides of the zips with their numbers, how to install, and the files and hashes;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
 
-**A release that ships the migration** names the one version it converts from, the version before the Bank was last stored differently:
+**What ships beside the patches** is decided by the script, as long as `scripts/packages.psd1` lists the package:
 
-```powershell
-./scripts/New-Release.ps1 -Version v1.1.0 -MigrateFrom v1.0.0
-```
+| Zip | Ships | Afterwards |
+| --- | --- | --- |
+| `offline_bank-migration.zip` | in every release below v1.0.0 | from v1.0.0 on the script refuses until the migration is removed ([The migration](#the-migration-from-earlier-releases)) |
+| `offline_bank-download.zip` | in every release until the official service ends, February 25, 2027 | after that day the script refuses until the download is removed ([The download](#the-download-from-the-official-server)) |
 
-It then writes a second zip, `offline_bank-v1.0.0-migration.zip`: the migration patch for Bank's folder and a `README.txt` with its guide. The zip is named after the version it converts from, and it is for that version only. Each guide is written once in the script and shown twice, in the zip's `README.txt` as plain text and in the notes, there with the pictures `pictures/v1.0.0-migration-converted.png` and `pictures/offline-boxes.png` from `main`; the script refuses to start without them. Which Bank goes which way comes from `$bankFormats` in the script: one line for each way the Bank has been stored, with its first version, the version its migration converts, and the size with which the patches refuse that version's Bank (error 3). A release that changes how the Bank is stored adds its line first. Guides for a release belong in the release on GitHub, not in `docs/`.
+Each holds its patch for Bank's folder and a `README.txt` with its guide. Neither name carries a version: the migration converts a Bank of whichever earlier way it finds, and the download belongs to the official service. Each guide is written once in the script and shown twice, in the zip's `README.txt` as plain text and in the notes, there with pictures from `main`: `pictures/<version>-migration-converted.png` for each earlier way, and `pictures/offline-boxes.png`. A release refuses to start without them; a draft warns.
 
-**A release made while the official service runs** can ship the download:
+Which Bank goes which way comes from `$bankFormats` in the script: one line for each change of how the Bank is stored, with its first version, the last version of the way before (which also names that way's folder in the migration and its picture), and the size with which the patches refuse such a Bank (error 3). The notes have a row for each: "An offline Bank from v0.2.1 or before", "… from v0.4.0 or before", then "… from every other version". A release that changes how the Bank is stored adds its line, and the migration its folder, first.
 
-```powershell
-./scripts/New-Release.ps1 -Version v1.1.0 -Download
-```
-
-It then writes one more zip, `offline_bank-download.zip`, without a version in its name: the download patch for Bank's folder and a `README.txt` with its guide, which the notes show as well, like the migration's.
+The last release of each earlier way, v0.2.1 and v0.4.0, stays on GitHub for good: the migration's guide links it for whoever has to settle a Bank with it before converting (`00000BAD 00000007` and `00000008`). Guides for a release belong in the release on GitHub, not in `docs/`.
 
 Nothing is pushed or uploaded. Try the zip on a console first, then publish:
 
@@ -198,9 +195,9 @@ Nothing is pushed or uploaded. Try the zip on a console first, then publish:
 ./scripts/New-Release.ps1 -Version v1.0.0 -Publish
 ```
 
-This pushes the tag and creates the GitHub release with the zip, a migration zip or a download zip the notes name, and the notes through the `gh` tool. It refuses if a zip changed since its notes were written. By hand instead: `git push origin v1.0.0`, then on GitHub draft a new release for that tag, paste the notes file and attach the zip.
+This pushes the tag and creates the GitHub release with the zip, the migration and download zips the notes name, and the notes through the `gh` tool. It refuses if a zip changed since its notes were written. By hand instead: `git push origin v1.0.0`, then on GitHub draft a new release for that tag, paste the notes file and attach the zip.
 
-To withdraw a version before it is published, delete the local tag (`git tag -d v1.0.0`) and the two files. `-Draft` packs the working tree as it is for your own testing: no tag, and the zip is marked as a draft.
+To withdraw a version before it is published, delete the local tag (`git tag -d v1.0.0`) and its folder in `build/release/`. `-Draft` packs the working tree as it is for your own testing: no tag, and the zip is marked as a draft.
 
 **Tracing a version.** The zip's `README.txt`, the release notes and the tag message all carry the same facts: the version, the date, the full commit hash, the two package names, and the SHA-256 of each patch file (the notes and the tag also that of the zip).
 
@@ -217,7 +214,7 @@ Patch files are never committed to the repository; they exist only as release do
 
 ```text
 patches/bank/           the offline patch for Bank
-patches/bank-migrate/   the migration patch for Bank, from the previous release
+patches/bank-migrate/   the migration patch for Bank, from earlier releases
 patches/bank-download/  the download patch for Bank, from the official server
 patches/transporter/    code injected into Transporter
 crates/bank-common/     what every patch for Bank shares: files, worker thread, dialogs

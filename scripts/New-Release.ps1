@@ -1,18 +1,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    # The one earlier version whose Bank this release converts: the version
-    # before the Bank was last stored differently. Adds the migration zip.
-    [string]$MigrateFrom = '',
-    # Adds the download zip: the patch that fetches the Bank from the
-    # official server while that service runs.
-    [switch]$Download,
     [switch]$Draft,
     [switch]$Publish
 )
 # Makes a release of both patches from the committed sources:
 #   tests, build, independent verification, zip for the SD card, release
 #   notes, and an annotated git tag on the commit it was built from.
+# Beside them it ships the migration below v1.0.0 and the download while
+# the official service runs, each as long as packages.psd1 lists it.
 # Nothing leaves this machine unless -Publish is given, which pushes the tag
 # and creates the GitHub release from the zips made by an earlier run.
 # -Draft packs the working tree as it is for testing: no tag, marked as draft.
@@ -22,43 +18,51 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version must look like v1.0.0: $Version" }
 if ($Draft -and $Publish) { throw 'A draft cannot be published.' }
 
-# Each way the Bank has been stored, oldest first. Since: the first version
-# that stores it so; a Bank last used with an older version is not continued
-# by a newer one. From: the version before it, whose Bank the migration of
-# that change converts. Size: the second number of error 3 with which the
-# patches refuse a Bank of From (the size of its first file). A release that
-# changes how the Bank is stored adds its line before it is made; a release
-# that ships the migration converts from the last From.
+# Each change of how the Bank is stored, oldest first. Since: the first
+# version that stores it the new way; a Bank last used with an older version
+# is not continued by a newer one. From: the last version that stored it the
+# way before, and the name of that way's folder in the migration; its release
+# stays published, for whoever has to settle a Bank with it. Size: the second
+# number of error 3 with which the patches refuse a Bank of From (the size of
+# the first of its files they open). A release that changes how the Bank is
+# stored adds its line, and the migration its folder, before it is made.
 $bankFormats = @(
     [pscustomobject]@{ Since = 'v0.3.0'; From = 'v0.2.1'; Size = '00164C54' }
     [pscustomobject]@{ Since = 'v0.5.0'; From = 'v0.4.0'; Size = '000000C0' }
 )
-$bankFormat = $bankFormats[-1]
-$bankFilesSince = $bankFormat.Since
+$bankFilesSince = $bankFormats[-1].Since
 function ConvertTo-Version([string]$tag) { return [version]$tag.Substring(1) }
 if ((ConvertTo-Version $Version) -lt (ConvertTo-Version $bankFilesSince)) { throw "$Version is older than the last way the Bank is stored ($bankFilesSince)." }
-if ($MigrateFrom) {
-    if ($MigrateFrom -notmatch '^v\d+\.\d+\.\d+$') { throw "MigrateFrom must look like v1.0.0: $MigrateFrom" }
-    if ($Publish) { throw '-Publish finds the migration zip of the earlier run by itself.' }
-    if ($MigrateFrom -ne $bankFormat.From) { throw "The migration converts a Bank of $($bankFormat.From), the version before $bankFilesSince. A new way of storing the Bank needs its line in `$bankFormats first." }
-}
 
-if ($Download -and $Publish) { throw '-Publish finds the download zip of the earlier run by itself.' }
+# What ships beside the two patches: every package for Bank that
+# packages.psd1 lists and whose time has not passed.
+$packages = Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1')
+$Migrate = $packages.ContainsKey('migration')
+$Download = $packages.ContainsKey('download')
+# The day the official service ends, in its own time zone.
+$serviceEnds = 'February 25, 2027'
+if (-not $Publish) {
+    if ($Migrate -and (ConvertTo-Version $Version) -ge [version]'1.0.0') {
+        throw "Releases from v1.0.0 on ship no migration. Remove it first (docs/building.md#the-migration-from-earlier-releases)."
+    }
+    $ended = [datetime]::ParseExact($serviceEnds, 'MMMM d, yyyy', [Globalization.CultureInfo]::InvariantCulture)
+    if ($Download -and (Get-Date).Date -gt $ended) {
+        throw "The official service ended on $serviceEnds. Remove the download first (docs/building.md#the-download-from-the-official-server)."
+    }
+}
 $suffix = if ($Draft) { '-draft' } else { '' }
 $name = "offline_bank-$Version$suffix"
 # A release lies in a folder of its own, named for its version.
 $releaseRoot = Join-Path $projectRoot "build/release/$Version$suffix"
 $zip = Join-Path $releaseRoot "$name.zip"
 $notesPath = Join-Path $releaseRoot "$name.md"
-# The migration zip carries the version it converts from.
-$migrationName = if ($MigrateFrom) { "offline_bank-$MigrateFrom-migration$suffix" } else { '' }
-$migrationZip = if ($MigrateFrom) { Join-Path $releaseRoot "$migrationName.zip" } else { '' }
-# The download zip has no version in its name: it belongs to the official
-# service, not to a version of the patch.
+# The zips beside the patches have no version in their names: the migration
+# converts whatever earlier Bank it finds, and the download belongs to the
+# official service, not to a version of the patch.
+$migrationName = if ($Migrate) { "offline_bank-migration$suffix" } else { '' }
+$migrationZip = if ($Migrate) { Join-Path $releaseRoot "$migrationName.zip" } else { '' }
 $downloadName = if ($Download) { "offline_bank-download$suffix" } else { '' }
 $downloadZip = if ($Download) { Join-Path $releaseRoot "$downloadName.zip" } else { '' }
-# The day the official service ends, in its own time zone.
-$serviceEnds = 'February 25, 2027'
 $bankTitle = '00040000000C9B00'
 # The release notes link to other releases and to the pictures on main.
 $repository = 'https://github.com/devEnju/offline_bank'
@@ -92,7 +96,7 @@ if ($Publish) {
     if ($notes -notmatch [regex]::Escape($tagged)) { throw "The notes do not name the commit of tag $Version ($tagged)." }
     $assets = @($zip)
     # A migration zip the notes name belongs to this release as well.
-    if ($notes -match 'offline_bank-v\d+\.\d+\.\d+-migration\.zip') {
+    if ($notes -match 'offline_bank-migration\.zip') {
         $assets += Join-Path $releaseRoot $Matches[0]
     }
     # And so does a download zip.
@@ -120,12 +124,18 @@ if ($Publish) {
 # 1. State of the repository.
 $commit = Invoke-Git rev-parse HEAD
 $dirty = [bool](Invoke-Git status --porcelain)
-if ($MigrateFrom) {
-    & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$MigrateFrom" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "There is no released version $MigrateFrom to migrate from." }
-    # The notes show the migration's result as pictures/ has it on main.
-    foreach ($picture in @("$MigrateFrom-migration-converted.png", 'offline-boxes.png')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "pictures/$picture") -PathType Leaf)) { throw "The notes need pictures/$picture." }
+if ($Migrate) {
+    foreach ($format in $bankFormats) {
+        & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$($format.From)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "There is no released version $($format.From) to migrate from." }
+    }
+    # The notes show the migration's result for each earlier way as
+    # pictures/ has it on main.
+    $pictures = @($bankFormats | ForEach-Object { "$($_.From)-migration-converted.png" }) + 'offline-boxes.png'
+    foreach ($picture in $pictures) {
+        if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "pictures/$picture") -PathType Leaf)) {
+            if ($Draft) { Write-Warning "A release needs pictures/$picture." } else { throw "The notes need pictures/$picture." }
+        }
     }
 }
 if (-not $Draft) {
@@ -154,7 +164,6 @@ try {
     # writes its name into PACKAGE.txt (Get-PackageId.ps1: the hash of its
     # compiled code and of the builder's profile with the edits of the
     # original), and verifies it.
-    $packages = Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1')
     function Get-Verified([string]$kind) {
         $directory = Join-Path $projectRoot $packages[$kind].Folder
         $id = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
@@ -175,13 +184,14 @@ try {
         return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
     }
     # A package for Bank says its version on its error and result screens.
-    # Of a draft, the offline package says so too. The migration says the
-    # version it converts from, as its zip is named.
+    # Of a draft, the offline package and the migration say so too; the
+    # migration puts the version of the Bank it converted in front.
     function Invoke-Build([hashtable]$arguments) {
         & (Join-Path $PSScriptRoot 'Build-Patches.ps1') @arguments | Out-Host
     }
-    Invoke-Build @{ Version = $(if ($Draft) { "$Version-draft" } else { $Version }) }
-    if ($MigrateFrom) { Invoke-Build @{ Kind = 'migration'; Version = $MigrateFrom } }
+    $built = if ($Draft) { "$Version-draft" } else { $Version }
+    Invoke-Build @{ Version = $built }
+    if ($Migrate) { Invoke-Build @{ Kind = 'migration'; Version = $built } }
     if ($Download) { Invoke-Build @{ Kind = 'download'; Version = $Version } }
     # The verify scripts still refuse what they must.
     & (Join-Path $PSScriptRoot 'Test-Verify.ps1') | Out-Host
@@ -189,12 +199,12 @@ try {
         $bankTitle         = [pscustomobject]@{ Label = 'Pokemon Bank 1.5'; Package = (Get-Verified 'bank') }
         '00040000000C9C00' = [pscustomobject]@{ Label = 'Poke Transporter 1.5'; Package = (Get-Verified 'transporter') }
     }
-    $migration = if ($MigrateFrom) { Get-Verified 'migration' }
+    $migration = if ($Migrate) { Get-Verified 'migration' }
     $downloaded = if ($Download) { Get-Verified 'download' }
 
     # 4. The zips, each laid out for the root of the SD card.
     $stage = Join-Path $releaseRoot $name
-    $migrationStage = if ($MigrateFrom) { Join-Path $releaseRoot $migrationName } else { '' }
+    $migrationStage = if ($Migrate) { Join-Path $releaseRoot $migrationName } else { '' }
     $downloadStage = if ($Download) { Join-Path $releaseRoot $downloadName } else { '' }
     foreach ($path in @($stage, $zip, $notesPath, $migrationStage, $migrationZip, $downloadStage, $downloadZip) | Where-Object { $_ }) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse }
@@ -332,59 +342,60 @@ try {
     }
 
     $installing = Get-Anchor "Installing $Version"
-    $coming = if ($MigrateFrom) { Get-Anchor "Coming from $MigrateFrom" }
+    $comingHeading = 'Coming from a previous version'
+    $coming = Get-Anchor $comingHeading
     $downloading = Get-Anchor 'Pokémon still on the official server'
     $install = "Install ${Version}: extract $name.zip from this release and copy its luma folder to the root of the SD card."
-    $convertWith = if ($MigrateFrom) { "convert it first with $migrationName.zip from this release" }
+    # Each earlier way of storing is known by the last release of it.
+    $lastOfEach = @($bankFormats | ForEach-Object { $_.From })
+    $earlier = "$($lastOfEach[-1]) or before"
+    # Without the migration, a Bank stored an earlier way goes through the
+    # last release that shipped it.
+    $migratedBy = if ($Migrate) { '' } else {
+        Get-ReleaseLink (@(Invoke-Git tag -l 'v0.*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Sort-Object { ConvertTo-Version $_ })[-1])
+    }
 
     # Whose Bank goes which way: what they have, what they do, and what the zip says instead.
     $routes = [Collections.Generic.List[object]]::new()
     $routes.Add(@('Never used the offline patch', "[Install $Version]($installing)"))
-    $current = Get-Versions $bankFilesSince $Version
-    if ($current) { $routes.Add(@("An offline Bank from $current", "[Install $Version]($installing)")) }
-    if ($MigrateFrom) {
-        # The Bank of $MigrateFrom is stored as since the format before.
-        $previousSince = if ($bankFormats.Count -gt 1) { $bankFormats[-2].Since } else { '' }
-        $routes.Add(@("An offline Bank from $MigrateFrom", "[Convert it first]($coming), then install $Version", "$convertWith, then install $Version"))
-        $same = Get-Versions $previousSince $MigrateFrom
-        if ($previousSince -and $same) {
-            $routes.Add(@("An offline Bank from $same", "Install $MigrateFrom from the $(Get-ReleaseLink $MigrateFrom) and start Bank once, then [convert it]($coming)"))
-        }
-        $older = if ($previousSince) { $previousSince } else { $MigrateFrom }
-        if (Get-Versions '' $older) {
-            $routes.Add(@("An offline Bank older than $older", "Bring it to $MigrateFrom first as the $(Get-ReleaseLink $MigrateFrom) describes, then [convert it]($coming)"))
-        }
-    } else {
-        $routes.Add(@("An offline Bank from $($bankFormat.From)", "Convert it first with the migration of the $(Get-ReleaseLink $bankFilesSince), then install $Version"))
-        if (Get-Versions '' $bankFormat.From) {
-            $routes.Add(@("An offline Bank older than $($bankFormat.From)", "Bring it to $($bankFormat.From) first as the $(Get-ReleaseLink $bankFormat.From) describes, then convert it with the migration of the $(Get-ReleaseLink $bankFilesSince), then install $Version"))
+    foreach ($format in $bankFormats) {
+        $have = "An offline Bank from $($format.From) or before"
+        if ($Migrate) {
+            $routes.Add(@($have, "[Convert it first]($coming), then install $Version", "convert it first with $migrationName.zip from this release, then install $Version"))
+        } else {
+            $routes.Add(@($have, "Convert it first with the migration of the $migratedBy, then install $Version"))
         }
     }
+    $routes.Add(@('An offline Bank from every other version', "[Install $Version]($installing)"))
     if ($Download) {
         $routes.Add(@('Pokémon on the official server and no offline Bank', "[Download them first]($downloading), then install $Version", "download them first with $downloadName.zip from this release, then install $Version"))
     }
 
     # What Bank says when the Bank on the SD card is not continued.
-    $unconverted = @("``00000003`` (with ``$($bankFormat.Size)``)", "The Bank is from $($bankFormat.From) and not converted yet.")
     $errors = @{
         Head = @('First number', 'Meaning', 'What to do')
-        Rows = @(, $(if ($MigrateFrom) {
-                    $unconverted + @("[Convert it first]($coming).", "Convert it first with $migrationName.zip.")
-                } else {
-                    $unconverted + @("Convert it first with the migration of the $(Get-ReleaseLink $bankFilesSince).")
-                }))
+        Rows = @($bankFormats | ForEach-Object {
+                $unconverted = @("``00000003`` (with ``$($_.Size)``)", "The Bank is from $($_.From) or before and not converted yet.")
+                , $(if ($Migrate) {
+                        $unconverted + @("[Convert it first]($coming).", "Convert it first with $migrationName.zip.")
+                    } else {
+                        $unconverted + @("Convert it first with the migration of the $migratedBy.")
+                    })
+            })
     }
 
-    # The migration from the previous release. This goes when patches/bank-migrate goes.
-    if ($MigrateFrom) {
+    # The migration from earlier releases. This goes when patches/bank-migrate goes.
+    if ($Migrate) {
+        # Who has to settle a Bank first puts back the last release of its way.
+        $settleWith = 'Put back ' + (@($lastOfEach | ForEach-Object { "the $(Get-ReleaseLink $_) for a Bank from $_ or before" }) -join ', ')
         $migrationGuide = @(
-            @{ P = "``$migrationName.zip`` converts a Bank that was last used with $MigrateFrom, once, and does nothing else. After converting, $MigrateFrom cannot open the Bank any more; the backup of step 1 is the only way back." }
+            @{ P = "``$migrationName.zip`` converts a Bank that was last used with $earlier, once, and does nothing else. After converting, that release cannot open the Bank any more; the backup of step 1 is the only way back." }
             @{ Step = 'Back up Bank''s extra data with [Checkpoint](https://github.com/BernardoGiordano/Checkpoint); for Bank, press X there to switch to extdata.' }
             @{ Step = "Extract ``$migrationName.zip`` and copy its ``luma`` folder to the root of the SD card." }
             @{ Step = 'Start Pokémon Bank. The start screen says "Ver. 1.5-migration".' }
             @{
-                Step    = "Press START. After preparation three lines appear: `"Press HOME to return to the HOME Menu`", ``$MigrateFrom-migration``, and two numbers. The Bank itself does not open."
-                Picture = "![The console showing $MigrateFrom-migration and 0000600D 00000001]($repository/blob/main/pictures/$MigrateFrom-migration-converted.png)"
+                Step    = "Press START. After preparation three lines appear: `"Press HOME to return to the HOME Menu`", the version your Bank is from with this one, as ``$($lastOfEach[-1])-$($Version.Substring(1))``, and two numbers. The Bank itself does not open."
+                Picture = (@($lastOfEach | ForEach-Object { "![The console showing a Bank of $_ converted, with 0000600D 00000001]($repository/blob/main/pictures/$_-migration-converted.png)" }) -join ' ')
             }
             @{
                 Step  = 'Look up the numbers:'
@@ -394,8 +405,8 @@ try {
                         , @('`0000600D 00000001`', 'Converted.', 'Go on with step 6.')
                         , @('`0000600D 00000002`', 'Already converted.', 'Go on with step 6.')
                         , @('`0000600D 00000000`', 'No Bank was found.', "Go on with step 6; $Version creates one.")
-                        , @('`00000BAD 00000007`', 'A Save and Quit was interrupted.', "Put $MigrateFrom back, start Bank once, then begin again at step 2.")
-                        , @('`00000BAD 00000008`', 'The Bank needs a Save and Quit first.', "Put $MigrateFrom back, open Bank with a game, Save and Quit, then begin again at step 2.")
+                        , @('`00000BAD 00000007`', 'A Save and Quit was interrupted.', "$settleWith; start Bank once, then begin again at step 2.")
+                        , @('`00000BAD 00000008`', 'The Bank needs a Save and Quit first.', "$settleWith; open Bank with a game, Save and Quit, then begin again at step 2.")
                         , @('`00000BA1` to `00000BA4`', 'A step failed.', 'Start Bank again with the migration files; that is always safe. If it keeps happening, restore your backup and report the version line and both numbers.')
                     )
                 }
@@ -480,11 +491,11 @@ try {
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
     Remove-Item -LiteralPath $stage -Recurse
 
-    if ($MigrateFrom) {
-        $steps = Get-Readme "Pokemon Bank Offline Patch: migration from $MigrateFrom to $Version"
+    if ($Migrate) {
+        $steps = Get-Readme "Pokemon Bank Offline Patch: migration from $earlier to $Version"
         $steps.AddRange([string[]](ConvertTo-Text $migrationGuide))
         $steps.Add('')
-        Add-Files $migrationStage $bankTitle $migration "Pokemon Bank 1.5, migration from $MigrateFrom" "$migrationName.zip" $steps
+        Add-Files $migrationStage $bankTitle $migration "Pokemon Bank 1.5, migration from $earlier" "$migrationName.zip" $steps
         [IO.File]::WriteAllLines((Join-Path $migrationStage 'README.txt'), $steps)
         [IO.Compression.ZipFile]::CreateFromDirectory($migrationStage, $migrationZip)
         Remove-Item -LiteralPath $migrationStage -Recurse
@@ -506,9 +517,9 @@ try {
     $notes.Add('## Which part is for you')
     $notes.Add('')
     $notes.AddRange([string[]](ConvertTo-MarkdownTable @{ Head = @('You have', 'Do'); Rows = $routes } ''))
-    if ($MigrateFrom) {
+    if ($Migrate) {
         $notes.Add('')
-        $notes.Add("## Coming from $MigrateFrom")
+        $notes.Add("## $comingHeading")
         $notes.Add('')
         $notes.AddRange([string[]](ConvertTo-Markdown $migrationGuide))
     }
@@ -539,7 +550,7 @@ try {
     $notes.Add("| Bank package | ``$($titles[$bankTitle].Package.Name)`` |")
     $notes.Add("| Transporter package | ``$($titles['00040000000C9C00'].Package.Name)`` |")
     $notes.Add("| ``$name.zip`` | ``$(Get-Sha256 $zip)`` |")
-    if ($MigrateFrom) {
+    if ($Migrate) {
         $notes.Add("| Migration package | ``$($migration.Name)`` |")
         $notes.Add("| ``$migrationName.zip`` | ``$(Get-Sha256 $migrationZip)`` |")
     }
@@ -566,7 +577,7 @@ try {
 
 Write-Host ''
 Write-Host "Archive: $zip"
-if ($MigrateFrom) { Write-Host "Archive: $migrationZip" }
+if ($Migrate) { Write-Host "Archive: $migrationZip" }
 if ($Download) { Write-Host "Archive: $downloadZip" }
 Write-Host "Notes:   $notesPath"
 if ($Draft) {

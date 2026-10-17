@@ -78,13 +78,13 @@ While the official service runs, yes. It ends on February 25, 2027. A release ma
 
 The normal patches read only the files of their own version, so that they stay free of code for earlier formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
 
-When a release changes how the Bank is stored, a separate migration patch converts the Bank once. You start Bank with it one time and then put the normal patch in its place. The release that needs one says how.
+A Bank that an earlier release stored differently is converted once by a separate migration patch, which every release ships. You start Bank with it one time and then put the normal patch in its place. The release notes say how.
 
 ### Why has the save format been changed?
 
 So that a power cut cannot cost you the Bank. Up to v0.2.1 a cut during Save and Quit could leave the one Bank file unreadable, and with it every box. Since v0.3.0 everything is stored in pairs of files, and a save only writes into the file of a pair that is not in use. A cut can then only damage a file Bank does not need, and the next start goes on with the other one ([details](docs/bank.md#where-the-bank-is-stored)).
 
-Since v0.5.0 the files take no more space on the SD card than needed. A Bank of v0.4.0 is converted once with the migration that v0.5.0 ships.
+Since v0.5.0 the files take no more space on the SD card than needed. A Bank of v0.4.0 or before is converted once with the migration every release ships.
 
 ## Problems and feature requests
 
