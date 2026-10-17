@@ -30,13 +30,50 @@ pub fn page_end(text: &[u16], pages: usize) -> Option<usize> {
 /// The version this package was built as. A release (`OFFLINE_BANK_RELEASE`,
 /// which `Build-Patches.ps1 -Release` sets, docs/building.md) has the
 /// workspace's version from `Cargo.toml`; every other build is a draft and
-/// has none.
+/// has none, but names the commit it was built from (`OFFLINE_BANK_COMMIT`,
+/// which `Build-Patches.ps1` sets to the short hash), as "draft-a782e1b".
 pub const VERSION: &[u8] = match option_env!("OFFLINE_BANK_RELEASE") {
     Some(_) => concat!("v", env!("CARGO_PKG_VERSION")).as_bytes(),
-    None => DRAFT,
+    None => &DRAFT_OF_COMMIT,
 };
 /// What a build that is no release says in place of a version.
 pub const DRAFT: &[u8] = b"draft";
+/// Hexadecimal digits of the commit a draft names.
+pub const COMMIT_DIGITS: usize = 7;
+const COMMIT: Option<&str> = option_env!("OFFLINE_BANK_COMMIT");
+const DRAFT_LEN: usize = match COMMIT {
+    Some(_) => DRAFT.len() + 1 + COMMIT_DIGITS,
+    None => DRAFT.len(),
+};
+/// "draft", and "-" and the commit behind it when the build names one. A
+/// commit that is not seven lowercase hexadecimal digits does not build.
+const DRAFT_OF_COMMIT: [u8; DRAFT_LEN] = {
+    let mut out = [0; DRAFT_LEN];
+    let mut at = 0;
+    while at < DRAFT.len() {
+        out[at] = DRAFT[at];
+        at += 1;
+    }
+    if let Some(commit) = COMMIT {
+        let digits = commit.as_bytes();
+        assert!(
+            digits.len() == COMMIT_DIGITS,
+            "OFFLINE_BANK_COMMIT is no short hash"
+        );
+        out[at] = b'-';
+        let mut index = 0;
+        while index < COMMIT_DIGITS {
+            let digit = digits[index];
+            assert!(
+                digit.is_ascii_digit() || (digit >= b'a' && digit <= b'f'),
+                "OFFLINE_BANK_COMMIT is no short hash"
+            );
+            out[at + 1 + index] = digit;
+            index += 1;
+        }
+    }
+    out
+};
 
 /// The line above the numbers: the version and, behind it, the package's
 /// own suffix, as in "v1.2.3-test". For whoever reports the numbers.
@@ -356,11 +393,12 @@ mod tests {
             text(Label::new(DRAFT, b"-migration").unwrap()),
             "draft-migration"
         );
-        // This build's own: a draft, as every build of the tests is, or the
-        // version from Cargo.toml for a release.
-        let own = match option_env!("OFFLINE_BANK_RELEASE") {
-            Some(_) => std::format!("v{}", env!("CARGO_PKG_VERSION")),
-            None => String::from("draft"),
+        // This build's own: a draft, with the commit when the build names
+        // one, or the version from Cargo.toml for a release.
+        let own = match (option_env!("OFFLINE_BANK_RELEASE"), COMMIT) {
+            (Some(_), _) => std::format!("v{}", env!("CARGO_PKG_VERSION")),
+            (None, Some(commit)) => std::format!("draft-{commit}"),
+            (None, None) => String::from("draft"),
         };
         assert_eq!(VERSION, own.as_bytes());
         assert_eq!(

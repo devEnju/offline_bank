@@ -17,7 +17,8 @@ param(
     [ValidateSet('', 'test', 'migration', 'download')][string]$Kind = '',
     # A release: a package for Bank says on its error and result screens the
     # version from Cargo.toml. Without it every package is a draft and says
-    # "draft". Only New-Release.ps1 gives it. Transporter shows none.
+    # "draft" and the commit it is built from, as "draft-a782e1b". Only
+    # New-Release.ps1 gives it. Transporter shows none.
     [switch]$Release,
     [string]$BankCiaPath = 'input/Bank-v1.5-update.cia',
     [string]$TransporterCiaPath = 'input/Transporter-v1.5-update.cia',
@@ -60,12 +61,18 @@ function Build-Payload([string]$kind, $package) {
     $mapArgument = '-Map=' + $mapPath.Replace('\', '/')
     $features = (@('linked-image') + $package.Features) -join ','
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-    # The payload reads whether it is a release from this variable when it is compiled.
+    # The payload reads whether it is a release, and of a draft the commit,
+    # from these variables when it is compiled (numbers::VERSION).
     $releaseBefore = $env:OFFLINE_BANK_RELEASE
+    $commitBefore = $env:OFFLINE_BANK_COMMIT
     try {
         $env:OFFLINE_BANK_RELEASE = if ($Release -and $package.Program -eq 'bank') { '1' } else { $null }
+        $env:OFFLINE_BANK_COMMIT = if (-not $Release -and $package.Program -eq 'bank') { $draftCommit } else { $null }
         Invoke-Native 'Payload link' { cargo "+$toolchain" rustc --locked --offline -p $package.Crate --bin "$($package.Crate)-link" --features $features --release --target targets/armv6k-3ds.json -Z json-target-spec -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem -- -C "link-arg=$linkerArgument" -C "link-arg=$mapArgument" -C link-arg=--build-id=none -C link-arg=--fatal-warnings -C link-arg=-zmax-page-size=4096 --remap-path-prefix "$projectRoot=/offline_bank" }
-    } finally { $env:OFFLINE_BANK_RELEASE = $releaseBefore }
+    } finally {
+        $env:OFFLINE_BANK_RELEASE = $releaseBefore
+        $env:OFFLINE_BANK_COMMIT = $commitBefore
+    }
     $linked = Join-Path $projectRoot "target/armv6k-3ds/release/$($package.Crate)-link"
     if (-not (Test-Path -LiteralPath $linked -PathType Leaf)) { throw "Missing linked ELF: $linked" }
     Copy-Item -LiteralPath $linked -Destination $elfPath -Force
@@ -113,6 +120,17 @@ function Write-TestNote([string]$output) {
         'The reward dialogs are never shown, and nothing is claimed.'
         'Back up Bank''s extdata and the game saves before using it, and put the normal package back afterwards.'
     )
+}
+
+# A draft names the commit it is built from. Built from changes that are not
+# committed, it names one its sources are not: commit first.
+$draftCommit = $null
+if (-not $Release) {
+    $draftCommit = (& git -C $projectRoot rev-parse --short=7 HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed: $LASTEXITCODE" }
+    if (& git -C $projectRoot status --porcelain --untracked-files=no) {
+        Write-Warning "Uncommitted changes: this draft says draft-$draftCommit, which its sources are not. Commit first."
+    }
 }
 
 Push-Location -LiteralPath $projectRoot
