@@ -1,6 +1,5 @@
 [CmdletBinding()]
 param(
-    [switch]$Draft,
     [switch]$Publish
 )
 # Makes a release of both patches from the committed sources:
@@ -10,20 +9,18 @@ param(
 # the official service runs, each as long as packages.psd1 lists it.
 # Nothing leaves this machine unless -Publish is given, which pushes the tag
 # and creates the GitHub release from the zips made by an earlier run.
-# -Draft packs the working tree as it is for testing: no tag, and no version:
-# everything in it is called "draft".
-# The version of a release is the workspace's in Cargo.toml; a release commit
+# A release is only ever made whole: to test one, make it, and withdraw it
+# (docs/building.md) if it fails. The version of a release is the workspace's in Cargo.toml; a release commit
 # sets it there and in Cargo.lock (docs/building.md).
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if ($Draft -and $Publish) { throw 'A draft cannot be published.' }
 $manifest = Join-Path $projectRoot 'Cargo.toml'
 $workspace = (& cargo +stable metadata --no-deps --format-version 1 --offline --locked --manifest-path $manifest) | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "cargo metadata failed: $LASTEXITCODE" }
 $release = 'v' + @($workspace.packages | Where-Object { $_.name -eq 'bank-payload' })[0].version
 if ($release -notmatch '^v\d+\.\d+\.\d+$') { throw "The version in Cargo.toml must look like 1.0.0: $release" }
-$Version = if ($Draft) { 'draft' } else { $release }
+$Version = $release
 
 function ConvertTo-Version([string]$tag) { return [version]$tag.Substring(1) }
 
@@ -57,7 +54,6 @@ if ($Migrate) {
         })
     if (-not $bankFormats.Count) { throw 'The migration names no earlier way.' }
 }
-$suffix = if ($Draft) { '-draft' } else { '' }
 $name = "offline_bank-$Version"
 # A release lies in a folder of its own, named for its version.
 $releaseRoot = Join-Path $projectRoot "build/release/$Version"
@@ -66,9 +62,9 @@ $notesPath = Join-Path $releaseRoot "$name.md"
 # The zips beside the patches have no version in their names: the migration
 # converts whatever earlier Bank it finds, and the download belongs to the
 # official service, not to a version of the patch.
-$migrationName = if ($Migrate) { "offline_bank-migration$suffix" } else { '' }
+$migrationName = if ($Migrate) { 'offline_bank-migration' } else { '' }
 $migrationZip = if ($Migrate) { Join-Path $releaseRoot "$migrationName.zip" } else { '' }
-$downloadName = if ($Download) { "offline_bank-download$suffix" } else { '' }
+$downloadName = if ($Download) { 'offline_bank-download' } else { '' }
 $downloadZip = if ($Download) { Join-Path $releaseRoot "$downloadName.zip" } else { '' }
 $bankTitle = '00040000000C9B00'
 # The release notes link to other releases and to the pictures on main.
@@ -130,7 +126,6 @@ if ($Publish) {
 
 # 1. State of the repository.
 $commit = Invoke-Git rev-parse HEAD
-$dirty = [bool](Invoke-Git status --porcelain)
 if ($Migrate) {
     foreach ($format in $bankFormats) {
         & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$($format.From)" | Out-Null
@@ -141,24 +136,22 @@ if ($Migrate) {
     $pictures = @($bankFormats | ForEach-Object { "$($_.From)-migration-converted.png" }) + 'offline-boxes.png'
     foreach ($picture in $pictures) {
         if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "pictures/$picture") -PathType Leaf)) {
-            if ($Draft) { Write-Warning "A release needs pictures/$picture." } else { throw "The notes need pictures/$picture." }
+            throw "The notes need pictures/$picture."
         }
     }
 }
-if (-not $Draft) {
-    $branch = Invoke-Git branch --show-current
-    if ($branch -ne 'main') { throw "Releases are made from main; this is '$branch'." }
-    # Files git does not track may lie in the folder; a tracked file must be as committed.
-    if (Invoke-Git status --porcelain --untracked-files=no) { throw 'There are uncommitted changes. Commit them, or use -Draft for a test build.' }
-    & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$Version" | Out-Null
-    if ($LASTEXITCODE -eq 0) { throw "Tag $Version already exists. Set the new version in Cargo.toml and Cargo.lock first." }
-    $newest = @(Invoke-Git tag -l 'v*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Sort-Object { ConvertTo-Version $_ })
-    if ($newest.Count -and (ConvertTo-Version $Version) -le (ConvertTo-Version $newest[-1])) {
-        throw "$Version is not newer than $($newest[-1]). Set the new version in Cargo.toml and Cargo.lock first."
-    }
-    foreach ($path in @($zip, $notesPath, $migrationZip, $downloadZip) | Where-Object { $_ }) {
-        if (Test-Path -LiteralPath $path) { throw "Output already exists and will not be replaced: $path" }
-    }
+$branch = Invoke-Git branch --show-current
+if ($branch -ne 'main') { throw "Releases are made from main; this is '$branch'." }
+# Files git does not track may lie in the folder; a tracked file must be as committed.
+if (Invoke-Git status --porcelain --untracked-files=no) { throw 'There are uncommitted changes. Commit them first.' }
+& git -C $projectRoot rev-parse --verify --quiet "refs/tags/$Version" | Out-Null
+if ($LASTEXITCODE -eq 0) { throw "Tag $Version already exists. Set the new version in Cargo.toml and Cargo.lock first." }
+$newest = @(Invoke-Git tag -l 'v*' | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Sort-Object { ConvertTo-Version $_ })
+if ($newest.Count -and (ConvertTo-Version $Version) -le (ConvertTo-Version $newest[-1])) {
+    throw "$Version is not newer than $($newest[-1]). Set the new version in Cargo.toml and Cargo.lock first."
+}
+foreach ($path in @($zip, $notesPath, $migrationZip, $downloadZip) | Where-Object { $_ }) {
+    if (Test-Path -LiteralPath $path) { throw "Output already exists and will not be replaced: $path" }
 }
 
 Push-Location -LiteralPath $projectRoot
@@ -194,11 +187,10 @@ try {
         }
         return [pscustomobject]@{ Name = $id; Directory = $directory; Hashes = $files }
     }
-    # A package for Bank says its version on its error and result screens:
-    # the release's, or "draft" for a draft. The migration puts the version
-    # of the Bank it converted in front.
+    # A package for Bank says the release's version on its error and result
+    # screens. The migration puts the version of the Bank it converted in front.
     function Invoke-Build([hashtable]$arguments) {
-        if (-not $Draft) { $arguments.Release = $true }
+        $arguments.Release = $true
         & (Join-Path $PSScriptRoot 'Build-Patches.ps1') @arguments | Out-Host
     }
     Invoke-Build @{}
@@ -222,8 +214,7 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
     $date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd')
-    $source = if ($Draft -and $dirty) { "$commit plus uncommitted changes" } else { $commit }
-    $draftMark = if ($Draft) { ' (DRAFT, not a release)' } else { '' }
+    $source = $commit
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $table = [Collections.Generic.List[string]]::new()
     # Copies a package into a staged luma folder and lists its files.
@@ -466,7 +457,7 @@ try {
     # Each zip with its README.txt: the facts to trace it, and its guide.
     function Get-Readme([string]$heading) {
         $readme = [Collections.Generic.List[string]]::new()
-        $readme.Add("$heading$draftMark")
+        $readme.Add($heading)
         $readme.Add("Built $date from commit $source")
         $readme.Add('')
         $readme.AddRange([string[]]$disclaimer)
@@ -576,12 +567,10 @@ try {
     [IO.File]::WriteAllLines($notesPath, $notes)
 
     # 6. The tag, on the commit the zips were built from.
-    if (-not $Draft) {
-        if ((Invoke-Git rev-parse HEAD) -ne $commit -or (Invoke-Git status --porcelain --untracked-files=no)) {
-            throw 'The repository changed while the release was built; nothing was tagged.'
-        }
-        Invoke-Checked "tag $Version" { git -C $projectRoot tag -a $Version -F $notesPath --cleanup=verbatim $commit }
+    if ((Invoke-Git rev-parse HEAD) -ne $commit -or (Invoke-Git status --porcelain --untracked-files=no)) {
+        throw 'The repository changed while the release was built; nothing was tagged.'
     }
+    Invoke-Checked "tag $Version" { git -C $projectRoot tag -a $Version -F $notesPath --cleanup=verbatim $commit }
 } finally { Pop-Location }
 
 Write-Host ''
@@ -589,13 +578,10 @@ Write-Host "Archive: $zip"
 if ($Migrate) { Write-Host "Archive: $migrationZip" }
 if ($Download) { Write-Host "Archive: $downloadZip" }
 Write-Host "Notes:   $notesPath"
-if ($Draft) {
-    Write-Host 'Draft: no tag was created. Do not publish these files.'
-} else {
-    Write-Host "Tag:     $Version on $commit (local; nothing was pushed)"
-    Write-Host ''
-    Write-Host 'Next: test the zips on a console. Then either'
-    Write-Host "  ./scripts/New-Release.ps1 -Publish"
-    Write-Host "or push the tag (git push origin $Version) and upload the zips and the notes by hand."
-    Write-Host "To withdraw before publishing: git tag -d $Version, and delete the files."
-}
+Write-Host "Tag:     $Version on $commit (local; nothing was pushed)"
+Write-Host ''
+Write-Host 'Next: test the zips on a console. Then either'
+Write-Host "  ./scripts/New-Release.ps1 -Publish"
+Write-Host "or push the tag (git push origin $Version) and upload the zips and the notes by hand."
+Write-Host "To withdraw before publishing: git tag -d $Version, and delete build/release/$Version."
+
