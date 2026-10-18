@@ -21,7 +21,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | Back out of game selection; leave the boxes without saving. | Return to the title. Unsaved changes are discarded. |
 | START without a usable game; then insert one and START again. | Two native explanatory pages, then the title after the second A press. No HOME-transfer question or Bank-file creation. A usable game proceeds normally. |
 | Select a save without the required Pokédex progress. | Native notice, then game selection; other eligible saves remain usable. |
-| Press START on the start screen. | The "Checking the Game Card… Don't turn off the power or remove the Game Card or SD card." screen with its spinner and sound appears with the press, not after a pause; its sound starts once and runs on into game selection. |
+| Press START on the start screen, in Bank and in Transporter. | The "Checking the Game Card… Don't turn off the power or remove the Game Card or SD card." screen with its spinner and sound appears with the press, not after a pause; In Bank the same panel runs on into game selection. In Transporter the same one spinner and sound stay, standing still while the game list loads, until the list is on screen; no second spinner, no restart of the sound, and nothing behind the list's "choose a game" text. The list comes as soon as it is loaded, at least 3 s after START, not 3 s after the search. |
 | Observe loading and try HOME/sleep during work and on idle screens. | Background work keeps updating the spinner and sound; short native pauses may remain. HOME/sleep are refused during loading/saving and work on idle screens and completed result/error screens. |
 
 ## Bank, feature by feature
@@ -43,7 +43,10 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | Transfer from a supported Gen 5 SD card save. | Only matching game/language saves are listed. The correct file changes, with a `.sav.bak` backup; unrelated saves stay unchanged. |
 | Transfer from a Gen 1 or Gen 2 Virtual Console game. | The Pokémon arrive and can be withdrawn into a Gen 7 game only. |
 | A Box 1 with an Egg or another Pokémon the original refuses. | The original's refusal dialogs for it; the others are offered. No notice about nicknames or OT names. |
-| START on a console where the offline Bank was never started. | The original's "did not complete correctly… open Pokémon Bank" message, then the title. No game list. |
+| START on a console where the offline Bank was never started. | The checking screen, then the original's "did not complete correctly… open Pokémon Bank" message without the spinner behind it, then the title. No game list. |
+| START with no game at all, then START again. | The checking screen, then "Could not find a game…" without the spinner behind it, then the title; the second START shows the checking screen again. |
+| Choose a game whose first box is empty; then choose one with Pokémon and answer "No" at the question. | Both times the original's message, then directly "Software wird beendet…"; no "Datenübertragung über den Server…" in between. |
+| START without a cartridge or SD save: once with only Virtual Console games of the listed language, once with only ones of another language, once with none. | The spinner stops only briefly. The first lists those games as before; the other two end with "Es wurde kein Spiel gefunden…". Transporter starts normally. |
 | Choose another language on the language screen; then Back, and B. | Only that language's games are listed; the logo and start prompt follow it, the other screens stay in the console's language. Back and B leave the choice unchanged. After a restart the console's language applies again. |
 | Try HOME and sleep while the list is built, a game is read and the transfer runs, then on the title, the list, the question and every message that waits for A. | Refused while Transporter works; they work everywhere else. |
 

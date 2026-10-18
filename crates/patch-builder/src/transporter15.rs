@@ -13,7 +13,7 @@ use crate::elf::{Contract, PayloadElf};
 use crate::placement::InputIdentity;
 use crate::profile::{Profile, Program};
 use crate::{encode_arm_branch, fail, le32, CheckedEdit, Result};
-use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES};
+use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES, VC_TITLE_LANGUAGES};
 use transporter_payload::sdsave::GAMES;
 
 pub const TITLE_ID: u64 = 0x0004_0000_000c_9c00;
@@ -101,11 +101,14 @@ pub const ENTRIES: &[&str] = &[
     "transporter_title_begin_stub",
     "transporter_title_end_stub",
     "transporter_list_ready_stub",
+    "transporter_list_indicator_stub",
+    "transporter_list_frame_stub",
     "transporter_message_stub",
     "transporter_version",
     "transporter_shiny_build_stub",
     "transporter_shiny_gender_stub",
     "transporter_layout_check",
+    "transporter_vc_mount_stub",
 ];
 /// The layout check stands in for this instruction at 0013AEE4 and begins
 /// with it: `mov r1, r0`.
@@ -128,9 +131,10 @@ const EDITS: &[(u32, u32, Word)] = &[
     (STARTUP_CALL, 0xeb00_0228, BranchLink(BOOTSTRAP_ADDRESS)),
     // --- Offline flow: the server steps are removed. ---
     // The one call of the router, get_next_state (was: bl 00242BA0). The
-    // entry asks the original and changes its answer in two places: after
-    // SHOW_GAMES comes GET_POKEMON, where the original connected, and after
-    // GET_POKEMON comes CHECK_IF_USER_CAN_TRANSFER. It also refuses HOME and
+    // entry asks the original and changes its answer in three places: after
+    // SHOW_GAMES comes GET_POKEMON, where the original connected; after
+    // GET_POKEMON comes CHECK_IF_USER_CAN_TRANSFER; and instead of the cancel
+    // step comes the disconnect step. It also refuses HOME and
     // sleep for the steps that read or write, as the connect step did for
     // the whole session.
     (0x0024_2ef8, 0xebff_ff28, Call("transporter_next")),
@@ -142,6 +146,18 @@ const EDITS: &[(u32, u32, Word)] = &[
         0xe594_0038,
         Call("transporter_list_ready_stub"),
     ),
+    // Game list set-up, state 0: the call that starts its loading indicator
+    // (was: bl 002450F4). While the search's loading panel is up the stub
+    // starts nothing and only notes when the list began; otherwise the call.
+    (
+        0x0024_4eac,
+        0xeb00_0090,
+        Call("transporter_list_indicator_stub"),
+    ),
+    // Game list set-up, every frame: the check that restarts its
+    // indicator's sound (was: ldr r0, [r5, #0x5c]). Skipped while the
+    // search's panel, whose sound plays, is up.
+    (0x0024_4d40, 0xe595_005c, To("transporter_list_frame_stub")),
     // The original's "show a message" function, its first instruction (was:
     // push {r4-r8, lr}). The stub runs it, lets HOME and sleep through if
     // the message waits for an answer, and goes on at 0019B510. A branch,
@@ -163,8 +179,9 @@ const EDITS: &[(u32, u32, Word)] = &[
     // Reading Gen 5 and Gen 1/2: skip the remote validation.
     (0x0024_5728, 0xe59f_0c74, Branch(0x0024_5800)),
     (0x0024_60b8, 0xe59f_02e4, Branch(0x0024_61d0)),
+    // Step 0xA, the server's question whether a transfer is open: its
+    // request counts as made. The step itself is never entered.
     (0x0024_88a0, 0xebfd_4ca3, Raw(0xe3a0_0001)),
-    (0x0024_83cc, 0xebfd_4dd8, Raw(0xe3a0_0001)),
     // Reading Gen 5, per-slot result code (was: ldr r0, [r1, r7]). The stub
     // gives empty slots the skip code the server used to send.
     (0x0024_58dc, 0xe791_0007, Call("transporter_slot")),
@@ -242,6 +259,15 @@ const EDITS: &[(u32, u32, Word)] = &[
     // Layout::Build (was: mov r1, r0): the check does the same and lets the
     // payload give the language screen's layout its Back button first.
     (0x0013_aee4, 0xe1a0_1000, Call("transporter_layout_check")),
+    // The scan of the Virtual Console saves (001E419C): the call that mounts
+    // a title's save (was: bl 0010E4A4). The stub skips the titles in another
+    // language than the listed one.
+    (0x001e_41c0, 0xebfc_a8b7, Call("transporter_vc_mount_stub")),
+    // Application init's call of that scan (was: bl 001E419C), before the
+    // payload can run: skipped. Its only result, the table at 003296E4, is
+    // read only by the search and the list's scanner, each right after a
+    // scan of its own; the call's return value is not used.
+    (0x0010_621c, 0xeb03_77de, Raw(0xe320_f000)),
     // Scanner of the Virtual Console titles (0024120C), asking whether a
     // row's title is installed (was: bl 002512A8): the entry answers no for
     // a row in another language than the listed one. The scanner files the
@@ -352,6 +378,9 @@ fn edits(_: &[u8], payload: &PayloadElf) -> Result<Vec<CheckedEdit>> {
 pub const VC_TABLE: u32 = 0x002a_fe0c;
 const VC_ROW: usize = 12;
 const VC_ROW_LANGUAGE: usize = 4;
+/// The language of each Virtual Console title by its index, one word each
+/// (`002C2B1C`), as the scan of their saves numbers them.
+pub const VC_TITLE_TABLE: u32 = 0x002c_2b1c;
 
 /// The hooks list the games of one language and leave the original's game
 /// list unbounded, as it is. That holds only while the payload's copy of the
@@ -362,6 +391,14 @@ fn check_game_list(code: &[u8]) -> Result<()> {
         if le32(code, table + row * VC_ROW + VC_ROW_LANGUAGE)? != u32::from(language) {
             return fail(format!(
                 "Virtual Console table row {row} is not in the language the hooks expect"
+            ));
+        }
+    }
+    let titles = (VC_TITLE_TABLE - CODE_BASE) as usize;
+    for (index, &language) in VC_TITLE_LANGUAGES.iter().enumerate() {
+        if le32(code, titles + index * 4)? != u32::from(language) {
+            return fail(format!(
+                "Virtual Console title {index} is not in the language the hooks expect"
             ));
         }
     }
@@ -462,6 +499,7 @@ mod tests {
             (0x0022_b5b0, "transporter_language_buttons"),
             (0x0024_12d4, "transporter_vc_scan_stub"),
             (0x0013_aee4, "transporter_layout_check"),
+            (0x001e_41c0, "transporter_vc_mount_stub"),
             (0x0024_ba44, "transporter_title_begin_stub"),
             (0x0024_ba74, "transporter_title_end_stub"),
             (0x0024_f6b0, "transporter_shiny_build_stub"),
@@ -553,9 +591,14 @@ mod tests {
     #[test]
     fn the_virtual_console_table_must_be_the_one_the_hooks_copied() {
         let table = (VC_TABLE - CODE_BASE) as usize;
-        let mut code = vec![0u8; table + VC_LANGUAGES.len() * VC_ROW];
+        let titles = (VC_TITLE_TABLE - CODE_BASE) as usize;
+        let mut code = vec![0u8; titles + VC_TITLE_LANGUAGES.len() * 4];
         for (row, &language) in VC_LANGUAGES.iter().enumerate() {
             let at = table + row * VC_ROW + VC_ROW_LANGUAGE;
+            code[at..at + 4].copy_from_slice(&u32::from(language).to_le_bytes());
+        }
+        for (index, &language) in VC_TITLE_LANGUAGES.iter().enumerate() {
+            let at = titles + index * 4;
             code[at..at + 4].copy_from_slice(&u32::from(language).to_le_bytes());
         }
         assert!(check_game_list(&code).is_ok());
@@ -564,7 +607,12 @@ mod tests {
             other[table + row * VC_ROW + VC_ROW_LANGUAGE] ^= 8;
             assert!(check_game_list(&other).is_err());
         }
+        for index in [0, 19, VC_TITLE_LANGUAGES.len() - 1] {
+            let mut other = code.clone();
+            other[titles + index * 4] ^= 8;
+            assert!(check_game_list(&other).is_err());
+        }
         // A table cut short is refused, not read past its end.
-        assert!(check_game_list(&code[..code.len() - VC_ROW]).is_err());
+        assert!(check_game_list(&code[..code.len() - 4]).is_err());
     }
 }

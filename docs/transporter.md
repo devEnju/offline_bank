@@ -31,7 +31,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 **One save before the question.** Right after the chosen game is read, and before any notice or question, the original saves that game once. It stores a small note of its own there, which the server used to sort out an interrupted transfer; offline the note is empty and nothing reads it. No Pokémon data changes in that save, and it happens also if you then answer "No".
 
-**When Transporter refuses.** It asks about Bank every time START is pressed on the title screen, before it looks for games. If Bank cannot take a delivery, it shows one of two messages of the original and returns to the title screen. No game has been read at that point.
+**When Transporter refuses.** It asks about Bank every time START is pressed on the title screen, behind the loading screen that comes with the press, before it looks for games. If Bank cannot take a delivery, it ends the loading screen, shows one of two messages of the original and returns to the title screen. No game has been read at that point.
 
 | Message | When | What to do |
 | --- | --- | --- |

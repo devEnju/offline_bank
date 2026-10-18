@@ -27,6 +27,7 @@ pub mod layout;
 pub mod legacy_shiny;
 pub mod lytpatch;
 pub mod navigation;
+pub mod panel;
 pub mod sdsave;
 pub mod storage_worker;
 

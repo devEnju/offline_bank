@@ -6,9 +6,10 @@
 use crate::{
     layout::*,
     navigation,
+    panel::{self, Panel},
     storage_worker::{DeliveryWorker, Failed, Job, Reply},
 };
-use core::{mem::transmute, slice};
+use core::{cell::UnsafeCell, mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{exclusive::Exclusive, worker::JobId};
 
@@ -46,6 +47,84 @@ const BLOCK_CLEAR: usize = 0x0011_a5fc;
 /// (001044D0) carries the press out some frames later, whatever the mask
 /// says by then.
 const HOME_ACCEPTED: *mut u8 = 0x002f_49e9 as *mut u8;
+/// The general loading panel of the shared UI (`ui`, its context at
+/// `ui + 0x5C`), as the reader's set-up starts it (`00246A2C`):
+/// `0019B340(ui)` plays the loop sound `0x50011`, shows the panel (pane
+/// `0x1D`) and binds its spinner (animation 0); `0019C700(ui, message)`
+/// shows its text frame (pane `0x1E`, with pane `0x25` hidden) and puts
+/// message `message` of text file 23 into pane `0x23`. The reader ends it
+/// before its messages (`0024621C`..`00246250`): `0019B6B0(0x50011, 0,
+/// -1)` stops the sound, `0019C884(context, 0, pane, shown)` hides the
+/// panel, `0019B604(context, 0, animation, 0)` unbinds the spinner.
+const PANEL_START: usize = 0x0019_b340;
+const STOP_SOUND: usize = 0x0019_b6b0;
+const PANE_SHOWN: usize = 0x0019_c884;
+const UNBIND_ANIMATION: usize = 0x0019_b604;
+/// `0019C814(ui)`: hides the panel, its text frame and the dialog frame
+/// (panes `0x1D`, `0x1E`, `0x25`) and two panes of the second group, the
+/// state the shared UI's constructor leaves it in (`0024B778`). The
+/// question step ends the panel with it when no message follows
+/// (`002473D8`).
+const PANEL_HIDE: usize = 0x0019_c814;
+const UI_CONTEXT: usize = 0x5c;
+const LOADING_SOUND: u32 = 0x0005_0011;
+const PANEL_PANE: u32 = 0x1d;
+const SPINNER_ANIMATION: u32 = 0;
+const TEXT_FRAME_PANE: u32 = 0x1e;
+const OTHER_FRAME_PANE: u32 = 0x25;
+const TEXT_PANE: u32 = 0x23;
+/// The panel's text, as the game scan of Bank and the game list's own
+/// indicator show it: message `0x20` of text file 39 ("Die Spielesoftware
+/// wird überprüft… Bitte weder das System ausschalten, noch Karte oder SD
+/// Card entfernen."), which the panel's own file 23 has not. A text file is
+/// opened as the original gives a screen its messages (`0022EF30`, see
+/// `language`): `(size, heap)` allocates on the UI's heap (`[[ui + 0x78] +
+/// 4]`, as `0019C700` allocates), `(10)` names the text archive of the
+/// screens' language, `(memory, archive, file, heap, 1, 5)` opens the file,
+/// `(strings, layout, pane, messages, message)` copies a message into a
+/// pane, and the object's second virtual function deletes it.
+const ALLOCATE: usize = 0x001e_6360;
+const MESSAGES_SIZE: u32 = 0x28;
+const TEXT_ARCHIVE: usize = 0x001e_2540;
+const OPEN_MESSAGES: usize = 0x001d_fb00;
+const SET_PANE_TEXT: usize = 0x0019_f7b0;
+const UI_HEAP: usize = 0x78;
+const PANEL_TEXT_FILE: u32 = 39;
+const PANEL_TEXT_MESSAGE: u32 = 0x20;
+
+/// The original's clock, as `0019B758` reads it: `00233854(&moment)` copies
+/// the current time (`002F4E38`) into an 8-byte moment, `0025A77C(&moment)`
+/// gives it in ms.
+const NOW: usize = 0x0023_3854;
+const MILLISECONDS: usize = 0x0025_a77c;
+/// Where the game list notes the time it began, in ms (`00245180`..
+/// `0024524C`), for its minimum time of 3 s (`00244B24`).
+const LIST_BEGAN: usize = 0x70;
+
+/// A moment of the original's clock.
+#[repr(C, align(8))]
+struct Moment(UnsafeCell<[u32; 2]>);
+// SAFETY: only the main thread uses it.
+unsafe impl Sync for Moment {}
+impl Moment {
+    /// Notes the current time.
+    unsafe fn note(&self) {
+        let now: unsafe extern "aapcs" fn(*mut [u32; 2]) = unsafe { transmute(NOW) };
+        unsafe { now(self.0.get()) };
+    }
+    /// The noted time in ms.
+    unsafe fn milliseconds(&self) -> u32 {
+        let ms: unsafe extern "aapcs" fn(*const [u32; 2]) -> u32 =
+            unsafe { transmute(MILLISECONDS) };
+        unsafe { ms(self.0.get()) }
+    }
+}
+/// When the search's panel went up.
+static PANEL_SINCE: Moment = Moment(UnsafeCell::new([0; 2]));
+
+/// The panel the search started (`panel`).
+static PANEL: Panel = Panel::new();
+
 /// The worker and the job it has out. Only the main thread takes it.
 struct Runtime {
     worker: Option<DeliveryWorker>,
@@ -126,6 +205,78 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
     }
 }
 
+/// Starts the general loading panel on `ui` with the text of the game
+/// scan, as the reader's set-up starts it.
+unsafe fn start_panel(ui: *const u8) {
+    let start: unsafe extern "aapcs" fn(*const u8) = unsafe { transmute(PANEL_START) };
+    unsafe {
+        start(ui);
+        panel_text(ui);
+        PANEL_SINCE.note();
+    }
+}
+
+/// The panel's text frame with message `0x20` of text file 39, as
+/// `0019C700` shows one of file 23.
+unsafe fn panel_text(ui: *const u8) {
+    unsafe {
+        let Some(context) = follow(ui, UI_CONTEXT) else {
+            return;
+        };
+        let (Some(strings), Some(layouts), Some(heap)) = (
+            follow(context, CONTEXT_STRINGS),
+            follow(context, CONTEXT_LAYOUTS),
+            follow(ui, UI_HEAP).and_then(|owner| follow(owner, 4)),
+        ) else {
+            return;
+        };
+        let Some(layout) = follow(layouts, 0) else {
+            return;
+        };
+        let pane: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) = transmute(PANE_SHOWN);
+        pane(context, 0, TEXT_FRAME_PANE, 1);
+        pane(context, 0, OTHER_FRAME_PANE, 0);
+        let allocate: unsafe extern "aapcs" fn(u32, *const u8) -> *mut u8 = transmute(ALLOCATE);
+        let archive: unsafe extern "aapcs" fn(u32) -> u32 = transmute(TEXT_ARCHIVE);
+        let open: unsafe extern "aapcs" fn(*mut u8, u32, u32, *const u8, u32, u32) -> *mut u8 =
+            transmute(OPEN_MESSAGES);
+        let set: unsafe extern "aapcs" fn(*const u8, *const u8, u32, *mut u8, u32) =
+            transmute(SET_PANE_TEXT);
+        let memory = allocate(MESSAGES_SIZE, heap);
+        if memory.is_null() {
+            return;
+        }
+        let messages = open(memory, archive(10), PANEL_TEXT_FILE, heap, 1, 5);
+        if messages.is_null() {
+            return;
+        }
+        set(strings, layout, TEXT_PANE, messages, PANEL_TEXT_MESSAGE);
+        let delete: unsafe extern "aapcs" fn(*mut u8) =
+            transmute(messages.cast::<*const usize>().read().add(1).read());
+        delete(messages);
+    }
+}
+
+/// Ends the general loading panel on `ui`, as the question step ends it
+/// (`00247394`..`002473D8`): its sound, its spinner, then the shared UI's
+/// resting state, so that neither its text frame nor its text is left.
+unsafe fn end_panel(ui: *const u8) {
+    let Some(context) = (unsafe { follow(ui, UI_CONTEXT) }) else {
+        return;
+    };
+    unsafe {
+        let stop: unsafe extern "aapcs" fn(u32, u32, i32) = transmute(STOP_SOUND);
+        let pane: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) = transmute(PANE_SHOWN);
+        let unbind: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) =
+            transmute(UNBIND_ANIMATION);
+        let hide: unsafe extern "aapcs" fn(*const u8) = transmute(PANEL_HIDE);
+        stop(LOADING_SOUND, 0, -1);
+        pane(context, 0, PANEL_PANE, 0);
+        unbind(context, 0, SPINNER_ANIMATION, 0);
+        hide(ui);
+    }
+}
+
 /// Sets or clears bit 1 of the original's activity mask through the
 /// original functions.
 ///
@@ -163,6 +314,13 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     };
     let next = navigation::destination(current, outcome, native, cancelled);
     unsafe { refuse_home(navigation::loads(next)) };
+    // The search's panel stays into the game list, until the list is on
+    // screen; after anything else it ends here.
+    if !panel::handed_on(next) {
+        if let Some(ui) = PANEL.release() {
+            unsafe { end_panel(ui as *const u8) };
+        }
+    }
     next
 }
 
@@ -176,16 +334,64 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
 /// Called only from that stub, on the main thread.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_message_waits() {
+    // A refusal or "Could not find a game" comes without the search's
+    // panel, as the reader's messages come without its own.
+    if let Some(ui) = PANEL.release() {
+        unsafe { end_panel(ui as *const u8) };
+    }
     unsafe { refuse_home(false) };
 }
 
+/// The game list's set-up is about to start its own indicator on the list's
+/// screen it has just built. Answers 1 while the search's panel is up: the
+/// list then starts nothing and only notes when it began, for its minimum
+/// time (link.rs); 0: the list starts its own, as the original.
+/// # Safety
+/// Called only from the stub of the patched site at 00244EAC (link.rs), on
+/// the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_indicator() -> u32 {
+    u32::from(PANEL.list_starts() == panel::ListStart::Quiet)
+}
+
+/// The game list has noted when it began, while the search's panel is up
+/// (link.rs): it counts its minimum time from when the panel went up
+/// instead, so the panel is not kept 3 s longer than the list needs.
+/// # Safety
+/// Called only from the stub of the patched site at 00244EAC (link.rs), on
+/// the main thread, with the live game-list task.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_started(task: *mut u8) {
+    unsafe {
+        let now = Moment(UnsafeCell::new([0; 2]));
+        now.note();
+        let elapsed = now.milliseconds().wrapping_sub(PANEL_SINCE.milliseconds());
+        let began = task.add(LIST_BEGAN).cast::<u64>();
+        began.write(panel::list_start(began.read(), elapsed));
+    }
+}
+
+/// A frame of the game list's set-up, before its check that restarts its
+/// indicator's sound (`00244D40`). Answers 1 while the search's panel is up,
+/// whose sound plays: the check is skipped (link.rs).
+/// # Safety
+/// Called only from the stub of the patched site at 00244D40 (link.rs), on
+/// the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_frame() -> u32 {
+    u32::from(PANEL.up())
+}
+
 /// The game list is set up and on screen: every save has been read, and it
-/// waits for the user.
+/// waits for the user. The panel that covered its loading ends here.
 /// # Safety
 /// Called only from the stub of the patched site at 002445EC (link.rs), on
 /// the main thread.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_list_ready() {
+    if let Some(ui) = PANEL.release() {
+        unsafe { end_panel(ui as *const u8) };
+    }
     unsafe { refuse_home(false) };
 }
 
@@ -199,6 +405,13 @@ pub unsafe extern "aapcs" fn transporter_list_ready() {
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
+    // The loading panel goes up before anything is read: on the first
+    // frame, before the check is handed over (`panel`).
+    if let Some(ui) = unsafe { follow(task, TASK_UI) } {
+        if unsafe { follow(ui, UI_CONTEXT) }.is_some() && PANEL.start(ui as usize) {
+            unsafe { start_panel(ui) };
+        }
+    }
     let answer = {
         let Some(mut state) = STATE.take() else {
             return SEARCH_PENDING;

@@ -35,6 +35,15 @@ pub const VC_LANGUAGES: [u8; 39] = [
     1, 2, 3, 4, 5, 7, 8, // Silver
     1, 2, 3, 4, 5, 7, // Crystal
 ];
+/// The language id of each Virtual Console title by the index the scan of
+/// their saves (`001E419C`) and the installed check (`002512A8`) number it
+/// with (`002C2B1C`, one word each; the builder compares them with the
+/// executable it patches). The same titles as `VC_LANGUAGES`, in another
+/// order.
+pub const VC_TITLE_LANGUAGES: [u8; 39] = [
+    1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 7, 7, 7, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 7, 7, 8,
+    8, 1, 2, 3, 4, 5, 7,
+];
 /// Entries the original's game list and its table of trainer names hold.
 pub const LIST_CAPACITY: usize = 40;
 
@@ -270,6 +279,20 @@ mod native {
         u32::from(vc_listed(filter(), language))
     }
 
+    /// Whether the scan of the Virtual Console saves (`001E419C`) mounts
+    /// the save of title `index` at all (`001E41C0`): a title in another
+    /// language than the listed one is never listed, so its save need not
+    /// be looked at. An index outside the table is looked at, as by the
+    /// original.
+    #[no_mangle]
+    pub extern "aapcs" fn transporter_vc_wanted(index: u32) -> u32 {
+        VC_TITLE_LANGUAGES
+            .get(index as usize)
+            .map_or(1, |&language| {
+                u32::from(vc_listed(filter(), u32::from(language)))
+            })
+    }
+
     /// Brackets the title screen's loading of its archives (`0024BA44`,
     /// `0024BA74`): one of them holds the logo and the start prompt once per
     /// language. With `chosen` it is read in the chosen language; afterwards
@@ -478,6 +501,21 @@ mod tests {
         for row in VC_LANGUAGES {
             assert_eq!(normalise(row), row);
         }
+    }
+
+    #[test]
+    fn the_scan_numbers_the_same_titles_in_another_order() {
+        let mut rows = VC_LANGUAGES;
+        let mut titles = VC_TITLE_LANGUAGES;
+        rows.sort_unstable();
+        titles.sort_unstable();
+        assert_eq!(rows, titles);
+        // In German six of the 39 saves are looked at.
+        let german = VC_TITLE_LANGUAGES
+            .iter()
+            .filter(|&&language| vc_listed(5, u32::from(language)))
+            .count();
+        assert_eq!(german, 6);
     }
 
     #[test]

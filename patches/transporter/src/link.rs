@@ -11,12 +11,14 @@ mod linked {
     };
     use transporter_payload::gen5::transporter_slot_holds;
     use transporter_payload::hooks::{
-        transporter_check, transporter_deliver, transporter_list_ready, transporter_message_waits,
+        transporter_check, transporter_deliver, transporter_list_frame, transporter_list_indicator,
+        transporter_list_ready, transporter_list_started, transporter_message_waits,
         transporter_next, transporter_version,
     };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
         transporter_layout_built, transporter_title_language, transporter_vc_listed,
+        transporter_vc_wanted,
     };
     use transporter_payload::legacy_shiny::{
         transporter_shiny_build, transporter_shiny_keeps_gender,
@@ -176,6 +178,72 @@ mod linked {
     core::arch::global_asm!(
         ".section .text.transporter_stubs,\"ax\",%progbits",
         ".arm",
+        // Game list set-up, state 0: the call that starts its indicator
+        // (00244EAC, was: bl 002450F4, r0 = task), once the list's screen is
+        // built. While the search's panel is up (entry: 1) the list starts
+        // nothing: on inside 002450F4 with that function's own prologue at
+        // 00245180, which only notes when the list began and returns to 2:;
+        // the started entry then moves that time back to when the panel
+        // went up and returns to the caller. Otherwise the call.
+        ".global transporter_list_indicator_stub",
+        ".type transporter_list_indicator_stub, %function",
+        "transporter_list_indicator_stub:",
+        "push {{r0, lr}}",
+        "bl {list_indicator}",
+        "movs r12, r0",
+        "pop {{r0, lr}}",
+        "ldreq r12, =0x002450f4",
+        "bxeq r12",
+        "push {{r0, lr}}",
+        "adr lr, 2f",
+        "push {{r3-r11, lr}}",
+        "mov r4, r0",
+        "ldr r12, =0x00245180",
+        "bx r12",
+        "2:",
+        "pop {{r0, lr}}",
+        "b {list_started}",
+        ".size transporter_list_indicator_stub, .-transporter_list_indicator_stub",
+        // The scan of the Virtual Console saves (001E419C), for title r5:
+        // the call that mounts its save (001E41C0, was: bl 0010E4A4, r0 = the
+        // mount name, r1 = the title). Application init's scan, the one
+        // before the payload can run, is skipped (0010621C). A title the
+        // entry does not want: on
+        // with the next title (001E42D0), with nothing mounted or unmounted;
+        // its entry in the scan's table was cleared at 001E41B4. Otherwise
+        // the call, which returns to the scan.
+        ".global transporter_vc_mount_stub",
+        ".type transporter_vc_mount_stub, %function",
+        "transporter_vc_mount_stub:",
+        "push {{r0, r1, r12, lr}}",
+        "mov r0, r5",
+        "bl {vc_wanted}",
+        "cmp r0, #0",
+        "pop {{r0, r1, r12, lr}}",
+        "ldreq r12, =0x001e42d0",
+        "bxeq r12",
+        "ldr r12, =0x0010e4a4",
+        "bx r12",
+        ".size transporter_vc_mount_stub, .-transporter_vc_mount_stub",
+        // Game list set-up, every frame: its check that restarts its
+        // indicator's sound (00244D40, was: ldr r0, [r5, #0x5c]; r4 = task,
+        // r5 = the list's screen; the check's own calls clobber r12 and the
+        // flags). While the search's panel is up (entry: 1) on behind the
+        // check (00244D8C); otherwise the instruction and the check.
+        ".global transporter_list_frame_stub",
+        ".type transporter_list_frame_stub, %function",
+        "transporter_list_frame_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "bl {list_frame}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "ldrne r12, =0x00244d8c",
+        "bxne r12",
+        "ldr r0, [r5, #0x5c]",
+        "ldr r12, =0x00244d44",
+        "bx r12",
+        ".size transporter_list_frame_stub, .-transporter_list_frame_stub",
+        ".ltorg",
         // Game list, the first instruction of its update (002445EC, was:
         // ldr r0, [r4, #0x38]): its set-up is done and it is on screen.
         // r4 = task; the instruction is run here and every other register
@@ -282,6 +350,10 @@ mod linked {
         check = sym transporter_check,
         message_waits = sym transporter_message_waits,
         list_ready = sym transporter_list_ready,
+        list_indicator = sym transporter_list_indicator,
+        list_frame = sym transporter_list_frame,
+        list_started = sym transporter_list_started,
+        vc_wanted = sym transporter_vc_wanted,
         deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,
     );
