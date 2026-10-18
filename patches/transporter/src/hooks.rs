@@ -4,6 +4,7 @@
 //! starts; the main thread never waits for it.
 
 use crate::{
+    cart,
     layout::*,
     navigation,
     panel::{self, Panel},
@@ -18,6 +19,10 @@ use patch_common::{exclusive::Exclusive, native::follow, worker::JobId};
 /// The original's "show this message and wait": `(ui, message, 1)`, as the
 /// game search calls it for its own message 0 (`00246FFC`).
 const SHOW_MESSAGE: usize = 0x0019_b50c;
+/// `(messages, message, string)`: loads a message of the shared UI's text
+/// file into a string object (`001DBEB8`), as "show a message" does before
+/// it hands the string to its dialog (`0019B578`).
+const LOAD_MESSAGE: usize = 0x001d_beb8;
 /// What the version line says behind "Ver. 1.5".
 const VERSION_SUFFIX: &[u8] = b"-offline";
 /// The original's router, `get_next_state(manager, current)`, and what it
@@ -291,10 +296,35 @@ unsafe fn show(task: *const u8, message: u32) -> bool {
     true
 }
 
+/// Replaces the load of a message in the original's "show a message"
+/// (`0019B578`): the original loads it, and the failure message then keeps
+/// only what follows its first page (`layout::from_second_page`).
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_message_text(
+    messages: *mut u8,
+    message: u32,
+    string: *mut u8,
+) -> u32 {
+    unsafe {
+        let load: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) -> u32 = transmute(LOAD_MESSAGE);
+        let loaded = load(messages, message, string);
+        if from_second_page(message) {
+            patch_common::ui::keep_rest(string);
+        }
+        loaded
+    }
+}
+
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
 /// flushed, and read back; `DELIVER_PENDING` while that is in progress; and
 /// `DELIVER_FAILED` when nothing was delivered, in which case the original
 /// must not remove anything from the source game.
+///
+/// Bank is written only while the game the Pokémon leave can be saved: for
+/// a cartridge whose card is gone the answer is `DELIVER_FAILED` before
+/// anything is written, as the original asks again before it saves the game.
 /// # Safety
 /// Called only from the stub of the patched site at 0024A150 (link.rs) with
 /// the live task in `r0`.
@@ -303,6 +333,14 @@ pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return DELIVER_PENDING;
     };
+    if state.job.is_none() {
+        let Some(manager) = (unsafe { follow(task, TASK_MANAGER) }) else {
+            return DELIVER_FAILED;
+        };
+        if unsafe { cart::chosen_card_missing(manager) } {
+            return DELIVER_FAILED;
+        }
+    }
     // The transport box goes to the worker in its staging buffer, copied
     // here: the worker touches no object of the original.
     let answer = unsafe {

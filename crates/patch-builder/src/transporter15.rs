@@ -110,6 +110,7 @@ pub const ENTRIES: &[&str] = &[
     "transporter_vc_mount_stub",
     "transporter_card_removed",
     "transporter_entry_card_removed",
+    "transporter_message_text",
 ];
 /// The layout check stands in for this instruction at 0013AEE4 and begins
 /// with it: `mov r1, r0`.
@@ -167,6 +168,11 @@ const EDITS: &[(u32, u32, Word)] = &[
     // three about the chosen game's save or card, and the closing message
     // of a transfer.
     (0x0019_b50c, 0xe92d_41f0, To("transporter_message_stub")),
+    // The same function, the load of the message into the string it hands
+    // to its dialog (was: bl 001DBEB8): the entry makes the load and keeps
+    // only the second page of the failure message 0x0B, whose first is
+    // about a server.
+    (0x0019_b578, 0xeb01_024e, Call("transporter_message_text")),
     // Game search, first step (was: ldr r0, [r0], the start of the cartridge
     // scan). The stub asks the check entry with the task (r4) whether Bank
     // can take a delivery, and either goes on with the search or ends it
@@ -177,6 +183,13 @@ const EDITS: &[(u32, u32, Word)] = &[
     // stores its record in the chosen game and saves it. Sub-states 1 to 3,
     // the request and its reply, are never entered.
     (0x0024_8cdc, 0xe59f_0304, Branch(0x0024_8e44)),
+    // Bank step, the Game Card gone before the note is saved (was: mov r1,
+    // #0x22, "No compatible Pokémon Game Card detected"): nothing was
+    // written, and the failure message's advice to check the card follows.
+    // A note save that failed (was: beq 00248F60, the end without a
+    // message) takes the same path.
+    (0x0024_8ebc, 0xe3a0_1022, Raw(0xe3a0_100b)),
+    (0x0024_8f88, 0x0aff_fff4, Raw(0x0aff_ffba)),
     // Reading Gen 5 and Gen 1/2: skip the remote validation.
     (0x0024_5728, 0xe59f_0c74, Branch(0x0024_5800)),
     (0x0024_60b8, 0xe59f_02e4, Branch(0x0024_61d0)),
@@ -302,13 +315,21 @@ const EDITS: &[(u32, u32, Word)] = &[
     // 1: delivered, the original removal code (0024A274).
     // 2: still working, return and come back next frame (0024A5DC).
     // else: the original failure message (sub-state 0x11, stored at
-    // 0024A4C0); the game is left alone.
+    // 0024A4C0); the game is left alone. That is also the answer while the
+    // chosen cartridge's card is gone, before anything is written.
     (0x0024_a150, 0xe59f_04f4, To("transporter_deliver_stub")),
     // Transfer, after the source game is saved (was: mov r0, #0xa, the one
     // place that selects the commit request, sub-state 0xA): no commit
     // request; the original final save and success message (sub-state 0xE)
     // come next.
     (0x0024_a3c0, 0xe3a0_000a, Raw(0xe3a0_000e)),
+    // Transfer, a save of the game that failed after the delivery: the save
+    // without the Pokémon (was: mov r0, #0xC, the server's commit, whose
+    // request was never created) and the final save (was: beq 0024A38C, the
+    // end without a message). Both go to the original's message that no
+    // Game Card is detected (0024A2A8), as for a card taken out.
+    (0x0024_a3d0, 0xe3a0_000c, Branch(0x0024_a2a8)),
+    (0x0024_a4e8, 0x0aff_ffa7, Raw(0x0aff_ff6e)),
     // --- Gen 1 conversion (0024F428): the Easter egg. ---
     // The constructor call (was: bl 0019CD3C): the entry may ask for a shiny
     // in the construction parameters, then makes the call.

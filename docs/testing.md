@@ -44,6 +44,8 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | With a White cartridge and a Black 2 save on the SD card, START; take the cartridge out on the list, choose Black 2 and transfer. START again, take the cartridge out on the list and choose White. | The Black 2 transfer runs as usual. White: the original's message that no compatible game is detected. |
 | With a White cartridge and a White save on the SD card, START; take the cartridge out on the list and choose White. | The original's message that no compatible game is detected; the save on the SD card is not changed. |
 | With a White cartridge and Black and Black 2 saves, take the cartridge out on the checking screen after START. | The list shows both saves and no White. |
+| Choose a cartridge game with Pokémon in Box 1, take the cartridge out on the question and answer "Yes". Open Bank. Repeat in Chinese. | Only "Please confirm that your Game Card is properly inserted, and then try again." (in Chinese, the line after the first), then the title. Bank's transport box is empty, and the game still holds its Pokémon. |
+| The same with a save on the SD card chosen, and with a Virtual Console title. | The transfer runs as usual. |
 | Transfer from a Gen 1 or Gen 2 Virtual Console game. | The Pokémon arrive and can be withdrawn into a Gen 7 game only. |
 | A Box 1 with an Egg or another Pokémon the original refuses. | The original's refusal dialogs for it; the others are offered. No notice about nicknames or OT names. |
 | START on a console where the offline Bank was never started. | The checking screen, then the original's "did not complete correctly… open Pokémon Bank" message without the spinner behind it, then the title. No game list. |

@@ -1,8 +1,22 @@
 //! The version line on the title screen, which every patch extends by its
-//! name ("Ver. 1.5-offline"), with the original's own calls.
+//! name ("Ver. 1.5-offline"), with the original's own calls; and the
+//! original's string objects, in which a message is changed in place.
 
-use crate::{native::follow, program::Program};
-use core::mem::transmute;
+use crate::{message, native::follow, program::Program};
+use core::{mem::transmute, slice};
+
+/// The text of the original's string object `text` and its room in units:
+/// the text at `+4`, the room at `+8`, the length at `+0xA`, and at `+0xC`
+/// whether the object holds a text of its own.
+unsafe fn string(text: *mut u8) -> Option<(*mut u16, usize)> {
+    unsafe {
+        let data = follow(text, 4)?.cast::<u16>();
+        if text.add(0xc).read() == 0 {
+            return None;
+        }
+        Some((data, usize::from(text.add(8).cast::<u16>().read())))
+    }
+}
 
 /// The second of the context's two work strings (`[context + 4]`), which
 /// the original fills and hands to a pane: the string object, its text, and
@@ -11,11 +25,29 @@ unsafe fn work_string(context: *mut u8) -> Option<(*mut u8, *mut u16, usize)> {
     unsafe {
         let strings = follow(context, 4)?;
         let text = follow(strings, 4)?;
-        let data = follow(text, 4)?.cast::<u16>();
-        if text.add(0xc).read() == 0 {
-            return None;
+        let (data, room) = string(text)?;
+        Some((text, data, room))
+    }
+}
+
+/// Keeps only what follows the first part of the message the original has
+/// just loaded into the string object `text` (`message::keep_rest`). A
+/// string whose length is not that of its text, or a message with nothing
+/// after its first part, stays as it is.
+/// # Safety
+/// `text` is a live string object of the original, on the main thread.
+pub unsafe fn keep_rest(text: *mut u8) {
+    unsafe {
+        let Some((data, room)) = string(text) else {
+            return;
+        };
+        let len = usize::from(text.add(0xa).cast::<u16>().read());
+        if len == 0 || len >= room || data.add(len).read() != 0 {
+            return;
         }
-        Some((text, data, usize::from(text.add(8).cast::<u16>().read())))
+        if let Some(len) = message::keep_rest(slice::from_raw_parts_mut(data, room), len) {
+            text.add(0xa).cast::<u16>().write(len as u16);
+        }
     }
 }
 

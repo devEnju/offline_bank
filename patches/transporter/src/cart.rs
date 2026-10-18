@@ -38,6 +38,12 @@ const CARD_REMOVED: usize = 0x001d_e43c;
 /// Mode byte of the cartridge task; 2 is the scan before the game list.
 const TASK_MODE: usize = 0x30;
 const MODE_SCAN: u8 = 2;
+/// What the manager holds of the chosen game: the version stored when an
+/// entry is confirmed, and a second word. Both are set only for a Virtual
+/// Console title; the original asks about the card only when they are not
+/// (`0024A27C`..`0024A290`, and the same at every other site).
+const MANAGER_VERSION: usize = 0x148;
+const MANAGER_TITLE: usize = 0x14c;
 /// Fields of the game-list task.
 const LIST_MANAGER: usize = 0x08;
 const LIST_STATE: usize = 0x10;
@@ -255,6 +261,23 @@ pub unsafe extern "aapcs" fn transporter_list_next(task: *mut u8) {
             }
         }
         state.write(STATE_VIRTUAL_CONSOLE);
+    }
+}
+
+/// Whether the chosen game is a cartridge whose card is gone, asked as the
+/// original asks before each save of a DS game: never for a Virtual Console
+/// title or a save on the SD card.
+/// # Safety
+/// `manager` is the live manager, on the main thread, while no cartridge
+/// task runs.
+pub unsafe fn chosen_card_missing(manager: *mut u8) -> bool {
+    unsafe {
+        let version = manager.add(MANAGER_VERSION).cast::<u32>().read();
+        let title = manager.add(MANAGER_TITLE).cast::<u32>().read();
+        if version != 0 && title != 0 {
+            return false;
+        }
+        saves().card_missing(|| card_removed(manager))
     }
 }
 

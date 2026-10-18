@@ -86,9 +86,10 @@ $allowed = @{
     0x00242EF8 = 'bl:transporter_next'; 0x002445EC = 'bl:transporter_list_ready_stub'
     0x00244EAC = 'bl:transporter_list_indicator_stub'; 0x00244D40 = 'b:transporter_list_frame_stub'
     0x001E41C0 = 'bl:transporter_vc_mount_stub'; 0x0010621C = 0xE320F000
-    0x0019B50C = 'b:transporter_message_stub'
+    0x0019B50C = 'b:transporter_message_stub'; 0x0019B578 = 'bl:transporter_message_text'
     0x0024BAE8 = 'bl:transporter_version'
     0x00246F48 = 'b:transporter_check_stub'; 0x00248CDC = 'b:00248E44'
+    0x00248EBC = 0xE3A0100B; 0x00248F88 = 0x0AFFFFBA
     0x00245728 = 'b:00245800'; 0x002460B8 = 'b:002461D0'
     0x002488A0 = 0xE3A00001
     0x002458DC = 'bl:transporter_slot'
@@ -108,6 +109,7 @@ $allowed = @{
     0x0024BA44 = 'bl:transporter_title_begin_stub'; 0x0024BA74 = 'bl:transporter_title_end_stub'
     0x0024A150 = 'b:transporter_deliver_stub'
     0x0024A3C0 = 0xE3A0000E
+    0x0024A3D0 = 'b:0024A2A8'; 0x0024A4E8 = 0x0AFFFF6E
     0x0024F6B0 = 'bl:transporter_shiny_build_stub'; 0x0024F8E0 = 'bl:transporter_shiny_gender_stub'
 }
 
@@ -276,7 +278,7 @@ Assert-Check ((Hash $patched ($rx.address - $base) $payloadImageLength) -eq $man
 $placement = $manifest.placement
 Assert-Check ($placement.payload_file_offset -eq $rx.address - $base -and $placement.payload_rw_address -eq $rw.address -and $placement.payload_rw_bytes -eq $rw.memory_bytes -and $placement.bootstrap_address -eq $boot.address -and $placement.bootstrap_bytes -eq $boot.file_bytes) 'manifest placement'
 $entryNames = @($allowed.Values | Where-Object { $_ -is [string] } | ForEach-Object { $_.Split(':')[1] } | Where-Object { $_ -like 'transporter_*' } | Sort-Object -Unique)
-Assert-Check ($entryNames.Count -eq 27 -and $manifest.runtime_exports -eq $entryNames.Count -and @($manifest.exports.psobject.Properties).Count -eq $entryNames.Count) 'manifest entry count'
+Assert-Check ($entryNames.Count -eq 28 -and $manifest.runtime_exports -eq $entryNames.Count -and @($manifest.exports.psobject.Properties).Count -eq $entryNames.Count) 'manifest entry count'
 foreach ($name in $entryNames) {
     Assert-Check ($manifest.exports.$name -eq $symbols[$name].value) "manifest export $name"
 }

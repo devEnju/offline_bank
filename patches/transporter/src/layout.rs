@@ -45,6 +45,20 @@ pub const MESSAGE_OPEN_BANK: u32 = 3;
 /// Pokémon Bank before using Poké Transporter."
 pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 
+/// The original's message `0x0B`: "The server did not receive the data." and,
+/// on its second page, "Please confirm that your Game Card is properly
+/// inserted, and then try again." The transfer shows it when nothing was
+/// delivered (sub-state `0x11`), the Bank step when the card is gone before
+/// it saves its note.
+pub const MESSAGE_FAILURE: u32 = 0x0b;
+
+/// Whether the message `message` is shown without its first page. There is
+/// no server any more, so the failure message keeps only its advice to check
+/// the Game Card, the same in every language.
+pub fn from_second_page(message: u32) -> bool {
+    message == MESSAGE_FAILURE
+}
+
 /// The message that stops a session before it begins, for what Bank's
 /// journal says (`transport::check`). Opening Bank shows or solves each
 /// reason, so the message carries no numbers of its own.
@@ -76,6 +90,16 @@ mod tests {
         assert_eq!(TAGS_OFFSET, 0xAD604);
         assert_eq!(RECORDS_LEN, 6_960);
         assert_eq!(RECORDS_LEN + TRANSPORT_SLOTS, 6_990);
+    }
+
+    #[test]
+    fn only_the_failure_message_loses_its_first_page() {
+        assert!(from_second_page(MESSAGE_FAILURE));
+        // The refusals, the no-card message 0x22, and the closing message
+        // of a transfer are shown whole.
+        for message in [0, MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY, 0x0a, 0x22] {
+            assert!(!from_second_page(message), "{message:#x}");
+        }
     }
 
     #[test]

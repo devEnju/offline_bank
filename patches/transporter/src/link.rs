@@ -13,8 +13,8 @@ mod linked {
     use transporter_payload::gen5::transporter_slot_holds;
     use transporter_payload::hooks::{
         transporter_check, transporter_deliver, transporter_list_frame, transporter_list_indicator,
-        transporter_list_ready, transporter_list_started, transporter_message_waits,
-        transporter_next, transporter_version,
+        transporter_list_ready, transporter_list_started, transporter_message_text,
+        transporter_message_waits, transporter_next, transporter_version,
     };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
@@ -51,6 +51,10 @@ mod linked {
     #[link_section = ".transporter.link_roots"]
     static ENTRY_CARD_REMOVED: unsafe extern "aapcs" fn(*const u8) -> u32 =
         transporter_entry_card_removed;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static MESSAGE_TEXT: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) -> u32 =
+        transporter_message_text;
     #[used]
     #[link_section = ".transporter.link_roots"]
     static LANGUAGE_CHOSEN: extern "aapcs" fn(u32) = transporter_language_chosen;
