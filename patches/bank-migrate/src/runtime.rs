@@ -16,9 +16,10 @@ use bank_common::{
     fault::Fault,
     fs::{self, ExtdataStorage},
     numbers::VERSION,
-    task::{storage_activity, write_word, Ended, Notice, Task, FS_SESSION, TASK_SCAN},
+    program::Bank15,
+    task::{refuse_home, write_word, Ended, Notice, Task, FS_SESSION, TASK_SCAN},
     ui,
-    worker::{Bank15, WorkerError},
+    worker::WorkerError,
 };
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
@@ -139,7 +140,7 @@ impl Runtime {
             let submitted = unsafe { self.worker()?.submit(Convert { session }) };
             let id = submitted.map_err(WorkerError::numbers)?;
             // Files are being read and written until the reply.
-            storage_activity(true);
+            refuse_home(true);
             self.owner = task.raw() as usize;
             self.job = Some(id);
             return Ok(None);
@@ -179,9 +180,9 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
     let destination = navigation::destination(current, outcome, next);
     // Refuse HOME and sleep from the scan to the end of the conversion.
     if navigation::loads(destination) {
-        storage_activity(true);
+        refuse_home(true);
     } else if state.job.is_none() {
-        storage_activity(false);
+        refuse_home(false);
     }
     destination
 }
@@ -230,5 +231,5 @@ pub unsafe extern "aapcs" fn bank_version_shown(
     pane: u32,
     message: u32,
 ) {
-    unsafe { ui::version(context, group, pane, message, PACKAGE) }
+    unsafe { patch_common::ui::version::<Bank15>(context, group, pane, message, PACKAGE) }
 }

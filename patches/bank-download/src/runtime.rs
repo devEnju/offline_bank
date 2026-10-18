@@ -16,12 +16,13 @@ use bank_common::{
     fault::Fault,
     fs,
     native_bank::NativeBank,
+    program::Bank15,
     task::{
-        checked_pointer, read_word, storage_activity, write_word, Ended, Notice, Task, FS_SESSION,
+        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, FS_SESSION,
         TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN,
     },
     ui,
-    worker::{Bank15, WorkerError},
+    worker::WorkerError,
 };
 use core::mem::transmute;
 use offline_core::native_blob::BLOB_SIZE;
@@ -174,7 +175,7 @@ impl Runtime {
                 task.begin_busy();
                 write_word(task.raw(), 0x10, 1);
                 // Files are read until the reply.
-                storage_activity(true);
+                refuse_home(true);
                 state.panel = true;
                 Ok(Job::Look {
                     session: FS_SESSION.read(),
@@ -227,7 +228,7 @@ pub unsafe extern "aapcs" fn bank_download_next(manager: *mut u8, current: u32) 
     let destination = navigation::destination(current, native, state.stage);
     state.stage = navigation::next_stage(current, state.stage);
     if destination == navigation::SCAN {
-        storage_activity(true);
+        refuse_home(true);
     }
     destination
 }
@@ -408,5 +409,5 @@ pub unsafe extern "aapcs" fn bank_version_shown(
     pane: u32,
     message: u32,
 ) {
-    unsafe { ui::version(context, group, pane, message, PACKAGE) }
+    unsafe { patch_common::ui::version::<Bank15>(context, group, pane, message, PACKAGE) }
 }

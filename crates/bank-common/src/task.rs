@@ -34,15 +34,6 @@ pub const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
 /// `0025c3e8(task)` ends it.
 const BEGIN_BUSY: usize = 0x0025_c420;
 const END_BUSY: usize = 0x0025_c3e8;
-/// Bits of the activity mask: `001d4d90(bit)` sets one, `00229eb4(bit)`
-/// clears it.
-const MARK_ACTIVE: usize = 0x001d_4d90;
-const MARK_IDLE: usize = 0x0022_9eb4;
-/// Set by the original main loop (0010ba04) when HOME is pressed while the
-/// activity mask is zero, and nothing else is done for the press then
-/// (0010ba7c). The loop carries the press out once the current scene is
-/// ready, which can be several frames later, whatever the mask says by then.
-const HOME_ACCEPTED: *mut u8 = 0x0037_2989 as *mut u8;
 
 /// A pointer or object of the original that is not what a hook expects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,22 +153,10 @@ impl Ended {
     }
 }
 
-/// Sets or clears bit 1 of Bank's activity mask through the original
-/// functions. While the mask is not zero the original main loop refuses the
-/// HOME button and sleep, as it does during its own transfers.
-///
-/// The mask only refuses new HOME presses. One accepted just before it was
-/// set would still be carried out, so setting the mask also takes that press
-/// back: accepting it did nothing but set the one byte cleared here. From
-/// then on the original refuses every press itself, and the HOME Menu, and
-/// closing Bank from it, never meet a loading screen or a running job.
-pub fn storage_activity(active: bool) {
-    let address = if active { MARK_ACTIVE } else { MARK_IDLE };
-    let mark: unsafe extern "aapcs" fn(u32) = unsafe { transmute(address) };
-    unsafe { mark(1) };
-    if active {
-        unsafe { HOME_ACCEPTED.write_volatile(0) };
-    }
+/// Refuses HOME and sleep, or lets them through again
+/// (`patch_common::home`).
+pub fn refuse_home(refuse: bool) {
+    patch_common::home::refuse::<crate::program::Bank15>(refuse);
 }
 
 // The original's "show a message" function, 001d6650(ui, kind, message,
@@ -212,7 +191,7 @@ core::arch::global_asm!(
     waits = sym message_waits,
 );
 extern "aapcs" fn message_waits() {
-    storage_activity(false);
+    refuse_home(false);
 }
 unsafe extern "aapcs" {
     /// # Safety
@@ -270,7 +249,7 @@ impl Notice {
             // Nothing more is read or written: HOME works on the error
             // screen, and closing Bank from the HOME Menu ends the task
             // the original's way.
-            storage_activity(false);
+            refuse_home(false);
             task.end_busy();
             // Loading may still be animating; end its sound before the dialog.
             let _ = unsafe { crate::ui::stop_loading(ui) };

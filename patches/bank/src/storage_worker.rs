@@ -95,7 +95,8 @@ mod arm {
         bank_files::{self, BankFiles, ExtFiles},
         fault::Fault,
         fs::GameMainReader,
-        worker::{Bank15, WorkerError, WorkerErrorKind},
+        program::Bank15,
+        worker::{WorkerError, WorkerErrorKind},
     };
     use core::{cell::UnsafeCell, mem::transmute};
     use offline_core::{

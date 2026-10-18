@@ -51,7 +51,7 @@ mod linked {
     static LANGUAGE_BUTTONS: unsafe extern "aapcs" fn(*mut u8) = transporter_language_buttons;
     #[used]
     #[link_section = ".transporter.link_roots"]
-    static VERSION: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) = transporter_version;
+    static VERSION: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transporter_version;
 
     // Call-site adapters for the SD-save hooks: they pass the caller's task
     // pointer (r4) and keep what the replaced instruction did.

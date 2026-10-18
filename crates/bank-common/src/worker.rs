@@ -1,22 +1,9 @@
-//! Bank's side of the worker (`patch_common::worker`): the SDK functions of
-//! Bank 1.5 it uses, and what a failure of a job or of the worker is on
-//! Bank's error screen.
+//! Bank's side of the worker (`patch_common::worker`): what a failure of a
+//! job or of the worker is on Bank's error screen. Bank's SDK addresses are
+//! `program::Bank15`.
 
 use crate::fault::Fault;
-use patch_common::worker::{Control, ControlKind, Program};
-
-/// Bank 1.5's SDK: thread creation `002320d4`, which enters the thread
-/// through `001211e4` and initializes native TLS there, its delegate, and
-/// the event (`00235c6c(event, 0)` makes one, `00234a00` signals it,
-/// `00231e70` waits for it).
-pub struct Bank15;
-impl Program for Bank15 {
-    const CREATE_THREAD: usize = 0x0023_20d4;
-    const DELEGATE: [u32; 4] = [4, 0x0012_117c, 0x0012_1198, 0x0012_118c];
-    const EVENT_INIT: usize = 0x0023_5c6c;
-    const EVENT_SIGNAL: usize = 0x0023_4a00;
-    const EVENT_WAIT: usize = 0x0023_1e70;
-}
+use patch_common::worker::{Control, ControlKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerErrorKind {

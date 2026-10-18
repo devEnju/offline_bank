@@ -28,6 +28,7 @@ pub mod legacy_shiny;
 pub mod lytpatch;
 pub mod navigation;
 pub mod panel;
+pub mod program;
 pub mod sdsave;
 pub mod storage_worker;
 
@@ -39,3 +40,5 @@ pub mod cart;
 mod fs;
 #[cfg(target_arch = "arm")]
 pub mod hooks;
+#[cfg(target_arch = "arm")]
+mod ui;

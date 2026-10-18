@@ -16,8 +16,9 @@ use bank_common::{
     bank_files::Loaded,
     fault::Fault,
     native_bank::NativeBank,
+    program::Bank15,
     task::{
-        checked_pointer, read_word, storage_activity, write_word, Ended, Notice, Task, FS_SESSION,
+        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, FS_SESSION,
         LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
         TEXT,
     },
@@ -324,7 +325,7 @@ impl Runtime {
         let result = unsafe { self.worker()?.submit(job) };
         let id = result.map_err(|e| self.worker_error(e))?;
         // Files are being read or written until `complete`.
-        storage_activity(true);
+        refuse_home(true);
         self.owner = task.raw() as usize;
         self.step = step;
         self.job = Some(id);
@@ -616,7 +617,7 @@ impl Runtime {
         self.game = None;
         self.save_dex = None;
         task.end_busy();
-        storage_activity(false);
+        refuse_home(false);
         true
     }
     /// The welcome the original gives before it creates a Bank. Its own
@@ -636,7 +637,7 @@ impl Runtime {
                 Ok(false)
             }
             4 => {
-                storage_activity(true);
+                refuse_home(true);
                 unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::CREATING_MESSAGE) }
                     .map_err(|_| Fault::NativeObject)?;
                 task.begin_busy();
@@ -730,7 +731,7 @@ impl Runtime {
                 // it is shown, so HOME works.
                 self.step = Step::Introduce;
                 task.end_busy();
-                storage_activity(false);
+                refuse_home(false);
                 unsafe { bank_common::ui::welcome(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
                 unsafe {
                     task.raw().add(0x54).write(0);
@@ -913,7 +914,7 @@ impl Runtime {
                 unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
                 self.step = Step::Ended { saved: false };
                 task.end_busy();
-                storage_activity(false);
+                refuse_home(false);
                 unsafe { bank_common::ui::notice_rest(ui, bank_common::ui::FAILURE_NOTICE) }
                     .map_err(|_| Fault::NativeObject)?;
                 Ok(None)
@@ -987,7 +988,7 @@ impl Runtime {
                 // message, which waits. Nothing is read or written now.
                 self.step = Step::Ended { saved: true };
                 task.end_busy();
-                storage_activity(false);
+                refuse_home(false);
                 unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
                 Ok(None)
             }
@@ -1042,9 +1043,9 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         // Refuse HOME and sleep across a whole chain of loading tasks, not
         // only while one of their jobs runs.
         if crate::navigation::loads(destination) {
-            storage_activity(true);
+            refuse_home(true);
         } else if state.job.is_none() {
-            storage_activity(false);
+            refuse_home(false);
         }
         destination
     };
@@ -1404,7 +1405,7 @@ pub unsafe extern "aapcs" fn bank_version_shown(
     } else {
         b"-offline"
     };
-    unsafe { bank_common::ui::version(context, group, pane, message, SUFFIX) }
+    unsafe { patch_common::ui::version::<Bank15>(context, group, pane, message, SUFFIX) }
 }
 
 /// Test builds: stands in for the main menu's listener "an entry was

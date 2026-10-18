@@ -162,28 +162,10 @@ impl<T: Copy, R: Copy> Mailbox<T, R> {
     }
 }
 
-/// The SDK functions of one program that the worker uses, found by static
-/// disassembly of that program's exact image.
-pub trait Program: 'static {
-    /// The SDK's thread creation, `(thread, delegate, entry, &context,
-    /// stack_top, priority, processor, 0)`. It enters the thread through
-    /// the SDK trampoline, which initializes TLS and ends the thread with
-    /// `svcExitThread`.
-    const CREATE_THREAD: usize;
-    /// The delegate it is given: its size, then its functions that copy the
-    /// one context pointer onto the new stack, invoke `entry(context)`, and
-    /// destroy nothing.
-    const DELEGATE: [u32; 4];
-    /// The SDK's event: `init(event, 0)` makes one, `signal(event)` signals
-    /// it, `wait(event)` waits for it.
-    const EVENT_INIT: usize;
-    const EVENT_SIGNAL: usize;
-    const EVENT_WAIT: usize;
-}
-
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::*;
+    use crate::program::Program;
     use core::{marker::PhantomData, mem::transmute, sync::atomic::AtomicBool};
 
     const STACK_SIZE: usize = 0x8000;

@@ -5,20 +5,7 @@
 
 use crate::layout::RECORDS_LEN;
 use offline_core::sections::TRANSPORT_SLOTS;
-use patch_common::worker::{Control, Program};
-
-/// Poké Transporter 1.5's SDK, the same code as Bank's: thread creation
-/// `001E3F58`, which enters the thread through `0011F100` and initializes
-/// native TLS there, its delegate, and the event (`001E6404(event, 0)`
-/// makes one, `001E5220` signals it, `001E3CF4` waits for it).
-pub struct Transporter15;
-impl Program for Transporter15 {
-    const CREATE_THREAD: usize = 0x001e_3f58;
-    const DELEGATE: [u32; 4] = [4, 0x0011_f098, 0x0011_f0b4, 0x0011_f0a8];
-    const EVENT_INIT: usize = 0x001e_6404;
-    const EVENT_SIGNAL: usize = 0x001e_5220;
-    const EVENT_WAIT: usize = 0x001e_3cf4;
-}
+use patch_common::worker::Control;
 
 /// The staging buffer: the transport box's records, then its tags.
 pub const STAGING_LEN: usize = RECORDS_LEN + TRANSPORT_SLOTS;
@@ -158,7 +145,7 @@ mod arm {
     pub type DeliveryWorker = Worker<Files>;
 
     impl Service for Files {
-        type Program = Transporter15;
+        type Program = crate::program::Transporter15;
         type Job = Job;
         type Reply = Reply;
         type Error = Failed;

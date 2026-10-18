@@ -1,9 +1,10 @@
 #![no_std]
-//! What every patch for Bank 1.5 shares: Bank's files in
-//! its extdata and the order they are written in, Bank's side of the worker
-//! thread (`patch_common::worker`), and the original's task objects and
-//! dialogs. Nothing here changes what Bank does;
-//! a patch adds that (docs/internals.md, "Patches for Bank").
+//! What every patch for Bank 1.5 shares: Bank's files in its extdata and
+//! the order they are written in, Bank 1.5 as `patch-common` reaches it
+//! (`program::Bank15`), what a failure of the worker is on Bank's error
+//! screen, and the original's task objects and dialogs. Nothing here
+//! changes what Bank does; a patch adds that (docs/internals.md, "Patches
+//! for Bank").
 //!
 //! A patch writes Bank's files only through this crate, so every patch
 //! leaves files that every other one reads.
@@ -17,6 +18,7 @@ pub mod fault;
 pub mod fs;
 pub mod native_bank;
 pub mod numbers;
+pub mod program;
 #[cfg(feature = "test-build")]
 pub mod rehearsal;
 #[cfg(any(test, feature = "test-support"))]

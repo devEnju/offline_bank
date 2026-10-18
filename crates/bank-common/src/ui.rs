@@ -45,13 +45,6 @@ const STRING: usize = 0x001d_fd90;
 const VALUE_STRING: usize = 0x002b_67d8;
 const VALUE_NUMBER: usize = 0x001e_6c0c;
 const STRING_END: usize = 0x0022_97a4;
-/// A pane's text: `001e264c(layout, pane)` finds the pane, `0029a628(pane,
-/// string, -1)` sets its text.
-const FIND_PANE: usize = 0x001e_264c;
-const PANE_TEXT: usize = 0x0029_a628;
-/// `001e21c8(context, group, pane, message)`: a message with its values
-/// into a pane, as the start screen writes its version line.
-const PANE_MESSAGE: usize = 0x001e_21c8;
 /// `001e0ef8(ui, group, pane, message)`: a message into a button's pane, as
 /// the menus label their buttons.
 #[cfg(feature = "test-build")]
@@ -370,87 +363,6 @@ pub unsafe fn other_copy(
     }
 }
 
-/// The second of the context's two work strings (`[context + 4]`), which
-/// the original fills and hands to a pane (001e21c8, 001e0ef8): the string
-/// object, its text, and its room in units.
-unsafe fn work_string(context: *mut u8) -> Option<(*mut u8, *mut u16, usize)> {
-    unsafe {
-        let strings = pointer(word(context, 4)).ok()?;
-        let text = pointer(word(strings, 4)).ok()?;
-        let data = pointer(word(text, 4)).ok()?.cast::<u16>();
-        if text.add(0xc).read() == 0 {
-            return None;
-        }
-        Some((text, data, text.add(8).cast::<u16>().read() as usize))
-    }
-}
-
-/// Ends the work string at `len` and gives it to pane `pane` of the layout
-/// of `group`, with the original's two calls: 001e264c finds the pane,
-/// 0029a628 sets its text.
-unsafe fn hand_over(
-    context: *mut u8,
-    group: u32,
-    pane: u32,
-    (text, data, len): (*mut u8, *mut u16, usize),
-) {
-    unsafe {
-        data.add(len).write(0);
-        text.add(0xa).cast::<u16>().write(len as u16);
-        let Ok(layouts) = pointer(word(context, 0x1c)) else {
-            return;
-        };
-        let find: unsafe extern "aapcs" fn(u32, u32) -> *mut u8 = transmute(FIND_PANE);
-        let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, i32) = transmute(PANE_TEXT);
-        let found = find(word(layouts, group as usize * 8), pane);
-        if !found.is_null() {
-            set(found, text, -1);
-        }
-    }
-}
-
-/// Adds `suffix`, plain Latin letters, to the text the original has just
-/// put into the work string and into pane `pane` of the layout of `group`,
-/// and gives the pane the longer text. Without room for it the pane keeps
-/// the original's text.
-unsafe fn add_suffix(context: *mut u8, group: u32, pane: u32, suffix: &[u8]) {
-    unsafe {
-        let Some((text, data, room)) = work_string(context) else {
-            return;
-        };
-        let mut len = 0;
-        while len < room && data.add(len).read() != 0 {
-            len += 1;
-        }
-        if len == 0 || len + suffix.len() >= room {
-            return;
-        }
-        for (index, &unit) in suffix.iter().enumerate() {
-            data.add(len + index).write(u16::from(unit));
-        }
-        hand_over(context, group, pane, (text, data, len + suffix.len()));
-    }
-}
-
-/// Writes the start screen's version line with `suffix` behind it, "Ver.
-/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
-/// the one call of 001e21c8(context, group, pane, message) that the start
-/// screen makes for its message 0x4E (002b49c4).
-///
-/// That function loads the message into the first of the context's two
-/// work strings, fills in its values into the second, and hands the second
-/// to the pane. Here the original runs first, the suffix is added to the
-/// second string in place, and the pane is given it again.
-/// # Safety
-/// The arguments are those of the replaced call, on the main thread.
-pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
-    unsafe {
-        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(PANE_MESSAGE);
-        original(context, group, pane, message);
-        add_suffix(context, group, pane, suffix);
-    }
-}
-
 /// Test builds: labels a button with the original's `message` and `suffix`
 /// behind it. The original's 001e0ef8(ui, group, pane, message), as its
 /// menus label their buttons, loads the message into the second work string
@@ -467,6 +379,6 @@ pub unsafe fn button(ui: *mut u8, group: u32, pane: u32, message: u32, suffix: &
         };
         let label: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(BUTTON_MESSAGE);
         label(ui, group, pane, message);
-        add_suffix(context, group, pane, suffix);
+        patch_common::ui::add_suffix::<crate::program::Bank15>(context, group, pane, suffix);
     }
 }
