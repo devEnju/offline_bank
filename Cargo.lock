@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "bank-common"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "offline-core",
  "patch-common",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "bank-download-payload"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bank-common",
  "offline-core",
@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "bank-migrate-payload"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bank-common",
  "offline-core",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "bank-payload"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bank-common",
  "offline-core",
@@ -43,7 +43,7 @@ version = "1.0.0"
 
 [[package]]
 name = "patch-builder"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "offline-core",
  "transporter-payload",
@@ -51,11 +51,11 @@ dependencies = [
 
 [[package]]
 name = "patch-common"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "transporter-payload"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bank-common",
  "offline-core",
