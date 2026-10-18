@@ -6,20 +6,20 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 
 ## What changes
 
-| Step | Original Transporter | Patched |
-| --- | --- | --- |
-| Connect, disconnect | Nintendo's servers | Skipped; wireless can stay off |
-| Read the source game and convert the Pokémon | Transporter itself | Unchanged, apart from a small Easter egg in the Gen 1 Virtual Console games |
-| Legality check | Server | None. Whatever Transporter itself accepts is transferred (eggs, for example, are still refused). |
-| "Is Bank's transport box empty?" | Server, after a game was chosen | Reads Bank's record of its files (`/journal.bin`, `/journal.alt.bin` in Bank's extdata), as soon as START is pressed on the title screen and before any game is looked for |
-| Store the Pokémon in Bank | Server | Writes one delivery into the file of the transport box that Bank is not using (`/mover.bin` or `/mover.alt.bin`), then notes in Bank's record that it waits |
-| Remove the Pokémon from the source game | Transporter itself | Unchanged |
-| A transfer interrupted by a power failure | Sorted out with the server at the next session, with the same copy of the game: neither lost nor doubled | Nothing is left pending. The Pokémon are never lost; after a power cut between the two writes they can be in Bank and still in the game. |
-| Source of a Gen 5 game | Cartridge | Cartridge and saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)) |
-| Language screen | Switches the language of the screens as long as the app is open | Chooses which language's games are listed ([below](#choosing-the-language-of-the-games)); the screens stay in the console's language |
-| Notice that nicknames and OT names with prohibited words will be erased | Shown; the server erased them | Skipped. No name is ever changed offline. The other notices are unchanged. |
-| HOME and sleep | Refused from connecting until disconnecting | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the title screen, the game list, the notices, the question, and every message that waits for a button, the closing message of a transfer included. |
-| Screens and messages | | The originals; no new text |
+| Original Transporter | Patched |
+| --- | --- |
+| Connects to Nintendo's servers at the start and disconnects at the end. | No connection. Wireless can stay off. |
+| Reads the source game and converts the Pokémon itself. | Unchanged, apart from a small Easter egg in the Gen 1 Virtual Console games. |
+| Gen 5 Pokémon come from a cartridge. | From a cartridge or from saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)). |
+| The server checks the Pokémon's legality. | No check. Whatever Transporter itself accepts is transferred (eggs, for example, are still refused). |
+| After a game was chosen, asks the server whether Bank's transport box is empty. | Reads Bank's record of its files (`/journal.bin`, `/journal.alt.bin` in Bank's extdata) as soon as START is pressed on the title screen, before any game is looked for. |
+| The server stores the Pokémon in Bank. | Writes one delivery into the file of the transport box that Bank is not using (`/mover.bin` or `/mover.alt.bin`), then notes in Bank's record that it waits ([below](#transfers-and-refusals)). |
+| Removes the Pokémon from the source game. | Unchanged. |
+| A transfer interrupted by a power failure is sorted out with the server at the next session, with the same copy of the game: neither lost nor doubled. | Nothing is left pending. The Pokémon are never lost; after a power cut between the two writes they can be in Bank and still in the game ([below](#limits)). |
+| Screens and messages. | The originals; no new text. |
+| The language screen switches the language of the screens as long as the app is open. | It chooses which language's games are listed ([below](#choosing-the-language-of-the-games)). The screens stay in the console's language. |
+| Shows a notice that nicknames and OT names with prohibited words will be erased; the server erased them. | Not shown. No name is ever changed offline. The other notices are unchanged. |
+| HOME and sleep are refused from connecting until disconnecting. | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the title screen, the game list, the notices, the question, and every message that waits for a button, the closing message of a transfer included. |
 
 Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produce Gen 7 Pokémon, as with the original service.
 
@@ -96,7 +96,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 ## Install
 
 1. Install the [Bank patch](bank.md#install) and start Bank once, so that the transport box file exists.
-2. Back up the source game's save and Bank's extdata `0x00000C9B`.
+2. Close Transporter, Bank and all games. Back up the source game's save and Bank's extdata `0x00000C9B` together, as one dated set ([how](bank.md#backing-up-the-bank)).
 3. Make sure the installed Poké Transporter is version 1.5, the final update.
 4. Copy both files from the same release or build:
 
@@ -106,7 +106,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
    ```
 
    They only work as a pair.
-5. *Enable game patching* must be on in Luma's configuration.
+5. *Enable game patching* must be on in Luma's configuration, as for Bank: hold SELECT while powering on, switch it on, and save. Wireless can stay off.
 
 ## Troubleshooting
 
