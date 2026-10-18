@@ -1,5 +1,5 @@
 #![no_std]
-//! What every patch for Bank 1.5 shares: the start-up hook, Bank's files in
+//! What every patch for Bank 1.5 shares: Bank's files in
 //! its extdata and the order they are written in, Bank's side of the worker
 //! thread (`patch_common::worker`), and the original's task objects and
 //! dialogs. Nothing here changes what Bank does;
@@ -13,7 +13,6 @@
 //! The builder must verify the complete input before emitting any patch.
 
 pub mod bank_files;
-pub mod bootstrap;
 pub mod fault;
 pub mod fs;
 pub mod native_bank;

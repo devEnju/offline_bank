@@ -9,14 +9,13 @@ use crate::{
 
 const MAX_MEMORY: u32 = 0x00d05000; // keeps the eventual code image within IPS 16 MiB
 
-/// What the linked payload of one program must be. The linker script names
-/// its symbols and its start-up section after `prefix`: the start-up hook
-/// `{prefix}_bootstrap_startup` and `{prefix}_bootstrap_enable_rx` in
-/// `.{prefix}.bootstrap`, and the bounds `__{prefix}_payload_start`,
-/// `_rx_end`, `_rx_size`, `_end` and `__{prefix}_original_app_init`.
+/// What the linked payload of one program must be. Every patch links
+/// `patch-common`'s start-up hook, `patch_bootstrap_startup` and
+/// `patch_bootstrap_enable_rx` in `.patch.bootstrap`, and its linker script
+/// names the bounds `__patch_payload_start`, `_rx_end`, `_rx_size`, `_end`
+/// and `__patch_original_app_init`.
 #[derive(Debug)]
 pub struct Contract {
-    pub prefix: &'static str,
     pub code_base: u32,
     /// The start-up hook's place, in the zero bytes after the original text.
     pub bootstrap: u32,
@@ -160,16 +159,15 @@ pub fn inspect_payload_elf(
     elf: &[u8],
     entries: &[&str],
 ) -> Result<PayloadElf> {
-    let prefix = contract.prefix;
-    let startup = format!("{prefix}_bootstrap_startup");
-    let enable_rx = format!("{prefix}_bootstrap_enable_rx");
-    let bootstrap_section = format!(".{prefix}.bootstrap");
+    let startup = "patch_bootstrap_startup";
+    let enable_rx = "patch_bootstrap_enable_rx";
+    let bootstrap_section = ".patch.bootstrap";
     let layout = [
-        format!("__{prefix}_payload_start"),
-        format!("__{prefix}_payload_rx_end"),
-        format!("__{prefix}_payload_rx_size"),
-        format!("__{prefix}_payload_end"),
-        format!("__{prefix}_original_app_init"),
+        "__patch_payload_start",
+        "__patch_payload_rx_end",
+        "__patch_payload_rx_size",
+        "__patch_payload_end",
+        "__patch_original_app_init",
     ];
     if entries.is_empty() {
         return fail("a profile names at least one entry function");
@@ -461,9 +459,7 @@ pub fn inspect_payload_elf(
                 }
             }
         }
-        if layout.iter().any(|known| known == name)
-            && bounds.insert(name.to_owned(), value).is_some()
-        {
+        if layout.contains(&name) && bounds.insert(name.to_owned(), value).is_some() {
             return fail("duplicate ELF layout symbol");
         }
     }
@@ -480,8 +476,8 @@ pub fn inspect_payload_elf(
         .iter()
         .map(|name| Ok((name.to_string(), get_export(name)?)))
         .collect::<Result<Vec<_>>>()?;
-    let bootstrap_entry = get_export(&startup)?;
-    get_export(&enable_rx)?;
+    let bootstrap_entry = get_export(startup)?;
+    get_export(enable_rx)?;
     if entry != entries[0].1 || bootstrap_entry != contract.bootstrap {
         return fail("ELF entry/startup symbol differs from the reviewed entry contract");
     }
@@ -492,7 +488,7 @@ pub fn inspect_payload_elf(
         memory_end,
         contract.original_app_init,
     ]) {
-        if bounds.get(name) != Some(&expected) {
+        if bounds.get(*name) != Some(&expected) {
             return fail(format!("ELF layout symbol mismatch: {name}"));
         }
     }
@@ -699,7 +695,7 @@ mod tests {
         elf[0x2000..0x2004].copy_from_slice(&[1, 2, 3, 4]);
         let mut names = vec![0];
         for (index, name, kind, flags, address, offset, size, link, align, entry_size) in [
-            (1, ".bank.bootstrap", 1, 6, BOOTSTRAP, 0x910, 8, 0, 4, 0),
+            (1, ".patch.bootstrap", 1, 6, BOOTSTRAP, 0x910, 8, 0, 4, 0),
             (2, ".text", 1, 6, 0x3fb000, 0x1000, 0x1000, 0, 4, 0),
             (3, ".data", 1, 3, 0x3fc000, 0x2000, 4, 0, 4, 0),
             (4, ".bss", 8, 3, 0x3fc004, 0x2004, 0xffc, 0, 4, 0),
@@ -731,13 +727,13 @@ mod tests {
             ("bank_offline_save", 0x3fb008, 4, 0x12, 2),
             ("bank_offline_rewards", 0x3fb014, 4, 0x12, 2),
             ("bank_offline_timestamp", 0x3fb018, 4, 0x12, 2),
-            ("bank_bootstrap_startup", BOOTSTRAP, 4, 0x12, 1),
-            ("bank_bootstrap_enable_rx", BOOTSTRAP + 4, 4, 0x12, 1),
-            ("__bank_payload_start", 0x3fb000, 0, 0x10, 0xfff1),
-            ("__bank_payload_rx_end", 0x3fc000, 0, 0x10, 0xfff1),
-            ("__bank_payload_rx_size", 0x1000, 0, 0x10, 0xfff1),
-            ("__bank_payload_end", 0x3fd000, 0, 0x10, 0xfff1),
-            ("__bank_original_app_init", 0x10494c, 0, 0x10, 0xfff1),
+            ("patch_bootstrap_startup", BOOTSTRAP, 4, 0x12, 1),
+            ("patch_bootstrap_enable_rx", BOOTSTRAP + 4, 4, 0x12, 1),
+            ("__patch_payload_start", 0x3fb000, 0, 0x10, 0xfff1),
+            ("__patch_payload_rx_end", 0x3fc000, 0, 0x10, 0xfff1),
+            ("__patch_payload_rx_size", 0x1000, 0, 0x10, 0xfff1),
+            ("__patch_payload_end", 0x3fd000, 0, 0x10, 0xfff1),
+            ("__patch_original_app_init", 0x10494c, 0, 0x10, 0xfff1),
             ("patch_svc_close_handle", 0x3fb100, 12, 0x12, 2),
             ("patch_svc_wait_thread", 0x3fb120, 12, 0x12, 2),
             ("patch_svc_get_resource_limit", 0x3fb140, 24, 0x12, 2),

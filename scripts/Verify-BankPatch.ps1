@@ -145,8 +145,8 @@ try {
         $symbol=$symbols[$name]
         Assert-Check ($symbol.value -eq $manifest.exports.$name -and $symbol.value%4 -eq 0 -and $symbol.value -ge $rx.address -and $symbol.value+$symbol.size -le $rx.address+$rx.file_bytes -and $symbol.info -eq 0x12 -and $symbol.size -gt 0) ('ELF export '+$name)
     }
-    Assert-Check ($symbols.bank_bootstrap_startup.value -eq $boot.address -and (U32 $elf 24) -eq $symbols[$exportNames[0]].value) 'ELF entry points'
-    foreach($bound in @(@('__bank_payload_start',$rx.address),@('__bank_payload_rx_end',$rw.address),@('__bank_payload_rx_size',$rx.memory_bytes),@('__bank_payload_end',$imageEnd),@('__bank_original_app_init',0x10494c))) {
+    Assert-Check ($symbols.patch_bootstrap_startup.value -eq $boot.address -and (U32 $elf 24) -eq $symbols[$exportNames[0]].value) 'ELF entry points'
+    foreach($bound in @(@('__patch_payload_start',$rx.address),@('__patch_payload_rx_end',$rw.address),@('__patch_payload_rx_size',$rx.memory_bytes),@('__patch_payload_end',$imageEnd),@('__patch_original_app_init',0x10494c))) {
         Assert-Check ($symbols[$bound[0]].value -eq $bound[1]) ('ELF bound '+$bound[0])
     }
 
@@ -163,7 +163,7 @@ try {
     $router=$exportNames[0]
     $branches=@(
         @(0x29f338,0xe594002cL,0x29f4fc,$false),
-        @(0x1040a4,0xeb000228L,'bank_bootstrap_startup',$true),
+        @(0x1040a4,0xeb000228L,'patch_bootstrap_startup',$true),
         @(0x2a5a2c,0xebfffed3L,$router,$true),
         @(0x2b49c4,0xebfcb5ffL,'bank_version_shown',$true)
     )

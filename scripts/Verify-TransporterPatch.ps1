@@ -224,7 +224,7 @@ $layoutCheck = $symbols['transporter_layout_check'].value
 Assert-Check ($layoutCheck -ge $bootstrapStart -and $layoutCheck + 4 -le $bootstrapEnd -and ([int64](Get-Word $patched $layoutCheck)) -eq 0xE1A01000L) 'layout check lies in the start-up hook and begins with mov r1, r0'
 # The ELF's entry is the router entry; the start-up hook is the linked one.
 Assert-Check ((U32 $elf 24) -eq $symbols['transporter_next'].value) 'ELF entry is transporter_next'
-Assert-Check ($symbols['transporter_bootstrap_startup'].value -eq $bootstrapStart) 'start-up hook symbol'
+Assert-Check ($symbols['patch_bootstrap_startup'].value -eq $bootstrapStart) 'start-up hook symbol'
 
 # Original read-only data and data: unchanged.
 for ($index = $textPageEnd - $base; $index -lt $original.Length; $index++) {

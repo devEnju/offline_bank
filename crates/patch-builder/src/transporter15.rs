@@ -71,7 +71,6 @@ pub const PROFILE: Profile = Profile {
 
 /// The linked payload (`elf::Contract`).
 pub const CONTRACT: Contract = Contract {
-    prefix: "transporter",
     code_base: CODE_BASE,
     bootstrap: BOOTSTRAP_ADDRESS,
     bootstrap_end: BOOTSTRAP_LIMIT,

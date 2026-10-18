@@ -40,7 +40,6 @@ pub const INPUT_IDENTITY: InputIdentity = InputIdentity {
 
 /// The linked payload of every patch for Bank 1.5 (`elf::Contract`).
 pub const CONTRACT: crate::elf::Contract = crate::elf::Contract {
-    prefix: "bank",
     code_base: CODE_BASE,
     bootstrap: 0x0031_3910,
     bootstrap_end: 0x0031_4000,

@@ -31,7 +31,7 @@ mod linked {
     #[used]
     #[link_section = ".transporter.link_roots"]
     static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
-        transporter_payload::bootstrap::transporter_bootstrap_startup;
+        patch_common::bootstrap::patch_bootstrap_startup;
     #[used]
     #[link_section = ".transporter.link_roots"]
     static NEXT: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = transporter_next;
