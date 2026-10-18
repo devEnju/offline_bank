@@ -149,18 +149,21 @@ if ($Publish) {
 
 # 1. State of the repository.
 $commit = Invoke-Git rev-parse HEAD
+# The notes show the screens of the guides' steps as pictures/ has them on
+# main: the migration's result for each earlier way and the boxes after it,
+# and the download's start screen.
+$pictures = @()
 if ($Migrate) {
     foreach ($format in $bankFormats) {
         & git -C $projectRoot rev-parse --verify --quiet "refs/tags/$($format.From)" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "There is no released version $($format.From) to migrate from." }
     }
-    # The notes show the migration's result for each earlier way as
-    # pictures/ has it on main.
-    $pictures = @($bankFormats | ForEach-Object { "$($_.From)-migration-converted.png" }) + 'offline-boxes.png'
-    foreach ($picture in $pictures) {
-        if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "pictures/$picture") -PathType Leaf)) {
-            throw "The notes need pictures/$picture."
-        }
+    $pictures += @($bankFormats | ForEach-Object { "$($_.From)-migration-converted.png" }) + 'offline-boxes.png'
+}
+if ($Download) { $pictures += 'download-title.png' }
+foreach ($picture in $pictures) {
+    if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "pictures/$picture") -PathType Leaf)) {
+        throw "The notes need pictures/$picture."
     }
 }
 $branch = Invoke-Git branch --show-current
@@ -421,7 +424,7 @@ try {
             @{ Step = "Extract ``$migrationName.zip`` and copy its ``luma`` folder to the root of the SD card." }
             @{ Step = "Start Pokémon Bank. The start screen says `"Ver. 1.5$($migrationFacts.package)`"." }
             @{
-                Step    = "Press START. After preparation three lines appear: `"Press HOME to return to the HOME Menu`", the version your Bank is from with this one, as ``$($lastOfEach[-1])-$($Version.TrimStart('v'))``, and two numbers. The Bank itself does not open."
+                Step    = "Press START. After preparation three lines appear: `"Press HOME to return to the HOME Menu`", the last released version your Bank's save is from, and two numbers. The Bank itself does not open."
                 Picture = (@($lastOfEach | ForEach-Object { "![The console showing a Bank of $_ converted, with $($migrationFacts.converted)]($repository/blob/main/pictures/$_-migration-converted.png)" }) -join ' ')
             }
             @{
@@ -461,7 +464,10 @@ try {
             }
             @{ Step = 'Back up Bank''s extra data and your game saves with [Checkpoint](https://github.com/BernardoGiordano/Checkpoint); for Bank, press X there to switch to extdata.' }
             @{ Step = "Extract ``$downloadName.zip`` and copy its ``luma`` folder to the root of the SD card." }
-            @{ Step = "Start Pokémon Bank. The start screen says `"Ver. 1.5$($downloadFacts.package)`"." }
+            @{
+                Step    = "Start Pokémon Bank. The start screen says `"Ver. 1.5$($downloadFacts.package)`"."
+                Picture = "![The start screen saying Ver. 1.5$($downloadFacts.package)]($repository/blob/main/pictures/download-title.png)"
+            }
             @{ Step = "Press START. It connects as the original does; there is no menu and nothing to choose. After the loading screens three lines appear: `"Press HOME to return to the HOME Menu`", ``$Version$($downloadFacts.package)``, and two numbers. The Bank itself does not open." }
             @{
                 Step  = 'Look up the numbers:'
