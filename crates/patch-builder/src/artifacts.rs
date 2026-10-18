@@ -1,39 +1,38 @@
-//! Fresh-directory emission of a fully checked development artifact pair.
+//! Writes a checked package into a fresh directory: the paired `code.ips`
+//! and `exheader.bin`, `report.md`, and `manifest.json`, the same for every
+//! kind.
 //!
 //! The manifest is written last. A failed write leaves an incomplete directory
 //! for inspection; the builder never replaces or deletes existing output.
 
-use crate::{
-    bank15::{self, Profile},
-    elf::inspect_payload_elf,
-    hex, prepare_development_patch, sha256, Error, Result,
-};
+use crate::{hex, prepare_patch, sha256, Error, PreparedPatch, Profile, Result};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
-pub struct DevelopmentArtifacts {
+pub struct Artifacts {
     pub directory: PathBuf,
-    pub elf_sha256: [u8; 32],
     pub ips_sha256: [u8; 32],
     pub exheader_sha256: [u8; 32],
     pub expanded_code_sha256: [u8; 32],
-    pub expanded_code_size: usize,
 }
 
-/// Validates the full reviewed profile before writing anything. The parent of
-/// output must exist; output itself must not exist, including as a symlink.
-/// No console, save file, or SD-card deployment is accessed.
-pub fn build_development_patch(
+/// Checks everything (`prepare_patch`) before writing anything. The parent of
+/// `output` must exist; `output` itself must not, not even as a link. No
+/// console, save or SD card is touched.
+pub fn build(
     profile: &Profile,
     code: &[u8],
     exheader: &[u8],
     elf: &[u8],
     output: &Path,
-) -> Result<DevelopmentArtifacts> {
-    let prepared = prepare_development_patch(profile, code, exheader, elf)?;
-    let parsed = inspect_payload_elf(elf, profile.entries)?;
+) -> Result<Artifacts> {
+    let program = profile.program;
+    let PreparedPatch {
+        placement: prepared,
+        payload: parsed,
+    } = prepare_patch(profile, code, exheader, elf)?;
     let exports = parsed
         .entries
         .iter()
@@ -47,13 +46,12 @@ pub fn build_development_patch(
     let manifest = format!(
         concat!(
             "{{\n",
-            "  \"schema_version\": 1,\n",
-            "  \"profile\": \"bank15-title6272-remaster6\",\n",
+            "  \"schema_version\": 2,\n",
+            "  \"program\": \"{}\",\n",
             "  \"patch\": \"{}\",\n",
-            "  \"status\": \"development-console-validation-required\",\n",
-            "  \"title_id\": \"00040000000c9b00\",\n",
-            "  \"tmd_version\": 6272,\n",
-            "  \"remaster_version\": 6,\n",
+            "  \"title_id\": \"{:016x}\",\n",
+            "  \"tmd_version\": {},\n",
+            "  \"remaster_version\": {},\n",
             "  \"source_code_sha256\": \"{}\",\n",
             "  \"source_exheader_sha256\": \"{}\",\n",
             "  \"source_elf_sha256\": \"{}\",\n",
@@ -84,9 +82,13 @@ pub fn build_development_patch(
             "  \"hardware_tested_by_builder\": false\n",
             "}}\n"
         ),
+        program.name,
         profile.name,
-        hex(&bank15::CODE_SHA256),
-        hex(&bank15::EXHEADER_SHA256),
+        program.title_id,
+        program.tmd_version,
+        program.remaster_version,
+        hex(&program.identity.code_sha256),
+        hex(&program.identity.exheader_sha256),
         hex(&parsed.elf_sha256),
         hex(&prepared.payload_sha256()),
         hex(&expanded_hash),
@@ -110,31 +112,40 @@ pub fn build_development_patch(
     );
     let report = format!(
         concat!(
-            "# Pokemon Bank development patch: {}\n\n",
-            "This build passed the exact input fingerprints, original hook bytes, ",
-            "ARM ELF structure, and paired allocation checks. Runtime behavior and ",
-            "power-loss recovery still require testing on a 3DS.\n\n",
-            "- Title: 00040000000c9b00; TMD version 6272; remaster 6.\n",
-            "- ELF SHA-256: {}.\n",
-            "- IPS SHA-256: {}.\n",
-            "- Exheader SHA-256: {}.\n",
-            "- Expanded code SHA-256: {}; {} bytes.\n",
-            "- Payload address: 0x{:08x}; RX 0x{:x} bytes; total 0x{:x} bytes.\n",
-            "- {} runtime exports; {} native edit regions; the five earlier ",
-            "main-menu locations keep their original bytes.\n\n",
-            "code.ips and exheader.bin must be kept together. The manifest was ",
-            "written after both files and records their hashes. The build command ",
-            "does not deploy the files or access game saves.\n\n",
-            "The original CIA and game data are not included. See the project's ",
-            "docs/bank.md for the original/replacement comparison, the ",
-            "checklist, and the limits.\n"
+            "# {}: {}\n\n",
+            "This package passed the checks of its input files, of every edited ",
+            "word of the original, of the linked payload, and of the paired ",
+            "placement. How it behaves is shown only on a console.\n\n",
+            "Install both files, never one without the other:\n\n",
+            "```text\n",
+            "SD:/luma/titles/{:016X}/code.ips\n",
+            "SD:/luma/titles/{:016X}/exheader.bin\n",
+            "```\n\n",
+            "- Title {:016X}, TMD version {}, remaster {}.\n",
+            "- ELF SHA-256: `{}`\n",
+            "- code.ips SHA-256: `{}`\n",
+            "- exheader.bin SHA-256: `{}`\n",
+            "- Expanded code SHA-256: `{}`, {} bytes.\n",
+            "- Start-up hook: {} bytes at `{:08X}`.\n",
+            "- Payload at `{:08X}`: {} bytes of code, {} bytes in all.\n",
+            "- {} entry functions; {} edited regions of the original.\n\n",
+            "The manifest is written after both files and records their hashes. ",
+            "The original files are not included.\n"
         ),
+        program.label,
         profile.name,
+        program.title_id,
+        program.title_id,
+        program.title_id,
+        program.tmd_version,
+        program.remaster_version,
         hex(&parsed.elf_sha256),
         hex(&ips_hash),
         hex(&exheader_hash),
         hex(&expanded_hash),
         layout.expanded_code_size,
+        parsed.bootstrap_bytes().len(),
+        parsed.bootstrap_entry,
         layout.payload_address,
         layout.executable_size,
         layout.memory_size,
@@ -150,13 +161,11 @@ pub fn build_development_patch(
             ("manifest.json", manifest.as_bytes()),
         ],
     )?;
-    Ok(DevelopmentArtifacts {
+    Ok(Artifacts {
         directory: output.to_path_buf(),
-        elf_sha256: parsed.elf_sha256,
         ips_sha256: ips_hash,
         exheader_sha256: exheader_hash,
         expanded_code_sha256: expanded_hash,
-        expanded_code_size: layout.expanded_code_size,
     })
 }
 
@@ -235,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_is_last_and_failure_keeps_incomplete_output() {
+    fn the_writer_stops_at_a_failed_file_and_keeps_what_it_wrote() {
         let temp = Temp::new();
         let directory = temp.0.join("output");
         // Duplicate name deliberately simulates a collision after one write.
@@ -253,13 +262,13 @@ mod tests {
     }
 
     #[test]
-    fn successful_output_contains_exact_pair_and_completion_marker() {
+    fn the_writer_writes_every_file_it_is_given_with_its_bytes() {
         let temp = Temp::new();
         let directory = temp.0.join("output");
         let files: [(&str, &[u8]); 4] = [
             ("code.ips", b"PATCH"),
             ("exheader.bin", b"paired-header"),
-            ("report.md", b"development"),
+            ("report.md", b"report"),
             ("manifest.json", b"complete"),
         ];
         write_artifacts(&directory, &files).unwrap();
@@ -273,8 +282,9 @@ mod tests {
     fn rejected_inputs_create_no_output() {
         let temp = Temp::new();
         let directory = temp.0.join("output");
-        let profile = &bank15::offline::PROFILE;
-        assert!(build_development_patch(profile, &[], &[], &[], &directory).is_err());
-        assert!(!directory.exists());
+        for profile in crate::profile::PROFILES {
+            assert!(build(profile, &[], &[], &[], &directory).is_err());
+            assert!(!directory.exists());
+        }
     }
 }

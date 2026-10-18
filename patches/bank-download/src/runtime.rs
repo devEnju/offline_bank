@@ -8,38 +8,32 @@
 //! ends as cancelled, which the original answers by leaving without saving.
 
 use crate::{
-    download::{self, DONE, NO_BANK_ON_SERVER, PRESENT, REFUSED, WRITTEN},
+    download::{self, DONE, NO_BANK_ON_SERVER, PACKAGE, PRESENT, REFUSED, WRITTEN},
     navigation::{self, Stage},
 };
 use bank_common::{
     bank_files::{self, ExtFiles},
+    fault::Fault,
     fs,
     native_bank::NativeBank,
-    session,
+    program::Bank15,
     task::{
-        checked_pointer, read_word, storage_activity, write_word, Notice, Task, FS_SESSION,
+        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, FS_SESSION,
         TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN,
     },
     ui,
-    worker::{JobId, Service, Shared, Worker, WorkerError},
+    worker::WorkerError,
 };
-use core::{
-    cell::UnsafeCell,
-    mem::transmute,
-    sync::atomic::{AtomicBool, Ordering},
+use core::mem::transmute;
+use offline_core::native_blob::BLOB_SIZE;
+use patch_common::{
+    exclusive::Exclusive,
+    worker::{JobId, Service, Shared, Worker},
 };
-use offline_core::StoreError;
 
-/// First number when a hook itself could not go on: a native object was
-/// not what it expects, or the worker could not be used. The offline patch
-/// shows the same number for the same.
-const NATIVE_OBJECT: u32 = 2;
-/// First numbers of a failed job, as the offline patch has them: Bank's
-/// files could not be opened, a new Bank could not be written, a file is
-/// not one of this layout.
-const STORAGE_OPEN: u32 = 3;
-const STORAGE_INITIALIZE: u32 = 4;
-const STORAGE_INVALID: u32 = 5;
+/// The numbers when a hook itself could not go on: a native object was not
+/// what it expects.
+const NATIVE: [u32; 2] = [Fault::NativeObject as u32, 0];
 
 /// The original's update and busy poll of task 9 (the two slots this patch
 /// takes, `bank15::OPEN_TASK`).
@@ -68,10 +62,13 @@ enum Reply {
     Written,
 }
 struct Files;
-static SHARED: Shared<Files> = Shared::new();
+static SHARED: Shared<Files> = Shared::new([0; BLOB_SIZE]);
 impl Service for Files {
+    type Program = Bank15;
     type Job = Job;
     type Reply = Reply;
+    type Error = WorkerError;
+    type Staging = [u8; BLOB_SIZE];
     // The worker alone; this patch starts no other thread.
     const THREADS: i64 = 1;
     fn shared() -> &'static Shared<Self> {
@@ -84,48 +81,28 @@ impl Service for Files {
         let (Job::Look { session } | Job::Write { session }) = job;
         if session == 0 {
             // Bank's own FS session is not initialized yet.
-            return Err(WorkerError::operation(STORAGE_OPEN, 0x7800_0000));
+            return Err(Fault::StorageOpen.with(0x7800_0000));
         }
         let files = ExtFiles { session };
         match job {
             Job::Look { .. } => {
-                if !unsafe { fs::ExtdataStorage::archive_exists(session) }
-                    .map_err(|error| fs_error(error, STORAGE_OPEN))?
+                if !unsafe { fs::ExtdataStorage::<Bank15>::archive_exists(session) }
+                    .map_err(|error| Fault::StorageOpen.io(error))?
                 {
                     return Ok(Reply::Absent);
                 }
                 match download::present(files) {
                     Ok(true) => Ok(Reply::Present),
                     Ok(false) => Ok(Reply::Absent),
-                    Err(bank_files::Error::Io(error)) => Err(fs_error(error, STORAGE_OPEN)),
-                    Err(error) => Err(files_error(error, STORAGE_INVALID)),
+                    Err(bank_files::Error::Io(error)) => Err(Fault::StorageOpen.io(error)),
+                    Err(error) => Err(Fault::StorageInvalid.files(error)),
                 }
             }
             Job::Write { .. } => match download::write(files, staging) {
                 Ok(true) => Ok(Reply::Written),
                 Ok(false) => Ok(Reply::Present),
-                Err(error) => Err(files_error(error, STORAGE_INITIALIZE)),
+                Err(error) => Err(Fault::StorageCreate.files(error)),
             },
-        }
-    }
-    // Neither job is given up half way.
-    fn cancellable(_: &Job) -> bool {
-        false
-    }
-}
-fn fs_error(error: fs::Error, fault: u32) -> WorkerError {
-    WorkerError::operation(fault, error.diagnostic())
-}
-/// The second number as the offline patch gives it for the same failure.
-fn files_error(error: bank_files::Error<fs::Error>, fault: u32) -> WorkerError {
-    match error {
-        bank_files::Error::Io(error)
-        | bank_files::Error::Bank(session::Error::Storage(StoreError::Io(error))) => {
-            fs_error(error, fault)
-        }
-        bank_files::Error::Bank(_) => WorkerError::operation(fault, 0),
-        bank_files::Error::Side(file, problem) => {
-            WorkerError::operation(fault, 0x7a00_0000 | (file as u32) << 8 | problem as u32)
         }
     }
 }
@@ -142,47 +119,23 @@ struct Runtime {
     panel: bool,
     notice: Notice,
 }
-struct State(UnsafeCell<Runtime>);
-// SAFETY: only the main task thread acquires Guard. The worker has a
-// separate mailbox and never receives Runtime or any live UI reference.
-unsafe impl Sync for State {}
-static BUSY: AtomicBool = AtomicBool::new(false);
-static STATE: State = State(UnsafeCell::new(Runtime {
-    worker: None,
-    owner: 0,
-    job: None,
-    stage: Stage::Looking,
-    numbers: None,
-    panel: false,
-    notice: Notice::new(PACKAGE),
-}));
-struct Guard;
-impl Guard {
-    fn acquire() -> Option<Self> {
-        BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| Self)
-    }
-    fn state(&mut self) -> &mut Runtime {
-        // SAFETY: this guard is the only access path while BUSY is held.
-        unsafe { &mut *STATE.0.get() }
-    }
-}
-impl Drop for Guard {
-    fn drop(&mut self) {
-        BUSY.store(false, Ordering::Release);
-    }
-}
+// SAFETY: the original calls the hooks, the only ones to take it, on its
+// main thread, which owns the original's objects the state points to.
+static STATE: Exclusive<Runtime> = unsafe {
+    Exclusive::new(Runtime {
+        worker: None,
+        owner: 0,
+        job: None,
+        stage: Stage::Looking,
+        numbers: None,
+        panel: false,
+        notice: Notice::new(PACKAGE),
+    })
+};
 
-fn numbers(error: WorkerError) -> [u32; 2] {
-    [error.fault_code(), error.native_result()]
-}
 impl Runtime {
     fn worker(&mut self) -> Result<&mut Worker<Files>, [u32; 2]> {
-        if self.worker.is_none() {
-            self.worker = Some(unsafe { Worker::start() }.map_err(numbers)?);
-        }
-        self.worker.as_mut().ok_or([NATIVE_OBJECT, 0])
+        unsafe { Worker::get(&mut self.worker) }.map_err(WorkerError::numbers)
     }
     fn decide(&mut self, numbers: [u32; 2]) {
         self.numbers = Some(numbers);
@@ -195,47 +148,34 @@ impl Runtime {
         task: Task,
         begin: impl FnOnce(&mut Self) -> Result<Job, [u32; 2]>,
     ) -> Result<Option<Reply>, [u32; 2]> {
-        let Some(id) = self.job else {
+        if self.job.is_none() {
             let job = begin(self)?;
             let submitted = unsafe { self.worker()?.submit(job) };
-            self.job = Some(submitted.map_err(numbers)?);
+            self.job = Some(submitted.map_err(WorkerError::numbers)?);
             self.owner = task.raw() as usize;
             return Ok(None);
-        };
+        }
         if self.owner != task.raw() as usize {
-            return Err([NATIVE_OBJECT, 0]);
+            return Err(NATIVE);
         }
-        let polled = self.worker()?.poll(id);
-        match polled {
-            Ok(Some(reply)) => {
-                self.job = None;
-                Ok(Some(reply))
-            }
-            Ok(None) => Ok(None),
-            Err(error) => {
-                if self.worker()?.active() {
-                    // An uncertain poll never ends a running job. Keep
-                    // rendering and ask again.
-                    return Ok(None);
-                }
-                self.job = None;
-                Err(numbers(error))
-            }
-        }
+        let mut job = self.job;
+        let polled = self.worker()?.collect(&mut job);
+        self.job = job;
+        polled.map_err(WorkerError::numbers)
     }
     /// Task 3 before anything is contacted: the loading panel, and the
     /// worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
         unsafe {
             self.job(task, |state| {
-                let panel = task.ui().map_err(|_| [NATIVE_OBJECT, 0])?;
-                ui::loading(panel, ui::CREATING_MESSAGE).map_err(|_| [NATIVE_OBJECT, 0])?;
+                let panel = task.ui().map_err(|_| NATIVE)?;
+                ui::loading(panel, ui::CREATING_MESSAGE).map_err(|_| NATIVE)?;
                 // The task's +1c continuation is this patch's poller while
                 // it looks. No FS call occurs here.
                 task.begin_busy();
                 write_word(task.raw(), 0x10, 1);
                 // Files are read until the reply.
-                storage_activity(true);
+                refuse_home(true);
                 state.panel = true;
                 Ok(Job::Look {
                     session: FS_SESSION.read(),
@@ -251,16 +191,16 @@ impl Runtime {
             self.job(task, |state| {
                 // The native server load left this panel active. Only its text
                 // changes for local work; sound and animation keep running.
-                ui::loading_message(
-                    task.ui().map_err(|_| [NATIVE_OBJECT, 0])?,
-                    ui::CREATING_MESSAGE,
-                );
-                let object = task.bank_pointer().map_err(|_| [NATIVE_OBJECT, 0])?;
-                let bank = NativeBank::from_raw(object).map_err(|_| [NATIVE_OBJECT, 0])?;
-                let live = bank.snapshot().map_err(|_| [NATIVE_OBJECT, 0])?.as_bytes();
-                let staging = state.worker()?.staging_mut().map_err(numbers)?;
+                ui::loading_message(task.ui().map_err(|_| NATIVE)?, ui::CREATING_MESSAGE);
+                let object = task.bank_pointer().map_err(|_| NATIVE)?;
+                let bank = NativeBank::from_raw(object).map_err(|_| NATIVE)?;
+                let live = bank.snapshot().map_err(|_| NATIVE)?.as_bytes();
+                let staging = state
+                    .worker()?
+                    .staging_mut()
+                    .map_err(WorkerError::numbers)?;
                 if staging.len() != live.len() {
-                    return Err([NATIVE_OBJECT, 0]);
+                    return Err(NATIVE);
                 }
                 staging.copy_from_slice(live);
                 Ok(Job::Write {
@@ -279,17 +219,16 @@ impl Runtime {
 /// verified executable.
 #[no_mangle]
 pub unsafe extern "aapcs" fn bank_download_next(manager: *mut u8, current: u32) -> u32 {
-    let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
-        unsafe { transmute(0x002a_5580usize) };
-    let native = unsafe { original(manager, current) };
-    let Some(mut guard) = Guard::acquire() else {
-        return native;
+    let Some(mut state) = STATE.take() else {
+        return navigation::CLEANUP;
     };
-    let state = guard.state();
+    let Some(Ended { native, .. }) = (unsafe { Ended::route(manager, current) }) else {
+        return navigation::CLEANUP;
+    };
     let destination = navigation::destination(current, native, state.stage);
     state.stage = navigation::next_stage(current, state.stage);
     if destination == navigation::SCAN {
-        storage_activity(true);
+        refuse_home(true);
     }
     destination
 }
@@ -300,10 +239,9 @@ unsafe fn scan(raw: *mut u8, original: usize) -> u32 {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
         return 1;
     };
-    let Some(mut guard) = Guard::acquire() else {
+    let Some(mut state) = STATE.take() else {
         return 0;
     };
-    let state = guard.state();
     if state.numbers.is_none() && state.stage == Stage::Looking {
         match unsafe { state.look(task) } {
             Ok(None) => return 0,
@@ -334,8 +272,9 @@ unsafe fn scan(raw: *mut u8, original: usize) -> u32 {
     }
     let native_state = unsafe { read_word(raw, 0x10) };
     unsafe { write_word(raw, 0x10, navigation::preparation_state(native_state)) };
-    // The native busy poll can call the hooked update; release the guard first.
-    drop(guard);
+    // The native busy poll can call the hooked update; release the state
+    // first.
+    drop(state);
     let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(original) };
     unsafe { original(raw) }
 }
@@ -363,10 +302,9 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_OPEN]) }) else {
         return unsafe { original(raw) };
     };
-    let Some(mut guard) = Guard::acquire() else {
+    let Some(mut state) = STATE.take() else {
         return unsafe { original(raw) };
     };
-    let state = guard.state();
     if let Some([first, second]) = state.numbers {
         if !state.panel {
             // A task 9 that begins with the result, after cleanup: it is
@@ -404,7 +342,7 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
             return task.finish(false);
         }
     }
-    drop(guard);
+    drop(state);
     unsafe { original(raw) }
 }
 
@@ -445,10 +383,9 @@ pub unsafe extern "aapcs" fn bank_download_save(raw: *mut u8) -> u32 {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_REWARD_GUARD]) }) else {
         return cancel(raw);
     };
-    let Some(mut guard) = Guard::acquire() else {
-        return cancel(raw);
+    let Some(mut state) = STATE.take() else {
+        return 0;
     };
-    let state = guard.state();
     if state.numbers.is_none() {
         match unsafe { state.write(task) } {
             Ok(None) => return 0,
@@ -461,10 +398,6 @@ pub unsafe extern "aapcs" fn bank_download_save(raw: *mut u8) -> u32 {
     cancel(raw)
 }
 
-/// The patch's name: behind "Ver. 1.5" on the start screen, and behind the
-/// version on the result screen.
-const PACKAGE: &[u8] = b"-download";
-
 /// Replaces the start screen's call that writes its version line
 /// (002b49c4): the line says which patch runs.
 /// # Safety
@@ -476,5 +409,5 @@ pub unsafe extern "aapcs" fn bank_version_shown(
     pane: u32,
     message: u32,
 ) {
-    unsafe { ui::version(context, group, pane, message, PACKAGE) }
+    unsafe { patch_common::ui::version::<Bank15>(context, group, pane, message, PACKAGE) }
 }

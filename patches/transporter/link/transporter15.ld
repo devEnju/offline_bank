@@ -5,7 +5,7 @@
      data (which ends at 0x003638A4), allocated by the paired exheader. */
 OUTPUT_FORMAT(elf32-littlearm)
 OUTPUT_ARCH(arm)
-ENTRY(transporter_entry)
+ENTRY(transporter_next)
 
 PHDRS {
     bootstrap PT_LOAD FLAGS(5);
@@ -13,21 +13,26 @@ PHDRS {
     payload_rw PT_LOAD FLAGS(6);
 }
 
-__transporter_original_app_init = 0x00104644;
+__patch_original_app_init = 0x00104644;
 
 SECTIONS {
     . = 0x0028D1AC;
-    .transporter.bootstrap : {
-        KEEP(*(.transporter.bootstrap))
+    .patch.bootstrap : {
+        KEEP(*(.patch.bootstrap))
+        KEEP(*(.patch.bootstrap.*))
     } :bootstrap
-    ASSERT(SIZEOF(.transporter.bootstrap) > 0, "missing bootstrap")
-    ASSERT(SIZEOF(.transporter.bootstrap) <= 0xE54, "bootstrap exceeds the unused bytes of the code section")
+    ASSERT(SIZEOF(.patch.bootstrap) > 0, "missing bootstrap")
+    ASSERT(SIZEOF(.patch.bootstrap) <= 0xE54, "bootstrap exceeds the unused bytes of the code section")
 
     . = 0x00364000;
-    __transporter_payload_start = .;
+    __patch_payload_start = .;
     .text : {
         FILL(0)
-        KEEP(*(.transporter.entry))
+        KEEP(*(.text.transporter_next))
+        KEEP(*(.text.transporter_cart_stubs))
+        KEEP(*(.text.transporter_language_stubs))
+        KEEP(*(.text.transporter_stubs))
+        KEEP(*(.text.transporter_shiny_stubs))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } :payload_rx
@@ -37,8 +42,8 @@ SECTIONS {
         FILL(0)
         . = ALIGN(0x1000);
     } :payload_rx
-    __transporter_payload_rx_end = .;
-    __transporter_payload_rx_size = __transporter_payload_rx_end - __transporter_payload_start;
+    __patch_payload_rx_end = .;
+    __patch_payload_rx_size = __patch_payload_rx_end - __patch_payload_start;
 
     .data : {
         KEEP(*(.transporter.link_roots))
@@ -50,10 +55,10 @@ SECTIONS {
         *(COMMON)
         . = ALIGN(0x1000);
     } :payload_rw
-    __transporter_payload_end = .;
+    __patch_payload_end = .;
 
-    ASSERT(__transporter_payload_rx_size > 0, "empty executable payload")
-    ASSERT((__transporter_payload_rx_end & 0xfff) == 0, "unaligned RX/RW boundary")
-    ASSERT(__transporter_payload_end < 0x08000000, "payload reaches application heap")
+    ASSERT(__patch_payload_rx_size > 0, "empty executable payload")
+    ASSERT((__patch_payload_rx_end & 0xfff) == 0, "unaligned RX/RW boundary")
+    ASSERT(__patch_payload_end < 0x08000000, "payload reaches application heap")
     /DISCARD/ : { *(.comment .note .note.* .eh_frame .eh_frame_hdr) }
 }

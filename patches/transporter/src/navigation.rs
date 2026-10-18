@@ -4,8 +4,9 @@
 //! Steps of the task factory (`0019CEE4`): 2 title screen, 7 game search,
 //! 8 game list, 9 reading the chosen game, 0xb the original's Bank step,
 //! 0xc the question, 6 the transfer, 0x10 disconnect, which leads back to
-//! the title screen. 3 is the original's connect step; with 4, 5, 0xa, 0xd
-//! and 0xe it belongs to the server and is never a destination.
+//! the title screen. 3 is the original's connect step; with 4, 5, 0xa, 0xd,
+//! 0xe and 0xf it belongs to the server and is never a destination. Neither
+//! is 0x12, the failure step.
 
 pub const TITLE: u32 = 2;
 pub const CONNECT: u32 = 3;
@@ -16,15 +17,30 @@ pub const READ: u32 = 9;
 pub const BANK_STEP: u32 = 0xb;
 pub const QUESTION: u32 = 0xc;
 pub const DISCONNECT: u32 = 0x10;
+/// The server step that cancels a transfer that was begun (`00248360`),
+/// after the Bank step or the question ended without one (outcome `0x10`):
+/// it asks the server and keeps its panel ("Datenübertragung über den
+/// Server…") up for at least 1.5 s. Offline nothing was begun; nothing is
+/// read or written there.
+pub const CANCEL: u32 = 0xf;
+/// The failure step (`002444BC`), after the Bank step or the transfer ended
+/// with outcome `0xF`: it shows the original's message `0x0B`. Offline each
+/// of those steps has shown its own message before that outcome, the
+/// failure message or the one that no Game Card is detected, so this one
+/// would be a second.
+pub const FAILURE: u32 = 0x12;
 
 /// `outcome` is the finished step's byte `+0x30`; `native` is what the
 /// original router answered for it; `cancelled` is the manager's flag
 /// (`+0x1a`), for which the original answers the disconnect step itself.
 ///
-/// The offline flow differs from the original's in two places: a game
+/// The offline flow differs from the original's in four places: a game
 /// chosen on the list is read at once, where the original connected first;
-/// and the Bank step follows the reading, where the original's server steps
-/// came in between.
+/// the Bank step follows the reading, where the original's server steps
+/// came in between; a session that ends without a transfer goes straight to
+/// the disconnect step, where the original cancelled it on the server
+/// first; and so does a step that failed, which has shown its message,
+/// where the original's failure step showed another.
 pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u32 {
     if cancelled {
         return native;
@@ -32,6 +48,7 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
     match (current, outcome) {
         (LIST, 4) => READ,
         (READ, _) => BANK_STEP,
+        _ if native == CANCEL || native == FAILURE => DISCONNECT,
         _ => native,
     }
 }
@@ -67,19 +84,19 @@ mod tests {
             (CONNECT, 3) => 5,
             (CONNECT, 0xe) => 4,
             (5, 3) => READ,
-            (TRANSFER, 0xf) => 0x12,
+            (TRANSFER, 0xf) => FAILURE,
             (SEARCH, 3) => LIST,
             (LIST, 4) => CONNECT,
             (READ, 3) => 0xa,
             (0xa, 8) => 0xe,
             (0xa, 9) => 0xd,
             (BANK_STEP, 4) => QUESTION,
-            (BANK_STEP, 0xf) => 0x12,
+            (BANK_STEP, 0xf) => FAILURE,
             (BANK_STEP, 0x10) => 0xf,
             (QUESTION, 4) => TRANSFER,
             (QUESTION, 0x10) => 0xf,
             (0xd, 3) => BANK_STEP,
-            (0xd, 0xf) => 0x12,
+            (0xd, 0xf) => FAILURE,
             (0xe, 3) => 0xd,
             (DISCONNECT | 0x11, _) => TITLE,
             (0x13.., _) => EXIT,
@@ -87,12 +104,14 @@ mod tests {
         }
     }
 
-    /// The routing of the patch so far, which edited two instructions
-    /// inside the router: `00242D10` and `00242D28`.
+    /// The routing the two edits inside the router gave (`00242D10`,
+    /// `00242D28`), and the cancel and failure steps left out.
     fn edited_inside(current: u32, outcome: u8) -> u32 {
         match (current, outcome) {
             (LIST, 4) => READ,
             (READ, _) => BANK_STEP,
+            (BANK_STEP | QUESTION, 0x10) => DISCONNECT,
+            (TRANSFER | BANK_STEP | 0xd, 0xf) => DISCONNECT,
             _ => original(current, outcome),
         }
     }
@@ -128,12 +147,11 @@ mod tests {
         for current in 0..=0x14 {
             for outcome in 0..=u8::MAX {
                 let next = destination(current, outcome, original(current, outcome), false);
-                // The server's own steps are only ever left, never entered.
-                if ![CONNECT, 4, 5, 0xa, 0xd, 0xe].contains(&current) {
-                    assert!(
-                        ![CONNECT, 4, 5, 0xa, 0xd, 0xe].contains(&next),
-                        "{current:#x} {outcome:#x}"
-                    );
+                // The server's own steps and the failure step are only ever
+                // left, never entered.
+                let never = [CONNECT, 4, 5, 0xa, 0xd, 0xe, CANCEL, FAILURE];
+                if !never.contains(&current) {
+                    assert!(!never.contains(&next), "{current:#x} {outcome:#x}");
                 }
             }
         }
@@ -155,15 +173,20 @@ mod tests {
         assert!(loads(destination(QUESTION, 4, TRANSFER, false)));
         // Every way back to the title screen ends the refusal: no game
         // found after START, Back on the list, a refusal of the original,
-        // "No" at the question, and the end of a transfer.
+        // "No" at the question, nothing to move, a Bank step or a transfer
+        // that failed, and the end of a transfer.
         for (current, outcome) in [
             (SEARCH, 2),
             (LIST, 5),
             (LIST, 0x11),
             (BANK_STEP, 5),
+            (BANK_STEP, 0xf),
+            (BANK_STEP, 0x10),
             (QUESTION, 3),
+            (QUESTION, 0x10),
             (TRANSFER, 2),
             (TRANSFER, 3),
+            (TRANSFER, 0xf),
         ] {
             let next = destination(current, outcome, original(current, outcome), false);
             assert_eq!(next, DISCONNECT, "{current:#x} {outcome:#x}");

@@ -1,13 +1,28 @@
 use crate::crc32;
 
-pub const SCHEMA_VERSION: u8 = 1;
+/// The journal version, in byte 3 of every record: the major number of this
+/// crate's version in its `Cargo.toml`, the version of the stored files.
+pub const SCHEMA_VERSION: u8 = major(env!("CARGO_PKG_VERSION_MAJOR"));
+const fn major(digits: &str) -> u8 {
+    let digits = digits.as_bytes();
+    assert!(!digits.is_empty());
+    let mut value: u32 = 0;
+    let mut at = 0;
+    while at < digits.len() {
+        assert!(digits[at].is_ascii_digit());
+        value = value * 10 + (digits[at] - b'0') as u32;
+        assert!(value <= u8::MAX as u32);
+        at += 1;
+    }
+    value as u8
+}
 pub const METADATA_SIZE: usize = 140;
 const METADATA_MAGIC: &[u8; 3] = b"BKJ";
 /// Most Pokémon the transport box holds.
 const MOST_HELD: u8 = 30;
 /// The games a save can be with, in the order of their number in the record
 /// (1 to 8): X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon.
-const TITLES: [u64; 8] = [
+pub const GAME_TITLES: [u64; 8] = [
     0x0004_0000_0005_5d00,
     0x0004_0000_0005_5e00,
     0x0004_0000_0011_c400,
@@ -235,7 +250,7 @@ impl Metadata {
             }
             Phase::Clean(current)
         } else {
-            let title_id = *TITLES
+            let title_id = *GAME_TITLES
                 .get(usize::from(bytes[8] >> 4).wrapping_sub(1))
                 .ok_or(FormatError::InvalidGameIdentity)?;
             Phase::Prepared(PendingTransfer {
@@ -260,7 +275,7 @@ impl Metadata {
 
 /// The number of a game in the record, 1 to 8.
 fn game_number(title_id: u64) -> Result<u8, FormatError> {
-    TITLES
+    GAME_TITLES
         .iter()
         .position(|title| *title == title_id)
         .map(|index| index as u8 + 1)
@@ -320,47 +335,25 @@ fn validate(phase: &Phase, delivery: Option<u32>) -> Result<(), FormatError> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GameObservation {
-    Missing,
-    Present {
-        game: GameIdentity,
-        fingerprint: Fingerprint,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecoveryBlock {
-    MissingGame,
-    DifferentGame,
-    ModifiedGame,
-}
-
+/// Which save of a save in progress becomes current.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecoveryDecision {
     KeepBefore,
     CommitAfter,
-    Blocked(RecoveryBlock),
 }
 
-/// Decides from evidence only; never edits storage or the game.
-pub fn decide_recovery(pending: &PendingTransfer, observed: GameObservation) -> RecoveryDecision {
-    match observed {
-        GameObservation::Missing => RecoveryDecision::Blocked(RecoveryBlock::MissingGame),
-        GameObservation::Present { game, .. } if game != pending.game => {
-            RecoveryDecision::Blocked(RecoveryBlock::DifferentGame)
-        }
-        GameObservation::Present { fingerprint, .. }
-            if fingerprint == pending.before_fingerprint =>
-        {
-            RecoveryDecision::KeepBefore
-        }
-        GameObservation::Present { fingerprint, .. }
-            if fingerprint == pending.after_fingerprint =>
-        {
-            RecoveryDecision::CommitAfter
-        }
-        GameObservation::Present { .. } => RecoveryDecision::Blocked(RecoveryBlock::ModifiedGame),
+/// The save whose image the game's save is, by its fingerprint; `None` for
+/// neither image. Never edits storage or the game.
+pub fn decide_recovery(
+    pending: &PendingTransfer,
+    fingerprint: Fingerprint,
+) -> Option<RecoveryDecision> {
+    if fingerprint == pending.before_fingerprint {
+        Some(RecoveryDecision::KeepBefore)
+    } else if fingerprint == pending.after_fingerprint {
+        Some(RecoveryDecision::CommitAfter)
+    } else {
+        None
     }
 }
 

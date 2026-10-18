@@ -1,4 +1,4 @@
-//! Frozen: the previous release's `sidecar.rs`. Only the migration reads it.
+//! Frozen: v0.4.0's `sidecar.rs`. Only the migration reads it.
 //! Two-slot side files that follow the Bank journal without one of their own.
 //!
 //! The Bank file is the single source of truth. A side file holds two slots;

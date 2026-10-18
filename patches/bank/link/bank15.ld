@@ -9,18 +9,19 @@ PHDRS {
     payload_rw PT_LOAD FLAGS(6);
 }
 
-__bank_original_app_init = 0x0010494c;
+__patch_original_app_init = 0x0010494c;
 
 SECTIONS {
     . = 0x00313910;
-    .bank.bootstrap : {
-        KEEP(*(.bank.bootstrap))
+    .patch.bootstrap : {
+        KEEP(*(.patch.bootstrap))
+        KEEP(*(.patch.bootstrap.*))
     } :bootstrap
-    ASSERT(SIZEOF(.bank.bootstrap) > 0, "missing bootstrap")
-    ASSERT(SIZEOF(.bank.bootstrap) <= 0x6f0, "bootstrap exceeds reviewed text padding")
+    ASSERT(SIZEOF(.patch.bootstrap) > 0, "missing bootstrap")
+    ASSERT(SIZEOF(.patch.bootstrap) <= 0x6f0, "bootstrap exceeds reviewed text padding")
 
     . = 0x003fb000;
-    __bank_payload_start = .;
+    __patch_payload_start = .;
     .text : {
         FILL(0)
         KEEP(*(.text.bank_offline_next))
@@ -37,8 +38,8 @@ SECTIONS {
         FILL(0)
         . = ALIGN(0x1000);
     } :payload_rx
-    __bank_payload_rx_end = .;
-    __bank_payload_rx_size = __bank_payload_rx_end - __bank_payload_start;
+    __patch_payload_rx_end = .;
+    __patch_payload_rx_size = __patch_payload_rx_end - __patch_payload_start;
 
     .data : {
         KEEP(*(.bank.link_roots))
@@ -50,10 +51,10 @@ SECTIONS {
         *(COMMON)
         . = ALIGN(0x1000);
     } :payload_rw
-    __bank_payload_end = .;
+    __patch_payload_end = .;
 
-    ASSERT(__bank_payload_rx_size > 0, "empty executable payload")
-    ASSERT((__bank_payload_rx_end & 0xfff) == 0, "unaligned RX/RW boundary")
-    ASSERT(__bank_payload_end < 0x08000000, "payload reaches application heap")
+    ASSERT(__patch_payload_rx_size > 0, "empty executable payload")
+    ASSERT((__patch_payload_rx_end & 0xfff) == 0, "unaligned RX/RW boundary")
+    ASSERT(__patch_payload_end < 0x08000000, "payload reaches application heap")
     /DISCARD/ : { *(.comment .note .note.* .eh_frame .eh_frame_hdr) }
 }

@@ -1,8 +1,10 @@
 #![no_std]
-//! What every patch for Bank 1.5 shares: the start-up hook, Bank's files in
-//! its extdata and the order they are written in, the worker thread, and the
-//! original's task objects and dialogs. Nothing here changes what Bank does;
-//! a patch adds that (docs/internals.md, "Patches for Bank").
+//! What every patch for Bank 1.5 shares: Bank's files in its extdata and
+//! the order they are written in, Bank 1.5 as `patch-common` reaches it
+//! (`program::Bank15`), what a failure of the worker is on Bank's error
+//! screen, and the original's task objects and dialogs. Nothing here
+//! changes what Bank does; a patch adds that (docs/internals.md, "Patches
+//! for Bank").
 //!
 //! A patch writes Bank's files only through this crate, so every patch
 //! leaves files that every other one reads.
@@ -12,12 +14,15 @@
 //! The builder must verify the complete input before emitting any patch.
 
 pub mod bank_files;
-pub mod bootstrap;
+pub mod fault;
 pub mod fs;
 pub mod native_bank;
 pub mod numbers;
+pub mod program;
 #[cfg(feature = "test-build")]
 pub mod rehearsal;
+#[cfg(any(test, feature = "test-support"))]
+pub mod router;
 pub mod session;
 #[cfg(target_arch = "arm")]
 pub mod task;
@@ -26,6 +31,3 @@ pub mod testing;
 #[cfg(target_arch = "arm")]
 pub mod ui;
 pub mod worker;
-
-#[cfg(any(test, target_arch = "arm"))]
-mod kernel;

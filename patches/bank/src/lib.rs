@@ -10,6 +10,8 @@ pub mod local_clock;
 pub mod navigation;
 
 pub mod native_game;
+pub mod open_files;
+pub mod panel;
 
 #[cfg(target_arch = "arm")]
 pub mod runtime;

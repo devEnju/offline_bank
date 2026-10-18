@@ -11,6 +11,7 @@ use crate::{elf::PayloadElf, CheckedEdit};
 
 pub const PROFILE: Profile = Profile {
     name: "download",
+    program: &super::BANK,
     entries: &[
         "bank_download_next",
         "bank_download_scan",
@@ -90,7 +91,7 @@ fn hook_edits(targets: Targets) -> crate::Result<Vec<CheckedEdit>> {
 #[cfg(test)]
 mod tests {
     use super::super::{
-        offline, CODE_BASE, LANGUAGE_EDITS, RETIRED_MENU_EDITS, SCAN_FIRST_START_EDITS,
+        offline, CODE_BASE, LANGUAGE_EDITS, MENU_LOCATIONS, SCAN_FIRST_START_EDITS,
     };
     use super::*;
 
@@ -144,7 +145,7 @@ mod tests {
         ] {
             assert!(at(address).is_none(), "{address:#x}");
         }
-        for (address, _) in RETIRED_MENU_EDITS {
+        for (address, _) in MENU_LOCATIONS {
             assert!(at(address).is_none());
         }
         assert!(PROFILE.menu_edits.is_empty());
@@ -168,8 +169,9 @@ mod tests {
                 None => own += 1,
             }
         }
-        // Its two scan-task hooks run before game detection.
-        assert_eq!(own, 2);
+        // Its scan task's busy poll; the scan's update, which it replaces
+        // before game detection, the offline patch replaces too.
+        assert_eq!(own, 1);
         // Its own entry functions are its own; the one for the version line
         // has the same name in every patch.
         assert!(PROFILE

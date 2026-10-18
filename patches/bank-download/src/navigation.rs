@@ -89,48 +89,8 @@ pub const fn preparation_state(state: u32) -> u32 {
 mod tests {
     extern crate std;
     use super::*;
+    use bank_common::router::next as original;
     use std::vec::Vec;
-
-    /// The original router, as far as this patch's session reaches
-    /// (002a5624..002a5934). `home` is the manager's flag `+0x1c`, set when
-    /// the scan found no game and the user chose to move to Pokémon HOME.
-    fn original(current: u32, outcome: u8, home: bool) -> u32 {
-        match (current, outcome) {
-            (2, 3) => 0x18,
-            (2, 4) => 3,
-            (3, 3) => CLEANUP,
-            (3, 4 | 0x17) => 5,
-            (5, 4) => 8,
-            (5, 0x12) => 6,
-            (8, 4) => 0xf,
-            (0xf, 4) => 9,
-            (9, 4) if home => 0x1c,
-            (9, 4) => 4,
-            (4, 0xc) => 0xa,
-            (4, 0xd) => 0xe,
-            (4, 0x17) => 0x1c,
-            (0xa, 5) => 0xb,
-            (0xa, 0x13) => 4,
-            (0xb, 9) => 0x12,
-            (0xb, 0xa) => 0x11,
-            (0x11, 4) => 0x10,
-            (0x11 | 0x10 | 7, 0x14) => 0x16,
-            (0x12 | 0x17, 4) => 0x11,
-            (0x12, 0x16) => 0x17,
-            (0x17, 9) => 0x12,
-            (0x17, 0xe) => 0x18,
-            (0x10, 4) => 0xc,
-            (0xc, 5) => 0xd,
-            (0xc, 6 | 0xc) | (0xd, 5) => 0x19,
-            (0xc | 0xd | 0x19, 0x15) => 0x13,
-            (0x19, 4) => 7,
-            (0x1c, 4) => 0x1d,
-            (0x1d, 4) => 0x1b,
-            (0x1b, _) => 0x13,
-            (0x14 | 0x15, _) => 2,
-            _ => CLEANUP,
-        }
-    }
 
     #[test]
     fn the_card_is_looked_at_before_anything_is_contacted() {

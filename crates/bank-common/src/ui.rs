@@ -7,25 +7,68 @@
 //! start for lack of its Game Card shows that message's other part, the
 //! advice to check the card. Nothing else is written here.
 
-use crate::numbers;
+use crate::{
+    numbers,
+    task::{checked_pointer, read_word as word},
+};
 use core::mem::transmute;
+use patch_common::message;
+
+/// `001d6650(ui, kind, message, wait)`: shows a message of the original.
+const SHOW_MESSAGE: usize = 0x001d_6650;
+/// `001d643c(context, string)`: hands a changed string to the dialog again,
+/// the call `SHOW_MESSAGE` ends its text set-up with.
+const DIALOG_TEXT: usize = 0x001d_643c;
+/// `001d6600(context)`: one frame of a dialog, 4 once a waiting one was
+/// acknowledged.
+const DIALOG_POLL: usize = 0x001d_6600;
+/// `001d5b44(ui)` starts the loading panel, sound and animation;
+/// `0025da24(ui, message)` sets its text.
+const LOADING: usize = 0x001d_5b44;
+const LOADING_TEXT: usize = 0x0025_da24;
+/// The end of loading: `001d6200(sound, 0, -1)` stops a sound,
+/// `001e7084(context, group, pane, 0)` hides a pane, `001e69ac(context, 0,
+/// 0, 0)` unbinds animation 0.
+const STOP_SOUND: usize = 0x001d_6200;
+const HIDE_PANE: usize = 0x001e_7084;
+const UNBIND_ANIMATION: usize = 0x001e_69ac;
+/// `001e9bc0(sound, fade, tag, mode)`: plays a sound once.
+const PLAY_SOUND: usize = 0x001e_9bc0;
+/// `001d6194(ui)` shows the dialog scene; `002b6114(0x10004, 0x3c, 0)` is
+/// the call before each of its character's speeches.
+const DIALOG_SCENE: usize = 0x001d_6194;
+const SPEECH: usize = 0x002b_6114;
+/// The values of a message: `001dfd90(string, text, heap)` makes a string
+/// object, `002b67d8(context, value, string, attribute)` gives it to the
+/// message, `001e6c0c(context, value, number, digits, 2, 1)` gives a number,
+/// `002297a4(string)` ends the string object.
+const STRING: usize = 0x001d_fd90;
+const VALUE_STRING: usize = 0x002b_67d8;
+const VALUE_NUMBER: usize = 0x001e_6c0c;
+const STRING_END: usize = 0x0022_97a4;
+/// `001e0ef8(ui, group, pane, message)`: a message into a button's pane, as
+/// the menus label their buttons.
+#[cfg(feature = "test-build")]
+const BUTTON_MESSAGE: usize = 0x001e_0ef8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     InvalidPointer,
     MissingBuffer,
-    InsufficientCapacity,
     InvalidMessage,
 }
 fn pointer(value: u32) -> Result<*mut u8, Error> {
-    if value == 0 || value & 3 != 0 {
-        Err(Error::InvalidPointer)
-    } else {
-        Ok(value as *mut u8)
-    }
+    checked_pointer(value).map_err(|_| Error::InvalidPointer)
 }
-unsafe fn word(base: *mut u8, offset: usize) -> u32 {
-    unsafe { base.add(offset).cast::<u32>().read() }
+/// The UI's context (`ui + 0x5c`), once the UI, the context and the UI's
+/// words at `+0x78` and `+0x94` (its string object) are pointers: what a
+/// message, the loading panel and the sounds need.
+unsafe fn ready(ui: *mut u8) -> Result<*mut u8, Error> {
+    pointer(ui as u32)?;
+    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    pointer(unsafe { word(ui, 0x78) })?;
+    pointer(unsafe { word(ui, 0x94) })?;
+    Ok(context)
 }
 
 /// Native message 0xB, which the original shows after a failed save
@@ -68,7 +111,7 @@ unsafe fn begin(context: *mut u8, text: *mut u8, room: &mut [u16], len: usize) {
     room[len] = 0;
     unsafe {
         text.add(0xa).cast::<u16>().write(len as u16);
-        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(0x001d_643cusize);
+        let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(DIALOG_TEXT);
         begin(context, text);
     }
 }
@@ -124,7 +167,7 @@ pub unsafe fn stop(
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Ok(());
     };
-    let mut len = numbers::cut(&room[..len]);
+    let mut len = message::cut(&room[..len]);
     if home_len != 0 {
         len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
     }
@@ -140,7 +183,7 @@ pub unsafe fn stop(
 pub unsafe fn acknowledged(ui: *mut u8) -> Result<bool, Error> {
     pointer(ui as u32)?;
     let context = pointer(unsafe { word(ui, 0x5c) })?;
-    let poll: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(0x001d_6600usize) };
+    let poll: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(DIALOG_POLL) };
     Ok(unsafe { poll(context) } == 4)
 }
 
@@ -162,12 +205,9 @@ const OTHER_COPY_NOTICE: u32 = 0xa;
 /// `ui` has stop's native lifetime contract. The task must keep returning each
 /// frame while the storage worker runs, so status and audio keep updating.
 pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
-    pointer(ui as u32)?;
-    pointer(unsafe { word(ui, 0x5c) })?;
-    pointer(unsafe { word(ui, 0x78) })?;
-    pointer(unsafe { word(ui, 0x94) })?;
+    unsafe { ready(ui) }?;
     unsafe {
-        let open_status: unsafe extern "aapcs" fn(*mut u8) = transmute(0x001d_5b44usize);
+        let open_status: unsafe extern "aapcs" fn(*mut u8) = transmute(LOADING);
         open_status(ui);
         loading_message(ui, message);
     }
@@ -179,8 +219,7 @@ pub unsafe fn loading(ui: *mut u8, message: u32) -> Result<(), Error> {
 /// `ui` has loading's native lifetime contract and its loading panel is already
 /// active, set up by `loading` or the original's native task initializer.
 pub unsafe fn loading_message(ui: *mut u8, message: u32) {
-    let show_message: unsafe extern "aapcs" fn(*mut u8, u32) =
-        unsafe { transmute(0x0025_da24usize) };
+    let show_message: unsafe extern "aapcs" fn(*mut u8, u32) = unsafe { transmute(LOADING_TEXT) };
     unsafe { show_message(ui, message) };
 }
 
@@ -193,9 +232,9 @@ pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
     pointer(ui as u32)?;
     let context = pointer(unsafe { word(ui, 0x5c) })?;
     unsafe {
-        let stop_sound: unsafe extern "aapcs" fn(u32, u32, u32) = transmute(0x001d_6200usize);
-        let pane: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(0x001e_7084usize);
-        let unbind: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(0x001e_69acusize);
+        let stop_sound: unsafe extern "aapcs" fn(u32, u32, u32) = transmute(STOP_SOUND);
+        let pane: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(HIDE_PANE);
+        let unbind: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(UNBIND_ANIMATION);
         stop_sound(0x0005_0011, 0, u32::MAX);
         pane(context, 0, 0x97, 0);
         unbind(context, 0, 0, 0);
@@ -217,12 +256,9 @@ const SAVED_NOTICE: u32 = 9;
 /// `ui` has stop's native lifetime contract, with the loading panel up and
 /// no dialog active, on the main task thread.
 pub unsafe fn saved(ui: *mut u8) -> Result<(), Error> {
-    pointer(ui as u32)?;
-    pointer(unsafe { word(ui, 0x5c) })?;
-    pointer(unsafe { word(ui, 0x78) })?;
-    pointer(unsafe { word(ui, 0x94) })?;
+    unsafe { ready(ui) }?;
     unsafe {
-        let play: unsafe extern "aapcs" fn(u32, u32, u32, u32) = transmute(0x001e_9bc0usize);
+        let play: unsafe extern "aapcs" fn(u32, u32, u32, u32) = transmute(PLAY_SOUND);
         play(0x0005_0012, 0, u32::MAX, 0);
         stop_loading(ui)?;
         display(ui, SAVED_NOTICE, true)
@@ -238,8 +274,8 @@ pub unsafe fn saved(ui: *mut u8) -> Result<(), Error> {
 pub unsafe fn welcome(ui: *mut u8) -> Result<(), Error> {
     unsafe { stop_loading(ui)? };
     unsafe {
-        let scene: unsafe extern "aapcs" fn(*mut u8) = transmute(0x001d_6194usize);
-        let sound: unsafe extern "aapcs" fn(u32, u32, u32) = transmute(0x002b_6114usize);
+        let scene: unsafe extern "aapcs" fn(*mut u8) = transmute(DIALOG_SCENE);
+        let sound: unsafe extern "aapcs" fn(u32, u32, u32) = transmute(SPEECH);
         scene(ui);
         sound(0x0001_0004, 0x3c, 0);
     }
@@ -249,12 +285,8 @@ pub unsafe fn welcome(ui: *mut u8) -> Result<(), Error> {
 /// Shows an original localized message through 001d6650, exactly as native
 /// tasks call it.
 unsafe fn display(ui: *mut u8, message: u32, wait: bool) -> Result<(), Error> {
-    pointer(ui as u32)?;
-    pointer(unsafe { word(ui, 0x5c) })?;
-    pointer(unsafe { word(ui, 0x78) })?;
-    pointer(unsafe { word(ui, 0x94) })?;
-    let show: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
-        unsafe { transmute(0x001d_6650usize) };
+    unsafe { ready(ui) }?;
+    let show: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
     unsafe { show(ui, 0, message, u32::from(wait)) };
     Ok(())
 }
@@ -270,12 +302,12 @@ pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<()
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Err(Error::MissingBuffer);
     };
-    let end = numbers::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
+    let end = message::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
     unsafe { begin(context, text, room, end) };
     Ok(())
 }
 
-/// Shows an original message without its first part (`numbers::rest`),
+/// Shows an original message without its first part (`message::rest`),
 /// waiting for A. The rest moves to the front of the UI's own string object.
 /// # Safety
 /// `ui` has stop's native lifetime contract, with no other dialog active.
@@ -285,9 +317,8 @@ pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Err(Error::MissingBuffer);
     };
-    let start = numbers::rest(&room[..len]).ok_or(Error::InvalidMessage)?;
-    room.copy_within(start..len, 0);
-    unsafe { begin(context, text, room, len - start) };
+    let len = message::keep_rest(room, len).ok_or(Error::InvalidMessage)?;
+    unsafe { begin(context, text, room, len) };
     Ok(())
 }
 
@@ -309,112 +340,26 @@ pub unsafe fn other_copy(
     number: u32,
     digits: u32,
 ) -> Result<(), Error> {
-    pointer(ui as u32)?;
     pointer(heap as u32)?;
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
-    pointer(unsafe { word(ui, 0x78) })?;
-    pointer(unsafe { word(ui, 0x94) })?;
+    let context = unsafe { ready(ui) }?;
     // The original's source is zero-terminated: 12 units and the end mark.
     let mut source = [0u16; 13];
     source[..12].copy_from_slice(name);
     // The string object: vtable, buffer, room, length, flag (16 bytes).
     let mut string = [0u32; 4];
     unsafe {
-        let create: unsafe extern "aapcs" fn(*mut u32, *const u16, *mut u8) =
-            transmute(0x001d_fd90usize);
+        let create: unsafe extern "aapcs" fn(*mut u32, *const u16, *mut u8) = transmute(STRING);
         let set_name: unsafe extern "aapcs" fn(*mut u8, u32, *mut u32, u32) =
-            transmute(0x002b_67d8usize);
+            transmute(VALUE_STRING);
         let set_number: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32, u32, u32) =
-            transmute(0x001e_6c0cusize);
-        let destroy: unsafe extern "aapcs" fn(*mut u32) = transmute(0x0022_97a4usize);
+            transmute(VALUE_NUMBER);
+        let destroy: unsafe extern "aapcs" fn(*mut u32) = transmute(STRING_END);
         create(string.as_mut_ptr(), source.as_ptr(), heap);
         set_name(context, 0, string.as_mut_ptr(), 0);
         set_number(context, 1, number, digits, 2, 1);
         let shown = display(ui, OTHER_COPY_NOTICE, true);
         destroy(string.as_mut_ptr());
         shown
-    }
-}
-
-/// The second of the context's two work strings (`[context + 4]`), which
-/// the original fills and hands to a pane (001e21c8, 001e0ef8): the string
-/// object, its text, and its room in units.
-unsafe fn work_string(context: *mut u8) -> Option<(*mut u8, *mut u16, usize)> {
-    unsafe {
-        let strings = pointer(word(context, 4)).ok()?;
-        let text = pointer(word(strings, 4)).ok()?;
-        let data = pointer(word(text, 4)).ok()?.cast::<u16>();
-        if text.add(0xc).read() == 0 {
-            return None;
-        }
-        Some((text, data, text.add(8).cast::<u16>().read() as usize))
-    }
-}
-
-/// Ends the work string at `len` and gives it to pane `pane` of the layout
-/// of `group`, with the original's two calls: 001e264c finds the pane,
-/// 0029a628 sets its text.
-unsafe fn hand_over(
-    context: *mut u8,
-    group: u32,
-    pane: u32,
-    (text, data, len): (*mut u8, *mut u16, usize),
-) {
-    unsafe {
-        data.add(len).write(0);
-        text.add(0xa).cast::<u16>().write(len as u16);
-        let Ok(layouts) = pointer(word(context, 0x1c)) else {
-            return;
-        };
-        let find: unsafe extern "aapcs" fn(u32, u32) -> *mut u8 = transmute(0x001e_264cusize);
-        let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, i32) = transmute(0x0029_a628usize);
-        let found = find(word(layouts, group as usize * 8), pane);
-        if !found.is_null() {
-            set(found, text, -1);
-        }
-    }
-}
-
-/// Adds `suffix`, plain Latin letters, to the text the original has just
-/// put into the work string and into pane `pane` of the layout of `group`,
-/// and gives the pane the longer text. Without room for it the pane keeps
-/// the original's text.
-unsafe fn add_suffix(context: *mut u8, group: u32, pane: u32, suffix: &[u8]) {
-    unsafe {
-        let Some((text, data, room)) = work_string(context) else {
-            return;
-        };
-        let mut len = 0;
-        while len < room && data.add(len).read() != 0 {
-            len += 1;
-        }
-        if len == 0 || len + suffix.len() >= room {
-            return;
-        }
-        for (index, &unit) in suffix.iter().enumerate() {
-            data.add(len + index).write(u16::from(unit));
-        }
-        hand_over(context, group, pane, (text, data, len + suffix.len()));
-    }
-}
-
-/// Writes the start screen's version line with `suffix` behind it, "Ver.
-/// 1.5" + suffix, so that a screen shows which patch runs. Stands in for
-/// the one call of 001e21c8(context, group, pane, message) that the start
-/// screen makes for its message 0x4E (002b49c4).
-///
-/// That function loads the message into the first of the context's two
-/// work strings, fills in its values into the second, and hands the second
-/// to the pane. Here the original runs first, the suffix is added to the
-/// second string in place, and the pane is given it again.
-/// # Safety
-/// The arguments are those of the replaced call, on the main thread.
-pub unsafe fn version(context: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
-    unsafe {
-        let original: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
-            transmute(0x001e_21c8usize);
-        original(context, group, pane, message);
-        add_suffix(context, group, pane, suffix);
     }
 }
 
@@ -432,8 +377,8 @@ pub unsafe fn button(ui: *mut u8, group: u32, pane: u32, message: u32, suffix: &
         let Ok(context) = pointer(word(ui, 0x5c)) else {
             return;
         };
-        let label: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(0x001e_0ef8usize);
+        let label: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(BUTTON_MESSAGE);
         label(ui, group, pane, message);
-        add_suffix(context, group, pane, suffix);
+        patch_common::ui::add_suffix::<crate::program::Bank15>(context, group, pane, suffix);
     }
 }

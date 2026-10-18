@@ -45,6 +45,20 @@ pub const MESSAGE_OPEN_BANK: u32 = 3;
 /// Pokémon Bank before using Poké Transporter."
 pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 
+/// The original's message `0x0B`: "The server did not receive the data." and,
+/// on its second page, "Please confirm that your Game Card is properly
+/// inserted, and then try again." The transfer shows it when nothing was
+/// delivered (sub-state `0x11`), the Bank step when the card is gone before
+/// it saves its note.
+pub const MESSAGE_FAILURE: u32 = 0x0b;
+
+/// Whether the message `message` is shown without its first page. There is
+/// no server any more, so the failure message keeps only its advice to check
+/// the Game Card, the same in every language.
+pub fn from_second_page(message: u32) -> bool {
+    message == MESSAGE_FAILURE
+}
+
 /// The message that stops a session before it begins, for what Bank's
 /// journal says (`transport::check`). Opening Bank shows or solves each
 /// reason, so the message carries no numbers of its own.
@@ -65,18 +79,6 @@ pub const DELIVER_FAILED: u32 = 0;
 pub const DELIVER_DONE: u32 = 1;
 pub const DELIVER_PENDING: u32 = 2;
 
-/// Stack of the worker thread, in the payload's own zero-initialised data.
-/// The file work keeps one 512-byte read buffer and a few journal records on
-/// it, far less than this.
-pub const WORKER_STACK_SIZE: usize = 0x4000;
-
-/// Bank's extdata and, inside it, the files Transporter reads and writes:
-/// the two journal records and the two copies of the transport box, each
-/// pair in Bank's order.
-pub const BANK_EXTDATA: u32 = 0x0000_0C9B;
-pub const JOURNAL_PATHS: [&[u8]; 2] = [b"/journal.bin\0", b"/journal.alt.bin\0"];
-pub const MOVER_PATHS: [&[u8]; 2] = [b"/mover.bin\0", b"/mover.alt.bin\0"];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,24 +93,21 @@ mod tests {
     }
 
     #[test]
+    fn only_the_failure_message_loses_its_first_page() {
+        assert!(from_second_page(MESSAGE_FAILURE));
+        // The refusals, the no-card message 0x22, and the closing message
+        // of a transfer are shown whole.
+        for message in [0, MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY, 0x0a, 0x22] {
+            assert!(!from_second_page(message), "{message:#x}");
+        }
+    }
+
+    #[test]
     fn the_check_tells_pokemon_in_the_way_from_a_bank_that_is_not_ready() {
         // The "remains in the Transport Box" message only when one does.
         assert_eq!(refusal_message(Refusal::Occupied), MESSAGE_BOX_NOT_EMPTY);
         assert_eq!(refusal_message(Refusal::NotReady), MESSAGE_OPEN_BANK);
         // The worker reports "go on" as 0, which no message may be.
         assert_eq!((MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY), (3, 5));
-    }
-
-    #[test]
-    fn the_paths_are_the_ones_bank_uses_and_fit_the_name_limit() {
-        assert_eq!(
-            JOURNAL_PATHS,
-            [&b"/journal.bin\0"[..], b"/journal.alt.bin\0"]
-        );
-        assert_eq!(MOVER_PATHS, [&b"/mover.bin\0"[..], b"/mover.alt.bin\0"]);
-        for path in JOURNAL_PATHS.into_iter().chain(MOVER_PATHS) {
-            assert_eq!(path.last(), Some(&0));
-            assert!(path.len() - 2 <= 16);
-        }
     }
 }

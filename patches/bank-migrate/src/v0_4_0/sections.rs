@@ -1,4 +1,4 @@
-//! Frozen: the previous release's `sections.rs`. Only the migration reads it.
+//! Frozen: v0.4.0's `sections.rs`. Only the migration reads it.
 //! Where each stored file's bytes live inside the native Bank body.
 //!
 //! The original code loads and saves one `0xBB518`-byte block. The patch keeps

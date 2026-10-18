@@ -1,12 +1,15 @@
 //! Reviewed Bank image identity, placement, and the edits of the original
 //! that the patches for Bank are made from.
 //!
-//! Each patch is a `Profile`: the entry functions its payload exports and
+//! Each patch is a `Profile` of the program `BANK`: the entry functions its payload exports and
 //! the edits it makes. The edits that more than one patch makes are defined
 //! here once; a profile only picks from them and adds its own.
 //! Hardware behavior and save recovery still require console validation.
 
-use crate::{elf::PayloadElf, placement::InputIdentity, CheckedEdit, BANK_TITLE_ID};
+pub(crate) use crate::profile::Profile;
+use crate::{
+    elf::PayloadElf, placement::InputIdentity, profile::Program, CheckedEdit, BANK_TITLE_ID,
+};
 
 pub mod download;
 pub mod migrate;
@@ -18,7 +21,6 @@ pub const REMASTER_VERSION: u16 = 6;
 pub const CODE_LENGTH: usize = 0x2ac000;
 pub const CODE_BASE: u32 = 0x00100000;
 pub const PAYLOAD_ADDRESS: u32 = 0x003fb000;
-pub const PAYLOAD_FILE_OFFSET: usize = 0x002fb000;
 
 pub const CODE_SHA256: [u8; 32] = [
     0x2d, 0xce, 0x47, 0x96, 0xf5, 0x48, 0x07, 0xcf, 0x8a, 0x67, 0xf1, 0xce, 0x62, 0x97, 0xbf, 0x47,
@@ -36,35 +38,28 @@ pub const INPUT_IDENTITY: InputIdentity = InputIdentity {
     remaster_version: REMASTER_VERSION,
 };
 
-/// One patch for Bank 1.5.
-pub struct Profile {
-    /// Its name on the command line and in the manifest.
-    pub name: &'static str,
-    /// The entry functions its payload must export, in the order of the
-    /// manifest. The first is the entry of the ELF.
-    pub entries: &'static [&'static str],
-    /// Edited regions of the original, the start-up hook's bytes included.
-    pub regions: usize,
-    /// The main-menu locations (`RETIRED_MENU_EDITS`) it edits. None for a
-    /// patch that is released: those never create the main menu.
-    pub menu_edits: &'static [u32],
-    /// Every edit but the start-up hook's bytes. `code` is the original.
-    edits: fn(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<CheckedEdit>>,
-}
+/// The linked payload of every patch for Bank 1.5 (`elf::Contract`).
+pub const CONTRACT: crate::elf::Contract = crate::elf::Contract {
+    code_base: CODE_BASE,
+    bootstrap: 0x0031_3910,
+    bootstrap_end: 0x0031_4000,
+    payload: PAYLOAD_ADDRESS,
+    original_app_init: 0x0010_494c,
+    wrappers: crate::elf::KERNEL_WRAPPERS,
+};
 
-pub const PROFILES: [&Profile; 4] = [
-    &offline::PROFILE,
-    &migrate::PROFILE,
-    &test::PROFILE,
-    &download::PROFILE,
-];
-
-pub fn profile(name: &str) -> crate::Result<&'static Profile> {
-    PROFILES
-        .into_iter()
-        .find(|profile| profile.name == name)
-        .ok_or_else(|| crate::Error(format!("unknown Bank patch profile: {name}")))
-}
+/// Pokémon Bank 1.5, which every patch for Bank edits.
+pub const BANK: Program = Program {
+    name: "bank15-title6272-remaster6",
+    label: "Pokémon Bank 1.5",
+    title_id: BANK_TITLE_ID,
+    tmd_version: TMD_VERSION,
+    remaster_version: REMASTER_VERSION,
+    code_length: CODE_LENGTH,
+    identity: INPUT_IDENTITY,
+    contract: &CONTRACT,
+    check,
+};
 
 /// One edited word: (virtual address, original word, replacement bytes).
 pub(crate) fn word(address: u32, expected: u32, replacement: [u8; 4]) -> CheckedEdit {
@@ -216,10 +211,11 @@ fn checked(edits: impl Iterator<Item = (u32, u32, u32)>) -> impl Iterator<Item =
     edits.map(|(address, expected, replacement)| word(address, expected, replacement.to_le_bytes()))
 }
 
-/// Main-menu locations edited by earlier builds. They must keep their original
-/// words, but for the ones a profile names as its own (`Profile::menu_edits`):
-/// (virtual address, original little-endian word).
-pub const RETIRED_MENU_EDITS: [(u32, u32); 5] = [
+/// The main menu's locations that only the console test build may edit.
+/// Every other profile leaves them with their original words; a profile edits
+/// only the ones it names as its own (`Profile::menu_edits`): (virtual
+/// address, original little-endian word).
+pub const MENU_LOCATIONS: [(u32, u32); 5] = [
     (0x001d6554, 0xeb0000ef),
     (0x002b33a4, 0xebfc853e),
     (0x002b33d4, 0xebfc8532),
@@ -227,27 +223,21 @@ pub const RETIRED_MENU_EDITS: [(u32, u32); 5] = [
     (0x003617dc, 0x002a6c84),
 ];
 
-/// Builds the complete hook set of `profile` in memory, paired with its
-/// expanded exheader. This verifies bytes and layout, not runtime readiness.
-/// No install files are written. See docs/internals.md.
-pub fn prepare_development_patch(
-    profile: &Profile,
+/// What every patch for Bank relies on beyond its edited words: the SDK's
+/// conversion of the worker's thread priority, and the main menu's
+/// locations, which only a profile that names one may edit.
+fn check(
     code: &[u8],
-    exheader: &[u8],
-    elf: &[u8],
-) -> crate::Result<crate::placement::PreparedPlacement> {
+    profile: &Profile,
+    _: &PayloadElf,
+    edits: &[CheckedEdit],
+) -> crate::Result<()> {
     for (address, expected) in SDK_PRIORITY_CODE {
         if crate::le32(code, (address - CODE_BASE) as usize)? != expected {
             return crate::fail("SDK thread-priority conversion is not the reviewed code");
         }
     }
-    let payload = crate::elf::inspect_payload_elf(elf, profile.entries)?;
-    let mut edits = (profile.edits)(code, &payload)?;
-    edits.push(payload.bootstrap_edit());
-    if edits.len() != profile.regions {
-        return crate::fail("profile edit count changed");
-    }
-    for (address, original) in RETIRED_MENU_EDITS {
+    for (address, original) in MENU_LOCATIONS {
         let offset = (address - CODE_BASE) as usize;
         let touching = edits
             .iter()
@@ -265,17 +255,11 @@ pub fn prepare_development_patch(
     if profile
         .menu_edits
         .iter()
-        .any(|address| RETIRED_MENU_EDITS.iter().all(|(known, _)| known != address))
+        .any(|address| MENU_LOCATIONS.iter().all(|(known, _)| known != address))
     {
         return crate::fail("profile names an unknown main-menu location");
     }
-    crate::placement::prepare_expanded_data(
-        code,
-        exheader,
-        &INPUT_IDENTITY,
-        &payload.linked_payload(),
-        &edits,
-    )
+    Ok(())
 }
 
 #[cfg(test)]
@@ -362,17 +346,5 @@ mod tests {
         for (address, _, _) in LANGUAGE_EDITS {
             assert!(!(0x002abe08..0x002acab8).contains(&address));
         }
-    }
-
-    #[test]
-    fn every_profile_has_a_name_of_its_own_and_is_found_by_it() {
-        for (index, known) in PROFILES.into_iter().enumerate() {
-            assert_eq!(profile(known.name).unwrap().entries, known.entries);
-            assert!(!known.entries.is_empty());
-            assert!(PROFILES[..index]
-                .iter()
-                .all(|earlier| earlier.name != known.name));
-        }
-        assert!(profile("unknown").is_err());
     }
 }

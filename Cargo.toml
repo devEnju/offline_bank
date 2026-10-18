@@ -1,8 +1,9 @@
 [workspace]
-members = ["crates/bank-common", "crates/offline-core", "crates/patch-builder", "patches/bank", "patches/bank-download", "patches/bank-migrate", "patches/transporter"]
+members = ["crates/bank-common", "crates/offline-core", "crates/patch-builder", "crates/patch-common", "patches/bank", "patches/bank-download", "patches/bank-migrate", "patches/transporter"]
 resolver = "2"
 
 [workspace.package]
+version = "0.5.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 rust-version = "1.85"
@@ -13,8 +14,3 @@ lto = true
 codegen-units = 1
 panic = "abort"
 overflow-checks = true
-
-# The Transporter hooks keep the settings of the builds that ran on a console.
-[profile.transporter]
-inherits = "release"
-overflow-checks = false

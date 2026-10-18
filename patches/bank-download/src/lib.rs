@@ -9,8 +9,8 @@
 //! (`navigation`) and writes the files (`download`).
 //!
 //! It is of use while the service runs. Nothing depends on this crate; when
-//! the service has ended, the crate, its builder profile
-//! (`bank15/download.rs`) and its script can be deleted.
+//! the service has ended, it is deleted with the places docs/building.md
+//! names.
 //!
 //! Addresses in this crate belong only to code SHA-256
 //! 2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf.

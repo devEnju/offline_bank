@@ -8,7 +8,7 @@
 //! initializer, a filesystem adapter, and fingerprints of the complete game
 //! save transaction. This crate neither patches Bank nor edits game saves.
 //!
-//! # Stored format (version 1)
+//! # Stored format (version 1: the major number of this crate's version)
 //!
 //! The Bank is the native body cut into three files (`sections`): the Bank
 //! file with the boxes, the main file, and the transport box. Each exists in
@@ -40,13 +40,12 @@
 //!
 //! For a transfer: verify the game's before state, call `prepare_transfer`, and
 //! mutate the game ONLY after that call succeeds. Then read the game back and
-//! call `reconcile`. A matching before state keeps the save before; a
-//! matching after state makes the new one current. Missing, different, or
-//! modified saves block recovery here; for a modified save, and for a missing
-//! one if the transfer moved Pokémon one way only, the runtime chooses the
-//! save itself, from what the transfer moved (`moved`), and names that image to
-//! `reconcile`. Startup must reconcile prepared transactions before allowing
-//! any Bank or game edits.
+//! call `reconcile` with its fingerprint. The before image keeps the save
+//! before; the after image makes the new one current; any other is refused.
+//! For a game whose save is neither image, or that is not there, the runtime
+//! chooses the save itself, from what the transfer moved (`moved`), and names
+//! that image to `reconcile`. Startup must reconcile prepared transactions
+//! before allowing any Bank or game edits.
 //!
 //! The adapter must implement exact reads/writes and durable `sync`. After ANY
 //! I/O error, stop the operation, reopen storage and inspect it before continuing.
@@ -61,6 +60,7 @@
 //! separately verified native secure-value/backup policy. A complete rollback of
 //! all local records also needs an external monotonic reference to be detectable.
 
+pub mod files;
 pub mod game_image;
 pub mod moved;
 pub mod native_blob;
@@ -76,9 +76,8 @@ mod store;
 
 pub use checksum::{crc32, Crc32};
 pub use format::{
-    decide_recovery, Fingerprint, FormatError, GameIdentity, GameObservation, Metadata, Part,
-    PendingTransfer, Phase, RecoveryBlock, RecoveryDecision, Save, Sides, Slot, METADATA_SIZE,
-    SCHEMA_VERSION,
+    decide_recovery, Fingerprint, FormatError, GameIdentity, Metadata, Part, PendingTransfer,
+    Phase, RecoveryDecision, Save, Sides, Slot, GAME_TITLES, METADATA_SIZE, SCHEMA_VERSION,
 };
 pub use hash::{Sha256, Sha256Error};
 pub use store::{may_deliver, BankStore, Head, Journal, Layout, Reconciled, Storage, StoreError};

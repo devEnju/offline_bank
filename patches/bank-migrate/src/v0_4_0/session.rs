@@ -1,4 +1,4 @@
-//! Frozen: the previous release's `session.rs`. Only the migration reads it.
+//! Frozen: v0.4.0's `session.rs`. Only the migration reads it.
 //! The journaled Bank file: one validated payload per snapshot.
 //!
 //! The payload is the Bank regions of the native body (`offline_core::sections`).

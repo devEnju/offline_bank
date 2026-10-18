@@ -11,9 +11,6 @@ use core::ops::Range;
 pub const BLOB_SIZE: usize = 0xBB518;
 pub const FORMAT_VERSION: u16 = 2;
 pub const BOX_COUNT: usize = 100;
-pub const POKEMON_SIZE: usize = 0xE8;
-pub const BOXES_OFFSET: usize = 0x17C;
-pub const EXTRA_SLOT_FORMAT_OFFSET: usize = 0xAD5FC;
 /// Whole Poké Miles, a u32 at object `+178`. Native accessors 001d588c and
 /// 001d59fc clamp it to 65,535.
 pub const MILES_OFFSET: usize = 0x170;
@@ -132,26 +129,6 @@ impl<'a> NativeBlobView<'a> {
     }
 }
 
-/// Native stored-record checksum, observed in 00220E90/00220F00 and 0013D284.
-/// XOR-decrypts bytes 8..232 with the EC at 0, then sums 112 little-endian u16
-/// words modulo 65536. Block ordering does not affect this sum. This does not
-/// establish Pokemon legality, species, format-tag consistency, or other fields.
-/// The returned value is compared with the stored u16 at bytes 6..8.
-pub fn stored_pokemon_checksum(record: &[u8; POKEMON_SIZE]) -> u16 {
-    let mut seed = u32::from_le_bytes(record[..4].try_into().unwrap());
-    let mut sum = 0_u16;
-    for bytes in record[8..].chunks_exact(2) {
-        seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
-        let plain = u16::from_le_bytes([bytes[0], bytes[1]]) ^ (seed >> 16) as u16;
-        sum = sum.wrapping_add(plain);
-    }
-    sum
-}
-
-pub fn stored_pokemon_checksum_matches(record: &[u8; POKEMON_SIZE]) -> bool {
-    stored_pokemon_checksum(record) == word(record, 6)
-}
-
 /// Sets the places in `UNUSED` to what a new Bank has there. `body` is a
 /// whole body; a shorter one is cleared as far as it reaches.
 pub fn clear_unused(body: &mut [u8]) {
@@ -226,33 +203,13 @@ mod tests {
     }
 
     #[test]
-    fn checksum_rejects_corrupted_payload_and_seed() {
-        let mut record = [0_u8; POKEMON_SIZE];
-        record[..4].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
-        // Plaintext words 0..111 sum to 6216, modulo 65536.
-        record[6..8].copy_from_slice(&6216_u16.to_le_bytes());
-        let mut seed = 0x1234_5678_u64;
-        for (index, chunk) in record[8..].chunks_exact_mut(2).enumerate() {
-            seed = (seed * 0x41C6_4E6D + 0x6073) & 0xFFFF_FFFF;
-            chunk.copy_from_slice(&((index as u16) ^ (seed >> 16) as u16).to_le_bytes());
-        }
-        assert_eq!(stored_pokemon_checksum(&record), 6216);
-        assert!(stored_pokemon_checksum_matches(&record));
-        record[113] ^= 0x10;
-        assert!(!stored_pokemon_checksum_matches(&record));
-        record[113] ^= 0x10;
-        record[0] ^= 0x80;
-        assert!(!stored_pokemon_checksum_matches(&record));
-    }
-
-    #[test]
     fn miles_balance_uses_the_native_field_and_limit() {
         let mut data = fixture();
         data[MILES_OFFSET..MILES_OFFSET + 4].copy_from_slice(&1234_u32.to_le_bytes());
         assert_eq!(NativeBlobView::parse_layout(&data).unwrap().miles(), 1234);
         data[MILES_OFFSET..MILES_OFFSET + 4].copy_from_slice(&0x1_0000_u32.to_le_bytes());
         assert_eq!(NativeBlobView::parse_layout(&data).unwrap().miles(), 0xffff);
-        const { assert!(MILES_OFFSET + 4 <= BOXES_OFFSET) };
+        const { assert!(MILES_OFFSET + 4 <= crate::sections::BANK_RANGES[0].start) };
         const { assert!(REWARD_DATE_OFFSET + crate::rewards::Moment::NATIVE_SIZE <= MILES_OFFSET) };
         const { assert!(MILES_OFFSET + 4 == REDEEMED_OFFSET) };
         const { assert!(REWARD_DATE_OFFSET + crate::rewards::Moment::NATIVE_SIZE == FRACTION_OFFSET) };
@@ -265,19 +222,6 @@ mod tests {
         data[at..at + 6].copy_from_slice(&[0xea, 0x07, 10, 6, 18, 10]);
         let date = NativeBlobView::parse_layout(&data).unwrap().reward_date();
         assert_eq!(date.unwrap().to_native(), [0xea, 0x07, 10, 6, 18, 10]);
-    }
-
-    #[test]
-    fn checksum_wraps_at_u16_boundary() {
-        let mut record = [0_u8; POKEMON_SIZE];
-        let expected = (112_u32 * 0xFFFF) as u16;
-        record[6..8].copy_from_slice(&expected.to_le_bytes());
-        let mut seed = 0_u64;
-        for chunk in record[8..].chunks_exact_mut(2) {
-            seed = (seed * 0x41C6_4E6D + 0x6073) & 0xFFFF_FFFF;
-            chunk.copy_from_slice(&(0xFFFF ^ (seed >> 16) as u16).to_le_bytes());
-        }
-        assert_eq!(stored_pokemon_checksum(&record), expected);
     }
 
     #[test]
@@ -311,7 +255,7 @@ mod tests {
             MILES_OFFSET + 3,
             FIRST_PRESENT_OFFSET,
             0x17B,
-            BOXES_OFFSET,
+            0x17C,
             0xAD619,
             0xAD61C,
             0xBB417,

@@ -81,10 +81,6 @@ impl Date {
             + u32::from(self.day)
             - 1
     }
-    /// Whole calendar days from `earlier` to `self`; zero when not later.
-    pub fn days_since(self, earlier: Self) -> u32 {
-        self.number().saturating_sub(earlier.number())
-    }
 }
 
 /// A console-local date and time to the minute, as the native reward date
@@ -181,7 +177,6 @@ impl Record {
 struct Step {
     fraction: u32,
     balance: u32,
-    earned: u32,
 }
 
 fn accrue(fraction: u32, count: u32, hours: u32, balance: u32) -> Step {
@@ -193,7 +188,6 @@ fn accrue(fraction: u32, count: u32, hours: u32, balance: u32) -> Step {
     Step {
         fraction: (total % u64::from(UNIT)) as u32,
         balance: balance + credited,
-        earned: credited,
     }
 }
 
@@ -207,17 +201,12 @@ pub struct Entry {
     count: u32,
     fraction: u32,
     balance: u32,
-    earned: u32,
 }
 
 impl Entry {
     /// Balance to expose through the native reward flow.
     pub const fn balance(&self) -> u32 {
         self.balance
-    }
-    /// Whole Miles credited on entry, after applying the native limit.
-    pub const fn earned(&self) -> u32 {
-        self.earned
     }
     /// What the reward screens have to say for `balance`, the live native
     /// balance of this session.
@@ -249,7 +238,6 @@ pub fn enter(
         count,
         fraction: step.fraction,
         balance: step.balance,
-        earned: step.earned,
     })
 }
 
@@ -260,8 +248,6 @@ pub struct Settlement {
     pub balance: u32,
     pub date: Moment,
     pub record: Record,
-    /// Miles credited between the entry quote and this save.
-    pub earned: u32,
 }
 
 /// Accounts for the hours elapsed since entry at the count the Bank was
@@ -288,7 +274,6 @@ pub fn settle(entry: &Entry, balance: u32, now: Moment, redeemed: bool) -> Settl
             fraction: step.fraction as u16,
             redeemed: day,
         },
-        earned: step.earned,
     }
 }
 
@@ -348,13 +333,6 @@ pub enum Receipt {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Claim {
-    pub currency: Currency,
-    pub transferred: u32,
-    pub retained: u32,
-}
-
 /// Confirms the native debit and game receipt of one completed claim.
 /// The Gen 7 caller ignores its insertion result, so the store is inspected.
 pub fn verify_claim(
@@ -363,7 +341,7 @@ pub fn verify_claim(
     balance_before: u32,
     balance_after: u32,
     receipt: Receipt,
-) -> Result<Claim, RewardError> {
+) -> Result<(), RewardError> {
     if !(REDEEM_THRESHOLD..=MILES_CAP).contains(&quoted) {
         return Err(RewardError::BelowThreshold);
     }
@@ -398,11 +376,7 @@ pub fn verify_claim(
     if !received {
         return Err(RewardError::ReceiptMismatch);
     }
-    Ok(Claim {
-        currency,
-        transferred,
-        retained,
-    })
+    Ok(())
 }
 
 #[cfg(test)]
@@ -437,14 +411,6 @@ mod tests {
         ] {
             assert_eq!(Date::new(year, month, day), Err(RewardError::InvalidDate));
         }
-        assert_eq!(date(2026, 3, 1).days_since(date(2026, 2, 28)), 1);
-        assert_eq!(date(2028, 3, 1).days_since(date(2028, 2, 28)), 2);
-        assert_eq!(date(2000, 3, 1).days_since(date(2000, 2, 28)), 2);
-        assert_eq!(date(2027, 1, 1).days_since(date(2026, 12, 31)), 1);
-        assert_eq!(date(2026, 11, 1).days_since(date(2026, 10, 31)), 1);
-        assert_eq!(date(2027, 10, 6).days_since(date(2026, 10, 6)), 365);
-        assert_eq!(date(2029, 1, 1).days_since(date(2028, 1, 1)), 366);
-        assert_eq!(date(2026, 10, 5).days_since(date(2026, 10, 6)), 0);
         assert!(date(2026, 10, 6) < date(2026, 11, 1));
         assert!(date(2026, 12, 31) < date(2027, 1, 1));
     }
@@ -499,7 +465,6 @@ mod tests {
         ] {
             let step = accrue(0, count, hours, 0);
             assert_eq!((step.balance, step.fraction), (miles, fraction));
-            assert_eq!(step.earned, miles);
         }
     }
 
@@ -527,14 +492,12 @@ mod tests {
             at(6, 18, 0),
         )
         .unwrap();
-        assert_eq!(
-            (first.balance(), first.earned(), first.fraction),
-            (21, 13, 240)
-        );
+        // 13 Miles for the eight hours.
+        assert_eq!((first.balance(), first.fraction), (21, 240));
         assert_eq!(first.dialog(first.balance()), Dialog::Silent);
         // 300 are deposited; the save ten minutes later crosses no hour.
         let saved = settle(&first, first.balance(), at(6, 18, 10), false);
-        assert_eq!((saved.balance, saved.earned), (21, 0));
+        assert_eq!(saved.balance, 21);
         assert_eq!(
             (saved.date, saved.record),
             (at(6, 18, 10), record(240, Some(6)))
@@ -548,10 +511,7 @@ mod tests {
             at(7, 9, 0),
         )
         .unwrap();
-        assert_eq!(
-            (next.balance(), next.earned(), next.fraction),
-            (52, 31, 420)
-        );
+        assert_eq!((next.balance(), next.fraction), (52, 420));
         assert_eq!(next.dialog(next.balance()), Dialog::Offer);
     }
 
@@ -561,7 +521,7 @@ mod tests {
         assert_eq!(entry.balance(), 12);
         // All twelve are redeemed, then the session stays open until 14:40.
         let saved = settle(&entry, 0, at(6, 14, 40), true);
-        assert_eq!((saved.balance, saved.earned), (6, 6));
+        assert_eq!(saved.balance, 6);
         assert_eq!(
             (saved.date, saved.record),
             (at(6, 14, 40), record(0, Some(6)))
@@ -569,13 +529,13 @@ mod tests {
         // Saving twice in one hour pays nothing twice.
         let again = enter(saved.record, Some(saved.date), 6, 720, at(6, 14, 50)).unwrap();
         let resaved = settle(&again, again.balance(), at(6, 14, 59), false);
-        assert_eq!((again.earned(), resaved.earned, resaved.balance), (0, 0, 6));
+        assert_eq!((again.balance(), resaved.balance), (6, 6));
     }
 
     #[test]
     fn a_bank_without_a_date_earns_nothing_until_it_was_saved() {
         let entry = enter(Record::NONE, None, 4321, 3000, at(6, 12, 0)).unwrap();
-        assert_eq!((entry.balance(), entry.earned()), (4321, 0));
+        assert_eq!(entry.balance(), 4321);
         assert_eq!(entry.dialog(entry.balance()), Dialog::Offer);
         let saved = settle(&entry, 4321, at(6, 12, 30), false);
         assert_eq!((saved.balance, saved.date), (4321, at(6, 12, 30)));
@@ -595,10 +555,7 @@ mod tests {
         )
         .unwrap();
         // 100 + 31 * 240 Pokémon-hours: ten whole Miles earned, one credited.
-        assert_eq!(
-            (entry.balance(), entry.earned(), entry.fraction),
-            (MILES_CAP, 1, 340)
-        );
+        assert_eq!((entry.balance(), entry.fraction), (MILES_CAP, 340));
         let over = enter(Record::NONE, Some(at(1, 0, 0)), 70_000, 1, at(2, 0, 0)).unwrap();
         assert_eq!(over.balance(), MILES_CAP);
         let first = Moment::new(date(1, 1, 1), 0, 0).unwrap();
@@ -612,21 +569,18 @@ mod tests {
     fn neither_date_goes_back_when_the_clock_does() {
         let stored = at(6, 12, 0);
         let entry = enter(record(11, Some(6)), Some(stored), 50, 3000, at(1, 8, 0)).unwrap();
-        assert_eq!(
-            (entry.balance(), entry.earned(), entry.fraction),
-            (50, 0, 11)
-        );
+        assert_eq!((entry.balance(), entry.fraction), (50, 11));
         // A stored day ahead of the clock counts as today: nothing is said.
         assert_eq!(entry.dialog(entry.balance()), Dialog::Silent);
         // Saving works; the date stays, also after a redemption.
         let saved = settle(&entry, 50, at(2, 8, 0), true);
-        assert_eq!((saved.balance, saved.earned), (50, 0));
+        assert_eq!(saved.balance, 50);
         assert_eq!((saved.date, saved.record), (stored, record(11, Some(6))));
         // Hours already accounted are not paid again when the clock catches up.
         let caught_up = enter(saved.record, Some(saved.date), 50, 3000, stored).unwrap();
-        assert_eq!(caught_up.earned(), 0);
+        assert_eq!(caught_up.balance(), 50);
         let after = enter(saved.record, Some(saved.date), 50, 3000, at(6, 13, 0)).unwrap();
-        assert_eq!((after.earned(), after.fraction), (4, 131));
+        assert_eq!((after.balance(), after.fraction), (54, 131));
         // A redemption moves its day forward, and only forward.
         let later = settle(&after, 0, at(8, 9, 0), true);
         assert_eq!(later.record.redeemed, Some(date(2026, 10, 8)));
@@ -644,10 +598,10 @@ mod tests {
         // Back on the real date, and at every moment up to the jumped one.
         for now in [real, at(10, 0, 0), jumped] {
             let later = enter(saved.record, Some(saved.date), saved.balance, 30, now).unwrap();
-            assert_eq!((later.balance(), later.earned()), (10, 0));
+            assert_eq!(later.balance(), 10);
         }
         let after = enter(saved.record, Some(saved.date), 10, 30, at(17, 12, 0)).unwrap();
-        assert_eq!(after.earned(), 1);
+        assert_eq!(after.balance(), 11);
     }
 
     #[test]
@@ -785,12 +739,23 @@ mod tests {
                 Err(RewardError::BelowThreshold)
             );
         }
-        let exact = verify_claim(Currency::BattlePoints, 10, 10, 0, gen6(1)).unwrap();
-        assert_eq!((exact.transferred, exact.retained), (1, 0));
-        let leftover = verify_claim(Currency::BattlePoints, 1237, 1237, 7, gen6(123)).unwrap();
-        assert_eq!((leftover.transferred, leftover.retained), (123, 7));
-        let full = verify_claim(Currency::Miles, MILES_CAP, MILES_CAP, 0, gen6(u16::MAX)).unwrap();
-        assert_eq!(full.transferred, MILES_CAP);
+        // Ten Miles are one Battle Point; the rest stays in the balance.
+        assert_eq!(
+            verify_claim(Currency::BattlePoints, 10, 10, 0, gen6(1)),
+            Ok(())
+        );
+        assert_eq!(
+            verify_claim(Currency::BattlePoints, 1237, 1237, 7, gen6(123)),
+            Ok(())
+        );
+        assert_eq!(
+            verify_claim(Currency::BattlePoints, 1237, 1237, 7, gen6(124)),
+            Err(RewardError::ReceiptMismatch)
+        );
+        assert_eq!(
+            verify_claim(Currency::Miles, MILES_CAP, MILES_CAP, 0, gen6(u16::MAX)),
+            Ok(())
+        );
     }
 
     #[test]

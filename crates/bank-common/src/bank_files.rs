@@ -19,6 +19,7 @@
 
 use crate::session::{self, BankSession};
 use offline_core::{
+    files,
     moved::{self, Moved},
     native_blob::BLOB_SIZE,
     pair::{Pair, PairError},
@@ -26,8 +27,7 @@ use offline_core::{
         self, Identity, BANK_SIZE, HELD, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE, TRANSPORT_RECORDS,
         TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
-    transport, Fingerprint, GameIdentity, GameObservation, Part, Phase, RecoveryDecision, Sides,
-    Slot, Storage,
+    transport, Fingerprint, GameIdentity, Part, Phase, RecoveryDecision, Sides, Slot, Storage,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,19 +63,20 @@ pub const MAIN: u64 = MAIN_SIZE as u64;
 pub const MOVER: u64 = transport::LEN as u64;
 /// In the order of the container's layout: the journal records, then the
 /// copies of the Bank file.
+/// The names are `offline_core::files`, which Transporter reaches too.
 static BANK_UNITS: [UnitFile; 4] = [
-    UnitFile::new("/journal.bin", RECORD),
-    UnitFile::new("/journal.alt.bin", RECORD),
-    UnitFile::new("/bank.bin", SNAPSHOT),
-    UnitFile::new("/bank.alt.bin", SNAPSHOT),
+    UnitFile::new(files::JOURNAL[0], RECORD),
+    UnitFile::new(files::JOURNAL[1], RECORD),
+    UnitFile::new(files::BANK[0], SNAPSHOT),
+    UnitFile::new(files::BANK[1], SNAPSHOT),
 ];
 static MAIN_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/main.bin", MAIN),
-    UnitFile::new("/main.alt.bin", MAIN),
+    UnitFile::new(files::MAIN[0], MAIN),
+    UnitFile::new(files::MAIN[1], MAIN),
 ];
 static TRANSPORT_UNITS: [UnitFile; 2] = [
-    UnitFile::new("/mover.bin", MOVER),
-    UnitFile::new("/mover.alt.bin", MOVER),
+    UnitFile::new(files::MOVER[0], MOVER),
+    UnitFile::new(files::MOVER[1], MOVER),
 ];
 
 impl FileName {
@@ -425,8 +426,10 @@ impl<F: Files> BankFiles<F> {
 
     /// Resolves a prepared save from the game actually observed. Follow it
     /// with `read`.
-    pub fn reconcile(&mut self, observed: GameObservation) -> Outcome<RecoveryDecision, F> {
-        self.bank()?.reconcile_game(observed).map_err(Error::Bank)
+    pub fn reconcile(&mut self, fingerprint: Fingerprint) -> Outcome<RecoveryDecision, F> {
+        self.bank()?
+            .reconcile_game(fingerprint)
+            .map_err(Error::Bank)
     }
 
     /// What the prepared save moved between Bank and the game: everything
@@ -487,16 +490,9 @@ impl<F: Files> BankFiles<F> {
         let Phase::Prepared(pending) = self.phase()? else {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         };
-        let fingerprint = match decision {
+        self.reconcile(match decision {
             RecoveryDecision::KeepBefore => pending.before_fingerprint,
             RecoveryDecision::CommitAfter => pending.after_fingerprint,
-            RecoveryDecision::Blocked(_) => {
-                return Err(Error::Side(FileName::Bank, Problem::NotReady))
-            }
-        };
-        self.reconcile(GameObservation::Present {
-            game: pending.game,
-            fingerprint,
         })
     }
 }
@@ -506,14 +502,19 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::testing::*;
-    use offline_core::sections::{BANK_RANGES, DEX, MILES, REWARD_DATE};
+    use offline_core::{
+        native_blob::{MILES_OFFSET, REWARD_DATE_OFFSET},
+        sections::{BANK_RANGES, DEX},
+    };
+    const MILES: core::ops::Range<usize> = MILES_OFFSET..MILES_OFFSET + 4;
+    const REWARD_DATE: core::ops::Range<usize> = REWARD_DATE_OFFSET..REWARD_DATE_OFFSET + 6;
     use std::{boxed::Box, collections::BTreeSet, format, vec, vec::Vec};
 
     /// Opens after a reboot, resolving a pending save from the observed game.
     fn recovered(disk: &Shared, game: Fingerprint) -> (Vec<u8>, Loaded) {
         let mut files = BankFiles::new(disk.reboot());
         if let Phase::Prepared(_) = files.open().unwrap().unwrap() {
-            files.reconcile(observed(game)).unwrap();
+            files.reconcile(game).unwrap();
         }
         load(&mut files)
     }
@@ -617,7 +618,7 @@ mod tests {
         assert_eq!(&before[MILES], &999u32.to_le_bytes());
         assert_eq!(before[REWARD_DATE.start + 3], 6);
         // A save that is committed has those of the save.
-        files.reconcile(observed(AFTER)).unwrap();
+        files.reconcile(AFTER).unwrap();
         let after = load(&mut files).0;
         assert_eq!(&after[MILES], &777u32.to_le_bytes());
         assert_eq!(after[REWARD_DATE.start + 3], 7);
@@ -663,7 +664,7 @@ mod tests {
         files
             .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
-        files.reconcile(observed([9; 32])).unwrap();
+        files.reconcile([9; 32]).unwrap();
         load(&mut files);
         drop(files);
         if delivered != 0 {
@@ -704,13 +705,13 @@ mod tests {
             // Whatever the cut left behind, the next save goes through.
             let mut files = BankFiles::new(disk.reboot());
             if let Phase::Prepared(_) = files.open().unwrap().unwrap() {
-                files.reconcile(observed(game)).unwrap();
+                files.reconcile(game).unwrap();
             }
             load(&mut files);
             files
                 .prepare(&mut third.clone(), GAME, [5; 32], [6; 32])
                 .unwrap_or_else(|error| panic!("{context}: the next save: {error:?}"));
-            files.reconcile(observed([6; 32])).unwrap();
+            files.reconcile([6; 32]).unwrap();
             let bytes = load(&mut opened(&files.files_mut().reboot())).0;
             assert!(bytes == third, "{context}: the next save differs");
         };
@@ -727,7 +728,7 @@ mod tests {
         check(&prepared, BEFORE, &old_state, "game write failed");
         let finish = |disk: &Shared| {
             let mut files = opened(disk);
-            files.reconcile(observed(AFTER))?;
+            files.reconcile(AFTER)?;
             let mut staging = vec![0; BLOB_SIZE];
             files.read(&mut staging).map(|_| ())
         };
@@ -752,7 +753,7 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files.prepare(&mut y.clone(), GAME, BEFORE, AFTER).unwrap();
-        files.reconcile(observed(AFTER)).unwrap();
+        files.reconcile(AFTER).unwrap();
         assert!(load(&mut files).0 == y);
         // A live import alone publishes nothing.
         assert!(load(&mut opened(&disk.reboot())).0 == y);
@@ -790,7 +791,7 @@ mod tests {
         files
             .prepare(&mut original.clone(), GAME, BEFORE, AFTER)
             .unwrap();
-        files.reconcile(observed(AFTER)).unwrap();
+        files.reconcile(AFTER).unwrap();
         let bytes = load(&mut files).0;
         assert!(bytes == original);
         assert_eq!(disk.0.borrow().files.len(), 3);
@@ -873,7 +874,7 @@ mod tests {
         {
             let published = disk.like(console).cut_after(cut);
             let mut files = opened(&published);
-            let _ = files.reconcile(observed(AFTER));
+            let _ = files.reconcile(AFTER);
             let (bytes, loaded) = recovered(&published, AFTER);
             assert_eq!(loaded.delivered, 0, "cut {cut}");
             assert!(bytes == after, "cut {cut}");
@@ -987,7 +988,7 @@ mod tests {
         files
             .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
-        files.reconcile(observed([9; 32])).unwrap();
+        files.reconcile([9; 32]).unwrap();
         assert!(load(&mut files).0 == old);
         let base = disk.reboot();
 
@@ -1073,7 +1074,7 @@ mod tests {
         files
             .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
             .unwrap();
-        files.reconcile(observed([9; 32])).unwrap();
+        files.reconcile([9; 32]).unwrap();
         let base = disk.reboot();
         let count = |disk: &Shared| {
             let mut files = BankFiles::new(disk.reboot());
@@ -1164,7 +1165,7 @@ mod tests {
         files
             .prepare(&mut body(0x52, 0x44, 0), GAME, BEFORE, AFTER)
             .unwrap();
-        files.reconcile(observed(AFTER)).unwrap();
+        files.reconcile(AFTER).unwrap();
         drop(files);
         let intact = disk.copy();
         // Both journal records are lost.
@@ -1215,7 +1216,7 @@ mod tests {
         let disk = disk.reboot();
         assert!(!transport_ok(&disk));
         let mut files = opened(&disk);
-        files.reconcile(observed(AFTER)).unwrap();
+        files.reconcile(AFTER).unwrap();
         for _ in 0..3 {
             let (bytes, loaded) = load(&mut files);
             assert_eq!(loaded.delivered, 0);
@@ -1246,8 +1247,8 @@ mod tests {
         drop(files);
         let in_progress = rolled_back.copy();
         let published = rolled_back.copy();
-        opened(&published).reconcile(observed(AFTER)).unwrap();
-        opened(&rolled_back).reconcile(observed(BEFORE)).unwrap();
+        opened(&published).reconcile(AFTER).unwrap();
+        opened(&rolled_back).reconcile(BEFORE).unwrap();
 
         for (name, disk, delivered, pokemon) in [
             ("delivery waiting", &waiting, 12, 12),
@@ -1329,7 +1330,7 @@ mod tests {
         files
             .prepare(&mut body(0x31, 0x44, 3), GAME, BEFORE, AFTER)
             .unwrap();
-        files.reconcile(observed(AFTER)).unwrap();
+        files.reconcile(AFTER).unwrap();
         let Phase::Clean(current) = files.phase().unwrap() else {
             unreachable!()
         };
@@ -1417,7 +1418,7 @@ mod tests {
             files
                 .prepare(&mut emptied.clone(), GAME, BEFORE, AFTER)
                 .unwrap_or_else(|error| panic!("cut {cut}: the next save: {error:?}"));
-            files.reconcile(observed(AFTER)).unwrap();
+            files.reconcile(AFTER).unwrap();
             assert!(load(&mut files).0 == emptied, "cut {cut}");
             drop(files);
             deliver(&disk, 2);
@@ -1453,7 +1454,7 @@ mod tests {
             files
                 .prepare(&mut next.clone(), GAME, BEFORE, AFTER)
                 .unwrap();
-            files.reconcile(observed(AFTER)).unwrap();
+            files.reconcile(AFTER).unwrap();
             end_session(&mut files, &disk);
             expected = next;
         }
@@ -1504,7 +1505,7 @@ mod tests {
             // The session ends before the game answered.
             end_session(&mut files, &disk);
             assert!(matches!(files.open(), Ok(Some(Phase::Prepared(_)))));
-            files.reconcile(observed(game)).unwrap();
+            files.reconcile(game).unwrap();
             let (bytes, _) = load(&mut files);
             assert!(&bytes == kept);
             // A restart at the same point comes to the same Bank.
@@ -1532,7 +1533,7 @@ mod tests {
             files
                 .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
                 .unwrap();
-            files.reconcile(observed([9; 32])).unwrap();
+            files.reconcile([9; 32]).unwrap();
             assert!(load(&mut files).0 == old);
             files
                 .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
@@ -1557,11 +1558,38 @@ mod tests {
 
             // START with the game there, in the same run: its save decides.
             assert!(matches!(files.open(), Ok(Some(Phase::Prepared(_)))));
-            files.reconcile(observed(game)).unwrap();
+            files.reconcile(game).unwrap();
             let (bytes, _) = load(&mut files);
             assert!(&bytes == kept);
             end_session(&mut files, &disk);
             assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
         }
+    }
+
+    /// The files of the current journal version, by name and length. A
+    /// change here is a new version of the stored files: raise
+    /// offline-core's version to the next whole number, and give the
+    /// migration a folder for the files as they were (docs/building.md).
+    #[test]
+    fn the_files_are_those_of_this_journal_version() {
+        assert_eq!(offline_core::SCHEMA_VERSION, 1);
+        let files: Vec<(&str, u64)> = [FileName::Bank, FileName::Main, FileName::Transport]
+            .into_iter()
+            .flat_map(FileName::units)
+            .map(|unit| (unit.path, unit.len))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                ("/journal.bin", 140),
+                ("/journal.alt.bin", 140),
+                ("/bank.bin", 729_800),
+                ("/bank.alt.bin", 729_800),
+                ("/main.bin", 30_466),
+                ("/main.alt.bin", 30_466),
+                ("/mover.bin", 6_990),
+                ("/mover.alt.bin", 6_990),
+            ]
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Frozen: the previous release's `bank_files.rs`. Only the migration reads it.
+//! Frozen: v0.4.0's `bank_files.rs`. Only the migration reads it.
 //! The stored files and the order in which they are read and written.
 //!
 //! The Bank container carries the journal and decides which save is current.
@@ -119,6 +119,9 @@ type Outcome<T, F> = Result<T, Error<<<F as Files>::Storage as Storage>::Error>>
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Loaded {
     pub rewards: Record,
+    /// Not of that release: the record's bytes as read, for a migration that
+    /// reads them with the meaning an earlier release gave them.
+    pub record: Option<[u8; rewards::RECORD_SIZE]>,
     /// No Pokédex for this save (no file, a damaged one, or one of another
     /// save): the staging region is zero and must be filled with the native
     /// defaults by the main thread.
@@ -318,6 +321,7 @@ impl<F: Files> BankFiles<F> {
         sections::expand(staging).map_err(|_| Error::Side(FileName::Bank, Problem::Layout))?;
         let mut loaded = Loaded {
             rewards: Record::NONE,
+            record: None,
             dex_missing: true,
             transport_missing: true,
             delivered: 0,
@@ -351,6 +355,7 @@ impl<F: Files> BankFiles<F> {
                 if let Some(slot) = slot {
                     match file.read(index, &slot, &mut bytes) {
                         Ok(()) => {
+                            loaded.record = Some(bytes);
                             loaded.rewards = rewards::decode(&bytes).unwrap_or(Record::NONE);
                             // The balance v0.3.1 kept in this record.
                             let body = u32::from_le_bytes([

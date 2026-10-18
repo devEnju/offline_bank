@@ -1,39 +1,28 @@
-//! The entry points called from the patched original code, the worker thread
-//! that does the file work, and the file adapter over Transporter's own SDK
-//! wrappers. The original task calls an entry every frame until it answers;
-//! the main thread waits for a file operation only if no worker thread can be
-//! created, and the job then runs on it.
+//! The entry points called from the patched original code. The original
+//! task calls an entry every frame until it answers. The file work runs on
+//! the patch's one worker thread (`storage_worker`), which the first START
+//! starts; the main thread never waits for it.
 
-use crate::{layout::*, navigation};
-use core::{
-    cell::UnsafeCell,
-    mem::transmute,
-    slice,
-    sync::atomic::{AtomicU32, Ordering},
+use crate::{
+    cart,
+    layout::*,
+    navigation,
+    panel::{self, Panel},
+    program::Transporter15,
+    storage_worker::{DeliveryWorker, Failed, Job, Reply},
+    ui::{end_panel, start_panel, UI_CONTEXT},
 };
-use offline_core::{sections::TRANSPORT_SLOTS, transport, Storage, METADATA_SIZE};
+use core::{cell::UnsafeCell, mem::transmute, slice};
+use offline_core::sections::TRANSPORT_SLOTS;
+use patch_common::{exclusive::Exclusive, native::follow, worker::JobId};
 
-/// Transporter's `fs:USER` session handle.
-pub(crate) const FS_SESSION: *const u32 = 0x0031_1f80 as *const u32;
-pub(crate) const OPEN_FILE_DIRECTLY: usize = 0x001d_f448;
-pub(crate) const FILE_READ: usize = 0x0015_930c;
-pub(crate) const FILE_WRITE: usize = 0x0015_9390;
-pub(crate) const FILE_SIZE: usize = 0x0015_93f0;
-pub(crate) const FILE_CLOSE: usize = 0x0015_9364;
 /// The original's "show this message and wait": `(ui, message, 1)`, as the
 /// game search calls it for its own message 0 (`00246FFC`).
 const SHOW_MESSAGE: usize = 0x0019_b50c;
-/// The title screen's "put this message into its pane": `(context, group,
-/// pane, message)`, as it calls it for its version line, message 0x29
-/// (`0024BAE8`). It loads the message into the first of the context's two
-/// work strings (`[context + 4]`), fills in its values into the second, and
-/// hands the second to the pane (`0019F834` finds it in the layout of the
-/// group, `[[context + 0x1C] + 8 * group]`; `002375D0` sets its text).
-const PANE_MESSAGE: usize = 0x001d_33cc;
-const PANE_FIND: usize = 0x0019_f834;
-const PANE_TEXT: usize = 0x0023_75d0;
-const CONTEXT_STRINGS: usize = 0x4;
-const CONTEXT_LAYOUTS: usize = 0x1c;
+/// `(messages, message, string)`: loads a message of the shared UI's text
+/// file into a string object (`001DBEB8`), as "show a message" does before
+/// it hands the string to its dialog (`0019B578`).
+const LOAD_MESSAGE: usize = 0x001d_beb8;
 /// What the version line says behind "Ver. 1.5".
 const VERSION_SUFFIX: &[u8] = b"-offline";
 /// The original's router, `get_next_state(manager, current)`, and what it
@@ -43,253 +32,94 @@ const NEXT_STATE: usize = 0x0024_2ba0;
 const MANAGER_TASK: usize = 0x10;
 const MANAGER_CANCELLED: usize = 0x1a;
 const TASK_OUTCOME: usize = 0x30;
-/// The original's HOME and sleep block: `0022AEEC(bit)` sets a bit of its
-/// activity mask and `0011A5FC(bit)` clears it. While the mask is not zero
-/// the original refuses both, as it did from its connect step to its
-/// disconnect step.
-const BLOCK_SET: usize = 0x0022_aeec;
-const BLOCK_CLEAR: usize = 0x0011_a5fc;
-/// Set by the original (0010AD84) when HOME is pressed while the mask is
-/// zero, and nothing else is done for the press then. Its main loop
-/// (001044D0) carries the press out some frames later, whatever the mask
-/// says by then.
-const HOME_ACCEPTED: *mut u8 = 0x002f_49e9 as *mut u8;
-/// Flush and update the file's time, as Bank's writer does.
-pub(crate) const FLUSH_FLAGS: u32 = 0x0001_0001;
-/// The original's `svcCreateThread(out, entry, arg, stack_top, priority,
-/// processor)` and `svcExitThread()` wrappers.
-const CREATE_THREAD: usize = 0x0010_e250;
-const EXIT_THREAD: usize = 0x0011_f140;
-/// One below the main thread, so the worker runs while the main thread waits
-/// for the next frame.
-const WORKER_PRIORITY: i32 = 0x31;
 
-extern "aapcs" {
-    /// `svc 0x23` behind an ordinary call boundary (see link.rs).
-    pub(crate) fn transporter_close_handle(handle: u32) -> i32;
+/// The original's clock, as `0019B758` reads it: `00233854(&moment)` copies
+/// the current time (`002F4E38`) into an 8-byte moment, `0025A77C(&moment)`
+/// gives it in ms.
+const NOW: usize = 0x0023_3854;
+const MILLISECONDS: usize = 0x0025_a77c;
+/// Where the game list notes the time it began, in ms (`00245180`..
+/// `0024524C`), for its minimum time of 3 s (`00244B24`).
+const LIST_BEGAN: usize = 0x70;
+
+/// A moment of the original's clock.
+#[repr(C, align(8))]
+struct Moment(UnsafeCell<[u32; 2]>);
+// SAFETY: only the main thread uses it.
+unsafe impl Sync for Moment {}
+impl Moment {
+    /// Notes the current time.
+    unsafe fn note(&self) {
+        let now: unsafe extern "aapcs" fn(*mut [u32; 2]) = unsafe { transmute(NOW) };
+        unsafe { now(self.0.get()) };
+    }
+    /// The noted time in ms.
+    unsafe fn milliseconds(&self) -> u32 {
+        let ms: unsafe extern "aapcs" fn(*const [u32; 2]) -> u32 =
+            unsafe { transmute(MILLISECONDS) };
+        unsafe { ms(self.0.get()) }
+    }
 }
+/// When the search's panel went up.
+static PANEL_SINCE: Moment = Moment(UnsafeCell::new([0; 2]));
 
-const IDLE: u32 = 0;
-const RUNNING: u32 = 1;
-const DONE: u32 = 2;
-const JOB_CHECK: u32 = 0;
-const JOB_DELIVER: u32 = 1;
+/// The panel the search started (`panel`).
+static PANEL: Panel = Panel::new();
 
-/// Worker state. Only the main thread starts and collects a job; while one
-/// runs, the worker reads `task` and `job` and writes the two atomics.
-#[repr(C)]
-struct Shared {
-    phase: AtomicU32,
-    result: AtomicU32,
-    handle: UnsafeCell<u32>,
-    task: UnsafeCell<*const u8>,
-    job: UnsafeCell<u32>,
+/// The worker and the job it has out. Only the main thread takes it.
+struct Runtime {
+    worker: Option<DeliveryWorker>,
+    job: Option<(JobId, Job)>,
 }
-// SAFETY: see the access rule above; `phase` orders every hand-over.
-unsafe impl Sync for Shared {}
-static STATE: Shared = Shared {
-    phase: AtomicU32::new(IDLE),
-    result: AtomicU32::new(0),
-    handle: UnsafeCell::new(0),
-    task: UnsafeCell::new(core::ptr::null()),
-    job: UnsafeCell::new(0),
+// SAFETY: the original calls the hooks, the only ones to take it, on its
+// main thread.
+static STATE: Exclusive<Runtime> = unsafe {
+    Exclusive::new(Runtime {
+        worker: None,
+        job: None,
+    })
 };
 
-#[repr(C, align(8))]
-struct Stack(UnsafeCell<[u8; WORKER_STACK_SIZE]>);
-// SAFETY: used only as the stack of the one worker thread.
-unsafe impl Sync for Stack {}
-static STACK: Stack = Stack(UnsafeCell::new([0; WORKER_STACK_SIZE]));
-
-/// A pair of files in Bank's extdata, open for reading and writing and
-/// addressed as one range: the two journal records, or the two copies of
-/// the transport box. Bank keeps each in a file of its own, because the
-/// console leaves a file that was being written unreadable when the power
-/// fails.
-///
-/// A file that is missing or cannot be opened makes every read of it fail,
-/// and so the check and the delivery refuse: Transporter neither creates
-/// nor replaces a file. Bank's next Save and Quit does.
-struct File {
-    handles: [Option<u32>; 2],
-    written: [bool; 2],
-    /// Length of each of the two files.
-    len: u64,
-}
-
-/// Bank's files as the delivery rules reach them (`transport::Files`): one
-/// pair at a time, so that never more than two files are open.
-struct BankFiles;
-impl transport::Files for BankFiles {
-    type Storage = File;
-    fn journal(&mut self) -> Option<File> {
-        unsafe { File::open(JOURNAL_PATHS, METADATA_SIZE as u64) }
-    }
-    fn mover(&mut self) -> Option<File> {
-        unsafe { File::open(MOVER_PATHS, u64::from(transport::LEN)) }
-    }
-}
-impl File {
-    /// `None` when Bank's extdata or both files do not exist, access is
-    /// refused, or a file is not exactly `len` bytes, the size Bank creates.
-    unsafe fn open(paths: [&[u8]; 2], len: u64) -> Option<Self> {
-        // Whatever was opened is closed again if this ends early.
-        let mut file = Self {
-            handles: [None; 2],
-            written: [false; 2],
-            len,
-        };
-        for (handle, path) in file.handles.iter_mut().zip(paths) {
-            *handle = unsafe { Self::open_one(path, len) }.ok()?;
-        }
-        file.handles.iter().any(Option::is_some).then_some(file)
-    }
-    /// `Ok(None)` for a file that is not there or cannot be opened, `Err`
-    /// for one of another size: that is not a file of this layout.
-    unsafe fn open_one(path: &[u8], len: u64) -> Result<Option<u32>, ()> {
-        type Open = unsafe extern "aapcs" fn(
-            *const u32,
-            *mut u32,
-            u32,
-            u32,
-            u32,
-            *const u8,
-            u32,
-            u32,
-            *const u8,
-            u32,
-            u32,
-            u32,
-        ) -> i32;
-        type Size = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-        let open: Open = unsafe { transmute(OPEN_FILE_DIRECTLY) };
-        // media type SD, extdata id low and high.
-        let archive = [1u32, BANK_EXTDATA, 0];
-        let mut handle = 0;
-        let code = unsafe {
-            open(
-                FS_SESSION,
-                &mut handle,
-                0,
-                6,
-                2,
-                archive.as_ptr().cast(),
-                12,
-                3,
-                path.as_ptr(),
-                path.len() as u32,
-                3,
-                0,
-            )
-        };
-        if code < 0 || handle == 0 {
-            return Ok(None);
-        }
-        let size: Size = unsafe { transmute(FILE_SIZE) };
-        let mut length = 0;
-        if unsafe { size(&handle, &mut length) } < 0 || length != len {
-            unsafe { close(handle) };
-            return Err(());
-        }
-        Ok(Some(handle))
-    }
-    /// The file that holds `offset..offset + length`, and where in it.
-    fn locate(&self, offset: u64, length: usize) -> Result<(usize, u32, u64), ()> {
-        let index = (offset / self.len) as usize;
-        let within = offset % self.len;
-        if index >= self.handles.len() || within + length as u64 > self.len {
-            return Err(());
-        }
-        Ok((index, self.handles[index].ok_or(())?, within))
-    }
-    fn put(&mut self, handle: u32, offset: u64, bytes: &[u8], flags: u32) -> Result<(), ()> {
-        type Write =
-            unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-        let write: Write = unsafe { transmute(FILE_WRITE) };
-        let mut count = 0;
-        let code = unsafe {
-            write(
-                &handle,
-                &mut count,
-                offset,
-                bytes.as_ptr(),
-                bytes.len() as u32,
-                flags,
-            )
-        };
-        if code < 0 || count as usize != bytes.len() {
-            return Err(());
-        }
-        Ok(())
-    }
-}
-unsafe fn close(handle: u32) {
-    type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
-    let close: Close = unsafe { transmute(FILE_CLOSE) };
-    unsafe {
-        close(&handle);
-        transporter_close_handle(handle);
-    }
-}
-impl Drop for File {
-    fn drop(&mut self) {
-        for handle in self.handles.into_iter().flatten() {
-            unsafe { close(handle) };
-        }
-    }
-}
-impl Storage for File {
-    type Error = ();
-    fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), ()> {
-        type Read = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-        let (_, handle, within) = self.locate(offset, bytes.len())?;
-        let read: Read = unsafe { transmute(FILE_READ) };
-        let mut count = 0;
-        let code = unsafe {
-            read(
-                &handle,
-                &mut count,
-                within,
-                bytes.as_mut_ptr(),
-                bytes.len() as u32,
-            )
-        };
-        if code < 0 || count as usize != bytes.len() {
-            return Err(());
-        }
-        Ok(())
-    }
-    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), ()> {
-        let (index, handle, within) = self.locate(offset, bytes.len())?;
-        self.written[index] = true;
-        self.put(handle, within, bytes, 0)
-    }
-    /// Only a file that was written is flushed: the one that holds Bank's
-    /// own box is never sent a write of any kind.
-    fn sync(&mut self) -> Result<(), ()> {
-        let dummy = [0u8; 1];
-        for index in 0..self.handles.len() {
-            if let (Some(handle), true) = (self.handles[index], self.written[index]) {
-                self.put(handle, 0, &dummy[..0], FLUSH_FLAGS)?;
-                self.written[index] = false;
+impl Runtime {
+    /// One frame of `kind`: on the first the worker is started if it is not
+    /// yet and `stage` hands it what the job needs, then its reply. `None`
+    /// while it runs. A job whose worker cannot say whether it is still
+    /// running stays out: what it holds stays lent, and the next frame asks
+    /// again.
+    unsafe fn step(
+        &mut self,
+        kind: Job,
+        stage: impl FnOnce(&mut DeliveryWorker) -> Option<()>,
+    ) -> Option<Result<Reply, Failed>> {
+        let Some((id, out)) = self.job else {
+            let worker = match unsafe { DeliveryWorker::get(&mut self.worker) } {
+                Ok(worker) => worker,
+                Err(failed) => return Some(Err(failed)),
+            };
+            if stage(worker).is_none() {
+                return Some(Err(Failed));
             }
+            return match unsafe { worker.submit(kind) } {
+                Ok(id) => {
+                    self.job = Some((id, kind));
+                    None
+                }
+                Err(failed) => Some(Err(failed)),
+            };
+        };
+        // The check and the delivery are steps of their own and never
+        // overlap; a reply is only ever the job's that asked for it.
+        if out != kind {
+            return Some(Err(Failed));
         }
-        Ok(())
+        let worker = self.worker.as_mut()?;
+        let mut job = Some(id);
+        let polled = worker.collect(&mut job);
+        if job.is_none() {
+            self.job = None;
+        }
+        polled.transpose()
     }
-    /// Transporter replaces no file of Bank's.
-    fn recreate(&mut self, _: u64, _: u64) -> Result<(), ()> {
-        Err(())
-    }
-}
-
-/// A pointer the original would itself dereference: word aligned and inside
-/// the process image or heap.
-unsafe fn follow(base: *const u8, offset: usize) -> Option<*const u8> {
-    let value = unsafe { base.add(offset).cast::<u32>().read() };
-    if value & 3 != 0 || !(0x0010_0000..0x1000_0000).contains(&value) {
-        return None;
-    }
-    Some(value as *const u8)
 }
 
 /// The transport box the original filled while reading the source game.
@@ -306,80 +136,10 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
     }
 }
 
-/// The file work of one job. Runs on the worker thread. The check answers
-/// the message to show, or 0 for none; the delivery answers 1 when it is
-/// written.
-unsafe fn work(job: u32, task: *const u8) -> u32 {
-    if job == JOB_CHECK {
-        return transport::check(&mut BankFiles)
-            .err()
-            .map_or(0, refusal_message);
-    }
-    let Some((records, tags)) = (unsafe { native_box(task) }) else {
-        return 0;
-    };
-    u32::from(transport::deliver(&mut BankFiles, records, tags).is_ok())
-}
-
-unsafe extern "aapcs" fn worker(_: u32) {
-    let result = unsafe { work(*STATE.job.get(), *STATE.task.get()) };
-    STATE.result.store(result, Ordering::Relaxed);
-    STATE.phase.store(DONE, Ordering::Release);
-    let exit: unsafe extern "aapcs" fn() = unsafe { transmute(EXIT_THREAD) };
-    unsafe { exit() };
-}
-
-/// Starts `job` on the first call and answers `None` until it is finished.
-/// If no thread can be created the job runs here, as it did before.
-unsafe fn step(task: *const u8, job: u32) -> Option<u32> {
-    type Create = unsafe extern "aapcs" fn(
-        *mut u32,
-        unsafe extern "aapcs" fn(u32),
-        u32,
-        usize,
-        i32,
-        i32,
-    ) -> i32;
-    match STATE.phase.load(Ordering::Acquire) {
-        IDLE => {
-            unsafe {
-                *STATE.task.get() = task;
-                *STATE.job.get() = job;
-            }
-            STATE.phase.store(RUNNING, Ordering::Release);
-            let create: Create = unsafe { transmute(CREATE_THREAD) };
-            let top = STACK.0.get() as usize + WORKER_STACK_SIZE;
-            let code = unsafe { create(STATE.handle.get(), worker, 0, top, WORKER_PRIORITY, -2) };
-            if code < 0 {
-                STATE.phase.store(IDLE, Ordering::Release);
-                return Some(unsafe { work(job, task) });
-            }
-            None
-        }
-        DONE => {
-            unsafe { transporter_close_handle(*STATE.handle.get()) };
-            STATE.phase.store(IDLE, Ordering::Release);
-            Some(STATE.result.load(Ordering::Relaxed))
-        }
-        _ => None,
-    }
-}
-
-/// Sets or clears bit 1 of the original's activity mask through the
-/// original functions.
-///
-/// The mask only refuses new HOME presses. One accepted just before it was
-/// set would still be carried out, so setting the mask also takes that press
-/// back: accepting it did nothing but set the one byte cleared here. From
-/// then on the original refuses every press itself, and the HOME Menu, and
-/// closing Transporter from it, never meet a file being read or written.
-unsafe fn refuse_home(refuse: bool) {
-    let address = if refuse { BLOCK_SET } else { BLOCK_CLEAR };
-    let mark: unsafe extern "aapcs" fn(u32) = unsafe { transmute(address) };
-    unsafe { mark(1) };
-    if refuse {
-        unsafe { HOME_ACCEPTED.write_volatile(0) };
-    }
+/// Refuses HOME and sleep, or lets them through again
+/// (`patch_common::home`).
+fn refuse_home(refuse: bool) {
+    patch_common::home::refuse::<Transporter15>(refuse);
 }
 
 /// Replaces the one call of the original's router (`00242EF8`). The
@@ -401,7 +161,14 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
         return native;
     };
     let next = navigation::destination(current, outcome, native, cancelled);
-    unsafe { refuse_home(navigation::loads(next)) };
+    refuse_home(navigation::loads(next));
+    // The search's panel stays into the game list, until the list is on
+    // screen; after anything else it ends here.
+    if !panel::handed_on(next) {
+        if let Some(ui) = PANEL.release() {
+            unsafe { end_panel(ui as *mut u8) };
+        }
+    }
     next
 }
 
@@ -415,17 +182,65 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
 /// Called only from that stub, on the main thread.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_message_waits() {
-    unsafe { refuse_home(false) };
+    // A refusal or "Could not find a game" comes without the search's
+    // panel, as the reader's messages come without its own.
+    if let Some(ui) = PANEL.release() {
+        unsafe { end_panel(ui as *mut u8) };
+    }
+    refuse_home(false);
+}
+
+/// The game list's set-up is about to start its own indicator on the list's
+/// screen it has just built. Answers 1 while the search's panel is up: the
+/// list then starts nothing and only notes when it began, for its minimum
+/// time (link.rs); 0: the list starts its own, as the original.
+/// # Safety
+/// Called only from the stub of the patched site at 00244EAC (link.rs), on
+/// the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_indicator() -> u32 {
+    u32::from(PANEL.list_starts() == panel::ListStart::Quiet)
+}
+
+/// The game list has noted when it began, while the search's panel is up
+/// (link.rs): it counts its minimum time from when the panel went up
+/// instead, so the panel is not kept 3 s longer than the list needs.
+/// # Safety
+/// Called only from the stub of the patched site at 00244EAC (link.rs), on
+/// the main thread, with the live game-list task.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_started(task: *mut u8) {
+    unsafe {
+        let now = Moment(UnsafeCell::new([0; 2]));
+        now.note();
+        let elapsed = now.milliseconds().wrapping_sub(PANEL_SINCE.milliseconds());
+        let began = task.add(LIST_BEGAN).cast::<u64>();
+        began.write(panel::list_start(began.read(), elapsed));
+    }
+}
+
+/// A frame of the game list's set-up, before its check that restarts its
+/// indicator's sound (`00244D40`). Answers 1 while the search's panel is up,
+/// whose sound plays: the check is skipped (link.rs).
+/// # Safety
+/// Called only from the stub of the patched site at 00244D40 (link.rs), on
+/// the main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_list_frame() -> u32 {
+    u32::from(PANEL.up())
 }
 
 /// The game list is set up and on screen: every save has been read, and it
-/// waits for the user.
+/// waits for the user. The panel that covered its loading ends here.
 /// # Safety
 /// Called only from the stub of the patched site at 002445EC (link.rs), on
 /// the main thread.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_list_ready() {
-    unsafe { refuse_home(false) };
+    if let Some(ui) = PANEL.release() {
+        unsafe { end_panel(ui as *mut u8) };
+    }
+    refuse_home(false);
 }
 
 /// Asks, when START was pressed and before the original searches for games,
@@ -438,7 +253,24 @@ pub unsafe extern "aapcs" fn transporter_list_ready() {
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    match unsafe { step(task, JOB_CHECK) } {
+    // The loading panel goes up before anything is read: on the first
+    // frame, before the check is handed over (`panel`).
+    if let Some(ui) = unsafe { follow(task, TASK_UI) } {
+        if unsafe { follow(ui, UI_CONTEXT) }.is_some() && PANEL.start(ui as usize) {
+            unsafe {
+                start_panel(ui);
+                PANEL_SINCE.note();
+            }
+        }
+    }
+    let answer = {
+        let Some(mut state) = STATE.take() else {
+            return SEARCH_PENDING;
+        };
+        unsafe { state.step(Job::Check, |_| Some(())) }
+    };
+    // A worker that failed refuses as a file that does not read does.
+    match answer.map(|reply| reply.unwrap_or(MESSAGE_OPEN_BANK)) {
         None => SEARCH_PENDING,
         Some(0) => SEARCH_GO,
         Some(message) => {
@@ -464,71 +296,81 @@ unsafe fn show(task: *const u8, message: u32) -> bool {
     true
 }
 
+/// Replaces the load of a message in the original's "show a message"
+/// (`0019B578`): the original loads it, and the failure message then keeps
+/// only what follows its first page (`layout::from_second_page`).
+/// # Safety
+/// Called only from that site, with the arguments of the replaced call.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_message_text(
+    messages: *mut u8,
+    message: u32,
+    string: *mut u8,
+) -> u32 {
+    unsafe {
+        let load: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) -> u32 = transmute(LOAD_MESSAGE);
+        let loaded = load(messages, message, string);
+        if from_second_page(message) {
+            patch_common::ui::keep_rest(string);
+        }
+        loaded
+    }
+}
+
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
 /// flushed, and read back; `DELIVER_PENDING` while that is in progress; and
 /// `DELIVER_FAILED` when nothing was delivered, in which case the original
 /// must not remove anything from the source game.
+///
+/// Bank is written only while the game the Pokémon leave can be saved: for
+/// a cartridge whose card is gone the answer is `DELIVER_FAILED` before
+/// anything is written, as the original asks again before it saves the game.
 /// # Safety
 /// Called only from the stub of the patched site at 0024A150 (link.rs) with
 /// the live task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
-    match unsafe { step(task, JOB_DELIVER) } {
+    let Some(mut state) = STATE.take() else {
+        return DELIVER_PENDING;
+    };
+    if state.job.is_none() {
+        let Some(manager) = (unsafe { follow(task, TASK_MANAGER) }) else {
+            return DELIVER_FAILED;
+        };
+        if unsafe { cart::chosen_card_missing(manager) } {
+            return DELIVER_FAILED;
+        }
+    }
+    // The transport box goes to the worker in its staging buffer, copied
+    // here: the worker touches no object of the original.
+    let answer = unsafe {
+        state.step(Job::Deliver, |worker| {
+            let (records, tags) = native_box(task)?;
+            let staging = worker.staging_mut().ok()?;
+            staging[..RECORDS_LEN].copy_from_slice(records);
+            staging[RECORDS_LEN..].copy_from_slice(tags);
+            Some(())
+        })
+    };
+    match answer {
         None => DELIVER_PENDING,
-        Some(1) => DELIVER_DONE,
+        Some(Ok(1)) => DELIVER_DONE,
         Some(_) => DELIVER_FAILED,
     }
 }
 
 /// Replaces the title screen's call that writes its version line
-/// (`0024BAE8`): the original call, then the same line with the patch's name
-/// behind it, added to the original's own string in place and handed to the
-/// pane with the original's two calls. Without room for it the line stays
-/// the original's.
+/// (`0024BAE8`): the line says which patch runs (`patch_common::ui`).
 /// # Safety
 /// Called only from that site, with the arguments of the replaced call.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_version(
-    context: *const u8,
+    context: *mut u8,
     group: u32,
     pane: u32,
     message: u32,
 ) {
     unsafe {
-        let original: unsafe extern "aapcs" fn(*const u8, u32, u32, u32) = transmute(PANE_MESSAGE);
-        original(context, group, pane, message);
-        let Some(text) = follow(context, CONTEXT_STRINGS).and_then(|strings| follow(strings, 4))
-        else {
-            return;
-        };
-        let (Some(data), Some(layouts)) = (follow(text, 4), follow(context, CONTEXT_LAYOUTS))
-        else {
-            return;
-        };
-        let data = data.cast_mut().cast::<u16>();
-        let room = usize::from(text.add(8).cast::<u16>().read());
-        if text.add(0xc).read() == 0 {
-            return;
-        }
-        let mut len = 0;
-        while len < room && data.add(len).read() != 0 {
-            len += 1;
-        }
-        if len == 0 || len + VERSION_SUFFIX.len() >= room {
-            return;
-        }
-        for (index, &unit) in VERSION_SUFFIX.iter().enumerate() {
-            data.add(len + index).write(u16::from(unit));
-        }
-        len += VERSION_SUFFIX.len();
-        data.add(len).write(0);
-        text.cast_mut().add(0xa).cast::<u16>().write(len as u16);
-        let find: unsafe extern "aapcs" fn(u32, u32) -> *const u8 = transmute(PANE_FIND);
-        let set: unsafe extern "aapcs" fn(*const u8, *const u8, i32) = transmute(PANE_TEXT);
-        let layout = layouts.add(group as usize * 8).cast::<u32>().read();
-        let found = find(layout, pane);
-        if !found.is_null() {
-            set(found, text, -1);
-        }
+        patch_common::ui::version::<Transporter15>(context, group, pane, message, VERSION_SUFFIX)
     }
 }

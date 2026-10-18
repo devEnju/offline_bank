@@ -20,7 +20,7 @@ pub unsafe fn timestamp_with(
     }
     let mut words = [0; 2];
     read(&mut words);
-    if !valid_date(words) {
+    if local_moment(words).is_none() {
         return 0;
     }
     // SAFETY: caller guarantees exclusive valid storage; alignment checked.
@@ -32,14 +32,15 @@ pub unsafe fn timestamp_with(
 }
 
 /// Console-local date and time, to the minute, of a native packed timestamp,
-/// for reward accounting. Returns None for any value `timestamp_with` would
-/// reject.
+/// for reward accounting. `timestamp_with` writes only a value this accepts.
+/// The calendar rules are `Date`'s and `Moment`'s; the packed format adds
+/// that nothing is set above the year and that the seconds are 0..=59.
 pub fn local_moment(words: [u32; 2]) -> Option<offline_core::rewards::Moment> {
     use offline_core::rewards::{Date, Moment};
-    if !valid_date(words) {
+    let packed = u64::from(words[0]) | (u64::from(words[1]) << 32);
+    if packed >> 40 != 0 || packed & 63 > 59 {
         return None;
     }
-    let packed = u64::from(words[0]) | (u64::from(words[1]) << 32);
     let day = Date::new(
         ((packed >> 26) & 0x3fff) as u16,
         ((packed >> 22) & 15) as u8,
@@ -47,27 +48,6 @@ pub fn local_moment(words: [u32; 2]) -> Option<offline_core::rewards::Moment> {
     )
     .ok()?;
     Moment::new(day, ((packed >> 12) & 31) as u8, ((packed >> 6) & 63) as u8).ok()
-}
-
-fn valid_date(words: [u32; 2]) -> bool {
-    let packed = u64::from(words[0]) | (u64::from(words[1]) << 32);
-    let year = ((packed >> 26) & 0x3fff) as u32;
-    let month = ((packed >> 22) & 15) as u32;
-    let day = ((packed >> 17) & 31) as u32;
-    let hour = (packed >> 12) & 31;
-    let minute = (packed >> 6) & 63;
-    let second = packed & 63;
-    if packed >> 40 != 0 || year == 0 || hour > 23 || minute > 59 || second > 59 {
-        return false;
-    }
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
-        2 => 28,
-        _ => return false,
-    };
-    (1..=days).contains(&day)
 }
 
 #[cfg(test)]
@@ -123,7 +103,6 @@ mod tests {
         assert_eq!(early.day(), Date::new(2027, 1, 1).unwrap());
         // One second across midnight crosses one clock hour and one day.
         assert_eq!(early.hours_since(late), 1);
-        assert_eq!(early.day().days_since(late.day()), 1);
         let leap = Date::new(2028, 2, 29).unwrap();
         assert_eq!(
             local_moment(date(2028, 2, 29, 12, 34, 56)),
@@ -180,7 +159,7 @@ mod tests {
             );
             assert_eq!(output, [0x11223344, 0x55667788]);
         }
-        assert!(valid_date(date(2000, 2, 29, 23, 59, 59)));
-        assert!(valid_date(date(2028, 2, 29, 0, 0, 0)));
+        assert!(local_moment(date(2000, 2, 29, 23, 59, 59)).is_some());
+        assert!(local_moment(date(2028, 2, 29, 0, 0, 0)).is_some());
     }
 }

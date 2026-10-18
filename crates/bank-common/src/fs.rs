@@ -9,14 +9,17 @@
 //! first write to it; one that cannot be opened or read is reported as such
 //! and is replaced through `recreate`.
 //!
-//! Native calls are specific to Bank 1.5 code SHA256
-//! 2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf.
-//! See docs/internals.md for the verified call ABIs.
+//! The native calls are those of the program `P` (`patch_common::program`):
+//! Bank 1.5 for Bank's patches, Poké Transporter 1.5 for Transporter's, which
+//! visits Bank's files (`Visit`). See docs/internals.md for the verified call
+//! ABIs.
 
 #[cfg(any(test, target_arch = "arm"))]
 use crate::bank_files::UnitFile;
 #[cfg(any(test, target_arch = "arm"))]
 use offline_core::Storage;
+#[cfg(target_arch = "arm")]
+use {crate::program::Bank15, core::marker::PhantomData, patch_common::program::Program};
 
 #[cfg(any(test, target_arch = "arm"))]
 const IO_CHUNK: usize = 0x10000;
@@ -348,6 +351,8 @@ struct Split<R: Reach> {
     /// A flush that failed when its unit was closed for another one. The
     /// next `sync` reports it, so that it is not taken for durable.
     unflushed: Option<Error>,
+    /// Opened by a visitor (`visit`), who changes only what is there.
+    visiting: bool,
 }
 
 #[cfg(any(test, target_arch = "arm"))]
@@ -365,6 +370,7 @@ impl<R: Reach> Split<R> {
             units: [Unit::Absent; MAX_UNITS],
             open: None,
             unflushed: None,
+            visiting: false,
         })
     }
 
@@ -393,6 +399,17 @@ impl<R: Reach> Split<R> {
             found = true;
         }
         Ok(found.then_some(this))
+    }
+
+    /// As `open`, for a visitor that uses only what is there: a unit that is
+    /// not there is neither read nor written, and no unit is replaced.
+    /// Nothing is created or deleted.
+    fn visit(reach: R, files: &'static [UnitFile]) -> Result<Option<Self>, Error> {
+        let mut this = Self::open(reach, files)?;
+        if let Some(split) = &mut this {
+            split.visiting = true;
+        }
+        Ok(this)
     }
 
     /// Creates every file anew, zero-filled. Fails if one exists.
@@ -470,6 +487,9 @@ impl<R: Reach> Storage for Split<R> {
     type Error = Error;
 
     fn read(&mut self, mut offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
+        // A closed container reads nothing, not even the zeros of an
+        // absent unit.
+        self.archive()?;
         let mut done = 0;
         while done < bytes.len() {
             let (index, start) = self.locate(offset)?;
@@ -478,6 +498,7 @@ impl<R: Reach> Storage for Split<R> {
             let part = &mut bytes[done..done + count];
             match self.units[index] {
                 Unit::Present => self.select(index, false)?.read(within, part)?,
+                Unit::Absent if self.visiting => return Err(Error::Unreadable),
                 Unit::Absent => part.fill(0),
                 Unit::Unreadable => return Err(Error::Unreadable),
             }
@@ -496,6 +517,7 @@ impl<R: Reach> Storage for Split<R> {
         }
         let file = match self.units[index] {
             Unit::Present => self.select(index, false)?,
+            Unit::Absent if self.visiting => return Err(Error::ReadOnly),
             Unit::Absent => {
                 let created = self.select(index, true).map(|_| ());
                 created?;
@@ -515,6 +537,7 @@ impl<R: Reach> Storage for Split<R> {
         if let Some(error) = self.unflushed.take() {
             return Err(error);
         }
+        self.archive()?;
         if let Some((_, file, written)) = &mut self.open {
             if *written {
                 file.sync()?;
@@ -525,6 +548,10 @@ impl<R: Reach> Storage for Split<R> {
     }
 
     fn recreate(&mut self, offset: u64, length: u64) -> Result<(), Error> {
+        if self.visiting {
+            return Err(Error::ReadOnly);
+        }
+        let archive = self.archive()?;
         let (index, start) = self.locate(offset)?;
         let unit = self.files[index];
         if start != offset || unit.len != length {
@@ -536,7 +563,6 @@ impl<R: Reach> Storage for Split<R> {
             self.open = None;
         }
         self.units[index] = Unit::Unreadable;
-        let archive = self.archive()?;
         remove_in(&mut self.reach.api(&unit)?, archive)?;
         self.units[index] = Unit::Absent;
         Ok(())
@@ -544,21 +570,22 @@ impl<R: Reach> Storage for Split<R> {
 }
 
 /// One exclusively accessed container of `bank_files::FileName` in SD extdata
-/// 0x00000c9b: its unit files, each with its exact allocation size.
-/// This borrows Bank's initialized FS session; it never closes that session.
+/// 0x00000c9b: its unit files, each with its exact allocation size, through
+/// the file calls of program `P`. This borrows the program's initialized FS
+/// session; it never closes that session.
 #[cfg(target_arch = "arm")]
-pub struct ExtdataStorage {
-    split: Split<native::Session>,
+pub struct ExtdataStorage<P: Program = Bank15> {
+    split: Split<native::Session<P>>,
 }
 
 #[cfg(target_arch = "arm")]
-impl ExtdataStorage {
+impl<P: Program> ExtdataStorage<P> {
     /// Whether Bank's archive can be opened. Only archive NotFound is false;
     /// no archive or file is created, and a successful handle is closed.
     /// # Safety
     /// The same session and native-thread requirements as `open_existing` apply.
     pub unsafe fn archive_exists(session: u32) -> Result<bool, Error> {
-        archive_exists(&mut native::Native::new(session, "/")?)
+        archive_exists(&mut native::Native::<P>::new(session, "/")?)
     }
 
     /// Opens the unit files that exist and requires the exact allocation
@@ -575,6 +602,15 @@ impl ExtdataStorage {
         files: &'static [UnitFile],
     ) -> Result<Option<Self>, Error> {
         Ok(Split::open(native::Session::new(session)?, files)?.map(|split| Self { split }))
+    }
+
+    /// Opens the unit files that exist for a visitor (`Split::visit`), as
+    /// `open_existing` does. `None` when none of them exists.
+    ///
+    /// # Safety
+    /// The same requirements as `open_existing` apply.
+    pub unsafe fn visit(session: u32, files: &'static [UnitFile]) -> Result<Option<Self>, Error> {
+        Ok(Split::visit(native::Session::new(session)?, files)?.map(|split| Self { split }))
     }
 
     /// Exclusively creates the unit files in an already existing Bank
@@ -603,7 +639,7 @@ impl ExtdataStorage {
     /// # Safety
     /// The same requirements as `open_existing` apply.
     pub unsafe fn exists(session: u32, files: &'static [UnitFile]) -> Result<bool, Error> {
-        match Split::open(native::Session::new(session)?, files) {
+        match Split::open(native::Session::<P>::new(session)?, files) {
             Ok(Some(mut split)) => {
                 let whole = split.units[..files.len()]
                     .iter()
@@ -622,7 +658,7 @@ impl ExtdataStorage {
     /// The same requirements as `open_existing` apply, and none of the files
     /// may be open.
     pub unsafe fn remove(session: u32, files: &'static [UnitFile]) -> Result<(), Error> {
-        let reach = native::Session::new(session)?;
+        let reach = native::Session::<P>::new(session)?;
         for file in files {
             remove(reach.api(file)?)?;
         }
@@ -631,7 +667,7 @@ impl ExtdataStorage {
 }
 
 #[cfg(target_arch = "arm")]
-impl Storage for ExtdataStorage {
+impl<P: Program> Storage for ExtdataStorage<P> {
     type Error = Error;
     fn read(&mut self, offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
         self.split.read(offset, bytes)
@@ -647,11 +683,48 @@ impl Storage for ExtdataStorage {
     }
 }
 
+/// Bank's files as the Transporter patch reaches them (`transport::Files`),
+/// through the file calls of program `P`: the Bank container for its two
+/// journal records, and the transport box, each visited (`Split::visit`)
+/// and one at a time. Its simulated twin is `testing::Visit`.
+#[cfg(target_arch = "arm")]
+pub struct Visit<P> {
+    session: u32,
+    program: PhantomData<P>,
+}
+#[cfg(target_arch = "arm")]
+impl<P: Program> Visit<P> {
+    /// # Safety
+    /// The requirements of `ExtdataStorage::open_existing` apply to
+    /// `session`, for as long as this is used.
+    pub const unsafe fn new(session: u32) -> Self {
+        Self {
+            session,
+            program: PhantomData,
+        }
+    }
+    fn visit(&self, file: crate::bank_files::FileName) -> Option<ExtdataStorage<P>> {
+        unsafe { ExtdataStorage::visit(self.session, file.units()) }
+            .ok()
+            .flatten()
+    }
+}
+#[cfg(target_arch = "arm")]
+impl<P: Program> offline_core::transport::Files for Visit<P> {
+    type Storage = ExtdataStorage<P>;
+    fn journal(&mut self) -> Option<ExtdataStorage<P>> {
+        self.visit(crate::bank_files::FileName::Bank)
+    }
+    fn mover(&mut self) -> Option<ExtdataStorage<P>> {
+        self.visit(crate::bank_files::FileName::Transport)
+    }
+}
+
 /// Read-only `main` in a borrowed, already mounted game archive. The archive and
 /// fs:USER session remain owned by native Bank; only this file handle is closed.
 #[cfg(target_arch = "arm")]
 pub struct GameMainReader<'a> {
-    api: native::Native,
+    api: native::Native<Bank15>,
     handle: Option<u32>,
     length: u64,
     archive_borrow: core::marker::PhantomData<&'a ()>,
@@ -668,7 +741,7 @@ impl<'a> GameMainReader<'a> {
         if archive == 0 {
             return Err(Error::InvalidHandle(Operation::OpenArchive));
         }
-        let mut api = native::Native::new(session, "/main")?;
+        let mut api = native::Native::<Bank15>::new(session, "/main")?;
         let handle = api.open_main(archive)?;
         let mut this = Self {
             api,
@@ -742,7 +815,8 @@ impl Storage for GameMainReader<'_> {
 mod native {
     use super::{Api, Error, Operation, Reach};
     use crate::bank_files::UnitFile;
-    use core::{arch::asm, marker::PhantomData, mem::transmute};
+    use core::{marker::PhantomData, mem::transmute};
+    use patch_common::{kernel::close_handle, program::Program};
 
     #[repr(C)]
     struct Path {
@@ -755,31 +829,33 @@ mod native {
     /// terminator: the form the native path type expects.
     const NAME: usize = 1 + UnitFile::MAX_NAME + 1;
 
-    /// Bank's file system session, through which each unit file is reached.
-    pub(super) struct Session(u32);
-    impl Session {
+    /// The program's file system session, through which each unit file is
+    /// reached.
+    pub(super) struct Session<P>(u32, PhantomData<P>);
+    impl<P: Program> Session<P> {
         pub(super) fn new(session: u32) -> Result<Self, Error> {
             if session == 0 {
                 return Err(Error::InvalidHandle(Operation::OpenArchive));
             }
-            Ok(Self(session))
+            Ok(Self(session, PhantomData))
         }
     }
-    impl Reach for Session {
-        type Api = Native;
-        fn api(&self, unit: &UnitFile) -> Result<Native, Error> {
+    impl<P: Program> Reach for Session<P> {
+        type Api = Native<P>;
+        fn api(&self, unit: &UnitFile) -> Result<Native<P>, Error> {
             Native::new(self.0, unit.path)
         }
     }
 
-    pub(super) struct Native {
+    pub(super) struct Native<P> {
         session: u32,
         name: [u16; NAME],
         /// Bytes of `name` with its terminator.
         byte_len: u32,
         _thread: PhantomData<*mut ()>,
+        _program: PhantomData<P>,
     }
-    impl Native {
+    impl<P: Program> Native<P> {
         pub(super) fn open_main(&mut self, archive: u64) -> Result<u32, Error> {
             const MAIN: [u16; 6] = [47, 109, 97, 105, 110, 0];
             let path = Path {
@@ -789,7 +865,7 @@ mod native {
             };
             type Call =
                 unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_57ecusize) };
+            let call: Call = unsafe { transmute(P::OPEN_FILE) };
             let mut file = 0;
             result(Operation::OpenFile, unsafe {
                 call(&self.session, &mut file, 0, archive, path, 1, 0)
@@ -823,6 +899,7 @@ mod native {
                 name,
                 byte_len: (bytes.len() as u32 + 1) * 2,
                 _thread: PhantomData,
+                _program: PhantomData,
             })
         }
     }
@@ -838,7 +915,7 @@ mod native {
         }
     }
 
-    impl Api for Native {
+    impl<P: Program> Api for Native<P> {
         fn open_archive(&mut self) -> Result<u64, Error> {
             // media byte=1, reserved bytes=0, extdata ID low/high.
             let binary = [1u32, 0xc9b, 0];
@@ -849,7 +926,7 @@ mod native {
             };
             let mut archive = 0;
             type Call = unsafe extern "aapcs" fn(*const u32, *mut u64, u32, Path) -> i32;
-            let call: Call = unsafe { transmute(0x0020_a468usize) };
+            let call: Call = unsafe { transmute(P::OPEN_ARCHIVE) };
             result(Operation::OpenArchive, unsafe {
                 call(&self.session, &mut archive, 6, path)
             })?;
@@ -860,21 +937,27 @@ mod native {
         }
         fn close_archive(&mut self, archive: u64) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, u64) -> i32;
-            let call: Call = unsafe { transmute(0x0020_a438usize) };
+            let call: Call = unsafe { transmute(P::CLOSE_ARCHIVE) };
             result(Operation::CloseArchive, unsafe {
                 call(&self.session, archive)
             })
         }
         fn create_file(&mut self, archive: u64, length: u64) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, u32, u64, Path, u32, u64) -> i32;
-            let call: Call = unsafe { transmute(0x0016_54f8usize) };
+            let Some(address) = P::CREATE_FILE else {
+                return Err(Error::ReadOnly);
+            };
+            let call: Call = unsafe { transmute(address) };
             result(Operation::CreateFile, unsafe {
                 call(&self.session, 0, archive, self.name(), 0, length)
             })
         }
         fn delete_file(&mut self, archive: u64) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, u32, u64, Path) -> i32;
-            let call: Call = unsafe { transmute(0x0016_5554usize) };
+            let Some(address) = P::DELETE_FILE else {
+                return Err(Error::ReadOnly);
+            };
+            let call: Call = unsafe { transmute(address) };
             result(Operation::DeleteFile, unsafe {
                 call(&self.session, 0, archive, self.name())
             })
@@ -882,7 +965,7 @@ mod native {
         fn open_file(&mut self, archive: u64) -> Result<u32, Error> {
             type Call =
                 unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_57ecusize) };
+            let call: Call = unsafe { transmute(P::OPEN_FILE) };
             let mut handle = 0;
             result(Operation::OpenFile, unsafe {
                 call(&self.session, &mut handle, 0, archive, self.name(), 3, 0)
@@ -894,14 +977,14 @@ mod native {
         }
         fn size(&mut self, file: u32) -> Result<u64, Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-            let call: Call = unsafe { transmute(0x0016_59acusize) };
+            let call: Call = unsafe { transmute(P::FILE_SIZE) };
             let mut size = 0;
             result(Operation::Size, unsafe { call(&file, &mut size) })?;
             Ok(size)
         }
         fn read(&mut self, file: u32, offset: u64, bytes: &mut [u8]) -> Result<u32, Error> {
             type Call = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_58c8usize) };
+            let call: Call = unsafe { transmute(P::FILE_READ) };
             let mut count = 0;
             result(Operation::Read, unsafe {
                 call(
@@ -923,7 +1006,7 @@ mod native {
         ) -> Result<u32, Error> {
             type Call =
                 unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_594cusize) };
+            let call: Call = unsafe { transmute(P::FILE_WRITE) };
             let mut count = 0;
             result(Operation::Write, unsafe {
                 call(
@@ -939,13 +1022,9 @@ mod native {
         }
         fn close_file(&mut self, file: u32) -> Result<(), Error> {
             type Call = unsafe extern "aapcs" fn(*const u32) -> i32;
-            let call: Call = unsafe { transmute(0x0016_5920usize) };
+            let call: Call = unsafe { transmute(P::FILE_CLOSE) };
             let close_result = result(Operation::CloseFile, unsafe { call(&file) });
-            let mut code = file;
-            unsafe {
-                asm!("svc 0x23", inout("r0") code, lateout("r1") _, lateout("r2") _, lateout("r3") _, lateout("r12") _, options(nostack));
-            }
-            let handle_result = result(Operation::CloseHandle, code as i32);
+            let handle_result = result(Operation::CloseHandle, unsafe { close_handle(file) });
             close_result.and(handle_result)
         }
     }
@@ -1514,6 +1593,42 @@ mod split_tests {
     }
 
     #[test]
+    fn a_visitor_changes_only_what_is_there() {
+        let card = card();
+        card.files.borrow_mut().remove("/two.bin");
+        let mut split = Split::visit(card.clone(), &FILES).unwrap().unwrap();
+        // A unit that is not there is not read, unlike for Bank, which reads
+        // it as zeros; the units that are there are.
+        let mut all = [0xff; 15];
+        assert_eq!(split.read(0, &mut all), Err(Error::Unreadable));
+        split.read(0, &mut all[..4]).unwrap();
+        split.read(10, &mut all[10..]).unwrap();
+        assert_eq!(&all[..4], b"abcd");
+        assert_eq!(&all[10..], b"klmno");
+        // It is neither created nor replaced, and no unit is.
+        assert_eq!(split.write(5, b"Q"), Err(Error::ReadOnly));
+        assert_eq!(split.recreate(4, 6), Err(Error::ReadOnly));
+        assert_eq!(split.recreate(0, 4), Err(Error::ReadOnly));
+        assert!(!card.files.borrow().contains_key("/two.bin"));
+        // A unit that was only read is sent no flush.
+        *card.flush_fails.borrow_mut() = true;
+        split.read(0, &mut [0; 4]).unwrap();
+        split.sync().unwrap();
+        *card.flush_fails.borrow_mut() = false;
+        // What is there is written and made durable.
+        split.write(10, b"KL").unwrap();
+        split.sync().unwrap();
+        assert_eq!(card.files.borrow()["/three.bin"].flushed, b"KLmno");
+        assert_eq!(card.files.borrow()["/one.bin"].bytes, b"abcd");
+        drop(split);
+        assert_eq!(card.files.borrow().len(), 2);
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
+        assert_eq!((card.archives.most(), card.handles.most()), (1, 1));
+        // Without any of its files there is nothing to visit.
+        assert!(Split::visit(Card::default(), &FILES).unwrap().is_none());
+    }
+
+    #[test]
     fn a_unit_file_left_by_an_interrupted_write_fails_alone_and_is_replaced() {
         let card = card();
         card.files.borrow_mut().get_mut("/two.bin").unwrap().torn = true;
@@ -1569,6 +1684,12 @@ mod split_tests {
         // It is not replaced either: whoever asks never gets that far.
         assert_eq!(card.files.borrow()["/two.bin"].bytes.len(), 7);
         assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
+        // Files that are not there before it do not hide it: the error
+        // screen shows its size, as for the Bank file of v0.2.1 behind the
+        // journal records it does not have.
+        card.files.borrow_mut().remove("/one.bin");
+        let error = Split::open(card.clone(), &FILES).err().unwrap();
+        assert_eq!(error.diagnostic(), 7);
 
         let card = self::card();
         *card.archive_fails.borrow_mut() = true;
@@ -1580,11 +1701,15 @@ mod split_tests {
         let mut split = open(&card);
         split.close().unwrap();
         assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
-        // Closed: nothing is opened again behind the caller's back.
+        // Closed: nothing is opened again behind the caller's back, and
+        // nothing reads as zeros.
         let mut all = [0xff; 15];
-        split.read(0, &mut all).unwrap();
-        assert_eq!(all, [0; 15]);
+        assert_eq!(split.read(0, &mut all), Err(Error::Closed));
+        assert_eq!(all, [0xff; 15]);
         assert_eq!(split.write(0, b"x"), Err(Error::Closed));
+        assert_eq!(split.sync(), Err(Error::Closed));
+        assert_eq!(split.recreate(0, 4), Err(Error::Closed));
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
     }
 
     #[test]

@@ -112,7 +112,7 @@ Eight files inside SD extdata archive `0x00000C9B`, the archive Bank already own
 - **They always belong to the same save.** One record names the file of each pair that belongs to it, and a file counts only if it has the checksum the record names. After a power cut, Bank goes on with the three files that record names.
 - **Missing transport files are not an error while the transport box is empty.** The next save creates them.
 - **A file that a power cut left unreadable is replaced.** It is always the one that was being written, never the one in use. Bank goes on with the other file of the pair, and the next save deletes the unreadable one and writes it anew.
-- **A file of the wrong size is never touched.** Bank stops with an error whose second number is the size: error `3` for the files of the record and the boxes, which are opened first, and the error of the step that needed it for another file. This is also what happens with a Bank that was last used with an earlier release whose files have other sizes. Such a Bank is converted once, with the migration that ships with the release that changed the files; that release says how.
+- **A file of the wrong size is never touched.** Bank stops with an error whose second number is the size: error `3` for the files of the record and the boxes, which are opened first, and the error of the step that needed it for another file. This is also what happens with a Bank that was last used with an earlier release whose files have other sizes. Such a Bank is converted once, with the migration that ships with every release; its release notes say how.
 - **A damaged file in use stops Bank** (error `9`). That holds for the boxes, for the main file, and for the transport box while it holds Pokémon: Bank never replaces what it cannot read with something empty. Pokémon from Poké Transporter that wait and cannot be read are not shown, and Save and Quit is then refused (error `F`), so that nothing is saved over them. A power cut cannot cause it, since it only reaches the file being written.
 - **Files are written only** at Save and Quit, when they are first created, and when a start has to finish or undo an interrupted save. Loading and moving Pokémon around never write anything.
 - **The transport box is filled by the [Transporter patch](transporter.md).** Bank shows what was delivered; you take Pokémon out by moving them into boxes, and what you leave in the box stays there.
@@ -191,7 +191,7 @@ The message only comes for a Save and Quit that was cut off. A cartridge taken o
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
-**After updating the patch.** A Save and Quit that was interrupted is finished by the version it was made with, or by one that records a save in progress the same way; a version that records it differently shows error `B` and changes nothing, whether its game is inserted or not. Put that version back, start Bank once, then switch. This also holds between v0.3.0 and the versions after it, which keep the game's name and trainer ID with a save in progress.
+**After updating the patch.** A Save and Quit that was interrupted is finished by any later release that stores the Bank the same way. A Bank that a release stored in an earlier way needs the migration, which finishes no save in progress itself: it says so (`00000BAD 00000007`), and the last release of that way finishes it, v0.2.1 for a Bank from v0.2.1 or before and v0.4.0 for one from v0.4.0 or before. A save in progress that v0.3.0 began is recorded in a form v0.4.0 does not read; the migration writes it in v0.4.0's form first, so that v0.4.0 finishes it too. If the game is not inserted then, v0.4.0's message names no trainer, because v0.3.0 did not record one.
 
 ## Troubleshooting
 
@@ -201,14 +201,15 @@ After A the original's line "Press HOME to return to the HOME Menu" appears with
 
 ```text
 Press HOME to return to the HOME Menu
-v0.4.0
+v1.2.3
 XXXXXXXX YYYYYYYY
 ```
 
-The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"; "dev" for a package someone built without a version). A migration shows the version it converts from, as in `v0.4.0-migration`. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
+The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"); a package that is no release says "draft" and the commit it was built from in place of the version, as "draft-a782e1b". A migration shows the version whose Bank it converted and its own, as in `v0.2.1-1.2.3`, and `v1.2.3-migration` when it found none to convert. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears.
 
 | First number | Step |
 | --- | --- |
+| `1`, `2` | Bank itself: one of its objects is not what the patch expects, or the patch's background thread cannot be used |
 | `3`, `4` | Opening or creating the files |
 | `5` | The stored data is not valid |
 | `6` | Console clock |
@@ -226,7 +227,7 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
 | `77000000` | Bank's filesystem session changed between two opens. |
 | `79000000` | A file that is needed exists but cannot be opened. |
-| `7A00ffpp` | A problem with one of the smaller files. `ff`: 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows. |
+| `7A00ffpp` | A problem with one of the files. `ff`: 0 boxes, 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows, 5 not ready: the boxes are not open, or a save is still in progress. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
 
 **Starting over with an empty Bank.** This deletes every Pokémon stored in the offline Bank.

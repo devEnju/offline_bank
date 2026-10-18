@@ -172,8 +172,8 @@ pub fn identity(
 }
 
 /// The kind of copy a transaction was made with, if its binding is one of
-/// this form. A binding of another form, as other versions of the patch
-/// wrote, does not come out of its own first 28 bytes again.
+/// this form. A binding of another form, such as a whole hash, does not
+/// come out of its own first 28 bytes again.
 pub fn bound(pending: &PendingTransfer) -> Result<Medium, Error> {
     for medium in [Medium::Cartridge, Medium::Installed] {
         let made = identity(
@@ -300,15 +300,14 @@ mod tests {
             damaged.game.save_identity[at] ^= 1;
             damaged
         });
-        // The bindings other versions of the patch wrote, a whole hash
-        // without a kind of copy and then with one: a save they left in
-        // progress is theirs to finish.
-        let earlier = [
+        // Bindings of another form: a whole hash, without a kind of copy
+        // and with one.
+        let other_forms = [
             &b"Bank offline game transaction v1\0"[..],
             b"Bank offline game transaction v2\0",
         ]
         .map(|version| {
-            let mut earlier = pending(Medium::Cartridge);
+            let mut other = pending(Medium::Cartridge);
             let mut hash = Sha256::new();
             hash.update(version).unwrap();
             hash.update(&TITLE.to_le_bytes()).unwrap();
@@ -317,15 +316,15 @@ mod tests {
             if version[31] == b'2' {
                 hash.update(&[Medium::Cartridge as u8]).unwrap();
             }
-            earlier.game.save_identity = hash.finalize();
-            earlier
+            other.game.save_identity = hash.finalize();
+            other
         });
         let mut other = [2; 32];
         other[31] ^= 1;
         for made in KINDS {
             assert_eq!(bound(&pending(made)), Ok(made));
         }
-        for pending in damaged.into_iter().chain(earlier) {
+        for pending in damaged.into_iter().chain(other_forms) {
             // Also when no game is there to show the kind of copy.
             assert_eq!(bound(&pending), Err(Error::InvalidBinding));
             for found in KINDS {
@@ -401,5 +400,27 @@ mod tests {
         short[..3].copy_from_slice(&[0x41, 0, 0x42]);
         assert_eq!(Trainer::of_game(&short, 1, false).name[..2], [0x41, 0]);
         assert_eq!(gen6.name, [0x41; NAME]);
+    }
+
+    /// A save in progress as v0.5.0 recorded it (offline-core's
+    /// `tests/journal.rs`, where every release of this journal version adds
+    /// its own). The binding of each is one of this form.
+    #[test]
+    fn every_save_in_progress_a_release_of_this_journal_version_recorded_binds() {
+        let records = [(
+            "v0.5.0",
+            "424b4a010300000013180002606ec39112c569f89adde7d8d5bea0d0aa861fd28f435e8196be08cd41005300480000000000000000000000000000000000000039300000389bdfc501010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202ef3896b9",
+        )];
+        for (release, hex) in records {
+            let bytes: std::vec::Vec<u8> = (0..hex.len() / 2)
+                .map(|at| u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16).unwrap())
+                .collect();
+            let record = offline_core::Metadata::decode(&bytes).expect(release);
+            let offline_core::Phase::Prepared(pending) = record.phase else {
+                panic!("{release}: no save in progress");
+            };
+            assert_eq!(bound(&pending), Ok(Medium::Cartridge), "{release}");
+            assert_eq!(Trainer::of(&pending.game), named("ASH", 12345), "{release}");
+        }
     }
 }

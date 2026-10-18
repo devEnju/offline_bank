@@ -13,12 +13,16 @@
 //! in the records screen only, as in the original. No function in this
 //! module writes a game file or the offline Bank store.
 
-use offline_core::{crc32, native_blob::BLOB_SIZE};
+use offline_core::{
+    crc32,
+    native_blob::BLOB_SIZE,
+    sections::{POKEDEX, RECORDS},
+};
 
-pub const RECORDS_OFFSET: usize = 0xAD61C;
+pub const RECORDS_OFFSET: usize = RECORDS.start;
+/// One trainer and adventure record per game version.
 pub const RECORD_SIZE: usize = 0x44;
-pub const DEX_OFFSET: usize = 0xAD83C;
-pub const DEX_SIZE: usize = 0x7260;
+pub const DEX_OFFSET: usize = POKEDEX.start;
 pub const VALIDITY_OFFSET: usize = DEX_OFFSET + 0x7254;
 const FAMILY_OFFSETS: [usize; 9] = [
     8, 0x6A8, 0xD48, 0x1F18, 0x30E8, 0x4060, 0x4FE0, 0x5F58, 0x6F18,
@@ -81,18 +85,33 @@ pub fn refreshed_by_a_save(slot: Slot) -> bool {
 #[cfg(target_arch = "arm")]
 mod native {
     use super::*;
-    use bank_common::native_bank::NativeBank;
+    use bank_common::{
+        native_bank::NativeBank,
+        task::{checked_pointer, read_word as word},
+    };
     use core::mem::transmute;
 
-    unsafe fn word(base: *mut u8, offset: usize) -> u32 {
-        unsafe { base.add(offset).cast::<u32>().read() }
-    }
+    /// The application object's pointer, whose manager is at `+0x1c`.
+    const APPLICATION: *const u32 = 0x003a_b90c as *const u32;
+    /// The records screen's collection of the selected game's data:
+    /// `0026de9c(selection)`.
+    const COLLECT: usize = 0x0026_de9c;
+    /// The records screen's two questions about a version slot,
+    /// `001e1e58(records, version)` "is it there" and `002cb7b8(records,
+    /// version, name, id, secret)` "is it this trainer", and its two imports,
+    /// `001e1ba8(records, version, words)` and `001e1b94(records, version,
+    /// dex)`.
+    const SLOT_EXISTS: usize = 0x001e_1e58;
+    const SLOT_MATCHES: usize = 0x002c_b7b8;
+    const COPY_RECORDS: usize = 0x001e_1ba8;
+    const COPY_DEX: usize = 0x001e_1b94;
+    /// After a restore: `002b9a3c(dex)` reloads the eight version caches,
+    /// `002b9b90(dex)` has the totals built anew.
+    const RELOAD: usize = 0x002b_9a3c;
+    const INVALIDATE: usize = 0x002b_9b90;
+
     fn pointer(value: u32) -> Result<*mut u8, DexError> {
-        if value == 0 || value & 3 != 0 {
-            Err(DexError::NativeObject)
-        } else {
-            Ok(value as *mut u8)
-        }
+        checked_pointer(value).map_err(|_| DexError::NativeObject)
     }
     unsafe fn helpers(bank: *mut u8) -> Result<(*mut u8, *mut u8), DexError> {
         pointer(bank as u32)?;
@@ -114,7 +133,7 @@ mod native {
         Ok((records, dex))
     }
     unsafe fn current() -> Result<(*mut u8, *mut u8), DexError> {
-        let application = pointer(unsafe { (0x003A_B90C as *const u32).read() })?;
+        let application = pointer(unsafe { APPLICATION.read() })?;
         let manager = pointer(unsafe { word(application, 0x1C) })?;
         let bank = pointer(unsafe { word(manager, 0xCC) })?;
         Ok((manager, bank))
@@ -133,19 +152,13 @@ mod native {
                 return Err(DexError::ChangedSelection);
             }
             unsafe { helpers(bank) }?;
-            let get_game: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 =
-                unsafe { transmute(0x0023_3A6Cusize) };
-            let game = unsafe { get_game(manager) };
-            pointer(game as u32)?;
-            if !(1..=8).contains(&unsafe { game.add(8).read() }) {
-                return Err(DexError::NativeObject);
-            }
+            unsafe { crate::native_game::selected(manager) }.map_err(|_| DexError::NativeObject)?;
             let mut selected = Self {
                 words: [0; 0x94 / 4],
             };
             // Unmapped trainer game versions must not default to family X.
             unsafe { selected.raw().add(0x4C).write(0xFF) };
-            let collect: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x0026_DE9Cusize) };
+            let collect: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(COLLECT) };
             unsafe { collect(selected.raw()) };
             if unsafe { selected.raw().add(0x4C).read() } >= 8
                 || unsafe { word(selected.raw(), 0x48) } != unsafe { word(bank, 0xBB52C) }
@@ -168,9 +181,9 @@ mod native {
         unsafe fn slot(&mut self) -> Slot {
             let records = unsafe { word(self.raw(), 0x48) } as *mut u8;
             let exists: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
-                unsafe { transmute(0x001E_1E58usize) };
+                unsafe { transmute(SLOT_EXISTS) };
             let matches: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8, u32, u32) -> u32 =
-                unsafe { transmute(0x002C_B7B8usize) };
+                unsafe { transmute(SLOT_MATCHES) };
             let family = self.family();
             if unsafe { exists(records, family) } == 0 {
                 return Slot::Empty;
@@ -196,9 +209,9 @@ mod native {
             let records = unsafe { word(self.raw(), 0x48) } as *mut u8;
             let family = self.family();
             let copy_records: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) =
-                unsafe { transmute(0x001E_1BA8usize) };
+                unsafe { transmute(COPY_RECORDS) };
             let copy_dex: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) =
-                unsafe { transmute(0x001E_1B94usize) };
+                unsafe { transmute(COPY_DEX) };
             unsafe {
                 copy_records(records, family, self.raw().add(0x70));
                 copy_dex(records, family, word(self.raw(), 0x40) as *mut u8);
@@ -255,8 +268,8 @@ mod native {
     /// object for the verified binary. No storage worker may access it.
     pub unsafe fn refresh_after_restore(bank: *mut u8) -> Result<(), DexError> {
         let (_, dex) = unsafe { helpers(bank) }?;
-        let reload: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x002B_9A3Cusize) };
-        let invalidate: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(0x002B_9B90usize) };
+        let reload: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(RELOAD) };
+        let invalidate: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(INVALIDATE) };
         unsafe {
             reload(dex);
             invalidate(dex);

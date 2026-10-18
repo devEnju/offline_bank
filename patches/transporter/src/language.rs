@@ -35,6 +35,15 @@ pub const VC_LANGUAGES: [u8; 39] = [
     1, 2, 3, 4, 5, 7, 8, // Silver
     1, 2, 3, 4, 5, 7, // Crystal
 ];
+/// The language id of each Virtual Console title by the index the scan of
+/// their saves (`001E419C`) and the installed check (`002512A8`) number it
+/// with (`002C2B1C`, one word each; the builder compares them with the
+/// executable it patches). The same titles as `VC_LANGUAGES`, in another
+/// order.
+pub const VC_TITLE_LANGUAGES: [u8; 39] = [
+    1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 7, 7, 7, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 7, 7, 8,
+    8, 1, 2, 3, 4, 5, 7,
+];
 /// Entries the original's game list and its table of trainer names hold.
 pub const LIST_CAPACITY: usize = 40;
 
@@ -65,8 +74,29 @@ pub const HIDDEN_Y: i32 = 1000;
 /// thread by the language screen, read there and by the cartridge task.
 static FILTER: AtomicU8 = AtomicU8::new(0);
 
+/// The languages Gen 1, 2 and 5 games exist in: the original's language id,
+/// which is also the language byte of a Gen 5 save, and the last letter of a
+/// Gen 5 game code (`00243568`).
+pub const GAME_LANGUAGES: [(u8, u8); 7] = [
+    (1, b'J'),
+    (2, b'O'),
+    (3, b'F'),
+    (4, b'I'),
+    (5, b'D'),
+    (7, b'S'),
+    (8, b'K'),
+];
+
 fn is_game_language(id: u8) -> bool {
-    matches!(id, 1..=5 | 7 | 8)
+    GAME_LANGUAGES.iter().any(|&(known, _)| known == id)
+}
+
+/// The language id of a game-code letter, if games exist in it.
+pub fn id_of_letter(letter: u8) -> Option<u8> {
+    GAME_LANGUAGES
+        .iter()
+        .find(|&&(_, known)| known == letter)
+        .map(|&(id, _)| id)
 }
 
 /// A language id games exist in; anything else becomes English, which is
@@ -79,17 +109,14 @@ pub fn normalise(id: u8) -> u8 {
     }
 }
 
-/// The language letter of a Gen 5 game code (`00243568`).
+/// The language letter of a Gen 5 game code; English for a language games
+/// do not exist in.
 pub fn letter(id: u8) -> u8 {
-    match normalise(id) {
-        1 => b'J',
-        3 => b'F',
-        4 => b'I',
-        5 => b'D',
-        7 => b'S',
-        8 => b'K',
-        _ => b'O',
-    }
+    let id = normalise(id);
+    GAME_LANGUAGES
+        .iter()
+        .find(|&&(known, _)| known == id)
+        .map_or(b'O', |&(_, letter)| letter)
 }
 
 /// What a choice of `chosen` (0: none yet) means while the screens are in
@@ -175,7 +202,7 @@ pub fn y_float(y: i32) -> f32 {
 }
 
 #[cfg(target_arch = "arm")]
-mod hooks {
+mod native {
     use super::*;
     use crate::lytpatch;
     use core::{mem::transmute, slice};
@@ -196,17 +223,6 @@ mod hooks {
     /// `(screen)`: the cursor's range and the enabled buttons of the screen
     /// part that is about to be shown.
     const ORIGINAL_BUTTONS: usize = 0x001a_1fe0;
-    /// What the original does to give a screen its message file
-    /// (`0022EF30`): `(size, heap)` allocates, `(10)` names the text archive
-    /// of the screens' language, and `(memory, archive, file, heap, 1, 5)`
-    /// opens the file. The object's second virtual function deletes it.
-    const ALLOCATE: usize = 0x001e_6360;
-    const MESSAGES_SIZE: u32 = 0x28;
-    const TEXT_ARCHIVE: usize = 0x001e_2540;
-    const OPEN_MESSAGES: usize = 0x001d_fb00;
-    /// `(strings, layout, pane, messages, message)`: the text of a text pane
-    /// (`001A20C8` calls it with the screen's own messages).
-    const SET_PANE_TEXT: usize = 0x0019_f7b0;
 
     /// Fields of the language screen (`0022BD28`) and of its layout work.
     const SCREEN_BUTTONS: usize = 0x10;
@@ -252,6 +268,20 @@ mod hooks {
         u32::from(vc_listed(filter(), language))
     }
 
+    /// Whether the scan of the Virtual Console saves (`001E419C`) mounts
+    /// the save of title `index` at all (`001E41C0`): a title in another
+    /// language than the listed one is never listed, so its save need not
+    /// be looked at. An index outside the table is looked at, as by the
+    /// original.
+    #[no_mangle]
+    pub extern "aapcs" fn transporter_vc_wanted(index: u32) -> u32 {
+        VC_TITLE_LANGUAGES
+            .get(index as usize)
+            .map_or(1, |&language| {
+                u32::from(vc_listed(filter(), u32::from(language)))
+            })
+    }
+
     /// Brackets the title screen's loading of its archives (`0024BA44`,
     /// `0024BA74`): one of them holds the logo and the start prompt once per
     /// language. With `chosen` it is read in the chosen language; afterwards
@@ -288,31 +318,23 @@ mod hooks {
     }
 
     /// Gives the Back button the text of the game-selection screen's Back
-    /// button, in the language of the screens: opens that screen's message
-    /// file as the original does, sets the pane's text from it, which copies
-    /// the string, and deletes the file object again.
+    /// button, in the language of the screens, from that screen's message
+    /// file (`ui::message_text`).
     unsafe fn set_back_text(screen: *mut u8, parameter: *const u8) {
         unsafe {
-            let allocate: unsafe extern "aapcs" fn(u32, *mut u8) -> *mut u8 = transmute(ALLOCATE);
-            let archive: unsafe extern "aapcs" fn(u32) -> u32 = transmute(TEXT_ARCHIVE);
-            let open: unsafe extern "aapcs" fn(*mut u8, u32, u32, *mut u8, u32, u32) -> *mut u8 =
-                transmute(OPEN_MESSAGES);
-            let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, u32, *mut u8, u32) =
-                transmute(SET_PANE_TEXT);
             let heap = parameter.add(PARAMETER_HEAP).cast::<*mut u8>().read();
-            let memory = allocate(MESSAGES_SIZE, heap);
-            if memory.is_null() {
-                return;
-            }
-            let messages = open(memory, archive(10), GAME_LIST_MESSAGES, heap, 1, 5);
             let work = screen.add(SCREEN_LAYOUT).cast::<*mut u8>().read();
             let strings = work.add(WORK_STRINGS).cast::<*mut u8>().read();
             let layouts = work.add(WORK_LAYOUTS).cast::<*mut u8>().read();
             let layout = layouts.add(LOWER_LAYOUT).cast::<*mut u8>().read();
-            set(strings, layout, lytpatch::TEXT_PANE, messages, BACK_MESSAGE);
-            let delete: unsafe extern "aapcs" fn(*mut u8) =
-                transmute(messages.cast::<*const usize>().read().add(1).read());
-            delete(messages);
+            crate::ui::message_text(
+                heap,
+                strings,
+                layout,
+                lytpatch::TEXT_PANE,
+                GAME_LIST_MESSAGES,
+                BACK_MESSAGE,
+            );
         }
     }
 
@@ -378,19 +400,22 @@ mod hooks {
     }
 }
 #[cfg(target_arch = "arm")]
-pub use hooks::*;
+pub use native::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdsave::LANGUAGES;
 
     #[test]
     fn every_game_language_has_its_letter_and_the_others_become_english() {
         // Ids in the order of the letters the original accepts.
         let ids = [1u8, 2, 3, 4, 5, 7, 8];
         let letters: [u8; 7] = ids.map(letter);
-        assert_eq!(letters, LANGUAGES);
+        assert_eq!(&letters, b"JOFIDSK");
+        for (id, letter) in GAME_LANGUAGES {
+            assert_eq!(id_of_letter(letter), Some(id));
+        }
+        assert_eq!(id_of_letter(b'E'), None);
         for id in ids {
             assert_eq!(normalise(id), id);
         }
@@ -457,6 +482,21 @@ mod tests {
         for row in VC_LANGUAGES {
             assert_eq!(normalise(row), row);
         }
+    }
+
+    #[test]
+    fn the_scan_numbers_the_same_titles_in_another_order() {
+        let mut rows = VC_LANGUAGES;
+        let mut titles = VC_TITLE_LANGUAGES;
+        rows.sort_unstable();
+        titles.sort_unstable();
+        assert_eq!(rows, titles);
+        // In German six of the 39 saves are looked at.
+        let german = VC_TITLE_LANGUAGES
+            .iter()
+            .filter(|&&language| vc_listed(5, u32::from(language)))
+            .count();
+        assert_eq!(german, 6);
     }
 
     #[test]

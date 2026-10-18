@@ -32,7 +32,7 @@ mod linked {
     #[used]
     #[link_section = ".bank.link_roots"]
     static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
-        bank_common::bootstrap::bank_bootstrap_startup;
+        patch_common::bootstrap::patch_bootstrap_startup;
     #[used]
     #[link_section = ".bank.link_roots"]
     static VERSION: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =

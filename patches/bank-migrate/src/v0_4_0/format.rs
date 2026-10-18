@@ -1,4 +1,4 @@
-//! Frozen: the previous release's `format.rs`. Only the migration reads it.
+//! Frozen: v0.4.0's `format.rs`. Only the migration reads it.
 use super::crc32;
 
 pub const SCHEMA_VERSION: u16 = 1;

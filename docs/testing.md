@@ -21,6 +21,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | Back out of game selection; leave the boxes without saving. | Return to the title. Unsaved changes are discarded. |
 | START without a usable game; then insert one and START again. | Two native explanatory pages, then the title after the second A press. No HOME-transfer question or Bank-file creation. A usable game proceeds normally. |
 | Select a save without the required Pokédex progress. | Native notice, then game selection; other eligible saves remain usable. |
+| Press START on the start screen, in Bank and in Transporter. | The "Checking the Game Card… Don't turn off the power or remove the Game Card or SD card." screen with its spinner and sound appears with the press, not after a pause; In Bank the same panel runs on into game selection. In Transporter the same one spinner and sound stay, standing still while the game list loads, until the list is on screen; no second spinner, no restart of the sound, and nothing behind the list's "choose a game" text. The list comes as soon as it is loaded, at least 3 s after START, not 3 s after the search. |
 | Observe loading and try HOME/sleep during work and on idle screens. | Background work keeps updating the spinner and sound; short native pauses may remain. HOME/sleep are refused during loading/saving and work on idle screens and completed result/error screens. |
 
 ## Bank, feature by feature
@@ -40,9 +41,17 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | --- | --- |
 | Transfer a Gen 5 Box 1 with gaps, then try another transfer before emptying Bank's transport box. Move the delivery into Bank, save, and reopen. | Accepted Pokémon arrive once in their original positions and leave the source. Another delivery is refused while Pokémon remain; it is allowed after Bank saves an empty transport box. |
 | Transfer from a supported Gen 5 SD card save. | Only matching game/language saves are listed. The correct file changes, with a `.sav.bak` backup; unrelated saves stay unchanged. |
+| With a White cartridge and a Black 2 save on the SD card, START; take the cartridge out on the list, choose Black 2 and transfer. START again, take the cartridge out on the list and choose White. | The Black 2 transfer runs as usual. White: the original's message that no compatible game is detected. |
+| With a White cartridge and a White save on the SD card, START; take the cartridge out on the list and choose White. | The original's message that no compatible game is detected; the save on the SD card is not changed. |
+| With a White cartridge and Black and Black 2 saves, take the cartridge out on the checking screen after START. | The list shows both saves and no White. |
+| Choose a cartridge game with Pokémon in Box 1, take the cartridge out on the question and answer "Yes". Open Bank. Repeat in Chinese. | Only "Please confirm that your Game Card is properly inserted, and then try again." (in Chinese, the line after the first), then the title. Bank's transport box is empty, and the game still holds its Pokémon. |
+| The same with a save on the SD card chosen, and with a Virtual Console title. | The transfer runs as usual. |
 | Transfer from a Gen 1 or Gen 2 Virtual Console game. | The Pokémon arrive and can be withdrawn into a Gen 7 game only. |
 | A Box 1 with an Egg or another Pokémon the original refuses. | The original's refusal dialogs for it; the others are offered. No notice about nicknames or OT names. |
-| START on a console where the offline Bank was never started. | The original's "did not complete correctly… open Pokémon Bank" message, then the title. No game list. |
+| START on a console where the offline Bank was never started. | The checking screen, then the original's "did not complete correctly… open Pokémon Bank" message without the spinner behind it, then the title. No game list. |
+| START with no game at all, then START again. | The checking screen, then "Could not find a game…" without the spinner behind it, then the title; the second START shows the checking screen again. |
+| Choose a game whose first box is empty; then choose one with Pokémon and answer "No" at the question. | Both times the original's message, then directly "Software wird beendet…"; no "Datenübertragung über den Server…" in between. |
+| START without a cartridge or SD save: once with only Virtual Console games of the listed language, once with only ones of another language, once with none. | The spinner stops only briefly. The first lists those games as before; the other two end with "Es wurde kein Spiel gefunden…". Transporter starts normally. |
 | Choose another language on the language screen; then Back, and B. | Only that language's games are listed; the logo and start prompt follow it, the other screens stay in the console's language. Back and B leave the choice unchanged. After a restart the console's language applies again. |
 | Try HOME and sleep while the list is built, a game is read and the transfer runs, then on the title, the list, the question and every message that waits for A. | Refused while Transporter works; they work everywhere else. |
 
@@ -112,17 +121,21 @@ Cut the power three to five times for each row: pull the SD card if the model al
 | Test package, **(record)** and then **(boxes)**: move one Pokémon, Save and Quit, cut the power about five seconds in. Reopen; then save again and reopen. | Bank opens with the boxes from before the save. The next save completes and persists. |
 | Normal packages: confirm a Gen 5 transfer, cut the power as soon as the moving screen appears. Open Bank, then look at Box 1 in the game. | The transport box is empty or holds every Pokémon of Box 1, never some. With an empty transport box all are still in the game; with a full one they may be in both places. After Bank saves the transport box empty, Transporter lists games again. |
 
-## A release with a migration
+## The migration
 
-Start from a Bank last used with the previous release, and keep a backup of it: after the conversion the previous release cannot open it.
+Once with a Bank last used with v0.2.1 and once with one last used with v0.4.0, each from a backup: after the conversion those releases cannot open it. Note the Miles and the date of the last Save and Quit before.
 
 | Check | Expected |
 | --- | --- |
-| New Bank, before converting: START. | The error screen with `00000003` and the refused file's size; nothing changed. |
+| New Bank, before converting: START. | The error screen with `00000003` and `00164C54` (v0.2.1) or `000000C0` (v0.4.0); nothing changed. |
 | New Transporter, before converting: START. | The "did not complete correctly… open Pokémon Bank" message, then the title. No game list. |
-| Migration package: START, also with no game present. | Preparation text, then the HOME line with "-migration" and `0000600D 00000001`. No game scan or game selection. |
-| Close Bank from HOME, reopen with the migration, START. | `0000600D 00000002`. |
-| New Bank and Transporter. | Boxes, Pokédex, Miles and transport box as before; a transfer works. |
+| Migration package: START, also with no game present. | Preparation text, then the HOME line with "v0.2.1-" or "v0.4.0-" and the release's version, and `0000600D 00000001`. No game scan or game selection. |
+| Close Bank from HOME, reopen with the migration, START. | The HOME line with "-migration" behind the release's version, and `0000600D 00000002`. |
+| New Bank and Transporter. | Boxes, Pokédex and transport box as before; a transfer works. |
+| Miles at the first opening with a game. | The balance from before, and what the days since the last Save and Quit earn on top: Pokémon in the Bank ÷ 30 per day. From v0.2.1, also the day of that save counts from its start. |
+| Save and Quit, reopen. | The same boxes and Miles. |
+| A Bank of v0.3.0 with a save in progress (v0.3.0, a cut during Save and Quit), then the migration. | `00000BAD 00000007`. |
+| v0.4.0 with the game, START. | v0.4.0 finishes the save as it finishes its own; without the game its message names no trainer. Then the migration converts (`0000600D 00000001`). |
 
 ## The download
 

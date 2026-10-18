@@ -1,4 +1,5 @@
-//! Bounded inspection and development-patch construction with exact input checks.
+//! Inspection of the original files and construction of the patch packages,
+//! with exact input checks.
 //! Inspection establishes byte identity, not authenticity or patch compatibility.
 
 pub mod artifacts;
@@ -8,13 +9,14 @@ mod formats;
 mod hash;
 mod ips;
 pub mod placement;
+pub mod profile;
 pub mod transporter15;
 
-pub use artifacts::{build_development_patch, DevelopmentArtifacts};
-pub use bank15::prepare_development_patch;
+pub use artifacts::{build, Artifacts};
 pub use formats::*;
 pub use hash::{hex, sha256};
 pub use ips::{build_ips, encode_arm_branch, CheckedEdit};
+pub use profile::{prepare_patch, profile, PreparedPatch, Profile, Program, PROFILES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);

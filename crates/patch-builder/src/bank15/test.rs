@@ -22,6 +22,7 @@ pub const MENU_CHOSEN: u32 = 0x002a6c84;
 
 pub const PROFILE: Profile = Profile {
     name: "test",
+    program: &super::BANK,
     entries: &[
         "bank_offline_next",
         "bank_offline_load",
@@ -29,6 +30,7 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_rewards",
         "bank_offline_timestamp",
         "bank_offline_no_game",
+        "bank_offline_scan",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
         MENU_ENTRY,
@@ -58,7 +60,7 @@ fn menu_edits(update: u32, chosen: u32) -> [CheckedEdit; 2] {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CODE_BASE, RETIRED_MENU_EDITS};
+    use super::super::{CODE_BASE, MENU_LOCATIONS};
     use super::*;
 
     #[test]
@@ -79,7 +81,7 @@ mod tests {
             assert_eq!(edit.replacement, target.to_le_bytes());
             // Each is one of the main menu's known locations, with its
             // original word, and no edit of the offline patch is there.
-            assert!(RETIRED_MENU_EDITS.contains(&(slot, original)));
+            assert!(MENU_LOCATIONS.contains(&(slot, original)));
             assert!(PROFILE.menu_edits.contains(&slot));
             assert!(offline::sample_edits()
                 .iter()

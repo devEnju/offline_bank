@@ -211,12 +211,13 @@ mod tests {
 
     /// With `TRANSPORTER_LANGUAGE_LAYOUT` naming the layout taken from your
     /// own copy of the game (not part of the repository), checks the two
-    /// hashes and that a second call changes nothing.
+    /// hashes and that a second call changes nothing. Run on its own
+    /// (docs/building.md).
     #[test]
+    #[ignore = "needs TRANSPORTER_LANGUAGE_LAYOUT, the layout from your own copy of the game"]
     fn the_real_layout_is_recognised_before_and_after() {
-        let Ok(path) = std::env::var("TRANSPORTER_LANGUAGE_LAYOUT") else {
-            return;
-        };
+        let path = std::env::var("TRANSPORTER_LANGUAGE_LAYOUT")
+            .expect("TRANSPORTER_LANGUAGE_LAYOUT names Turtle_lang_select_lower.bclyt");
         let mut layout = std::fs::read(path).unwrap();
         assert_eq!((layout.len(), crc32(&layout)), (SIZE, ORIGINAL_CRC));
         assert!(apply(&mut layout));
