@@ -19,7 +19,7 @@ exheader.bin 39d93584b07901dfa7ea2fc8ce1236cdd92476584ee2dbb60c11a4ae9402abf7
 
 | Where | Role |
 | --- | --- |
-| [patches/bank/](../patches/bank/src/) | The offline patch: ARMv6K code injected into Bank. Hooks in [runtime.rs](../patches/bank/src/runtime.rs) and [dex.rs](../patches/bank/src/dex.rs), routing in [navigation.rs](../patches/bank/src/navigation.rs), closing the files between sessions in [open_files.rs](../patches/bank/src/open_files.rs), the storage jobs in [storage_worker.rs](../patches/bank/src/storage_worker.rs), game adapters. |
+| [patches/bank/](../patches/bank/src/) | The offline patch: ARMv6K code injected into Bank. Hooks in [runtime.rs](../patches/bank/src/runtime.rs) and [dex.rs](../patches/bank/src/dex.rs), routing in [navigation.rs](../patches/bank/src/navigation.rs), the game scan's loading panel in [panel.rs](../patches/bank/src/panel.rs), closing the files between sessions in [open_files.rs](../patches/bank/src/open_files.rs), the storage jobs in [storage_worker.rs](../patches/bank/src/storage_worker.rs), game adapters. |
 | [crates/bank-common/](../crates/bank-common/src/) | What every patch for Bank shares: the start-up hook, file access ([fs.rs](../crates/bank-common/src/fs.rs)), file coordination ([bank_files.rs](../crates/bank-common/src/bank_files.rs)), the worker thread, the original's task objects and dialogs. See [Patches for Bank](#patches-for-bank). |
 | [patches/bank-download/](../patches/bank-download/src/) | The download patch: routing in [navigation.rs](../patches/bank-download/src/navigation.rs), the two file jobs in [download.rs](../patches/bank-download/src/download.rs), the hooks in [runtime.rs](../patches/bank-download/src/runtime.rs). |
 | [patches/bank-migrate/](../patches/bank-migrate/src/) | The migration patch from both earlier ways of storing the Bank: the run in [migrate.rs](../patches/bank-migrate/src/migrate.rs), the current files in [target.rs](../patches/bank-migrate/src/target.rs), each way's reader in [v0_2_1/](../patches/bank-migrate/src/v0_2_1/) and [v0_4_0/](../patches/bank-migrate/src/v0_4_0/) (v0.4.0's storage code, frozen) under the contract of [source.rs](../patches/bank-migrate/src/source.rs), and two hooks. |
@@ -55,10 +55,12 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 | The "show a message" function (`001d6650`) | `bank_message_shown` | `bank_message_shown` |
 | The start screen's version line (`002b49c4`) | `bank_version_shown`, "-offline" | `bank_version_shown`, "-migration" |
 | Task 9, update and busy poll (`00361cfc`, `00361d0c`) | `bank_offline_load` | original |
-| Task 3, update and busy poll (`00361ac4`, `00361ad4`) | original | `bank_migrate_scan` |
+| Task 3, update (`00361ac4`) | `bank_offline_scan` | `bank_migrate_scan` |
+| Task 3, busy poll (`00361ad4`) | original | `bank_migrate_scan` |
+| Scan state 0 starts no panel (`002ac00c`, `002ac018`) | yes | no: task 3's update is replaced |
 | Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the timestamp helper (8 regions) | yes | no |
 | No-game notice without the HOME question (`002ac7a4`, `002ac7a8`) | `bank_offline_no_game` | no |
-| Regions / entry functions | 26 / 8 | 10 / 4 |
+| Regions / entry functions | 29 / 9 | 10 / 4 |
 
 `bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`ui::version`). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", or "Ver. 1.5-test" in a test build.
 
@@ -118,7 +120,7 @@ What the code cannot show: how the original behaves online with about 0.8 MB les
 
 ### Edits to the original
 
-The offline patch: 26 regions (25 words and the start-up hook) and eight entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
+The offline patch: 29 regions (28 words and the start-up hook) and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -135,6 +137,8 @@ The offline patch: 26 regions (25 words and the start-up hook) and eight entry f
 | `00362034`, `00362044` | Task 7 update `002b1cf8` and busy poll | `bank_offline_save` |
 | `00361be4` | Task `0xC` update `002ad1bc`, reward guard | `bank_offline_rewards` |
 | `00361a08` | Task `0xD` update `002a9750`, reward claim | `bank_offline_rewards` |
+| `00361ac4` | Task 3 update `002abe08`, the game scan | `bank_offline_scan`: the scan's loading panel one frame before its first state, then the original ([Screens](#screens)) |
+| `002ac00c`, `002ac018` | Scan state 0, after the extdata mount: `BL 001d5b44` (loading panel) and `BL 0025da24` (its text `0x20`) | `nop`: the panel is up already |
 | `002ac7a4` | Scan state `0x18`: show message `0x00` | `bank_offline_no_game`: original message, acknowledged, ending before its second page break |
 | `002ac7a8` | Continue at state `0x21`, the HOME question | State `0x19`, native acknowledgment and unsuccessful-scan exit |
 | `002a4898` | `BL 0025c08c`: apply the language of Bank's save | Nothing; the console's language stays |
@@ -180,6 +184,8 @@ The version line reads "Ver. 1.5-test". No package that is released links `bank_
 ### Screens
 
 **What the skipped menu did.** Its initializer `002a6e38` also builds menu controls and account texts, so it is not called. Only its loading-transition calls are reproduced when task 9 succeeds: `001d6200(0x50011, 0, -1)` stops the loading sound, `001e7084(ctx, 0, 0x97, 0)` hides the loading pane, `001e69ac(ctx, 0, 0, 0)` unbinds animation 0. Game selection (`002ae310`, `002adc50`) creates or reuses the shared UI and registers its own controls.
+
+**The scan's panel.** The scan's first state (`002abed0`) mounts Bank's extdata on the main thread (`0029f12c`) and only then starts the loading panel with message `0x20` ("Checking the Game Card… Don't turn off the power or remove the Game Card or SD card."). The scan entry (`bank_offline_scan`, decided in [panel.rs](../patches/bank/src/panel.rs)) starts that panel and its text (`ui::loading`) on the scan's first frame and returns; the original's state 0 runs on the next frame, behind it, and its own two calls are `nop`, so the panel is started once. State 0 is entered once per scan: only the task's creation sets it. Its one other exit, a failed mount (FS results `0xc8`..`0xdb`), shows message `0x26` and selects state `0x19` without the panel; the entry ends the panel in that frame (`ui::stop_loading`), so the message comes as the original showed it. The mount itself stays the original's: the panel is on screen while it runs, standing still until it returns.
 
 **Scene and text window.** Bank draws its screen objects in the order in which they were registered with the manager (`001df0e4` appends to the list at `manager + 0x44`). The reward dialogs need the character scene (`manager + 0x8c`, created by `002a5228`) registered before the text window (the shared UI at `manager + 0x80`), or the scene covers the text. The start-up routine of task `0xB` (`002af12c`) establishes that order: `001d6a34` closes and destroys the shared UI, the scene is created and registered, `001d62a8` creates a new shared UI, and the loading panel is shown on it. The patch therefore runs task `0xB` between game selection and loading and replaces only its update. The reward claim's end (`002ab934`) and the manager's cleanup (`002a497c`) destroy the scene.
 

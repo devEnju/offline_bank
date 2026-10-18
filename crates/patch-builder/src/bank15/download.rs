@@ -169,8 +169,9 @@ mod tests {
                 None => own += 1,
             }
         }
-        // Its two scan-task hooks run before game detection.
-        assert_eq!(own, 2);
+        // Its scan task's busy poll; the scan's update, which it replaces
+        // before game detection, the offline patch replaces too.
+        assert_eq!(own, 1);
         // Its own entry functions are its own; the one for the version line
         // has the same name in every patch.
         assert!(PROFILE

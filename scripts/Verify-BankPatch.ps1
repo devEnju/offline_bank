@@ -114,14 +114,14 @@ try {
     # The entry functions of each patch; the first is the entry of the ELF.
     # The last is the one every patch has: where the original's "show a
     # message" function goes first.
-    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game','bank_message_shown','bank_version_shown')
+    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game','bank_offline_scan','bank_message_shown','bank_version_shown')
     $exportNames=@{
         bank=$offlineNames
         migration=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
         download=@('bank_download_next','bank_download_scan','bank_download_scan_busy','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
     }[$Kind]
-    $exportCount=@{bank=8;migration=4;test=10;download=7}[$Kind]
+    $exportCount=@{bank=9;migration=4;test=11;download=7}[$Kind]
     Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
     # No entry function of another patch is linked into this one.
     $foreign=@{bank=@('bank_migrate_*','bank_download_*');migration=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Kind]
@@ -237,6 +237,11 @@ try {
         $pointers+=@(
             # Native no-game notice, then its own acknowledgment/error exit.
             @(0x2ac7a8,0xe3a00021L,0xe3a00019L),
+            # The scan's update; its first state no longer starts the
+            # loading panel and its text (bl 001d5b44, bl 0025da24 -> nop).
+            @(0x361ac4,0x2abe08,'bank_offline_scan'),
+            @(0x2ac00c,0xebfca6ccL,0xe320f000L),
+            @(0x2ac018,0xebfec681L,0xe320f000L),
             @(0x361a08,0x2a9750,'bank_offline_rewards'),
             @(0x361be4,0x2ad1bc,'bank_offline_rewards'),
             @(0x361ed4,0x2af460,'bank_offline_load'),
@@ -258,7 +263,7 @@ try {
             @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
         )
     }
-    $regions=@{bank=26;migration=10;test=28;download=10}[$Kind]
+    $regions=@{bank=29;migration=10;test=31;download=10}[$Kind]
     # SDK CreateThread adds 0x20 to the worker's SDK argument before SVC 08.
     foreach($check in @(@(0x232144,0xe3550020L),@(0x23214c,0x92850020L),@(0x232154,0x9a000008L),@(0x232160,0xe3500027L),@(0x232164,0x92800018L),@(0x232174,0xe3500040L),@(0x232178,0x83e00000L),@(0x2321b8,0xaef62b00L),@(0x2321bc,0x93725b00L))) {
         Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1]) 'Native SDK thread-priority conversion'

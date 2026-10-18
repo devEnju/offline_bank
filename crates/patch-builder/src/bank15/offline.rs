@@ -2,7 +2,7 @@
 
 use super::{
     archive_preservation_candidate, first_start_edits, message_hook, router_call, startup_call,
-    version_call, word, Profile, CODE_BASE, MESSAGE_ENTRY, OPEN_TASK, VERSION_ENTRY,
+    version_call, word, Profile, CODE_BASE, MESSAGE_ENTRY, OPEN_TASK, SCAN_TASK, VERSION_ENTRY,
 };
 use crate::{elf::PayloadElf, CheckedEdit};
 
@@ -16,11 +16,12 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_rewards",
         "bank_offline_timestamp",
         "bank_offline_no_game",
+        "bank_offline_scan",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
-    // Twenty-five edited words plus the linked bootstrap bytes.
-    regions: 26,
+    // Twenty-eight edited words plus the linked bootstrap bytes.
+    regions: 29,
     menu_edits: &[],
     edits,
 };
@@ -40,6 +41,13 @@ pub const NATIVE_FINISHED_BODY: [u32; 2] = [0xe3a00001, 0xe12fff1e];
 /// field, and the patch keeps the day of the last redemption in it.
 pub const COUNT_UNAVAILABLE: u32 = 0x002aac04;
 pub const COUNT_UNAVAILABLE_BODY: [u32; 2] = [0xe3700001, 0x0a000011];
+
+/// Scan state 0 mounts Bank's extdata, then starts the loading panel
+/// (`001d5b44`) and its text 0x20 (`0025da24`). The scan entry starts both
+/// one frame earlier, so these two calls become `nop`: the panel is up
+/// before the mount, and started once.
+pub const SCAN_PANEL_CALLS: [(u32, u32); 2] = [(0x002ac00c, 0x001d5b44), (0x002ac018, 0x0025da24)];
+const NOP: u32 = 0xe320f000;
 
 /// Scan state 0x18 keeps its native loading-panel shutdown and notice.
 /// Only the message call is adapted; state 0x19 then waits for A and exits
@@ -84,6 +92,7 @@ pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<Chec
         rewards: payload.export("bank_offline_rewards")?,
         timestamp: payload.export("bank_offline_timestamp")?,
         no_game: payload.export("bank_offline_no_game")?,
+        scan: payload.export("bank_offline_scan")?,
         message: payload.export(MESSAGE_ENTRY)?,
         version: payload.export(VERSION_ENTRY)?,
     })
@@ -98,6 +107,7 @@ struct HookTargets {
     rewards: u32,
     timestamp: u32,
     no_game: u32,
+    scan: u32,
     message: u32,
     version: u32,
 }
@@ -127,6 +137,13 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
         message_hook(targets.message)?,
         version_call(targets.version)?,
     ];
+    for (address, call) in SCAN_PANEL_CALLS {
+        edits.push(word(
+            address,
+            u32::from_le_bytes(crate::encode_arm_branch(address, call, true)?),
+            NOP.to_le_bytes(),
+        ));
+    }
     // Original read-only vtables: taskC/D rewards, task9 open, task0x10 load, task7 normal /
     // forced-busy updates. Native constructors/init/end callbacks remain intact.
     // The main menu (task 4) is never created, so none of its code is edited.
@@ -134,6 +151,7 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
     // scene and the text window; only its server check is replaced.
     for (address, expected, target) in [
         (SCENE_UPDATE_SLOT, SCENE_UPDATE, NATIVE_FINISHED),
+        (SCAN_TASK[0].0, SCAN_TASK[0].1, targets.scan),
         (0x00361a08, 0x002a9750, targets.rewards),
         (0x00361be4, 0x002ad1bc, targets.rewards),
         (OPEN_TASK[0].0, OPEN_TASK[0].1, targets.load),
@@ -160,6 +178,7 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
         rewards: 0x3fba00,
         timestamp: 0x3fbc00,
         no_game: 0x3fbe00,
+        scan: 0x3fbe40,
         message: 0x3fca00,
         version: 0x3fcc00,
     })
@@ -215,6 +234,7 @@ mod tests {
             rewards: 0x3fba00,
             timestamp: 0x3fbc00,
             no_game: 0x3fbe00,
+            scan: 0x3fbe40,
             message: 0x3fca00,
             version: 0x3fcc00,
         };
@@ -253,12 +273,26 @@ mod tests {
             (0x361ed4, targets.load),
             (0x362034, targets.save),
             (0x362044, targets.save),
+            (0x361ac4, targets.scan),
         ] {
             let edit = edits
                 .iter()
                 .find(|e| e.offset == (address - CODE_BASE) as usize)
                 .unwrap();
             assert_eq!(edit.replacement, target.to_le_bytes());
+        }
+        // The scan's first state no longer starts its panel and text: the
+        // scan entry has, one frame before.
+        for (address, call) in [(0x2ac00c, 0x1d5b44), (0x2ac018, 0x25da24)] {
+            let edit = edits
+                .iter()
+                .find(|e| e.offset == (address - CODE_BASE) as usize)
+                .unwrap();
+            assert_eq!(
+                edit.expected,
+                encode_arm_branch(address, call, true).unwrap()
+            );
+            assert_eq!(edit.replacement, NOP.to_le_bytes());
         }
         // The first start: each edit is present with its original word, and
         // the notice is skipped to where accepting it continues.

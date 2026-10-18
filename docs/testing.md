@@ -21,6 +21,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | Back out of game selection; leave the boxes without saving. | Return to the title. Unsaved changes are discarded. |
 | START without a usable game; then insert one and START again. | Two native explanatory pages, then the title after the second A press. No HOME-transfer question or Bank-file creation. A usable game proceeds normally. |
 | Select a save without the required Pokédex progress. | Native notice, then game selection; other eligible saves remain usable. |
+| Press START on the start screen. | The "Checking the Game Card… Don't turn off the power or remove the Game Card or SD card." screen with its spinner and sound appears with the press, not after a pause; its sound starts once and runs on into game selection. |
 | Observe loading and try HOME/sleep during work and on idle screens. | Background work keeps updating the spinner and sound; short native pauses may remain. HOME/sleep are refused during loading/saving and work on idle screens and completed result/error screens. |
 
 ## Bank, feature by feature

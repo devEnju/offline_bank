@@ -30,6 +30,7 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_rewards",
         "bank_offline_timestamp",
         "bank_offline_no_game",
+        "bank_offline_scan",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
         MENU_ENTRY,

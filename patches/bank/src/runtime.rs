@@ -8,6 +8,7 @@ use crate::{
         self, GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll,
     },
     open_files::Files,
+    panel::{self, Panel},
     storage_worker::{BankWorker, GameEvidence, Job, Reply},
     transaction::Trainer,
 };
@@ -36,6 +37,8 @@ use offline_core::{
 const BANK_COUNT: usize = 0x001d_5ec0;
 /// `00235bfc(id)`: a heap of the original, as its counts are given one.
 const HEAP: usize = 0x0023_5bfc;
+/// The original's update of the game scan, task 3, `002abe08`.
+const SCAN_UPDATE: usize = 0x002a_be08;
 /// The original's update of task 9, `002ae568`: its welcome and the request
 /// for a new Bank.
 const OPEN_UPDATE: usize = 0x002a_e568;
@@ -107,6 +110,8 @@ struct Runtime {
     /// The native blank transport-box record and its format tag, captured from
     /// the freshly constructed Bank before the first restore.
     blank: Option<([u8; RECORD_SIZE], u8)>,
+    /// The game scan's loading panel (`panel`).
+    panel: Panel,
 }
 /// The game the Bank was loaded with, as it was then or after the last
 /// save: a save in progress is bound to both.
@@ -175,6 +180,7 @@ static STATE: Exclusive<Runtime> = unsafe {
         turn_back: false,
         rewards: RewardSession::NONE,
         blank: None,
+        panel: Panel::new(),
     })
 };
 
@@ -1072,6 +1078,53 @@ pub unsafe extern "aapcs" fn bank_offline_load(raw: *mut u8) -> u32 {
             state.report_failure(task)
         }
     }
+}
+
+/// Replaces task 3's update (`00361ac4`). The scan's loading panel goes up
+/// one frame before the original's first state, which mounts Bank's extdata
+/// on this thread and no longer starts the panel itself (`panel`); every
+/// later frame is the original's update.
+/// # Safety
+/// The trusted Bank task driver supplies the live scan task on the main
+/// thread, after native init.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
+        return 1;
+    };
+    let before = unsafe { read_word(raw, 0x10) };
+    {
+        let Some(mut state) = STATE.take() else {
+            return 0;
+        };
+        if state.panel.frame(before) == panel::Frame::Show {
+            let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
+                bank_common::ui::loading(ui, panel::MESSAGE).map_err(|_| Fault::NativeObject)
+            });
+            return match shown {
+                Ok(()) => 0,
+                Err(fault) => {
+                    state.fault = fault;
+                    state.report_failure(task)
+                }
+            };
+        }
+    }
+    // The state is free while the original runs: its no-game notice
+    // (`bank_offline_no_game`) takes it.
+    let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(SCAN_UPDATE) };
+    let result = unsafe { original(raw) };
+    let after = unsafe { read_word(raw, 0x10) };
+    if let Some(mut state) = STATE.take() {
+        if state.panel.ran(before, after) {
+            // The mount failed and its message waits: as the original
+            // showed it, without the panel, which ends in this same frame.
+            if let Ok(ui) = task.ui() {
+                let _ = unsafe { bank_common::ui::stop_loading(ui) };
+            }
+        }
+    }
+    result
 }
 
 // Only scan state 0x18's BL at 002ac7a4 enters here. Its r4 is the live
