@@ -96,6 +96,10 @@ $allowed = @{
     0x00243528 = 'bl:transporter_cart_id_stub'; 0x002439A8 = 'bl:transporter_cart_read'
     0x002437F4 = 'bl:transporter_cart_write'; 0x0024397C = 'bl:transporter_cart_write'
     0x00244F10 = 'bl:transporter_list_next_stub'; 0x00244908 = 'bl:transporter_select_stub'
+    0x00244F00 = 'bl:transporter_card_removed'; 0x00245658 = 'bl:transporter_card_removed'
+    0x00248E68 = 'bl:transporter_card_removed'; 0x0024A298 = 'bl:transporter_card_removed'
+    0x0024A474 = 'bl:transporter_card_removed'
+    0x0025C5A4 = 0xE1A00004; 0x0025C5A8 = 'bl:transporter_entry_card_removed'
     0x0025C5FC = 'bl:transporter_language_chosen'; 0x0025C618 = 0xE320F000
     0x0022BEE0 = 'bl:transporter_language_order_stub'; 0x0022B5B0 = 'bl:transporter_language_buttons'
     0x0022B6E0 = 0xE3500007; 0x0022B6E4 = 0x03A01003
@@ -272,7 +276,7 @@ Assert-Check ((Hash $patched ($rx.address - $base) $payloadImageLength) -eq $man
 $placement = $manifest.placement
 Assert-Check ($placement.payload_file_offset -eq $rx.address - $base -and $placement.payload_rw_address -eq $rw.address -and $placement.payload_rw_bytes -eq $rw.memory_bytes -and $placement.bootstrap_address -eq $boot.address -and $placement.bootstrap_bytes -eq $boot.file_bytes) 'manifest placement'
 $entryNames = @($allowed.Values | Where-Object { $_ -is [string] } | ForEach-Object { $_.Split(':')[1] } | Where-Object { $_ -like 'transporter_*' } | Sort-Object -Unique)
-Assert-Check ($entryNames.Count -eq 25 -and $manifest.runtime_exports -eq $entryNames.Count -and @($manifest.exports.psobject.Properties).Count -eq $entryNames.Count) 'manifest entry count'
+Assert-Check ($entryNames.Count -eq 27 -and $manifest.runtime_exports -eq $entryNames.Count -and @($manifest.exports.psobject.Properties).Count -eq $entryNames.Count) 'manifest entry count'
 foreach ($name in $entryNames) {
     Assert-Check ($manifest.exports.$name -eq $symbols[$name].value) "manifest export $name"
 }

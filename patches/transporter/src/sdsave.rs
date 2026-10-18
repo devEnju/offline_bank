@@ -195,6 +195,9 @@ impl Item {
 /// cartridge in that language takes the place of its own game and hides the
 /// SD save of that game, so the game in the slot is always the one used. A
 /// Gen 5 cartridge in another language is not offered at all.
+///
+/// A removed Game Card concerns the cartridge alone (`card_missing`): a save
+/// on the SD card is read and written whatever is in the slot.
 #[derive(Clone, Copy, Debug)]
 pub struct Saves {
     list: [Save; MAX_SAVES],
@@ -217,6 +220,10 @@ pub struct Saves {
     entry_count: u8,
     /// Saves already copied to their backup in this session, as a bit set.
     backed_up: u8,
+    /// The Game Card was taken out in this session. The original's signal
+    /// for it is cleared by every read that starts, a save's included, so
+    /// it is kept here as well.
+    cartridge_removed: bool,
 }
 impl Saves {
     pub const EMPTY: Self = Self {
@@ -232,6 +239,7 @@ impl Saves {
         entries: [CARTRIDGE; MAX_SAVES + 1],
         entry_count: 0,
         backed_up: 0,
+        cartridge_removed: false,
     };
 
     /// A new session. `cartridge` is the game code the cartridge slot
@@ -325,11 +333,38 @@ impl Saves {
         Some(self.item(self.current))
     }
 
+    /// What the DS entry at `position` of the game list stands for, as an
+    /// item value.
+    fn entry(&self, position: usize) -> Option<u8> {
+        (position < self.entry_count as usize).then(|| self.entries[position])
+    }
+
     /// The user picked the DS entry at `position` of the game list.
     pub fn select(&mut self, position: usize) {
-        if position < self.entry_count as usize {
-            self.current = self.entries[position];
+        if let Some(item) = self.entry(position) {
+            self.current = item;
         }
+    }
+
+    /// Whether the Game Card the presented item needs is gone: only ever
+    /// for the cartridge slot, once the card was taken out in this session.
+    /// `removed` asks the original's signal, which is only read; a removal
+    /// it reports is kept until the next scan.
+    pub fn card_missing(&mut self, removed: impl FnOnce() -> bool) -> bool {
+        self.card_missing_for(self.current, removed)
+    }
+    /// The same for the DS entry at `position` of the game list, before it
+    /// is picked. A position that is no DS entry the hooks know of is taken
+    /// for the cartridge, whose answer is the original's.
+    pub fn card_missing_at(&mut self, position: usize, removed: impl FnOnce() -> bool) -> bool {
+        let item = self.entry(position).unwrap_or(CARTRIDGE);
+        self.card_missing_for(item, removed)
+    }
+    fn card_missing_for(&mut self, item: u8, removed: impl FnOnce() -> bool) -> bool {
+        if removed() {
+            self.cartridge_removed = true;
+        }
+        item >= self.count && self.cartridge_removed
     }
 
     /// Whether the current save still needs its backup, and marks it done.
@@ -752,6 +787,74 @@ mod tests {
         ]);
         // Save 0 damaged: no entry. Save 1 then lands at position 0.
         assert_eq!(saves.next_for_list(0), Some(Item::Save(save(1, b'D'))));
+        assert_eq!(saves.next_for_list(1), None);
+        saves.select(0);
+        assert_eq!(saves.current(), Some(save(1, b'D')));
+    }
+
+    #[test]
+    fn a_removed_card_concerns_only_the_entry_of_the_cartridge() {
+        // A German White cartridge hides the German White save behind it;
+        // a German Black 2 save is listed beside it.
+        let mut saves = scan_with(Some(*b"IRAD"), &[W, B2]);
+        assert_eq!(
+            listed(&mut saves),
+            vec![(2, None), (3, Some(save(2, b'D')))]
+        );
+        // The card is taken out while the list is on screen: the White entry
+        // is the cartridge, and the save behind it is not used in its place.
+        assert!(saves.card_missing_at(0, || true));
+        saves.select(0);
+        assert_eq!(saves.current(), None);
+        assert!(saves.card_missing(|| true));
+        // The Black 2 save is not concerned, whatever the signal says.
+        assert!(!saves.card_missing_at(1, || true));
+        saves.select(1);
+        assert!(!saves.card_missing(|| true));
+        // A new session forgets it.
+        let mut again = scan_with(Some(*b"IRAD"), &[W, B2]);
+        assert!(!again.card_missing(|| false));
+        // With the card in, nothing is missing.
+        assert!(!again.card_missing_at(0, || false));
+    }
+
+    #[test]
+    fn a_removal_is_kept_after_a_save_was_read_and_the_signal_cleared() {
+        // A Black cartridge, then a White save.
+        let mut saves = scan_with(Some(*b"IRBD"), &[W]);
+        assert!(!saves.card_missing(|| false));
+        // The cartridge's entry is added; the White save is read next, and
+        // the card is taken out before that read clears the signal.
+        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(1, b'D'))));
+        assert!(!saves.card_missing(|| true));
+        assert_eq!(saves.next_for_list(2), None);
+        // The cartridge's entry is still the one whose card is gone.
+        assert!(saves.card_missing_at(0, || false));
+        assert!(!saves.card_missing_at(1, || false));
+    }
+
+    #[test]
+    fn a_cartridge_whose_card_is_gone_is_skipped_and_shifts_no_entry() {
+        // Black on SD, a White cartridge, White 2 on SD. The card is taken
+        // out after the Black save was read: the list-next entry asks before
+        // each read and skips the cartridge without reading it.
+        let mut saves = scan_with(Some(*b"IRAD"), &[B, W2]);
+        assert_eq!(saves.current(), Some(save(0, b'D')));
+        assert_eq!(saves.next_for_list(1), Some(Item::Cartridge { kind: 2 }));
+        assert!(saves.card_missing(|| true));
+        assert_eq!(saves.next_for_list(1), Some(Item::Save(save(3, b'D'))));
+        assert!(!saves.card_missing(|| false));
+        assert_eq!(saves.next_for_list(2), None);
+        saves.select(1);
+        assert_eq!(saves.current(), Some(save(3, b'D')));
+        saves.select(0);
+        assert_eq!(saves.current(), Some(save(0, b'D')));
+        // The cartridge was the first item, gone before it was read: the
+        // first save lands at position 0.
+        let mut saves = scan_with(Some(*b"IRBD"), &[W]);
+        assert!(saves.card_missing(|| true));
+        assert_eq!(saves.next_for_list(0), Some(Item::Save(save(1, b'D'))));
+        assert!(!saves.card_missing(|| true));
         assert_eq!(saves.next_for_list(1), None);
         saves.select(0);
         assert_eq!(saves.current(), Some(save(1, b'D')));

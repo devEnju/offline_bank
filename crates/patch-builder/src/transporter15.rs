@@ -108,6 +108,8 @@ pub const ENTRIES: &[&str] = &[
     "transporter_shiny_gender_stub",
     "transporter_layout_check",
     "transporter_vc_mount_stub",
+    "transporter_card_removed",
+    "transporter_entry_card_removed",
 ];
 /// The layout check stands in for this instruction at 0013AEE4 and begins
 /// with it: `mov r1, r0`.
@@ -197,11 +199,31 @@ const EDITS: &[(u32, u32, Word)] = &[
     (0x0024_37f4, 0xebff_5cd5, Call("transporter_cart_write")),
     (0x0024_397c, 0xebff_5c73, Call("transporter_cart_write")),
     // Game list (00244D2C): "state = 3, go on to the Virtual Console titles"
-    // (was: str r6, [r4, #0x10]). The entry reads the next SD save first.
+    // (was: str r6, [r4, #0x10]). The entry reads the next item first: the
+    // next SD save, or the cartridge unless its card is gone.
     (0x0024_4f10, 0xe584_6010, Call("transporter_list_next_stub")),
     // Game list (002445A4), a DS entry was confirmed (was: mov r0, #0). The
     // entry notes which one and returns 0.
     (0x0024_4908, 0xe3a0_0000, Call("transporter_select_stub")),
+    // The original's question whether the Game Card was taken out (was:
+    // bl 001DE43C): before the first item of the list is read, before the
+    // chosen game is read, before the Bank step saves its note, and before
+    // each save of the transfer. The entry answers it for the cartridge
+    // slot only; a save on the SD card never needs the card.
+    (0x0024_4f00, 0xebfe_654d, Call("transporter_card_removed")),
+    (0x0024_5658, 0xebfe_6377, Call("transporter_card_removed")),
+    (0x0024_8e68, 0xebfe_5573, Call("transporter_card_removed")),
+    (0x0024_a298, 0xebfe_5067, Call("transporter_card_removed")),
+    (0x0024_a474, 0xebfe_4ff0, Call("transporter_card_removed")),
+    // The same question in the game list's listener (0025C520), a DS entry
+    // confirmed (was: ldr r0, [r4, #8] and bl 001DE43C): the entry gets the
+    // task and answers for the entry at the cursor.
+    (0x0025_c5a4, 0xe594_0008, Raw(0xe1a0_0004)),
+    (
+        0x0025_c5a8,
+        0xebfe_07a3,
+        Call("transporter_entry_card_removed"),
+    ),
     // --- The language screen chooses which language's games are listed. ---
     // The screen ending (0025C5BC): no switch of the screens' language (was:
     // bl 0022AF28); the entry notes the choice. The record of the language

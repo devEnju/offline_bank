@@ -6,7 +6,8 @@
 #[cfg(target_arch = "arm")]
 mod linked {
     use transporter_payload::cart::{
-        transporter_cart_id, transporter_cart_read, transporter_cart_write, transporter_list_next,
+        transporter_card_removed, transporter_cart_id, transporter_cart_read,
+        transporter_cart_write, transporter_entry_card_removed, transporter_list_next,
         transporter_select,
     };
     use transporter_payload::gen5::transporter_slot_holds;
@@ -43,6 +44,13 @@ mod linked {
     #[link_section = ".transporter.link_roots"]
     static CART_WRITE: unsafe extern "aapcs" fn(u32, u32, *const u8, u32) -> i32 =
         transporter_cart_write;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static CARD_REMOVED: unsafe extern "aapcs" fn(*mut u8) -> u32 = transporter_card_removed;
+    #[used]
+    #[link_section = ".transporter.link_roots"]
+    static ENTRY_CARD_REMOVED: unsafe extern "aapcs" fn(*const u8) -> u32 =
+        transporter_entry_card_removed;
     #[used]
     #[link_section = ".transporter.link_roots"]
     static LANGUAGE_CHOSEN: extern "aapcs" fn(u32) = transporter_language_chosen;

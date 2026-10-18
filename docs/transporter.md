@@ -90,7 +90,9 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | After START you | What happens |
 | --- | --- |
 | Insert a cartridge | Nothing. It is not offered, and the list stays as it was until the next START. |
-| Take the cartridge out | The session ends with the original's message that no Game Card is inserted. The original looks for a removed Game Card before each of its saves and stops instead of saving; the patch neither adds nor removes that check. |
+| Take the cartridge out before the list is on screen | The cartridge is not listed; the saves on the SD card and the Virtual Console titles are. |
+| Take the cartridge out on the list | Only the cartridge's entry is concerned. Choosing it shows the original's message that no compatible Pokémon game is detected; a save of the same game on the SD card is not used in its place. Every other entry can be chosen and transferred as usual. |
+| Take the cartridge out after choosing it | The session ends with the original's message that no Game Card is inserted. The original looks for a removed Game Card before each of its saves and stops instead of saving; the patch asks only for the cartridge, never for a save on the SD card. |
 | Take it out after the Pokémon were written to Bank and before the game is saved | The same message. The Pokémon are then in Bank and still in the game, as after a power cut at that moment ([Limits](#limits)). |
 
 ## Install
