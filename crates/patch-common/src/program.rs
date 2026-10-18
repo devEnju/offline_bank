@@ -41,4 +41,23 @@ pub trait Program: 'static {
     const FIND_PANE: usize;
     /// `(pane, string, -1)`: sets a text pane's text.
     const PANE_TEXT: usize;
+
+    /// The SDK's file system calls. The first argument is the `fs:USER`
+    /// session for the archive calls and the open, the file handle for the
+    /// others: `OPEN_ARCHIVE(session, &archive, id, path)`,
+    /// `CLOSE_ARCHIVE(session, archive)`, `CREATE_FILE(session, 0, archive,
+    /// path, 0, size)`, `DELETE_FILE(session, 0, archive, path)`,
+    /// `OPEN_FILE(session, &file, 0, archive, path, flags, 0)`,
+    /// `FILE_SIZE(file, &size)`, `FILE_READ(file, &count, offset, bytes,
+    /// length)`, `FILE_WRITE(file, &count, offset, bytes, length, flags)`,
+    /// `FILE_CLOSE(file)`. A program without a call has `None`.
+    const OPEN_ARCHIVE: usize;
+    const CLOSE_ARCHIVE: usize;
+    const CREATE_FILE: Option<usize>;
+    const DELETE_FILE: Option<usize>;
+    const OPEN_FILE: usize;
+    const FILE_SIZE: usize;
+    const FILE_READ: usize;
+    const FILE_WRITE: usize;
+    const FILE_CLOSE: usize;
 }

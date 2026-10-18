@@ -13,7 +13,10 @@ use patch_common::program::Program;
 ///   and the byte its HOME check (`0010AD84`) sets for the main loop
 ///   (`001044D0`);
 /// - the title screen's call for its version line, message 0x29
-///   (`0024BAE8`), and the two calls it hands the line to the pane with.
+///   (`0024BAE8`), and the two calls it hands the line to the pane with;
+/// - its file system calls, the same code as Bank's (found by comparing
+///   their instructions with Bank's), without create and delete: the patch
+///   neither creates nor deletes a file.
 pub struct Transporter15;
 impl Program for Transporter15 {
     const CREATE_THREAD: usize = 0x001e_3f58;
@@ -27,4 +30,13 @@ impl Program for Transporter15 {
     const PANE_MESSAGE: usize = 0x001d_33cc;
     const FIND_PANE: usize = 0x0019_f834;
     const PANE_TEXT: usize = 0x0023_75d0;
+    const OPEN_ARCHIVE: usize = 0x001d_b7dc;
+    const CLOSE_ARCHIVE: usize = 0x001d_b7ac;
+    const CREATE_FILE: Option<usize> = None;
+    const DELETE_FILE: Option<usize> = None;
+    const OPEN_FILE: usize = 0x0015_9230;
+    const FILE_SIZE: usize = 0x0015_93f0;
+    const FILE_READ: usize = 0x0015_930c;
+    const FILE_WRITE: usize = 0x0015_9390;
+    const FILE_CLOSE: usize = 0x0015_9364;
 }

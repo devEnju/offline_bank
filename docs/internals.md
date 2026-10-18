@@ -40,7 +40,7 @@ A patch for Bank is a crate of its own with its own payload, its own profile in 
 | Hooks | `patch-common`'s `exclusive`: the state a patch's hooks share, one hook at a time | the state |
 | In the builder | `bank15.rs`: identity, placement, the shared edits | a profile: its entry functions and its list of edits |
 
-**Rule: a patch writes Bank's files only through `bank-common`.** The byte formats exist once, in `offline-core`; the file names, their sizes and the order in which they are written exist once, in `bank-common`. A patch that writes a Bank has a PC test that loads the result with `BankFiles` and compares every byte. So what one patch writes, every other reads.
+**Rule: a patch writes Bank's files only through `bank-common`.** The byte formats exist once, in `offline-core`; the file names, their sizes and the order in which they are written exist once, in `bank-common`. A patch that writes a Bank has a PC test that loads the result with `BankFiles` and compares every byte. So what one patch writes, every other reads. The Transporter patch holds to it as well ([File access](#file-access)).
 
 **Rule: a hook that is entered again while it runs does nothing.** The original's update of a task may call the task's busy poll, which a patch replaces with the same hook. Each patch's hooks share one guard; a task hook that finds it taken answers 0, "not done, next frame", and a router hook answers cleanup (`0x14`), as it does for a manager or task it cannot read.
 
@@ -218,7 +218,7 @@ A save written by the patched Bank is therefore valid with language 0, which to 
 
 ### Filesystem calls
 
-The first argument is a pointer to the session or file handle; a negative `i32` is failure.
+The first argument is a pointer to the session or file handle; a negative `i32` is failure. `bank-common`'s `fs` makes these calls through `program::Bank15`; Transporter has the same calls at other addresses ([File access](#file-access)).
 
 | Address | Call | Arguments after the handle pointer |
 | --- | --- | --- |
@@ -533,8 +533,9 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 
 | Where | Role |
 | --- | --- |
-| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs) on the worker of [storage_worker.rs](../patches/transporter/src/storage_worker.rs), the search's loading panel in [panel.rs](../patches/transporter/src/panel.rs) with the original's screen calls in [ui.rs](../patches/transporter/src/ui.rs), Transporter's addresses for the shared code in [program.rs](../patches/transporter/src/program.rs), file access in [fs.rs](../patches/transporter/src/fs.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), the assembly stubs in [link.rs](../patches/transporter/src/link.rs), the layout check beside the start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
+| [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs) on the worker of [storage_worker.rs](../patches/transporter/src/storage_worker.rs), the search's loading panel in [panel.rs](../patches/transporter/src/panel.rs) with the original's screen calls in [ui.rs](../patches/transporter/src/ui.rs), Transporter's addresses for the shared code in [program.rs](../patches/transporter/src/program.rs), Bank's files through `bank-common`, the SD card in [fs.rs](../patches/transporter/src/fs.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), the assembly stubs in [link.rs](../patches/transporter/src/link.rs), the layout check beside the start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
 | [crates/offline-core/](../crates/offline-core/src/) | `transport::deliver` and the side-file format, shared with Bank. |
+| [crates/bank-common/](../crates/bank-common/src/) | Bank's files (`fs::Visit`), reached as every patch of Bank reaches them. |
 | [crates/patch-common/](../crates/patch-common/src/) | The start-up hook, the worker thread, its kernel calls, the hooks' shared state, the refusal of HOME and sleep and the version line, shared with Bank. |
 | [crates/patch-builder/](../crates/patch-builder/src/) | Host tool, the same as for Bank. [transporter15.rs](../crates/patch-builder/src/transporter15.rs) holds the program and its one profile, with every edit and its original word. |
 
@@ -684,10 +685,10 @@ Stack 32 KiB with a guard pattern, as in Bank; the file work keeps one 512-byte 
 
 ### File access
 
-[fs.rs](../patches/transporter/src/fs.rs), through Transporter's SDK wrappers: open-directly `001DF448`, read `0015930C`, write `00159390`, size `001593F0`, close `00159364`; `fs:USER` handle at `00311F80`.
+Transporter's SDK has the same file calls as Bank's ([Filesystem calls](#filesystem-calls)): OpenArchive `001DB7DC`, CloseArchive `001DB7AC`, OpenFile `00159230`, Read `0015930C`, Write `00159390`, GetSize `001593F0`, CloseFile `00159364`, each with the same instructions and command words as Bank's; it has no CreateFile. Its `fs:USER` handle is at `00311F80`. [program.rs](../patches/transporter/src/program.rs) names them (`Transporter15`), without CreateFile and DeleteFile.
 
-- Bank's extdata: archive 6, binary path `{1, C9B, 0}`, ASCII file paths `/journal.bin`, `/journal.alt.bin`, `/mover.bin` and `/mover.alt.bin` (`offline_core::files`, Bank's own names): the two journal records and the two copies of the transport box. One pair is open at a time (`hooks::BankFiles`), so never more than two files ([Files](#files)). A file that is missing or does not open makes every read of it fail, and the check then refuses; Transporter never creates, deletes or replaces a file. Transporter's exheader grants neither: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
-- SD card: archive 9 with an empty path.
+- Bank's extdata: through `bank-common`, as every patch of Bank reaches it ([fs.rs](../crates/bank-common/src/fs.rs), `fs::Visit` with Transporter's calls): the Bank container for its two journal records, and the transport box, one at a time, each with one archive handle and one open file ([Files](#files)). Transporter visits them (`Split::visit`): it reads and writes the files that are there, and creates, deletes or replaces none. A file that is not there or does not open makes every read of it fail, unlike for Bank, which reads a missing one as zeros; the check then refuses at START, and Bank's next Save and Quit makes the file whole. The host tests run the delivery rules on a simulated card that does the same (`testing::Visit`). Transporter's exheader grants neither archive: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
+- SD card ([fs.rs](../patches/transporter/src/fs.rs)): archive 9 with an empty path, each file opened with its archive in one call (open-directly `001DF448`).
 
 ### Cartridge and game list
 

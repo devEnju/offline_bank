@@ -251,8 +251,8 @@ impl Files for Shared {
 }
 
 /// What the Transporter patch has of a container of Bank's: it reads and
-/// writes the files that are there and can neither create nor replace
-/// one. It holds the files of one container at a time.
+/// writes the files that are there, cannot use one that is not, and can
+/// neither create nor replace one. It holds the files of one container at a time.
 pub struct Visitor(Handle);
 impl Visitor {
     fn of(disk: &Shared, file: FileName) -> Option<Self> {
@@ -273,7 +273,15 @@ impl Drop for Visitor {
 }
 impl Storage for Visitor {
     type Error = ();
+    /// A unit file that is not there is not read (`fs::Split::visit`).
     fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+        let units = self.0.units(at, out.len() as u64);
+        if units
+            .iter()
+            .any(|unit| ((self.0).0).0.borrow().absent.contains(unit))
+        {
+            return Err(());
+        }
         self.0.read(at, out)
     }
     fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
@@ -357,8 +365,9 @@ pub fn opened(disk: &Shared) -> BankFiles<Shared> {
     files.open().unwrap().unwrap();
     files
 }
-/// Bank's files as the Transporter patch reaches them. Of the Bank
-/// container it touches the two journal records only.
+/// Bank's files as the Transporter patch reaches them, the simulated twin
+/// of `fs::Visit`. Of the Bank container it touches the two journal records
+/// only.
 pub struct Visit(pub Shared);
 impl transport::Files for Visit {
     type Storage = Visitor;

@@ -36,7 +36,7 @@ impl Card for ExtFiles {
     type Error = fs::Error;
     type Storage = ExtdataStorage;
     fn exists(&mut self, files: &'static [UnitFile]) -> Result<bool, fs::Error> {
-        unsafe { ExtdataStorage::exists(self.session, files) }
+        unsafe { ExtdataStorage::<Bank15>::exists(self.session, files) }
     }
     fn open(&mut self, files: &'static [UnitFile]) -> Result<Option<ExtdataStorage>, fs::Error> {
         unsafe { ExtdataStorage::open_existing(self.session, files) }
@@ -45,7 +45,7 @@ impl Card for ExtFiles {
         unsafe { ExtdataStorage::create_new(self.session, files) }
     }
     fn remove(&mut self, files: &'static [UnitFile]) -> Result<(), fs::Error> {
-        unsafe { ExtdataStorage::remove(self.session, files) }
+        unsafe { ExtdataStorage::<Bank15>::remove(self.session, files) }
     }
 }
 
@@ -78,7 +78,7 @@ impl Service for Converter {
             return Err(Fault::StorageOpen.with(0x7800_0000));
         }
         // The old files cannot be read: the numbers of that step.
-        match unsafe { ExtdataStorage::archive_exists(job.session) } {
+        match unsafe { ExtdataStorage::<Bank15>::archive_exists(job.session) } {
             Ok(true) => {}
             Ok(false) => return Ok(([migrate::DONE, Done::NoBank as u32], None)),
             Err(error) => {

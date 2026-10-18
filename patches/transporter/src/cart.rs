@@ -14,7 +14,7 @@
 //! task runs.
 
 use crate::{
-    fs::{Archive, File, FLUSH_FLAGS, OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE},
+    fs::{File, FLUSH_FLAGS, OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE},
     language,
     sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE},
 };
@@ -64,7 +64,7 @@ fn saves() -> &'static mut Saves {
 /// For a file of exactly the size of a Gen 5 save that opens for reading and
 /// writing, the two bytes at each offset. Nothing is created.
 fn identity(path: &[u8], offsets: [u64; 2]) -> Option<[[u8; 2]; 2]> {
-    let file = unsafe { File::open(Archive::Sd, path, OPEN_READ_WRITE) }?;
+    let file = unsafe { File::open(path, OPEN_READ_WRITE) }?;
     if file.size() != Some(SAVE_SIZE) {
         return None;
     }
@@ -80,7 +80,7 @@ fn identity(path: &[u8], offsets: [u64; 2]) -> Option<[[u8; 2]; 2]> {
 fn open_save(save: Save, backup: bool, flags: u32) -> Option<File> {
     let mut path = [0; PATH_CAPACITY];
     let length = save.path(backup, &mut path);
-    let file = unsafe { File::open(Archive::Sd, &path[..length], flags) }?;
+    let file = unsafe { File::open(&path[..length], flags) }?;
     // The save itself must still be what the scan found.
     (backup || file.size() == Some(SAVE_SIZE)).then_some(file)
 }

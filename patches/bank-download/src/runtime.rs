@@ -86,7 +86,7 @@ impl Service for Files {
         let files = ExtFiles { session };
         match job {
             Job::Look { .. } => {
-                if !unsafe { fs::ExtdataStorage::archive_exists(session) }
+                if !unsafe { fs::ExtdataStorage::<Bank15>::archive_exists(session) }
                     .map_err(|error| Fault::StorageOpen.io(error))?
                 {
                     return Ok(Reply::Absent);

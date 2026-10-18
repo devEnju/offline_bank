@@ -12,7 +12,8 @@ use patch_common::program::Program;
 ///   its main loop (`0010ba04`) sets for a HOME press it accepts
 ///   (`0010ba7c`);
 /// - the start screen's call for its version line, message 0x4E
-///   (`002b49c4`), and the two calls it hands the line to the pane with.
+///   (`002b49c4`), and the two calls it hands the line to the pane with;
+/// - its file system calls (docs/internals.md, "Filesystem calls").
 pub struct Bank15;
 impl Program for Bank15 {
     const CREATE_THREAD: usize = 0x0023_20d4;
@@ -26,4 +27,13 @@ impl Program for Bank15 {
     const PANE_MESSAGE: usize = 0x001e_21c8;
     const FIND_PANE: usize = 0x001e_264c;
     const PANE_TEXT: usize = 0x0029_a628;
+    const OPEN_ARCHIVE: usize = 0x0020_a468;
+    const CLOSE_ARCHIVE: usize = 0x0020_a438;
+    const CREATE_FILE: Option<usize> = Some(0x0016_54f8);
+    const DELETE_FILE: Option<usize> = Some(0x0016_5554);
+    const OPEN_FILE: usize = 0x0016_57ec;
+    const FILE_SIZE: usize = 0x0016_59ac;
+    const FILE_READ: usize = 0x0016_58c8;
+    const FILE_WRITE: usize = 0x0016_594c;
+    const FILE_CLOSE: usize = 0x0016_5920;
 }
