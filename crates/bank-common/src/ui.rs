@@ -12,6 +12,7 @@ use crate::{
     task::{checked_pointer, read_word as word},
 };
 use core::mem::transmute;
+use patch_common::message;
 
 /// `001d6650(ui, kind, message, wait)`: shows a message of the original.
 const SHOW_MESSAGE: usize = 0x001d_6650;
@@ -166,7 +167,7 @@ pub unsafe fn stop(
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Ok(());
     };
-    let mut len = numbers::cut(&room[..len]);
+    let mut len = message::cut(&room[..len]);
     if home_len != 0 {
         len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
     }
@@ -301,12 +302,12 @@ pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<()
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Err(Error::MissingBuffer);
     };
-    let end = numbers::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
+    let end = message::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
     unsafe { begin(context, text, room, end) };
     Ok(())
 }
 
-/// Shows an original message without its first part (`numbers::rest`),
+/// Shows an original message without its first part (`message::rest`),
 /// waiting for A. The rest moves to the front of the UI's own string object.
 /// # Safety
 /// `ui` has stop's native lifetime contract, with no other dialog active.
@@ -316,9 +317,8 @@ pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
     let Some((text, room, len)) = (unsafe { text(ui)? }) else {
         return Err(Error::MissingBuffer);
     };
-    let start = numbers::rest(&room[..len]).ok_or(Error::InvalidMessage)?;
-    room.copy_within(start..len, 0);
-    unsafe { begin(context, text, room, len - start) };
+    let len = message::keep_rest(room, len).ok_or(Error::InvalidMessage)?;
+    unsafe { begin(context, text, room, len) };
     Ok(())
 }
 
