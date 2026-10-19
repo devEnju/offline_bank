@@ -83,7 +83,10 @@ enum Step {
     /// returns to the start screen.
     TurnBack,
     Load,
-    SaveInspect,
+    SaveDetect,
+    /// The Game Card is there and the counts and Miles are settled: the
+    /// game and the Bank are staged for the save on this frame.
+    SaveStage,
     SavePrepare,
     SaveWrite,
     SaveFinalize,
@@ -840,26 +843,17 @@ impl Runtime {
     }
     unsafe fn save(&mut self, task: Task) -> Result<Option<bool>, Fault> {
         if self.step == Step::Idle {
+            // Whether the Game Card is there comes before anything else.
             self.baseline.ok_or(Fault::GameRead)?;
             let coordinator = task.pointer(8)?;
             task.begin_busy();
             unsafe { write_word(task.raw(), 0x10, 1) };
-            // The counts of the load, and the ones now.
-            let old_game = unsafe { read_word(coordinator, 0xf4) };
-            let old_bank = unsafe { read_word(coordinator, 0xf8) };
-            let (new_game, new_bank) = counts(task)?;
-            let new_game = new_game.unwrap_or(old_game);
-            // An earlier clock earns nothing; only an invalid one stops here.
-            self.settle_rewards(task)?;
-            let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
-                .map_err(|_| Fault::NativeObject)?;
-            bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
             let game =
                 unsafe { NativeGameSession::from_raw(coordinator, read_word(task.raw(), 0xc)) }
                     .map_err(|_| Fault::GameRead)?;
             let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
             self.game = Some(game);
-            self.submit(task, Step::SaveInspect, Job::Inspect { game: descriptor })?;
+            self.submit(task, Step::SaveDetect, Job::Detect { game: descriptor })?;
             return Ok(None);
         }
         if self.owner != task.raw() as usize {
@@ -886,21 +880,59 @@ impl Runtime {
                 }
             }
         }
+        if self.step == Step::SaveStage {
+            let Baseline {
+                evidence: baseline,
+                trainer,
+            } = self.baseline.ok_or(Fault::GameRead)?;
+            let game = self.game.as_mut().ok_or(Fault::GamePrepare)?;
+            game.prepare().map_err(|_| Fault::GamePrepare)?;
+            let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
+            let prepared = game
+                .prepared()
+                .map_err(|_| Fault::GamePrepare)?
+                .freeze()
+                .map_err(|_| Fault::GamePrepare)?;
+            if !self.rewards.settled {
+                return Err(Fault::RewardState);
+            }
+            // A game the Bank knows already, with the same trainer,
+            // brings its records and Pokédex along with the save.
+            unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
+                .map_err(|_| Fault::NativeObject)?;
+            self.stage_bank(task, true)?;
+            // Conservative until Finalize succeeds: failed preparation may
+            // already have published a durable pending journal replica.
+            self.pending = true;
+            // The worker reads the game once and compares it with the game
+            // as it was loaded.
+            self.submit(
+                task,
+                Step::SavePrepare,
+                Job::Prepare {
+                    game: descriptor,
+                    prepared,
+                    baseline,
+                    trainer,
+                },
+            )?;
+            return Ok(None);
+        }
         let Some(reply) = self.poll(task)? else {
             return Ok(None);
         };
         match (self.step, reply) {
-            (Step::SaveInspect, Reply::CardRemoved) => {
-                // The game could not be read and the original's test finds
-                // no Game Card; nothing was written.
-                // As the original's own failed save (task 7 state 0x10):
-                // loading ends, the message waits, outcome 3, cleanup and
-                // the start screen. Of its message only the advice about
-                // the card is shown; its first part names a server. The
-                // changes made in memory go with the session.
+            (Step::SaveDetect | Step::SavePrepare, Reply::CardRemoved) => {
+                // The original's test finds no Game Card, and nothing was
+                // written. As the original's own failed save (task 7 state
+                // 0x10): loading ends, the message waits, outcome 3,
+                // cleanup and the start screen. Of its message only the
+                // advice about the card is shown; its first part names a
+                // server. The changes made in memory go with the session.
                 if !self.baseline.ok_or(Fault::GameRead)?.evidence.cartridge {
                     return Err(Fault::GameRead);
                 }
+                self.pending = false;
                 let ui = task.ui()?;
                 unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
                 self.step = Step::Ended { saved: false };
@@ -910,44 +942,20 @@ impl Runtime {
                     .map_err(|_| Fault::NativeObject)?;
                 Ok(None)
             }
-            (Step::SaveInspect, Reply::Inspected(original)) => {
-                let Baseline {
-                    evidence: baseline,
-                    trainer,
-                } = self.baseline.ok_or(Fault::GameRead)?;
-                if baseline.title != original.title || baseline.fingerprint != original.fingerprint
-                {
-                    return Err(Fault::GameChanged);
-                }
-                let game = self.game.as_mut().ok_or(Fault::GamePrepare)?;
-                game.prepare().map_err(|_| Fault::GamePrepare)?;
-                let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
-                let prepared = game
-                    .prepared()
-                    .map_err(|_| Fault::GamePrepare)?
-                    .freeze()
-                    .map_err(|_| Fault::GamePrepare)?;
-                if !self.rewards.settled {
-                    return Err(Fault::RewardState);
-                }
-                // A game the Bank knows already, with the same trainer,
-                // brings its records and Pokédex along with the save.
-                unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
+            (Step::SaveDetect, Reply::Detected) => {
+                let coordinator = task.pointer(8)?;
+                // The counts of the load, and the ones now.
+                let old_game = unsafe { read_word(coordinator, 0xf4) };
+                let old_bank = unsafe { read_word(coordinator, 0xf8) };
+                let (new_game, new_bank) = counts(task)?;
+                let new_game = new_game.unwrap_or(old_game);
+                // An earlier clock earns nothing; only an invalid one stops here.
+                self.settle_rewards(task)?;
+                let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
                     .map_err(|_| Fault::NativeObject)?;
-                self.stage_bank(task, true)?;
-                // Conservative until Finalize succeeds: failed preparation may
-                // already have published a durable pending journal replica.
-                self.pending = true;
-                self.submit(
-                    task,
-                    Step::SavePrepare,
-                    Job::Prepare {
-                        game: descriptor,
-                        prepared,
-                        baseline: original,
-                        trainer,
-                    },
-                )?;
+                bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
+                // The game and the Bank are staged on the next frame.
+                self.step = Step::SaveStage;
                 Ok(None)
             }
             (Step::SavePrepare, Reply::ReadyToWrite) => {

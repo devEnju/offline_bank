@@ -36,12 +36,14 @@ pub enum Job {
     LoadGame {
         game: GameIoDescriptor,
     },
-    Inspect {
+    /// Save and Quit's first question: is the game's Game Card there?
+    Detect {
         game: GameIoDescriptor,
     },
     Prepare {
         game: GameIoDescriptor,
         prepared: PreparedImage,
+        /// The game as it was loaded.
         baseline: GameEvidence,
         /// Whose game it is, read when the game was loaded.
         trainer: Trainer,
@@ -70,8 +72,11 @@ pub enum Reply {
         loaded: Option<Loaded>,
     },
     Inspected(GameEvidence),
-    /// The game's save could not be read, and the original's test finds no
-    /// Game Card. Nothing was written.
+    /// The original's test finds the game's Game Card, or the installed
+    /// copy, there.
+    Detected,
+    /// The original's test finds no Game Card, before the save wrote
+    /// anything.
     CardRemoved,
     ReadyToWrite,
     /// The save in progress moved Pokémon both ways and its game is not
@@ -292,15 +297,14 @@ mod arm {
                         loaded: None,
                     })
                 }
-                Job::Inspect { game } => {
+                Job::Detect { game } => {
                     // A reply, not an error: the worker stays usable for
-                    // the next session.
-                    let evidence = match inspect(game) {
-                        Err(_) if !detected(game) => return Ok(Reply::CardRemoved),
-                        evidence => evidence?,
-                    };
-                    require_secure(game, evidence.secure.current)?;
-                    Ok(Reply::Inspected(evidence))
+                    // the next session. Nothing of the save is read yet.
+                    if detected(game) {
+                        Ok(Reply::Detected)
+                    } else {
+                        Ok(Reply::CardRemoved)
+                    }
                 }
                 Job::LoadGame { game } => {
                     // An opening settles a save in progress or ends there;
@@ -408,52 +412,72 @@ mod arm {
                     {
                         return Err(Fault::GamePrepare.with(0));
                     }
-                    let mut main = unsafe { GameMainReader::open(game.session, game.archive) }
-                        .map_err(|e| Fault::GameRead.io(e))?;
-                    let length = main.len();
-                    if prepared
-                        .validate_geometry(length)
-                        .map_err(|_| Fault::GamePrepare.with(0))?
-                        != game.metadata_offset
-                    {
-                        return Err(Fault::GamePrepare.with(0));
-                    }
-                    let secure = file_secure(game, &mut main)?;
-                    if secure != baseline.secure {
-                        return Err(Fault::GameChanged.with(0));
-                    }
-                    require_secure(game, secure.current)?;
-                    // The unsafe submit contract keeps every frozen allocation
-                    // immutable and live until this worker publishes completion.
-                    let blocks = prepared.blocks[..prepared.count].iter().map(|block| {
-                        let end = block
-                            .offset
-                            .checked_add(block.length as u64)
-                            .ok_or(Fault::GamePrepare.with(0))?;
-                        if end > length
-                            || (block.length != 0 && block.address == 0)
-                            || block.address.checked_add(block.length).is_none()
+                    // The game's save is read once, before anything is
+                    // written: the image as it was loaded and the one about
+                    // to be written, from that one read.
+                    let read = || {
+                        let mut main = unsafe { GameMainReader::open(game.session, game.archive) }
+                            .map_err(|e| Fault::GameRead.io(e))?;
+                        let length = main.len();
+                        if prepared
+                            .validate_geometry(length)
+                            .map_err(|_| Fault::GamePrepare.with(0))?
+                            != game.metadata_offset
                         {
                             return Err(Fault::GamePrepare.with(0));
                         }
-                        let pointer = if block.length == 0 {
-                            core::ptr::NonNull::<u8>::dangling().as_ptr()
-                        } else {
-                            block.address as *mut u8
-                        };
-                        Ok(Overlay {
-                            offset: block.offset,
-                            bytes: unsafe { core::slice::from_raw_parts(pointer, block.length) },
-                        })
-                    });
-                    let images = fingerprint_images(&mut main, length, blocks).map_err(
-                        |error| match error {
-                            offline_core::game_image::ImageError::Read(e) => Fault::GameRead.io(e),
-                            offline_core::game_image::ImageError::Block(e) => e,
-                            _ => Fault::GamePrepare.with(0),
-                        },
-                    )?;
-                    main.close().map_err(|e| Fault::GameRead.io(e))?;
+                        let secure = file_secure(game, &mut main)?;
+                        if secure != baseline.secure {
+                            return Err(Fault::GameChanged.with(0));
+                        }
+                        let console = platform(game)?;
+                        if !console.matches_native_rule(secure.current) {
+                            return Err(Fault::GameSecureValue.with(0));
+                        }
+                        // The unsafe submit contract keeps every frozen allocation
+                        // immutable and live until this worker publishes completion.
+                        let blocks = prepared.blocks[..prepared.count].iter().map(|block| {
+                            let end = block
+                                .offset
+                                .checked_add(block.length as u64)
+                                .ok_or(Fault::GamePrepare.with(0))?;
+                            if end > length
+                                || (block.length != 0 && block.address == 0)
+                                || block.address.checked_add(block.length).is_none()
+                            {
+                                return Err(Fault::GamePrepare.with(0));
+                            }
+                            let pointer = if block.length == 0 {
+                                core::ptr::NonNull::<u8>::dangling().as_ptr()
+                            } else {
+                                block.address as *mut u8
+                            };
+                            Ok(Overlay {
+                                offset: block.offset,
+                                bytes: unsafe {
+                                    core::slice::from_raw_parts(pointer, block.length)
+                                },
+                            })
+                        });
+                        let images =
+                            fingerprint_images(&mut main, length, blocks).map_err(|error| {
+                                match error {
+                                    offline_core::game_image::ImageError::Read(e) => {
+                                        Fault::GameRead.io(e)
+                                    }
+                                    offline_core::game_image::ImageError::Block(e) => e,
+                                    _ => Fault::GamePrepare.with(0),
+                                }
+                            })?;
+                        main.close().map_err(|e| Fault::GameRead.io(e))?;
+                        Ok((images, console.gamecard))
+                    };
+                    // A Game Card taken out by now ends the save as `Detect`
+                    // does: nothing is written yet.
+                    let (images, cartridge) = match read() {
+                        Err(_) if !detected(game) => return Ok(Reply::CardRemoved),
+                        read => read?,
+                    };
                     if images.before != baseline.fingerprint {
                         return Err(Fault::GameChanged.with(0));
                     }
@@ -465,7 +489,7 @@ mod arm {
                         baseline.title,
                         images.before,
                         images.after,
-                        Medium::of(baseline.cartridge),
+                        Medium::of(cartridge),
                         trainer,
                     )
                     .map_err(|_| Fault::GamePrepare.with(0))?;
