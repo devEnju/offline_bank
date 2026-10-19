@@ -42,7 +42,7 @@ A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt
 ./scripts/Verify-TransporterPatch.ps1
 ```
 
-The build script runs these itself. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed, that the start-up hook and the added memory hold exactly the bytes of the linked payload, and that `exheader.bin` differs from the original only in its three size fields. They also check that the package is the one of the current sources, by its name. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
+The build script runs these itself. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed, that the start-up hook and the added memory hold exactly the bytes of the linked payload, and that `exheader.bin` differs from the original only in its three size fields. They also check, by its name, that the package is the one of the linked payload in `build/intermediate/` and of the current profile files; that this payload is the one of the current Rust sources only a new build shows, which is why `New-Release.ps1` builds before it verifies. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
 
 ```powershell
 ./scripts/Test-Verify.ps1

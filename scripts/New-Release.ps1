@@ -198,7 +198,7 @@ try {
         $directory = Join-Path $projectRoot $packages[$kind].Folder
         $id = (Get-Content -LiteralPath (Join-Path $directory 'PACKAGE.txt') -Raw).Trim()
         if ($id -ne (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind)) {
-            throw "Package $kind is not the one of the current sources."
+            throw "Package $kind is not the one of the current payload and profile."
         }
         $verification = Get-Content -LiteralPath (Join-Path $directory 'verification.json') -Raw | ConvertFrom-Json
         if ($verification.status -ne 'passed') { throw "Package $kind/$id did not pass verification." }
