@@ -867,13 +867,19 @@ impl Runtime {
                     }
                 };
             }
-            Save::Stage => {
+            Save::StageGame => {
+                let game = self.game.as_mut().ok_or(Fault::GamePrepare)?;
+                game.prepare().map_err(|_| Fault::GamePrepare)?;
+                // The Pokédex and the Bank follow on the next frame.
+                self.step = Step::Save(Save::StageBank);
+                return Ok(None);
+            }
+            Save::StageBank => {
                 let Baseline {
                     evidence: baseline,
                     trainer,
                 } = self.baseline.ok_or(Fault::GameRead)?;
                 let game = self.game.as_mut().ok_or(Fault::GamePrepare)?;
-                game.prepare().map_err(|_| Fault::GamePrepare)?;
                 let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
                 let prepared = game
                     .prepared()
@@ -889,8 +895,8 @@ impl Runtime {
                     .map_err(|_| Fault::NativeObject)?;
                 self.stage_bank(task)?;
                 self.pending = Save::Prepare.pending();
-                // The worker reads the game once and compares it with the
-                // game as it was loaded.
+                // The worker checks the prepared game, reads the game once
+                // and compares it with the game as it was loaded.
                 self.submit(
                     task,
                     Step::Save(Save::Prepare),
@@ -913,7 +919,7 @@ impl Runtime {
         self.step = Step::Save(next);
         self.pending = next.pending();
         match next {
-            Save::Stage => {
+            Save::StageGame => {
                 let coordinator = task.pointer(8)?;
                 // The counts of the load, and the ones now.
                 let old_game = unsafe { read_word(coordinator, 0xf4) };
@@ -925,7 +931,7 @@ impl Runtime {
                 let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
                     .map_err(|_| Fault::NativeObject)?;
                 bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
-                // The game and the Bank are staged on the next frame.
+                // The game is prepared on the next frame.
             }
             Save::Write => {
                 // Room for the retained native game-writer thread.
@@ -957,7 +963,9 @@ impl Runtime {
                 refuse_home(false);
                 unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
             }
-            Save::Detect | Save::Prepare | Save::Finalize => return Err(Fault::JournalRecovery),
+            Save::Detect | Save::StageBank | Save::Prepare | Save::Finalize => {
+                return Err(Fault::JournalRecovery)
+            }
         }
         Ok(None)
     }

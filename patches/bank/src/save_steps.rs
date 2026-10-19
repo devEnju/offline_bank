@@ -12,9 +12,12 @@ pub enum Step {
     /// save is done before its answer.
     Detect,
     /// The Game Card is there and the counts and Miles are settled: the game
-    /// and the Bank are staged on this frame, and `Job::Prepare` is handed
-    /// over.
-    Stage,
+    /// is prepared on this frame.
+    StageGame,
+    /// The game is prepared: the Pokédex is refreshed and the Bank staged on
+    /// this frame, and `Job::Prepare` is handed over. Each of the two has a
+    /// frame of its own, as the original's states have.
+    StageBank,
     /// `Job::Prepare` is out: the journal is prepared and the game checked.
     Prepare,
     /// The original writes the game.
@@ -37,7 +40,7 @@ impl Step {
                 Ok(Self::Ended { saved: false })
             }
             (Self::Detect | Self::Prepare, Reply::CardRemoved) => Err(Fault::GameRead),
-            (Self::Detect, Reply::Detected) => Ok(Self::Stage),
+            (Self::Detect, Reply::Detected) => Ok(Self::StageGame),
             (Self::Prepare, Reply::ReadyToWrite) => Ok(Self::Write),
             (Self::Finalize, Reply::Saved) => Ok(Self::Ended { saved: true }),
             _ => Err(Fault::JournalRecovery),
@@ -60,9 +63,10 @@ mod tests {
     use offline_core::{Part, Phase, Save, Slot};
     use std::vec::Vec;
 
-    const STEPS: [Step; 7] = [
+    const STEPS: [Step; 8] = [
         Step::Detect,
-        Step::Stage,
+        Step::StageGame,
+        Step::StageBank,
         Step::Prepare,
         Step::Write,
         Step::Finalize,
@@ -117,9 +121,10 @@ mod tests {
     #[test]
     fn a_save_goes_from_the_game_card_to_its_message() {
         let step = Step::Detect.after(Reply::Detected, true).unwrap();
-        assert_eq!(step, Step::Stage);
-        // The hook hands `Job::Prepare` over from `Stage`, and starts the
-        // original's writer, whose end hands `Job::Finalize` over.
+        assert_eq!(step, Step::StageGame);
+        // The hook prepares the game in `StageGame`, goes on to `StageBank`
+        // on the next frame and hands `Job::Prepare` over from there, and
+        // starts the original's writer, whose end hands `Job::Finalize` over.
         let step = Step::Prepare.after(Reply::ReadyToWrite, true).unwrap();
         assert_eq!(step, Step::Write);
         let step = Step::Finalize.after(Reply::Saved, true).unwrap();
