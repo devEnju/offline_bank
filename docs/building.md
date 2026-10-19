@@ -5,7 +5,7 @@ How to build the two patches from source, check them, and make a release. Everyt
 ## Requirements
 
 - Windows with PowerShell 7.
-- Rust: the stable toolchain and the nightly that `rust-toolchain.toml` pins, with `rust-src` (the nightly builds the ARM code; `Build-Patches.ps1` reads its name from there).
+- Rust: the stable toolchain and the nightly that `rust-toolchain.toml` pins, with `rust-src` and `clippy` (the nightly builds and lints the ARM code; `Build-Patches.ps1` reads its name from there).
 - Your own decrypted update CIAs in `input/`, and `ctrtool.exe` in `tools/`. Both folders are git-ignored.
 
   ```text
@@ -22,7 +22,7 @@ The builder identifies the inputs by hash and refuses any other version. The exp
 ./scripts/Build-Patches.ps1
 ```
 
-This builds the two patches of a release, Bank's and Transporter's, one after the other with the same steps: it unpacks the CIA, compiles the injected code, writes a package, and verifies it:
+This builds the two patches of a release, Bank's and Transporter's, one after the other with the same steps: it unpacks the CIA, lints and compiles the injected code (Clippy with `-D warnings`; the host lint below does not compile the code that runs on the console), writes a package, and verifies it:
 
 ```text
 build/binary/bank/           code.ips, exheader.bin, manifest.json, report.md, verification.json, PACKAGE.txt
