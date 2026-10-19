@@ -256,6 +256,33 @@ mod tests {
     }
 
     #[test]
+    fn after_a_load_no_way_leads_to_another_load_before_the_start_screen() {
+        // Loading keeps the Bank its opening restored (`Job::LoadGame`), and
+        // the Miles of the hours since the reward date are paid once per
+        // load: a second load needs an opening before it.
+        let mut seen = std::vec![LOAD];
+        let mut next_task = 0;
+        while let Some(&current) = seen.get(next_task) {
+            next_task += 1;
+            for outcome in 0..=u8::MAX {
+                for home in [false, true] {
+                    for turn_back in [false, true] {
+                        let native = router::next(current, outcome, home);
+                        let next = destination(current, outcome, native, turn_back);
+                        assert!(
+                            ![SELECT, SCENE, LOAD, MAIN_MENU, OPEN].contains(&next),
+                            "{current:#x} {outcome:#x} -> {next:#x}"
+                        );
+                        if next != START_SCREEN && !seen.contains(&next) {
+                            seen.push(next);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn failures_missing_games_and_online_destinations_end_in_cleanup() {
         // Failed opening or loading (outcome 3) uses the native cleanup route.
         assert_eq!(destination(OPEN, 3, CLEANUP, false), CLEANUP);

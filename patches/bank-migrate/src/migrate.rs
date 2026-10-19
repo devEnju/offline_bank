@@ -170,13 +170,16 @@ fn convert<C: Card>(
         *source = marked(card);
     } else {
         let Some(found) = find(card)? else {
-            // What a finished run may have left when it was cut at its end.
-            target::remove_temporary(card)?;
-            return Ok(if target::exists(card)? {
+            let done = if target::exists(card, buffer)? {
                 Done::AlreadyNew
             } else {
                 Done::NoBank
-            });
+            };
+            // What a finished run may have left when it was cut at its end,
+            // removed only once the current files are known: a run that
+            // stops changes nothing.
+            target::remove_temporary(card)?;
+            return Ok(done);
         };
         *source = Some(found);
         stage(card, buffer, found)?;
@@ -322,6 +325,78 @@ mod tests {
                 assert!(card.files() == files, "{source:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_bank_of_the_current_files_is_already_converted_only_when_it_opens_as_one() {
+        let (converted, _) = (Source::V0_4_0.fixtures().used)(false);
+        convert(&converted).unwrap();
+        // Each beside what a run cut at its end leaves: the temporary files.
+        let changed = |change: &dyn Fn(&mut crate::testing::State)| {
+            let card = converted.restarted(None);
+            let mut state = card.0.borrow_mut();
+            change(&mut state);
+            for file in target::ORDER {
+                for unit in target::temporary(file) {
+                    state.files.insert(unit.path, vec![0x5a; unit.len as usize]);
+                }
+            }
+            drop(state);
+            card
+        };
+        let journal = FileName::Bank.units();
+        let damaged = || Err(Stopped::Failed(Step::ReadOld, Cause::Damaged));
+        let cases = [
+            // Both journal records damaged.
+            (
+                changed(&|state| {
+                    for unit in &journal[..2] {
+                        state.files.get_mut(unit.path).unwrap()[77] ^= 1;
+                    }
+                }),
+                damaged(),
+            ),
+            // The main file gone.
+            (
+                changed(&|state| {
+                    for unit in FileName::Main.units() {
+                        state.files.remove(unit.path);
+                    }
+                }),
+                damaged(),
+            ),
+            // One journal file, all zero: it never held a Bank, and the
+            // offline patch creates one there.
+            (
+                changed(&|state| {
+                    state.files.clear();
+                    state
+                        .files
+                        .insert(journal[0].path, vec![0; journal[0].len as usize]);
+                }),
+                Ok(Done::NoBank),
+            ),
+        ];
+        for (card, result) in cases {
+            let mut files = card.files();
+            assert_eq!(convert(&card), result);
+            // A run that stops changes nothing; one that answers removes
+            // the temporary files and nothing else.
+            if result.is_ok() {
+                files.retain(|path, _| !of_the_run(path));
+            }
+            assert!(card.files() == files);
+        }
+        // A save in progress is the offline patch's to settle.
+        let card = converted.restarted(None);
+        let mut bank = BankFiles::new(Final(card.clone()));
+        bank.open().unwrap();
+        let mut staging = vec![0; BLOB_SIZE];
+        bank.read(&mut staging).unwrap();
+        bank.prepare(&mut staging, bank_common::testing::GAME, [1; 32], [2; 32])
+            .unwrap();
+        drop(bank);
+        assert_eq!(convert(&card), Ok(Done::AlreadyNew));
     }
 
     #[test]

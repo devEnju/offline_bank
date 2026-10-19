@@ -5,7 +5,7 @@ How to build the two patches from source, check them, and make a release. Everyt
 ## Requirements
 
 - Windows with PowerShell 7.
-- Rust: the stable toolchain and the nightly that `rust-toolchain.toml` pins, with `rust-src` (the nightly builds the ARM code; `Build-Patches.ps1` reads its name from there).
+- Rust: the stable toolchain and the nightly that `rust-toolchain.toml` pins, with `rust-src` and `clippy` (the nightly builds and lints the ARM code; `Build-Patches.ps1` reads its name from there).
 - Your own decrypted update CIAs in `input/`, and `ctrtool.exe` in `tools/`. Both folders are git-ignored.
 
   ```text
@@ -22,7 +22,7 @@ The builder identifies the inputs by hash and refuses any other version. The exp
 ./scripts/Build-Patches.ps1
 ```
 
-This builds the two patches of a release, Bank's and Transporter's, one after the other with the same steps: it unpacks the CIA, compiles the injected code, writes a package, and verifies it:
+This builds the two patches of a release, Bank's and Transporter's, one after the other with the same steps: it unpacks the CIA, lints and compiles the injected code (Clippy with `-D warnings`; the host lint below does not compile the code that runs on the console), writes a package, and verifies it:
 
 ```text
 build/binary/bank/           code.ips, exheader.bin, manifest.json, report.md, verification.json, PACKAGE.txt
@@ -33,7 +33,7 @@ build/binary/transporter/    the same
 
 **The version on Bank's screens.** Bank's error and result screens say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). Only a release has a version there: `New-Release.ps1` builds with `Build-Patches.ps1 -Release`, and the payload then compiles the version from `Cargo.toml` in (`numbers::VERSION`, through `OFFLINE_BANK_RELEASE`), as `v1.2.3`. Every other build is a draft: one built by hand with `Build-Patches.ps1`, and the console test build. It says `draft` and the short hash of the commit it is built from, as `draft-a782e1b` or `draft-a782e1b-test` (`OFFLINE_BANK_COMMIT`); a build that no script made, as `cargo test`, says `draft` alone. A draft is built from committed sources only: built from uncommitted changes it names a commit it is not, and `Build-Patches.ps1` warns. A draft is never released; `New-Release.ps1` only makes releases. The migration puts the version of the Bank it converted in front, as `v0.2.1-1.2.3` or `v0.2.1-draft-a782e1b`. The version is part of the compiled code, so it is part of the package's name too.
 
-A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way with `-Kind`, each into a folder beside `binary`: `-Kind test` into `build/test/`, `-Kind migration` into `build/migration/`, `-Kind download` into `build/download/` (all below). Each kind's crate, linker script, features, profile files and folder are listed once, in `scripts/packages.psd1`, which every script reads.
+A folder holds one package, the latest: the next build replaces what it holds, and the folder stays. `PACKAGE.txt` holds the package's name, the first 16 hex digits of a hash over the compiled code and the builder's profile of that patch (`crates/patch-builder/src/bank15.rs` with `bank15/offline.rs`, or `transporter15.rs`, which list the edits of the original), so the same source built in the same folder gives the same name, and any change to the patch gives a new one. The folder's path goes into the compiled code: a build in another folder has another name. `./scripts/Get-PackageId.ps1 -Kind bank` prints it. The other packages for Bank are built the same way with `-Kind`, each into a folder beside `binary`: `-Kind test` into `build/test/`, `-Kind migration` into `build/migration/`, `-Kind download` into `build/download/` (all below). Each kind's crate, linker script, features, profile files and folder are listed once, in `scripts/packages.psd1`, which every script reads.
 
 ## Verify
 
@@ -42,7 +42,7 @@ A folder holds one package, the latest: the next build replaces it. `PACKAGE.txt
 ./scripts/Verify-TransporterPatch.ps1
 ```
 
-The build script runs these itself. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves and check that only the listed locations and the added memory changed, that the start-up hook and the added memory hold exactly the bytes of the linked payload, and that `exheader.bin` differs from the original only in its three size fields. They also check that the package is the one of the current sources, by its name. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
+The build script runs these itself. The verify scripts share no code with the builder. They apply `code.ips` to the original themselves, which they find under `build/extracted/` by the hash of its code, whatever the CIA it came from, and check that only the listed locations and the added memory changed, that the start-up hook and the added memory hold exactly the bytes of the linked payload, and that `exheader.bin` differs from the original only in its three size fields. They also check, by its name, that the package is the one of the linked payload in `build/intermediate/` and of the current profile files; that this payload is the one of the current Rust sources only a new build shows, which is why `New-Release.ps1` builds before it verifies. On success they write `verification.json` into the package. This checks the files, not the behaviour on a console.
 
 ```powershell
 ./scripts/Test-Verify.ps1
@@ -197,7 +197,7 @@ In this order, stopping at the first problem, it:
 | `offline_bank-migration.zip` | in every release below v1.0.0 | from v1.0.0 on the script refuses until the migration is removed ([The migration](#the-migration-from-earlier-releases)) |
 | `offline_bank-download.zip` | in every release until the official service ends, February 25, 2027 | after that day the script refuses until the download is removed ([The download](#the-download-from-the-official-server)) |
 
-Each holds its patch for Bank's folder and a `README.txt` with its guide. Neither name carries a version: the migration converts a Bank of whichever earlier way it finds, and the download belongs to the official service. Each guide is written once in the script and shown twice, in the zip's `README.txt` as plain text and in the notes, there with pictures from `main`: `pictures/<version>-migration-converted.png` for each earlier way, and `pictures/offline-boxes.png`. A release refuses to start without them.
+Each holds its patch for Bank's folder and a `README.txt` with its guide. Neither name carries a version: the migration converts a Bank of whichever earlier way it finds, and the download belongs to the official service. Each guide is written once in the script and shown twice, in the zip's `README.txt` as plain text and in the notes, there with pictures from `main`: `pictures/<version>-migration-converted.png` for each earlier way and `pictures/offline-boxes.png` for the migration, `pictures/download-title.png` for the download. A release refuses to start without them.
 
 Which Bank goes which way comes from the migration alone: its binary `bank-migrate-payload-guide` (`cargo +stable run -p bank-migrate-payload --bin bank-migrate-payload-guide`) prints each earlier way as the last release of it and the second number of error 3 with which the release refuses such a Bank, as `way v0.2.1 00164C54`. It also prints the patch's name and every result number the guide quotes, by name, as `converted 0000600D 00000001`; the download's `bank-download-payload-guide` does the same for it. So the numbers in the notes are the code's own, and the package titles come from each package's `manifest.json`, as the builder wrote them. The notes have a row for each: "An offline Bank from v0.2.1 or before", "… from v0.4.0 or before", then "… from every other version", and an error row for each number. Nothing else in the project knows the earlier ways; without the migration, one row and one error line point to the migration of the last release below v1.0.0.
 

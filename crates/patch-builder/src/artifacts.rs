@@ -169,13 +169,19 @@ pub fn build(
     })
 }
 
+/// Writes `files` into `output`, a new folder or an empty one: existing
+/// output is never replaced. An empty folder is kept, so that a window open
+/// on it stays open across builds.
 fn write_artifacts(output: &Path, files: &[(&str, &[u8])]) -> Result<()> {
-    fs::create_dir(output).map_err(|error| {
-        Error(format!(
-            "cannot create fresh output directory {}: {error}; existing output is never replaced",
-            output.display()
-        ))
-    })?;
+    let empty = || fs::read_dir(output).is_ok_and(|mut entries| entries.next().is_none());
+    if let Err(error) = fs::create_dir(output) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists || !empty() {
+            return Err(Error(format!(
+                "cannot create fresh output directory {}: {error}; existing output is never replaced",
+                output.display()
+            )));
+        }
+    }
     for (name, contents) in files {
         write_new_file(&output.join(name), contents).map_err(|error| {
             Error(format!(
@@ -241,6 +247,20 @@ mod tests {
         assert!(write_new_file(&path, b"changed").is_err());
         assert_eq!(fs::read(path).unwrap(), b"original");
         assert!(!directory.join("manifest.json").exists());
+    }
+
+    #[test]
+    fn the_writer_uses_an_empty_existing_directory() {
+        let temp = Temp::new();
+        let directory = temp.0.join("output");
+        fs::create_dir(&directory).unwrap();
+        write_artifacts(&directory, &[("code.ips", b"PATCH")]).unwrap();
+        assert_eq!(fs::read(directory.join("code.ips")).unwrap(), b"PATCH");
+        // A file there is not.
+        let file = temp.0.join("file");
+        fs::write(&file, b"original").unwrap();
+        assert!(write_artifacts(&file, &[("code.ips", b"PATCH")]).is_err());
+        assert_eq!(fs::read(file).unwrap(), b"original");
     }
 
     #[test]

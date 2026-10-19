@@ -85,10 +85,19 @@ pub const HOME_NOTICE: u32 = 0x4d;
 /// units in the ten languages of the original.
 const HOME_ROOM: usize = 128;
 
-/// The dialog's own string object at `ui + 0x94`, its room in units, and
-/// the length of the text in it. `None` if it is not a text that can be
-/// changed in place.
-unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize)>, Error> {
+/// The text of a dialog, as `text` finds it in the UI's own string object.
+struct Text<'a> {
+    /// The string object at `ui + 0x94`.
+    object: *mut u8,
+    /// Its room in units, for as long as the dialog holds that string.
+    room: &'a mut [u16],
+    /// The length of the text in it.
+    len: usize,
+}
+
+/// The dialog's own text. `None` if it is not a text that can be changed in
+/// place. The caller uses it before the dialog's string changes again.
+unsafe fn text<'a>(ui: *mut u8) -> Result<Option<Text<'a>>, Error> {
     let text = pointer(unsafe { word(ui, 0x94) })?;
     let data = pointer(unsafe { word(text, 4) })?.cast::<u16>();
     let capacity = unsafe { text.add(8).cast::<u16>().read() } as usize;
@@ -99,11 +108,11 @@ unsafe fn text(ui: *mut u8) -> Result<Option<(*mut u8, &'static mut [u16], usize
     if len == 0 || len >= capacity || unsafe { data.add(len).read() } != 0 {
         return Ok(None);
     }
-    Ok(Some((
-        text,
-        unsafe { core::slice::from_raw_parts_mut(data, capacity) },
+    Ok(Some(Text {
+        object: text,
+        room: unsafe { core::slice::from_raw_parts_mut(data, capacity) },
         len,
-    )))
+    }))
 }
 
 /// Terminate the allocated native string and reset the dialog's parser.
@@ -149,7 +158,12 @@ pub unsafe fn stop(
     let mut home = [0u16; HOME_ROOM];
     let mut home_len = 0;
     unsafe { display(ui, HOME_NOTICE, false)? };
-    if let Some((text, room, len)) = unsafe { text(ui)? } {
+    if let Some(Text {
+        object: text,
+        room,
+        len,
+    }) = unsafe { text(ui)? }
+    {
         let Some(_) = reason else {
             let len = numbers::put(room, len, label, first, second).unwrap_or(len);
             unsafe { begin(context, text, room, len) };
@@ -164,7 +178,12 @@ pub unsafe fn stop(
         return Ok(());
     };
     unsafe { display(ui, reason, false)? };
-    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+    let Some(Text {
+        object: text,
+        room,
+        len,
+    }) = (unsafe { text(ui)? })
+    else {
         return Ok(());
     };
     let mut len = message::cut(&room[..len]);
@@ -299,7 +318,12 @@ unsafe fn display(ui: *mut u8, message: u32, wait: bool) -> Result<(), Error> {
 pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<(), Error> {
     unsafe { display(ui, message, true)? };
     let context = pointer(unsafe { word(ui, 0x5c) })?;
-    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+    let Some(Text {
+        object: text,
+        room,
+        len,
+    }) = (unsafe { text(ui)? })
+    else {
         return Err(Error::MissingBuffer);
     };
     let end = message::page_end(&room[..len], pages).ok_or(Error::InvalidMessage)?;
@@ -314,7 +338,12 @@ pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<()
 pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
     unsafe { display(ui, message, true)? };
     let context = pointer(unsafe { word(ui, 0x5c) })?;
-    let Some((text, room, len)) = (unsafe { text(ui)? }) else {
+    let Some(Text {
+        object: text,
+        room,
+        len,
+    }) = (unsafe { text(ui)? })
+    else {
         return Err(Error::MissingBuffer);
     };
     let len = message::keep_rest(room, len).ok_or(Error::InvalidMessage)?;

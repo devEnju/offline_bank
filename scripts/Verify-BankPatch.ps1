@@ -16,7 +16,10 @@ param(
     [ValidateSet('bank', 'migration', 'test', 'download')][string]$Kind = 'bank',
     # Another copy of the package or its payload (Test-Verify.ps1).
     [string]$PackagePath = '',
-    [string]$ElfPath = ''
+    [string]$ElfPath = '',
+    # The extracted original (Extract-Cia.ps1); by default the folder under
+    # build/extracted whose code.bin has the reviewed hash, whatever its name.
+    [string]$InputPath = ''
 )
 Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
 $ErrorActionPreference = 'Stop'
@@ -47,15 +50,25 @@ try {
     $packageName='unknown'
     $packageName=(Get-Content -LiteralPath (Join-Path $packagePath 'PACKAGE.txt') -Raw).Trim()
     $manifest=Get-Content -LiteralPath (Join-Path $packagePath 'manifest.json') -Raw | ConvertFrom-Json
-    [byte[]]$original=[IO.File]::ReadAllBytes((Join-Path (Get-Location) 'build/extracted/559b2b6a6fd3b001/exefs/code.bin'))
-    [byte[]]$originalHeader=[IO.File]::ReadAllBytes((Join-Path (Get-Location) 'build/extracted/559b2b6a6fd3b001/exheader.bin'))
+    $expectedCode='2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf'
+    if (-not $InputPath) {
+        $candidates=@(Get-ChildItem -LiteralPath (Join-Path (Get-Location) 'build/extracted') -Directory |
+            Where-Object {
+                $code=Join-Path $_.FullName 'exefs/code.bin'
+                (Test-Path -LiteralPath $code) -and ((Get-FileHash -LiteralPath $code -Algorithm SHA256).Hash.ToLowerInvariant() -eq $expectedCode)
+            })
+        Assert-Check ($candidates.Count -ge 1) 'No extracted Bank input with the reviewed code hash'
+        $InputPath=$candidates[0].FullName
+    }
+    [byte[]]$original=[IO.File]::ReadAllBytes((Join-Path $InputPath 'exefs/code.bin'))
+    [byte[]]$originalHeader=[IO.File]::ReadAllBytes((Join-Path $InputPath 'exheader.bin'))
     [byte[]]$elf=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $ElfPath))
     [byte[]]$ips=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $packagePath, 'code.ips'))
     [byte[]]$header=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $packagePath, 'exheader.bin'))
     $codeHash=Hash $original
     $headerHash=Hash $originalHeader
     $elfHash=Hash $elf
-    Assert-Check ($codeHash -eq '2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf') 'Original code hash'
+    Assert-Check ($codeHash -eq $expectedCode) 'Original code hash'
     Assert-Check ($headerHash -eq '39d93584b07901dfa7ea2fc8ce1236cdd92476584ee2dbb60c11a4ae9402abf7') 'Original exheader hash'
     Assert-Check ($original.Length -eq 0x2ac000 -and $originalHeader.Length -eq 0x800) 'Original input lengths'
     Assert-Check ($manifest.source_code_sha256 -eq $codeHash -and $manifest.source_exheader_sha256 -eq $headerHash) 'Manifest input hashes'

@@ -117,12 +117,25 @@ impl<C: Card> Files for Current<'_, C> {
     }
 }
 
-/// Whether a Bank of the current files is there.
-pub(crate) fn exists<C: Card>(card: &mut C) -> Outcome<bool, C> {
-    let found = card
-        .open(FileName::Bank.units())
-        .map_err(io(Step::ReadOld))?;
-    Ok(found.is_some())
+/// Whether a Bank of the current files is there, as the offline patch finds
+/// one: files that never held a Bank are none, and it creates one there. A
+/// Bank that is there must open, and without a save in progress, which the
+/// offline patch settles, load whole. Nothing is written. `buffer` is
+/// working room of at least one body.
+pub(crate) fn exists<C: Card>(card: &mut C, buffer: &mut [u8]) -> Outcome<bool, C> {
+    let step = Step::ReadOld;
+    let Some(body) = buffer.get_mut(..BLOB_SIZE) else {
+        return Err(Stopped::Failed(step, Cause::Damaged));
+    };
+    let mut bank = BankFiles::new(Current(card));
+    match bank.open().map_err(unwritten(step))? {
+        None => Ok(false),
+        Some(Phase::Prepared(_)) => Ok(true),
+        Some(Phase::Clean(_)) => {
+            bank.read(body).map_err(unwritten(step))?;
+            Ok(true)
+        }
+    }
 }
 
 /// Removes what of the temporary files is there.

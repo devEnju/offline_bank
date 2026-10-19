@@ -13,16 +13,28 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $packages = Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1')
-# The unpacked originals (Extract-Cia.ps1), by program.
-$originals = @{
-    bank        = 'build/extracted/559b2b6a6fd3b001/exefs/code.bin'
-    transporter = 'build/extracted/09f0a4ba5969f715/exefs/code.bin'
+# The code of each program's original, by its hash: the unpacked original
+# (Extract-Cia.ps1) is the folder under build/extracted whose code.bin has
+# it, whatever the folder is called.
+$codeHashes = @{
+    bank        = '2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf'
+    transporter = '001c20ada74016507c969bb44a0a50f8edf803ec06a3fc46834263ba8df0fd2f'
 }
 $work = Join-Path ([IO.Path]::GetTempPath()) ('offline_bank-verify-' + [Guid]::NewGuid().ToString('N'))
 
 function Get-Sha([byte[]]$bytes) {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { [Convert]::ToHexString($sha.ComputeHash($bytes)).ToLowerInvariant() } finally { $sha.Dispose() }
+}
+
+# The extracted original of `program`: its folder under build/extracted.
+function Get-Original([string]$program) {
+    $found = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'build/extracted') -Directory | Where-Object {
+            $code = Join-Path $_.FullName 'exefs/code.bin'
+            (Test-Path -LiteralPath $code) -and (Get-Sha ([IO.File]::ReadAllBytes($code))) -eq $codeHashes[$program]
+        })
+    if (-not $found) { throw "No extracted $program input with the reviewed code hash." }
+    return $found[0].FullName
 }
 
 # The IPS records: offset, length and where the data begins in the file.
@@ -51,7 +63,7 @@ function Update-Hashes([string]$dir, [string]$kind) {
     $manifest.source_elf_sha256 = Get-Sha ([IO.File]::ReadAllBytes((Join-Path $dir 'payload.elf')))
     $manifest.artifacts.'code.ips'.sha256 = Get-Sha $ips
     $manifest.artifacts.'exheader.bin'.sha256 = Get-Sha ([IO.File]::ReadAllBytes((Join-Path $dir 'exheader.bin')))
-    [byte[]]$original = [IO.File]::ReadAllBytes((Join-Path $projectRoot $originals[$packages[$kind].Program]))
+    [byte[]]$original = [IO.File]::ReadAllBytes((Join-Path (Get-Original $packages[$kind].Program) 'exefs/code.bin'))
     $image = [byte[]]::new([int]$manifest.expanded_code_bytes)
     [Array]::Copy($original, $image, $original.Length)
     foreach ($record in Get-IpsRecords $ips) { [Array]::Copy($ips, $record.Data, $image, $record.Offset, $record.Length) }
@@ -182,6 +194,15 @@ try {
         Test-Case $kind 'package name' {
             param($dir) Set-Content -LiteralPath (Join-Path $dir 'PACKAGE.txt') -Encoding utf8 -Value '0000000000000000'
         } $expected[$kind]['package name']
+    }
+    # The original is found by its hash, whatever its extraction's folder
+    # is called, as for a CIA that holds the same program packed otherwise.
+    foreach ($kind in 'bank', 'transporter') {
+        $folder = Get-Original $packages[$kind].Program
+        $name = Split-Path -Leaf $folder
+        Rename-Item -LiteralPath $folder -NewName "$name-renamed"
+        try { Test-Case $kind 'original in another folder' $null '' }
+        finally { Rename-Item -LiteralPath "$folder-renamed" -NewName $name }
     }
     # The package of one kind is not that of another.
     Test-Case 'bank' 'checked as the test build' $null 'Package is not the one of the current payload and profile' 'test'

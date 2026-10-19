@@ -71,6 +71,9 @@ function Build-Payload([string]$kind, $package) {
     try {
         $env:OFFLINE_BANK_RELEASE = if ($Release -and $package.Program -eq 'bank') { '1' } else { $null }
         $env:OFFLINE_BANK_COMMIT = if (-not $Release -and $package.Program -eq 'bank') { $draftCommit } else { $null }
+        # The ARM code is linted as it is built: the host lint does not
+        # compile it.
+        Invoke-Native 'Payload lint' { cargo "+$toolchain" clippy --locked --offline --quiet -p $package.Crate --lib --bin "$($package.Crate)-link" --features $features --release --target targets/armv6k-3ds.json -Z json-target-spec -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem -- -D warnings }
         Invoke-Native 'Payload link' { cargo "+$toolchain" rustc --locked --offline -p $package.Crate --bin "$($package.Crate)-link" --features $features --release --target targets/armv6k-3ds.json -Z json-target-spec -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem -- -C "link-arg=$linkerArgument" -C "link-arg=$mapArgument" -C link-arg=--build-id=none -C link-arg=--fatal-warnings -C link-arg=-zmax-page-size=4096 --remap-path-prefix "$projectRoot=/offline_bank" }
     } finally {
         $env:OFFLINE_BANK_RELEASE = $releaseBefore
@@ -89,7 +92,9 @@ function Build-Package([string]$kind) {
     $elf = Build-Payload $kind $package
     $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind
     $output = Join-Path $projectRoot $package.Folder
-    if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+    # The folder stays, so that a window open on it stays open; what it
+    # held goes.
+    if (Test-Path -LiteralPath $output) { Get-ChildItem -LiteralPath $output -Force | Remove-Item -Recurse -Force }
     Invoke-Native 'Package build' { cargo +stable run --locked --offline --quiet -p patch-builder -- build $kind $original.code $original.exheader $elf $output }
     Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value $id
     & (Join-Path $PSScriptRoot $package.Verify) -Kind $kind | Out-Null
