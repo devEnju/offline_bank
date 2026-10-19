@@ -366,28 +366,23 @@ mod arm {
                     if rehearsal::chosen() == Rehearsal::StopAfterGame {
                         return Err(Fault::TestStop.with(2));
                     }
-                    // The save is resolved as soon as the game is known to
-                    // hold the image this worker prepared, so that a cut
-                    // after the game's write rarely finds it in progress.
-                    // The secure pair tells: it is new with every prepared
-                    // image, and the game's commit replaces the file whole.
+                    // The save is resolved only once the whole game is the
+                    // image this worker prepared, with its secure pair, which
+                    // is new with every prepared image. Anything else leaves
+                    // the save in progress for the next start to settle.
                     let written = self.written.take();
-                    let mut main = unsafe { GameMainReader::open(game.session, game.archive) }
-                        .map_err(|e| Fault::GameRead.io(e))?;
-                    let secure = file_secure(game, &mut main)?;
-                    main.close().map_err(|e| Fault::GameRead.io(e))?;
-                    if written != Some(secure) || secure.current == secure.previous {
+                    let evidence = inspect(game)?;
+                    let secure = evidence.secure;
+                    if written != Some(secure)
+                        || secure.current == secure.previous
+                        || matched(&pending, &evidence)? != Match::After
+                    {
                         return Err(Fault::TransferRolledBack.with(0));
                     }
                     finish_secure(game, secure)?;
                     self.files
                         .reconcile_as(RecoveryDecision::CommitAfter)
                         .map_err(|e| Fault::JournalRecovery.files(e))?;
-                    // The complete image is still checked.
-                    let evidence = inspect(game)?;
-                    if matched(&pending, &evidence)? != Match::After {
-                        return Err(Fault::TransferRolledBack.with(0));
-                    }
                     // The Bank as it is now stored must hold the Pokédex the
                     // save staged. The live object is that staged body; the
                     // session ends here, so nothing is copied back.
@@ -480,7 +475,9 @@ mod arm {
                         Err(_) if !detected(game) => return Ok(Reply::CardRemoved),
                         read => read?,
                     };
-                    if images.before != baseline.fingerprint {
+                    // The same kind of copy as the one loaded, before
+                    // anything is written.
+                    if images.before != baseline.fingerprint || cartridge != baseline.cartridge {
                         return Err(Fault::GameChanged.with(0));
                     }
                     // Bound to the kind of copy, so that a recovery can
