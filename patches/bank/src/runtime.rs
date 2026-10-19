@@ -80,10 +80,16 @@ enum Step {
     Introduce,
     Initialize,
     Recover,
+    /// The opening restored the Bank; its Pokédex views are reloaded on
+    /// this frame and the opening ends.
+    Restored,
     /// A save in progress waits for its game at a native notice, then
     /// returns to the start screen.
     TurnBack,
     Load,
+    /// The chosen game is loaded and its trainer read; the counts are taken
+    /// on this frame and the load ends.
+    Loaded,
     /// Save and Quit (`save_steps`).
     Save(save_steps::Step),
 }
@@ -413,17 +419,32 @@ impl Runtime {
         Ok(())
     }
     /// Restores the assembled body into the native object, at opening or
-    /// after a recovery.
+    /// after a recovery. Its Pokédex views follow on the next frame
+    /// (`reload_dex`).
     fn restore_bank(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
         self.fill_defaults(loaded)?;
+        let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+            .map_err(|_| Fault::NativeObject)?;
+        let bytes = self.staged_body()?;
+        bank.restore_preserving_detected_games(bytes)
+            .map_err(|_| Fault::StorageLoad)?;
+        Ok(())
+    }
+    /// The opening's end, once the live object is the Bank: no save is in
+    /// progress any more, and the loading panel ends.
+    fn opened(&mut self, task: Task) -> Result<bool, Fault> {
+        self.pending = false;
+        // The original's main-menu initializer, which is skipped, ends the
+        // loading panel; game selection does not.
+        let ui = task.ui()?;
+        unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+        Ok(self.complete(task))
+    }
+    /// After `restore_bank`, with staging still the body it restored: the
+    /// Pokédex views are reloaded from the live object and checked.
+    fn reload_dex(&mut self, task: Task) -> Result<(), Fault> {
         let raw = task.bank_pointer()?;
         let expected = crate::dex::evidence(self.staged_body()?).map_err(|_| Fault::StorageLoad)?;
-        {
-            let mut bank = unsafe { NativeBank::from_raw(raw) }.map_err(|_| Fault::NativeObject)?;
-            let bytes = self.staged_body()?;
-            bank.restore_preserving_detected_games(bytes)
-                .map_err(|_| Fault::StorageLoad)?;
-        }
         // Native helper buffers live outside the serialized body. Reload all
         // eight family views after the body changes, then invalidate aggregates.
         unsafe { crate::dex::refresh_after_restore(raw) }.map_err(|_| Fault::NativeObject)?;
@@ -659,6 +680,24 @@ impl Runtime {
                 Err(_) => Err(Fault::NativeObject),
             };
         }
+        if matches!(self.step, Step::Restored | Step::Loaded) && self.owner != task.raw() as usize {
+            return Err(Fault::NativeObject);
+        }
+        if self.step == Step::Restored {
+            self.reload_dex(task)?;
+            return self.opened(task);
+        }
+        if self.step == Step::Loaded {
+            // The counts of the game and the Bank as they were loaded.
+            let (game, bank) = counts(task)?;
+            let coordinator = task.pointer(8)?;
+            if let Some(game) = game {
+                unsafe { write_word(coordinator, 0xf4, game) };
+            }
+            unsafe { write_word(coordinator, 0xf8, bank) };
+            self.begin_rewards(task, bank)?;
+            return Ok(self.complete(task));
+        }
         if self.step == Step::Idle {
             // The files of the session before are closed first.
             if !self.files_closed() {
@@ -777,19 +816,18 @@ impl Runtime {
             )
             | (Step::Initialize | Step::Recover, Reply::BankReady { loaded }) => {
                 match loaded {
-                    Some(loaded) => self.restore_bank(task, loaded)?,
+                    // Its Pokédex views follow on the next frame.
+                    Some(loaded) => {
+                        self.restore_bank(task, loaded)?;
+                        self.step = Step::Restored;
+                        Ok(false)
+                    }
                     // A newly created Bank: the live object is the body that
                     // was just written. Copying it back would only stall the
                     // first start.
-                    None if self.step == Step::Initialize => {}
-                    None => return Err(Fault::StorageInvalid),
+                    None if self.step == Step::Initialize => self.opened(task),
+                    None => Err(Fault::StorageInvalid),
                 }
-                self.pending = false;
-                // The original's main-menu initializer, which is skipped,
-                // ends the loading panel; game selection does not.
-                let ui = task.ui()?;
-                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
-                Ok(self.complete(task))
             }
             (Step::Load, Reply::Inspected(evidence)) => {
                 // The Bank is the body opening restored: nothing between
@@ -805,14 +843,9 @@ impl Runtime {
                     trainer: Trainer::of_game(&name, id, gen7),
                 });
                 self.pending = false;
-                let (game, bank) = counts(task)?;
-                let coordinator = task.pointer(8)?;
-                if let Some(game) = game {
-                    unsafe { write_word(coordinator, 0xf4, game) };
-                }
-                unsafe { write_word(coordinator, 0xf8, bank) };
-                self.begin_rewards(task, bank)?;
-                Ok(self.complete(task))
+                // The counts follow on the next frame.
+                self.step = Step::Loaded;
+                Ok(false)
             }
             _ => Err(Fault::StorageInvalid),
         }

@@ -22,7 +22,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | START without a usable game; then insert one and START again. | Two native explanatory pages, then the title after the second A press. No HOME-transfer question or Bank-file creation. A usable game proceeds normally. |
 | Select a save without the required Pokédex progress. | Native notice, then game selection; other eligible saves remain usable. |
 | Press START on the start screen, in Bank and in Transporter. | The "Checking the Game Card… Don't turn off the power or remove the Game Card or SD card." screen with its spinner and sound appears with the press, not after a pause; In Bank the same panel runs on into game selection. In Transporter the same one spinner and sound stay, standing still while the game list loads, until the list is on screen; no second spinner, no restart of the sound, and nothing behind the list's "choose a game" text. The list comes as soon as it is loaded, at least 3 s after START, not 3 s after the search. |
-| Observe loading and try HOME/sleep during work and on idle screens. | Background work keeps updating the spinner and sound; short native pauses may remain. HOME/sleep are refused during loading/saving and work on idle screens and completed result/error screens. |
+| Observe loading and try HOME/sleep during work and on idle screens. Watch the spinner at the press of Save and Quit and just before the menu or the boxes appear after loading. | Background work keeps updating the spinner and sound, also at those moments; a stop there is a fault, a short native pause elsewhere is not. HOME/sleep are refused during loading/saving and work on idle screens and completed result/error screens. |
 
 ## Bank, feature by feature
 
