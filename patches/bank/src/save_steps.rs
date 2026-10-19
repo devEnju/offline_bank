@@ -10,13 +10,22 @@ use bank_common::fault::Fault;
 pub enum Step {
     /// `Job::Detect` is out: is the game's Game Card there? Nothing of the
     /// save is done before its answer.
+    ///
+    /// From its answer on, each of the following steps is one frame with one
+    /// heavy native call on the main thread, as the original's states are.
     Detect,
-    /// The Game Card is there and the counts and Miles are settled: the game
-    /// is prepared on this frame.
+    /// The Game Card is there: the game's Pokémon are counted on this frame.
+    CountGame,
+    /// The game's Pokémon are counted (`None` without a game count): the
+    /// Bank's are counted, the Miles settled and the counts recorded on this
+    /// frame.
+    CountBank { game: Option<u32> },
+    /// The counts and Miles are settled: the game is prepared on this frame.
     StageGame,
-    /// The game is prepared: the Pokédex is refreshed and the Bank staged on
-    /// this frame, and `Job::Prepare` is handed over. Each of the two has a
-    /// frame of its own, as the original's states have.
+    /// The game is prepared: the Pokédex is refreshed on this frame.
+    StageDex,
+    /// The Pokédex is refreshed: the Bank is staged on this frame, and
+    /// `Job::Prepare` is handed over.
     StageBank,
     /// `Job::Prepare` is out: the journal is prepared and the game checked.
     Prepare,
@@ -40,7 +49,7 @@ impl Step {
                 Ok(Self::Ended { saved: false })
             }
             (Self::Detect | Self::Prepare, Reply::CardRemoved) => Err(Fault::GameRead),
-            (Self::Detect, Reply::Detected) => Ok(Self::StageGame),
+            (Self::Detect, Reply::Detected) => Ok(Self::CountGame),
             (Self::Prepare, Reply::ReadyToWrite) => Ok(Self::Write),
             (Self::Finalize, Reply::Saved) => Ok(Self::Ended { saved: true }),
             _ => Err(Fault::JournalRecovery),
@@ -63,9 +72,13 @@ mod tests {
     use offline_core::{Part, Phase, Save, Slot};
     use std::vec::Vec;
 
-    const STEPS: [Step; 8] = [
+    const STEPS: [Step; 12] = [
         Step::Detect,
+        Step::CountGame,
+        Step::CountBank { game: None },
+        Step::CountBank { game: Some(31) },
         Step::StageGame,
+        Step::StageDex,
         Step::StageBank,
         Step::Prepare,
         Step::Write,
@@ -121,10 +134,11 @@ mod tests {
     #[test]
     fn a_save_goes_from_the_game_card_to_its_message() {
         let step = Step::Detect.after(Reply::Detected, true).unwrap();
-        assert_eq!(step, Step::StageGame);
-        // The hook prepares the game in `StageGame`, goes on to `StageBank`
-        // on the next frame and hands `Job::Prepare` over from there, and
-        // starts the original's writer, whose end hands `Job::Finalize` over.
+        assert_eq!(step, Step::CountGame);
+        // The hook goes on by itself, a frame each, through `CountBank`,
+        // `StageGame` and `StageDex` to `StageBank`, which hands
+        // `Job::Prepare` over, and starts the original's writer, whose end
+        // hands `Job::Finalize` over.
         let step = Step::Prepare.after(Reply::ReadyToWrite, true).unwrap();
         assert_eq!(step, Step::Write);
         let step = Step::Finalize.after(Reply::Saved, true).unwrap();

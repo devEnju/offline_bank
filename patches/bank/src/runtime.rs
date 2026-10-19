@@ -87,9 +87,14 @@ enum Step {
     /// returns to the start screen.
     TurnBack,
     Load,
-    /// The chosen game is loaded and its trainer read; the counts are taken
-    /// on this frame and the load ends.
+    /// The chosen game is loaded and its trainer read; its Pokémon are
+    /// counted on this frame.
     Loaded,
+    /// The game's Pokémon are counted (`None` without a game count); the
+    /// Bank's are counted on this frame and the load ends.
+    Counted {
+        game: Option<u32>,
+    },
     /// Save and Quit (`save_steps`).
     Save(save_steps::Step),
 }
@@ -202,11 +207,12 @@ fn local_date(task: Task) -> Result<(), Fault> {
     }
     Ok(())
 }
-/// The Pokémon of the selected game, if one is selected, and of the Bank,
-/// counted as the original counts them for its transfer record. The
-/// coordinator keeps them at `+0xf4` and `+0xf8`.
-fn counts(task: Task) -> Result<(Option<u32>, u32), Fault> {
-    let game = match unsafe { native_game::selected(task.pointer(8)?) } {
+/// The Pokémon of the selected game, if one is selected, counted as the
+/// original counts them for its transfer record. The coordinator keeps the
+/// count at `+0xf4`, and the Bank's (`bank_count`) at `+0xf8`. Each count is
+/// a frame's work of its own.
+fn game_count(task: Task) -> Result<Option<u32>, Fault> {
+    match unsafe { native_game::selected(task.pointer(8)?) } {
         Ok((game, kind)) => unsafe {
             let boxes = game.add(if kind.gen7() { 0x769dc } else { 0x1e51c });
             let vtable = checked_pointer(read_word(boxes, 0))?;
@@ -217,12 +223,11 @@ fn counts(task: Task) -> Result<(Option<u32>, u32), Fault> {
             let heap: unsafe extern "aapcs" fn(u32) -> u32 = transmute(HEAP);
             let count: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 =
                 transmute(address as usize);
-            Some(count(boxes, heap(0x17), 1))
+            Ok(Some(count(boxes, heap(0x17), 1)))
         },
-        Err(NativeGameError::NotLoaded) => None,
-        Err(_) => return Err(Fault::NativeObject),
-    };
-    Ok((game, bank_count(task)?))
+        Err(NativeGameError::NotLoaded) => Ok(None),
+        Err(_) => Err(Fault::NativeObject),
+    }
 }
 /// The Pokémon in the Bank's hundred boxes, as native 001d5ec0 counts them
 /// for the transfer record and for the Miles.
@@ -680,23 +685,37 @@ impl Runtime {
                 Err(_) => Err(Fault::NativeObject),
             };
         }
-        if matches!(self.step, Step::Restored | Step::Loaded) && self.owner != task.raw() as usize {
+        if matches!(
+            self.step,
+            Step::Restored | Step::Loaded | Step::Counted { .. }
+        ) && self.owner != task.raw() as usize
+        {
             return Err(Fault::NativeObject);
         }
-        if self.step == Step::Restored {
-            self.reload_dex(task)?;
-            return self.opened(task);
-        }
-        if self.step == Step::Loaded {
-            // The counts of the game and the Bank as they were loaded.
-            let (game, bank) = counts(task)?;
-            let coordinator = task.pointer(8)?;
-            if let Some(game) = game {
-                unsafe { write_word(coordinator, 0xf4, game) };
+        match self.step {
+            Step::Restored => {
+                self.reload_dex(task)?;
+                return self.opened(task);
             }
-            unsafe { write_word(coordinator, 0xf8, bank) };
-            self.begin_rewards(task, bank)?;
-            return Ok(self.complete(task));
+            // The counts of the game and the Bank as they were loaded, a
+            // frame each.
+            Step::Loaded => {
+                self.step = Step::Counted {
+                    game: game_count(task)?,
+                };
+                return Ok(false);
+            }
+            Step::Counted { game } => {
+                let bank = bank_count(task)?;
+                let coordinator = task.pointer(8)?;
+                if let Some(game) = game {
+                    unsafe { write_word(coordinator, 0xf4, game) };
+                }
+                unsafe { write_word(coordinator, 0xf8, bank) };
+                self.begin_rewards(task, bank)?;
+                return Ok(self.complete(task));
+            }
+            _ => {}
         }
         if self.step == Step::Idle {
             // The files of the session before are closed first.
@@ -900,10 +919,32 @@ impl Runtime {
                     }
                 };
             }
+            Save::CountBank { game } => {
+                let coordinator = task.pointer(8)?;
+                // The counts of the load, and the ones now.
+                let old_game = unsafe { read_word(coordinator, 0xf4) };
+                let old_bank = unsafe { read_word(coordinator, 0xf8) };
+                let new_game = game.unwrap_or(old_game);
+                let new_bank = bank_count(task)?;
+                // An earlier clock earns nothing; only an invalid one stops here.
+                self.settle_rewards(task)?;
+                let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+                    .map_err(|_| Fault::NativeObject)?;
+                bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
+                self.step = Step::Save(Save::StageGame);
+                return Ok(None);
+            }
             Save::StageGame => {
                 let game = self.game.as_mut().ok_or(Fault::GamePrepare)?;
                 game.prepare().map_err(|_| Fault::GamePrepare)?;
-                // The Pokédex and the Bank follow on the next frame.
+                self.step = Step::Save(Save::StageDex);
+                return Ok(None);
+            }
+            Save::StageDex => {
+                // A game the Bank knows already, with the same trainer,
+                // brings its records and Pokédex along with the save.
+                unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
+                    .map_err(|_| Fault::NativeObject)?;
                 self.step = Step::Save(Save::StageBank);
                 return Ok(None);
             }
@@ -922,10 +963,6 @@ impl Runtime {
                 if !self.rewards.settled {
                     return Err(Fault::RewardState);
                 }
-                // A game the Bank knows already, with the same trainer,
-                // brings its records and Pokédex along with the save.
-                unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
-                    .map_err(|_| Fault::NativeObject)?;
                 self.stage_bank(task)?;
                 self.pending = Save::Prepare.pending();
                 // The worker checks the prepared game, reads the game once
@@ -942,6 +979,8 @@ impl Runtime {
                 )?;
                 return Ok(None);
             }
+            // Its reply's frame goes on to `CountBank` by itself.
+            Save::CountGame => return Err(Fault::JournalRecovery),
             Save::Detect | Save::Prepare | Save::Finalize => {}
         }
         let Some(reply) = self.poll(task)? else {
@@ -952,19 +991,11 @@ impl Runtime {
         self.step = Step::Save(next);
         self.pending = next.pending();
         match next {
-            Save::StageGame => {
-                let coordinator = task.pointer(8)?;
-                // The counts of the load, and the ones now.
-                let old_game = unsafe { read_word(coordinator, 0xf4) };
-                let old_bank = unsafe { read_word(coordinator, 0xf8) };
-                let (new_game, new_bank) = counts(task)?;
-                let new_game = new_game.unwrap_or(old_game);
-                // An earlier clock earns nothing; only an invalid one stops here.
-                self.settle_rewards(task)?;
-                let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
-                    .map_err(|_| Fault::NativeObject)?;
-                bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
-                // The game is prepared on the next frame.
+            Save::CountGame => {
+                // The Bank's count follows on the next frame.
+                self.step = Step::Save(Save::CountBank {
+                    game: game_count(task)?,
+                });
             }
             Save::Write => {
                 // Room for the retained native game-writer thread.
@@ -996,9 +1027,13 @@ impl Runtime {
                 refuse_home(false);
                 unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
             }
-            Save::Detect | Save::StageBank | Save::Prepare | Save::Finalize => {
-                return Err(Fault::JournalRecovery)
-            }
+            Save::Detect
+            | Save::CountBank { .. }
+            | Save::StageGame
+            | Save::StageDex
+            | Save::StageBank
+            | Save::Prepare
+            | Save::Finalize => return Err(Fault::JournalRecovery),
         }
         Ok(None)
     }
