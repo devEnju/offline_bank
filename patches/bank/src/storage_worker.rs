@@ -105,6 +105,10 @@ pub enum Reply {
 /// A game's save and its secure value on the console, as the worker reaches
 /// them: `arm::Console` on the console, a simulated game in the tests.
 pub trait Game {
+    /// The original's check of the prepared game in memory (`002cbea0`),
+    /// which its writer thread makes after the write. Nothing is read from
+    /// the card.
+    fn check(&mut self) -> Result<(), WorkerError>;
     /// The game's save as it is.
     fn inspect(&mut self) -> Result<GameEvidence, WorkerError>;
     /// One read of the game's save: its secure pair, and its image as it is
@@ -144,11 +148,11 @@ pub enum Prepared {
     Ready { staged: u32 },
 }
 
-/// Save and Quit's preparation, with the Bank staged: the game's save is read
-/// once, before anything is written, for the image as it was loaded and the
-/// one about to be written. Only then the journal takes the save in
-/// progress, and after it the game is checked again: nothing may have
-/// changed it in between.
+/// Save and Quit's preparation, with the Bank staged: the prepared game is
+/// checked first, then the game's save is read once, before anything is
+/// written, for the image as it was loaded and the one about to be written.
+/// Only then the journal takes the save in progress, and after it the game is
+/// checked again: nothing may have changed it in between.
 pub fn prepare<F: Files, G: Game>(
     files: &mut BankFiles<F>,
     game: &mut G,
@@ -156,6 +160,7 @@ pub fn prepare<F: Files, G: Game>(
     baseline: GameEvidence,
     trainer: Trainer,
 ) -> Stopped<Prepared, F> {
+    game.check()?;
     let mut read = || {
         let (secure, images) = game.images()?;
         if secure != baseline.secure {
@@ -631,6 +636,12 @@ mod arm {
         }
     }
     impl Game for Console<'_> {
+        fn check(&mut self) -> Result<(), WorkerError> {
+            let prepared = self.prepared.ok_or(Fault::GamePrepare.with(0))?;
+            // The unsafe submit contract keeps the game frozen and live, and
+            // read by nothing else, until this worker publishes completion.
+            unsafe { prepared.check() }.map_err(|_| Fault::GamePrepare.with(0))
+        }
         fn inspect(&mut self) -> Result<GameEvidence, WorkerError> {
             let game = self.game;
             let mut main = unsafe { GameMainReader::open(game.session, game.archive) }
@@ -796,6 +807,8 @@ mod tests {
         value: u64,
         /// The card is taken out after this many calls more.
         out_after: Option<usize>,
+        /// The prepared game passes the original's check.
+        valid: bool,
     }
     impl Simulated {
         fn loaded(cartridge: bool) -> Self {
@@ -805,6 +818,7 @@ mod tests {
                 cartridge,
                 value: LOADED.current,
                 out_after: None,
+                valid: true,
             }
         }
         /// The game as it was loaded, as `LoadGame` saw it.
@@ -833,6 +847,13 @@ mod tests {
         }
     }
     impl Game for Simulated {
+        fn check(&mut self) -> Result<(), WorkerError> {
+            if self.valid {
+                Ok(())
+            } else {
+                Err(Fault::GamePrepare.with(0))
+            }
+        }
         fn inspect(&mut self) -> Result<GameEvidence, WorkerError> {
             let (fingerprint, secure) = self.save()?;
             Ok(GameEvidence {
@@ -953,6 +974,20 @@ mod tests {
         let result = prepare(&mut files, &mut game, &mut staging, baseline, trainer());
         assert_eq!(fault(result), Fault::GameRead);
         assert!(pending(&mut files).is_some());
+    }
+
+    #[test]
+    fn a_prepared_game_that_fails_its_check_is_refused_before_anything_is_written() {
+        let (disk, mut files, body) = bank();
+        let mut game = Simulated::loaded(true);
+        let baseline = game.evidence();
+        game.valid = false;
+        let before = stored(&disk);
+        let mut staging = body.clone();
+        let result = prepare(&mut files, &mut game, &mut staging, baseline, trainer());
+        assert_eq!(fault(result), Fault::GamePrepare);
+        assert!(stored(&disk) == before);
+        assert!(pending(&mut files).is_none());
     }
 
     #[test]

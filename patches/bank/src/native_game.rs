@@ -143,6 +143,8 @@ impl FrozenBlock {
 pub struct PreparedImage {
     pub kind: GameKind,
     pub secure: SecureValues,
+    /// The native game object the blocks belong to, for its check.
+    pub(crate) game: usize,
     pub(crate) blocks: [FrozenBlock; MAX_PREPARED_BLOCKS],
     pub(crate) count: usize,
 }
@@ -153,6 +155,9 @@ impl PreparedImage {
     pub fn validate_geometry(&self, file_len: u64) -> Result<u64, NativeGameError> {
         if file_len == 0 || file_len > i32::MAX as u64 {
             return Err(NativeGameError::InvalidFileLength);
+        }
+        if self.game == 0 {
+            return Err(NativeGameError::NullPointer);
         }
         if self.count != self.kind.data_block_count() as usize + 1
             || self.count > MAX_PREPARED_BLOCKS
@@ -260,6 +265,7 @@ mod frozen_tests {
                 current: 2,
                 previous: 1,
             },
+            game: 0x1000,
             blocks,
             count: 56,
         }
@@ -287,6 +293,13 @@ mod frozen_tests {
         assert!(image.validate_geometry(0x10000).is_err());
         image.blocks[0].address = 0;
         assert!(image.validate_geometry(0x10000).is_err());
+        // An image without the game it belongs to.
+        let mut image = fixture();
+        image.game = 0;
+        assert_eq!(
+            image.validate_geometry(55 * 512 + 0x1e8),
+            Err(NativeGameError::NullPointer)
+        );
     }
 }
 
@@ -307,8 +320,10 @@ mod arm {
     /// one its metadata.
     const BLOCK: usize = 0x002b_c460;
     /// Preparing a save: `002bc7c4(game)` rotates the secure-value pair,
-    /// `002bc4bc(game)` regenerates checksums and signatures,
-    /// `002cbea0(game, detail)` validates the result (1).
+    /// `002bc4bc(game)` regenerates checksums and signatures, both on the
+    /// main thread as in the original. `002cbea0(game, detail)` checks the
+    /// result (1); the original's writer thread makes that check after it
+    /// wrote, the worker makes it before anything is written.
     const ROTATE: usize = 0x002b_c7c4;
     const PREPARE: usize = 0x002b_c4bc;
     const VALIDATE: usize = 0x002c_bea0;
@@ -416,8 +431,10 @@ mod arm {
         /// Every reachable metadata/block object, vtable, getter, and returned
         /// byte range must remain valid throughout `'a`. They must be the native
         /// objects/getters for this game, not arbitrary readable addresses.
-        /// Native RNG002bc7c4 and preparation002bc4bc must have completed and the
-        /// prepared image must have passed native validation. No native or Rust mutation, mutable alias, callback, or worker may overlap this borrow. Shared read-only views are allowed.
+        /// Native RNG002bc7c4 and preparation002bc4bc must have completed; the
+        /// worker checks the prepared image before anything is written. No native
+        /// or Rust mutation, mutable alias, callback, or worker may overlap this
+        /// borrow. Shared read-only views are allowed.
         pub unsafe fn from_raw(raw: *mut u8) -> Result<Self, NativeGameError> {
             let base = raw as u32;
             let pointer = pointer(base)?;
@@ -459,6 +476,7 @@ mod arm {
             let mut image = PreparedImage {
                 kind: self.kind,
                 secure: self.secure_values(),
+                game: self.pointer.as_ptr() as usize,
                 blocks: [FrozenBlock::EMPTY; MAX_PREPARED_BLOCKS],
                 count: 0,
             };
@@ -492,6 +510,30 @@ mod arm {
                 failed: false,
                 borrow: PhantomData,
             })
+        }
+    }
+
+    impl PreparedImage {
+        /// The original's check of the prepared game (`002cbea0`): every
+        /// block's checksum and, in Sun to Ultra Moon, the signature. For the
+        /// signature it overwrites 0x80 bytes of block 0x24 and restores
+        /// them, and it takes the SDK's critical section around the shared
+        /// crypto state (`00235658`), as on the original's writer thread.
+        ///
+        /// # Safety
+        /// Only on the worker, inside the job the image was submitted with:
+        /// the main thread keeps the game frozen and allocated until that job
+        /// has completed, and nothing else reads it meanwhile.
+        pub unsafe fn check(&self) -> Result<(), NativeGameError> {
+            type Validate = unsafe extern "aapcs" fn(*mut u8, *mut u32) -> u32;
+            let validate: Validate = unsafe { transmute(VALIDATE) };
+            let game = pointer(self.game as u32)?;
+            let mut detail = 0;
+            let status = unsafe { validate(game.as_ptr(), &mut detail) };
+            if status != 1 {
+                return Err(NativeGameError::Validation { status, detail });
+            }
+            Ok(())
         }
     }
 
@@ -623,6 +665,7 @@ mod arm {
         }
         /// Advances native save metadata and regenerates all checksums/signatures.
         /// Does not bind a writer, set activity flags, spawn a worker, or write FS.
+        /// The result is checked by the worker (`PreparedImage::check`).
         pub fn prepare(&mut self) -> Result<(), NativeGameError> {
             if self.phase != Phase::Ready {
                 return Err(NativeGameError::InvalidPhase);
@@ -630,19 +673,12 @@ mod arm {
             self.check_idle()?;
             type Rotate = unsafe extern "aapcs" fn(*mut u8) -> u64;
             type Prepare = unsafe extern "aapcs" fn(*mut u8) -> u32;
-            type Validate = unsafe extern "aapcs" fn(*mut u8, *mut u32) -> u32;
             let rotate: Rotate = unsafe { transmute(ROTATE) };
             let prepare: Prepare = unsafe { transmute(PREPARE) };
-            let validate: Validate = unsafe { transmute(VALIDATE) };
             self.phase = Phase::Poisoned;
             unsafe {
                 rotate(self.game.as_ptr());
                 prepare(self.game.as_ptr());
-            }
-            let mut detail = 0;
-            let status = unsafe { validate(self.game.as_ptr(), &mut detail) };
-            if status != 1 {
-                return Err(NativeGameError::Validation { status, detail });
             }
             self.phase = Phase::Prepared;
             Ok(())
@@ -656,8 +692,9 @@ mod arm {
         /// Starts exactly the native mode4 worker; preparation is not repeated.
         ///
         /// # Safety
-        /// The caller must have durably prepared both journal replicas for this
-        /// exact prepared image, reverified the unchanged original game file,
+        /// The caller must have checked this exact prepared image
+        /// (`PreparedImage::check`), durably prepared both journal replicas for
+        /// it, reverified the unchanged original game file,
         /// and protected the native owning task against cancellation/destruction
         /// (0025c420 busy lifecycle or an equivalent verified hook). Keep this
         /// session and its native owners alive until poll reaches a terminal
