@@ -29,7 +29,7 @@ use offline_core::{
     native_blob::NativeBlobView,
     rewards::{self, Currency, Dialog, Entry, Moment, Receipt, RewardError},
     sections::{RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS},
-    Phase, RecoveryDecision,
+    Phase,
 };
 use patch_common::{
     exclusive::Exclusive,
@@ -104,7 +104,6 @@ struct Runtime {
     job: Option<JobId>,
     files: Files<JobId>,
     baseline: Option<Baseline>,
-    save_dex: Option<crate::dex::Evidence>,
     fault: Fault,
     native_result: u32,
     pending: bool,
@@ -120,8 +119,8 @@ struct Runtime {
     /// The game scan's loading panel (`panel`).
     panel: Panel,
 }
-/// The game the Bank was loaded with, as it was then or after the last
-/// save: a save in progress is bound to both.
+/// The game the Bank was loaded with, as it was then: a save in progress is
+/// bound to both.
 #[derive(Clone, Copy)]
 struct Baseline {
     evidence: GameEvidence,
@@ -178,7 +177,6 @@ static STATE: Exclusive<Runtime> = unsafe {
         job: None,
         files: Files::Closed,
         baseline: None,
-        save_dex: None,
         fault: Fault::None,
         native_result: 0,
         pending: false,
@@ -371,16 +369,12 @@ impl Runtime {
         result.map_err(|error| self.worker_error(error))
     }
     /// Stages the live native body for the worker, which cuts it into files.
-    /// For a save, its Pokédex evidence is kept for `restore_bank`; a new
-    /// Bank has no earlier Pokédex to compare against.
-    fn stage_bank(&mut self, task: Task, save: bool) -> Result<(), Fault> {
+    /// For a save, the worker keeps its Pokédex evidence to check the Bank
+    /// it reads back; a new Bank has no earlier Pokédex to compare against.
+    fn stage_bank(&mut self, task: Task) -> Result<(), Fault> {
         let bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
         let snapshot = bank.snapshot().map_err(|_| Fault::NativeObject)?;
-        if save {
-            self.save_dex =
-                Some(crate::dex::evidence(snapshot.as_bytes()).map_err(|_| Fault::NativeObject)?);
-        }
         let staging = self
             .worker()?
             .staging_mut()
@@ -427,20 +421,12 @@ impl Runtime {
         }
         Ok(())
     }
-    /// Restores the assembled body into the native object. After a save,
-    /// its Pokédex must be the one the save staged.
-    fn restore_bank(&mut self, task: Task, loaded: Loaded, saved: bool) -> Result<(), Fault> {
+    /// Restores the assembled body into the native object, at opening or
+    /// after a recovery.
+    fn restore_bank(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
         self.fill_defaults(loaded)?;
         let raw = task.bank_pointer()?;
         let expected = crate::dex::evidence(self.staged_body()?).map_err(|_| Fault::StorageLoad)?;
-        if saved {
-            let saved = self.save_dex.ok_or(Fault::StorageLoad)?;
-            if saved.validity_mask != expected.validity_mask
-                || saved.family_crc32 != expected.family_crc32
-            {
-                return Err(Fault::StorageLoad);
-            }
-        }
         {
             let mut bank = unsafe { NativeBank::from_raw(raw) }.map_err(|_| Fault::NativeObject)?;
             let bytes = self.staged_body()?;
@@ -617,7 +603,6 @@ impl Runtime {
         self.step = Step::Idle;
         self.job = None;
         self.game = None;
-        self.save_dex = None;
         task.end_busy();
         refuse_home(false);
         true
@@ -661,7 +646,7 @@ impl Runtime {
                 Ok(false)
             }
             7 => {
-                self.stage_bank(task, false)?;
+                self.stage_bank(task)?;
                 unsafe { write_word(task.raw(), 0x10, 1) };
                 self.submit(task, Step::Initialize, Job::Initialize)?;
                 Ok(false)
@@ -799,9 +784,9 @@ impl Runtime {
                     loaded,
                 },
             )
-            | (Step::Initialize | Step::Recover, Reply::BankReady { loaded, .. }) => {
+            | (Step::Initialize | Step::Recover, Reply::BankReady { loaded }) => {
                 match loaded {
-                    Some(loaded) => self.restore_bank(task, loaded, false)?,
+                    Some(loaded) => self.restore_bank(task, loaded)?,
                     // A newly created Bank: the live object is the body that
                     // was just written. Copying it back would only stall the
                     // first start.
@@ -900,7 +885,7 @@ impl Runtime {
             // brings its records and Pokédex along with the save.
             unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
                 .map_err(|_| Fault::NativeObject)?;
-            self.stage_bank(task, true)?;
+            self.stage_bank(task)?;
             // Conservative until Finalize succeeds: failed preparation may
             // already have published a durable pending journal replica.
             self.pending = true;
@@ -967,22 +952,10 @@ impl Runtime {
                 self.step = Step::SaveWrite;
                 Ok(None)
             }
-            (
-                Step::SaveFinalize,
-                Reply::BankReady {
-                    evidence: Some(evidence),
-                    decision: Some(RecoveryDecision::CommitAfter),
-                    loaded: Some(loaded),
-                },
-            ) => {
-                self.restore_bank(task, loaded, true)?;
-                // The saved game is the one the session goes on with.
-                self.baseline = self.baseline.map(|baseline| Baseline {
-                    evidence,
-                    ..baseline
-                });
+            (Step::SaveFinalize, Reply::Saved) => {
+                // The worker has checked the Bank it read back; the live
+                // object is the body it saved, and the session ends here.
                 self.pending = false;
-                self.begin_rewards(task, bank_count(task)?)?;
                 // The original's ending of a successful save: its sound and
                 // message, which waits. Nothing is read or written now.
                 self.step = Step::Ended { saved: true };

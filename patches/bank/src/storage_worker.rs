@@ -6,7 +6,7 @@ use crate::{
     transaction::Trainer,
 };
 use bank_common::bank_files::Loaded;
-use offline_core::{Fingerprint, Phase, RecoveryDecision};
+use offline_core::{Fingerprint, Phase};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameEvidence {
@@ -67,10 +67,11 @@ pub enum Reply {
     /// `loaded` is `None` only for a newly created Bank, whose live object
     /// already is the saved body.
     BankReady {
-        evidence: Option<GameEvidence>,
-        decision: Option<RecoveryDecision>,
         loaded: Option<Loaded>,
     },
+    /// Save and Quit has committed, and the Bank read back holds the
+    /// Pokédex it staged. The live object already is the saved body.
+    Saved,
     Inspected(GameEvidence),
     /// The original's test finds the game's Game Card, or the installed
     /// copy, there.
@@ -111,7 +112,7 @@ mod arm {
         moved,
         native_blob::{NativeBlobView, BLOB_SIZE},
         sections::{Identity, HELD},
-        PendingTransfer, Storage,
+        PendingTransfer, RecoveryDecision, Storage,
     };
     use patch_common::worker::{Service, Shared, Worker};
 
@@ -141,6 +142,9 @@ mod arm {
         /// The secure pair of the game image the last `Prepare` allowed to
         /// be written, until `Finalize` has looked for it.
         written: Option<SecureValues>,
+        /// The Pokédex of the body that `Prepare` staged, for `Finalize`
+        /// to find in the Bank it reads back.
+        staged: Option<crate::dex::Evidence>,
     }
     impl Service for StorageWorker {
         type Program = Bank15;
@@ -160,6 +164,7 @@ mod arm {
                 missing: false,
                 poisoned: false,
                 written: None,
+                staged: None,
             }
         }
         fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
@@ -173,6 +178,7 @@ mod arm {
                 self.fs_session = 0;
                 self.missing = false;
                 self.written = None;
+                self.staged = None;
                 return Ok(Reply::Closed);
             }
             if self.poisoned {
@@ -234,18 +240,10 @@ mod arm {
                 .map(Some)
                 .map_err(|e| Fault::JournalRecovery.files(e))
         }
-        /// The end of a recovery or a Save and Quit, once the save in
-        /// progress is resolved.
-        fn settled(
-            &mut self,
-            staging: &mut [u8],
-            evidence: Option<GameEvidence>,
-            decision: RecoveryDecision,
-        ) -> Result<Reply, WorkerError> {
+        /// The end of a recovery, once the save in progress is resolved.
+        fn settled(&mut self, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             let loaded = self.read_bank(staging)?;
             Ok(Reply::BankReady {
-                evidence,
-                decision: Some(decision),
                 loaded: Some(loaded),
             })
         }
@@ -291,11 +289,7 @@ mod arm {
                         .initialize(staging)
                         .map_err(|e| Fault::StorageCreate.files(e))?;
                     self.missing = false;
-                    Ok(Reply::BankReady {
-                        evidence: None,
-                        decision: None,
-                        loaded: None,
-                    })
+                    Ok(Reply::BankReady { loaded: None })
                 }
                 Job::Detect { game } => {
                     // A reply, not an error: the worker stays usable for
@@ -332,7 +326,7 @@ mod arm {
                         // version's, on one kind or the other.
                         transaction::bound(&pending).map_err(|_| Fault::GameChanged.with(0))?;
                         return match self.settle_by_moves(staging, false)? {
-                            Some(decision) => self.settled(staging, None, decision),
+                            Some(_) => self.settled(staging),
                             None => Ok(waiting),
                         };
                     };
@@ -360,7 +354,7 @@ mod arm {
                         Match::Other(Found::StandIn) => self.settle_by_moves(staging, false)?,
                     };
                     match decision {
-                        Some(decision) => self.settled(staging, Some(evidence), decision),
+                        Some(_) => self.settled(staging),
                         None => Ok(waiting),
                     }
                 }
@@ -386,17 +380,25 @@ mod arm {
                         return Err(Fault::TransferRolledBack.with(0));
                     }
                     finish_secure(game, secure)?;
-                    let decision = self
-                        .files
+                    self.files
                         .reconcile_as(RecoveryDecision::CommitAfter)
                         .map_err(|e| Fault::JournalRecovery.files(e))?;
-                    // The complete image is still checked; it is also what
-                    // the next save of this session starts from.
+                    // The complete image is still checked.
                     let evidence = inspect(game)?;
                     if matched(&pending, &evidence)? != Match::After {
                         return Err(Fault::TransferRolledBack.with(0));
                     }
-                    self.settled(staging, Some(evidence), decision)
+                    // The Bank as it is now stored must hold the Pokédex the
+                    // save staged. The live object is that staged body; the
+                    // session ends here, so nothing is copied back.
+                    let staged = self.staged.take().ok_or(Fault::StorageLoad.with(0))?;
+                    self.read_bank(staging)?;
+                    let stored =
+                        crate::dex::evidence(staging).map_err(|_| Fault::StorageLoad.with(0))?;
+                    if stored != staged {
+                        return Err(Fault::StorageLoad.with(0));
+                    }
+                    Ok(Reply::Saved)
                 }
                 Job::Prepare {
                     game,
@@ -493,6 +495,11 @@ mod arm {
                         trainer,
                     )
                     .map_err(|_| Fault::GamePrepare.with(0))?;
+                    // The Pokédex of the staged body, before the files take
+                    // staging apart; `Finalize` finds it in the Bank again.
+                    self.staged = Some(
+                        crate::dex::evidence(staging).map_err(|_| Fault::NativeObject.with(0))?,
+                    );
                     #[cfg(feature = "test-build")]
                     self.files.rehearse(rehearsal::chosen());
                     // Side files first, then the Bank journal.
