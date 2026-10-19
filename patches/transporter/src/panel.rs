@@ -6,7 +6,8 @@
 //! (`0024264C`). The patch reads Bank's files and looks for saves on the SD
 //! card in the search, so the search shows the general loading panel of the
 //! shared UI, which needs nothing loaded, with the text the list's indicator
-//! shows. That one panel stays until the list is on screen:
+//! shows. The search's first frame only starts it; the check follows on the
+//! next. That one panel stays until the list is on screen:
 //!
 //! - the list's set-up does not start its own indicator; it only notes the
 //!   time it began (`hooks::transporter_list_indicator`), and its check
@@ -111,6 +112,8 @@ mod tests {
     #[test]
     fn the_check_starts_it_once_however_many_frames_it_takes() {
         let panel = Panel::new();
+        // The frame that starts it does nothing else: the check comes back
+        // next frame and is handed over then.
         assert!(panel.start(UI));
         for _ in 0..100 {
             assert!(!panel.start(UI));

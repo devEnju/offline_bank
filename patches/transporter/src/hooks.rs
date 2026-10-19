@@ -253,14 +253,16 @@ pub unsafe extern "aapcs" fn transporter_list_ready() {
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    // The loading panel goes up before anything is read: on the first
-    // frame, before the check is handed over (`panel`).
+    // The loading panel goes up before anything is read, on a frame of its
+    // own, as Bank's scan puts up its panel (`panel`): the worker's start
+    // and the check follow on the next frame.
     if let Some(ui) = unsafe { follow(task, TASK_UI) } {
         if unsafe { follow(ui, UI_CONTEXT) }.is_some() && PANEL.start(ui as usize) {
             unsafe {
                 start_panel(ui);
                 PANEL_SINCE.note();
             }
+            return SEARCH_PENDING;
         }
     }
     let answer = {
