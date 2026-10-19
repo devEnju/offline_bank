@@ -170,13 +170,16 @@ fn convert<C: Card>(
         *source = marked(card);
     } else {
         let Some(found) = find(card)? else {
-            // What a finished run may have left when it was cut at its end.
-            target::remove_temporary(card)?;
-            return Ok(if target::exists(card, buffer)? {
+            let done = if target::exists(card, buffer)? {
                 Done::AlreadyNew
             } else {
                 Done::NoBank
-            });
+            };
+            // What a finished run may have left when it was cut at its end,
+            // removed only once the current files are known: a run that
+            // stops changes nothing.
+            target::remove_temporary(card)?;
+            return Ok(done);
         };
         *source = Some(found);
         stage(card, buffer, found)?;
@@ -328,9 +331,17 @@ mod tests {
     fn a_bank_of_the_current_files_is_already_converted_only_when_it_opens_as_one() {
         let (converted, _) = (Source::V0_4_0.fixtures().used)(false);
         convert(&converted).unwrap();
+        // Each beside what a run cut at its end leaves: the temporary files.
         let changed = |change: &dyn Fn(&mut crate::testing::State)| {
             let card = converted.restarted(None);
-            change(&mut card.0.borrow_mut());
+            let mut state = card.0.borrow_mut();
+            change(&mut state);
+            for file in target::ORDER {
+                for unit in target::temporary(file) {
+                    state.files.insert(unit.path, vec![0x5a; unit.len as usize]);
+                }
+            }
+            drop(state);
             card
         };
         let journal = FileName::Bank.units();
@@ -367,8 +378,13 @@ mod tests {
             ),
         ];
         for (card, result) in cases {
-            let files = card.files();
+            let mut files = card.files();
             assert_eq!(convert(&card), result);
+            // A run that stops changes nothing; one that answers removes
+            // the temporary files and nothing else.
+            if result.is_ok() {
+                files.retain(|path, _| !of_the_run(path));
+            }
             assert!(card.files() == files);
         }
         // A save in progress is the offline patch's to settle.
