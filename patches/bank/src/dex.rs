@@ -349,27 +349,6 @@ mod tests {
     }
 
     #[test]
-    fn the_bank_read_back_after_a_save_has_the_pokedex_the_save_staged() {
-        use bank_common::testing::{body, fresh, load, opened, GAME};
-        use offline_core::RecoveryDecision;
-        let disk = fresh(&body(0, 0, 0));
-        let mut files = opened(&disk);
-        load(&mut files);
-        let mut staging = body(0x52, 0x66, 1);
-        staging[DEX_OFFSET + FAMILY_OFFSETS[3]] = 9;
-        staging[RECORDS_OFFSET + 3 * RECORD_SIZE] = 9;
-        staging[VALIDITY_OFFSET] = 1 << 3;
-        // `Prepare` takes it before the files take staging apart.
-        let staged = evidence(&staging).unwrap();
-        files.prepare(&mut staging, GAME, [1; 32], [2; 32]).unwrap();
-        assert_ne!(evidence(&staging).unwrap(), staged);
-        // `Finalize` commits and reads the Bank back into the same buffer.
-        files.reconcile_as(RecoveryDecision::CommitAfter).unwrap();
-        files.read(&mut staging).unwrap();
-        assert_eq!(evidence(&staging).unwrap(), staged);
-    }
-
-    #[test]
     fn evidence_keeps_validity_separate_from_family_digests() {
         let mut body = fixture();
         let before = evidence(&body).unwrap();

@@ -69,8 +69,8 @@ pub enum Reply {
     BankReady {
         loaded: Option<Loaded>,
     },
-    /// Save and Quit has committed, and the Bank read back holds the
-    /// Pokédex it staged. The live object already is the saved body.
+    /// Save and Quit has committed, and the Bank read back is the body it
+    /// staged. The live object already is the saved body.
     Saved,
     Inspected(GameEvidence),
     /// The original's test finds the game's Game Card, or the installed
@@ -108,6 +108,7 @@ mod arm {
     };
     use core::{cell::UnsafeCell, mem::transmute};
     use offline_core::{
+        crc32,
         game_image::{fingerprint_image, fingerprint_images, Overlay},
         moved,
         native_blob::{NativeBlobView, BLOB_SIZE},
@@ -142,9 +143,9 @@ mod arm {
         /// The secure pair of the game image the last `Prepare` allowed to
         /// be written, until `Finalize` has looked for it.
         written: Option<SecureValues>,
-        /// The Pokédex of the body that `Prepare` staged, for `Finalize`
+        /// The checksum of the body that `Prepare` staged, for `Finalize`
         /// to find in the Bank it reads back.
-        staged: Option<crate::dex::Evidence>,
+        staged: Option<u32>,
     }
     impl Service for StorageWorker {
         type Program = Bank15;
@@ -383,14 +384,12 @@ mod arm {
                     self.files
                         .reconcile_as(RecoveryDecision::CommitAfter)
                         .map_err(|e| Fault::JournalRecovery.files(e))?;
-                    // The Bank as it is now stored must hold the Pokédex the
-                    // save staged. The live object is that staged body; the
+                    // The Bank as it is now stored must be the body the save
+                    // staged, every byte. The live object is that body; the
                     // session ends here, so nothing is copied back.
                     let staged = self.staged.take().ok_or(Fault::StorageLoad.with(0))?;
                     self.read_bank(staging)?;
-                    let stored =
-                        crate::dex::evidence(staging).map_err(|_| Fault::StorageLoad.with(0))?;
-                    if stored != staged {
+                    if crc32(staging) != staged {
                         return Err(Fault::StorageLoad.with(0));
                     }
                     Ok(Reply::Saved)
@@ -492,11 +491,9 @@ mod arm {
                         trainer,
                     )
                     .map_err(|_| Fault::GamePrepare.with(0))?;
-                    // The Pokédex of the staged body, before the files take
+                    // The checksum of the staged body, before the files take
                     // staging apart; `Finalize` finds it in the Bank again.
-                    self.staged = Some(
-                        crate::dex::evidence(staging).map_err(|_| Fault::NativeObject.with(0))?,
-                    );
+                    self.staged = Some(crc32(staging));
                     #[cfg(feature = "test-build")]
                     self.files.rehearse(rehearsal::chosen());
                     // Side files first, then the Bank journal.
@@ -642,3 +639,26 @@ mod arm {
 }
 #[cfg(target_arch = "arm")]
 pub(crate) use arm::BankWorker;
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use bank_common::testing::{body, fresh, load, opened, GAME};
+    use offline_core::{crc32, RecoveryDecision};
+
+    #[test]
+    fn the_bank_read_back_after_a_save_is_the_body_the_save_staged() {
+        let disk = fresh(&body(0, 0, 0));
+        let mut files = opened(&disk);
+        load(&mut files);
+        let mut staging = body(0x52, 0x66, 1);
+        // `Prepare` takes it before the files take staging apart.
+        let staged = crc32(&staging);
+        files.prepare(&mut staging, GAME, [1; 32], [2; 32]).unwrap();
+        assert_ne!(crc32(&staging), staged);
+        // `Finalize` commits and reads the Bank back into the same buffer.
+        files.reconcile_as(RecoveryDecision::CommitAfter).unwrap();
+        files.read(&mut staging).unwrap();
+        assert_eq!(crc32(&staging), staged);
+    }
+}

@@ -369,8 +369,8 @@ impl Runtime {
         result.map_err(|error| self.worker_error(error))
     }
     /// Stages the live native body for the worker, which cuts it into files.
-    /// For a save, the worker keeps its Pokédex evidence to check the Bank
-    /// it reads back; a new Bank has no earlier Pokédex to compare against.
+    /// For a save, the worker keeps its checksum to check the Bank it reads
+    /// back.
     fn stage_bank(&mut self, task: Task) -> Result<(), Fault> {
         let bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
