@@ -92,7 +92,9 @@ function Build-Package([string]$kind) {
     $elf = Build-Payload $kind $package
     $id = & (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $kind
     $output = Join-Path $projectRoot $package.Folder
-    if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
+    # The folder stays, so that a window open on it stays open; what it
+    # held goes.
+    if (Test-Path -LiteralPath $output) { Get-ChildItem -LiteralPath $output -Force | Remove-Item -Recurse -Force }
     Invoke-Native 'Package build' { cargo +stable run --locked --offline --quiet -p patch-builder -- build $kind $original.code $original.exheader $elf $output }
     Set-Content -LiteralPath (Join-Path $output 'PACKAGE.txt') -Encoding utf8 -Value $id
     & (Join-Path $PSScriptRoot $package.Verify) -Kind $kind | Out-Null
