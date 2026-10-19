@@ -31,7 +31,9 @@ pub enum Job {
     Recover {
         game: Option<GameIoDescriptor>,
     },
-    InspectAndLoad {
+    /// The game a session is loaded with. The Bank is the one opening
+    /// restored; it is not read again.
+    LoadGame {
         game: GameIoDescriptor,
     },
     Inspect {
@@ -300,7 +302,7 @@ mod arm {
                     require_secure(game, evidence.secure.current)?;
                     Ok(Reply::Inspected(evidence))
                 }
-                Job::InspectAndLoad { game } => {
+                Job::LoadGame { game } => {
                     // An opening settles a save in progress or ends there;
                     // no game is loaded beside one.
                     if !matches!(self.phase()?, Phase::Clean(_)) {
@@ -310,12 +312,7 @@ mod arm {
                     // A save in progress that was settled without its game
                     // may have left the platform value one step behind.
                     finish_secure(game, evidence.secure)?;
-                    let loaded = self.read_bank(staging)?;
-                    Ok(Reply::BankReady {
-                        evidence: Some(evidence),
-                        decision: None,
-                        loaded: Some(loaded),
-                    })
+                    Ok(Reply::Inspected(evidence))
                 }
                 Job::Recover { game } => {
                     let Phase::Prepared(pending) = self.phase()? else {

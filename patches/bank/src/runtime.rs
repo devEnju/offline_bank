@@ -462,10 +462,9 @@ impl Runtime {
     }
     /// Starts the session's provisional reward state from what was loaded:
     /// the balance, the reward date and the record of the Bank body, and the
-    /// Pokémon in its boxes. The hours since that date are paid into the
-    /// native balance, where the original reward screens read it.
-    fn begin_rewards(&mut self, task: Task) -> Result<(), Fault> {
-        let count = bank_count(task)?;
+    /// Pokémon in its boxes, `count`. The hours since that date are paid
+    /// into the native balance, where the original reward screens read it.
+    fn begin_rewards(&mut self, task: Task, count: u32) -> Result<(), Fault> {
         let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
             .map_err(|_| Fault::NativeObject)?;
         let stored = bank.reward_date().map_err(|_| Fault::NativeObject)?;
@@ -717,7 +716,7 @@ impl Runtime {
                 .map_err(|_| Fault::GameRead)?;
                 let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
                 self.game = Some(game);
-                self.submit(task, Step::Load, Job::InspectAndLoad { game: descriptor })?;
+                self.submit(task, Step::Load, Job::LoadGame { game: descriptor })?;
             }
             return Ok(false);
         }
@@ -813,23 +812,15 @@ impl Runtime {
                 unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
                 Ok(self.complete(task))
             }
-            (
-                Step::Load,
-                Reply::BankReady {
-                    evidence: Some(evidence),
-                    loaded: Some(loaded),
-                    ..
-                },
-            ) => {
-                // Whose game it is, kept with its fingerprint: a save in
-                // progress is bound to both. The original's reader also
-                // reloads the Pokédex views, so it runs before the restore,
-                // which leaves them as it always has.
+            (Step::Load, Reply::Inspected(evidence)) => {
+                // The Bank is the body opening restored: nothing between
+                // opening and here writes it. Whose game it is, kept with
+                // its fingerprint: a save in progress is bound to both. The
+                // original's reader reloads the Pokédex views from that body.
                 let (_, gen7) = selected_game(task)?;
                 let (name, id) =
                     unsafe { crate::dex::trainer(task.pointer(8)?, task.bank_pointer()?) }
                         .map_err(|_| Fault::NativeObject)?;
-                self.restore_bank(task, loaded, false)?;
                 self.baseline = Some(Baseline {
                     evidence,
                     trainer: Trainer::of_game(&name, id, gen7),
@@ -841,7 +832,7 @@ impl Runtime {
                     unsafe { write_word(coordinator, 0xf4, game) };
                 }
                 unsafe { write_word(coordinator, 0xf8, bank) };
-                self.begin_rewards(task)?;
+                self.begin_rewards(task, bank)?;
                 Ok(self.complete(task))
             }
             _ => Err(Fault::StorageInvalid),
@@ -983,7 +974,7 @@ impl Runtime {
                     ..baseline
                 });
                 self.pending = false;
-                self.begin_rewards(task)?;
+                self.begin_rewards(task, bank_count(task)?)?;
                 // The original's ending of a successful save: its sound and
                 // message, which waits. Nothing is read or written now.
                 self.step = Step::Ended { saved: true };
