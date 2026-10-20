@@ -151,10 +151,11 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     };
     let next = navigation::destination(current, outcome, native, cancelled);
     refuse_home(navigation::loads(next));
-    // The step's set-up puts up its loading panel on this frame.
+    // The step's set-up puts up its loading panel on a later frame; its
+    // time is taken on the first frame of the patch behind it.
     if navigation::spins(next) {
         if let Some(mut state) = STATE.take() {
-            state.spinner.up(now());
+            state.spinner.coming();
         }
     }
     // The search's panel stays into the game list, until the list is on
@@ -296,10 +297,12 @@ pub unsafe extern "aapcs" fn transporter_update_waits(task: *mut u8, step: u32) 
     if step == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
         return 0;
     }
-    let Some(state) = STATE.take() else {
+    let Some(mut state) = STATE.take() else {
         return 0;
     };
     let now = now();
+    // The panel of reading the game or of the transfer.
+    state.spinner.seen(now);
     let task_state = unsafe { task.add(TASK_STATE).cast::<u32>().read() };
     let waits = panel::waits(
         step,

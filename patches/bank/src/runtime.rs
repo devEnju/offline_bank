@@ -1162,9 +1162,10 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         } else if state.job.is_none() {
             refuse_home(false);
         }
-        // The task's set-up puts up its loading panel on this frame.
+        // The task's set-up puts up its loading panel on a later frame; its
+        // time is taken on the first frame of the patch behind it.
         if crate::navigation::spins(destination) {
-            state.spinner.up(now());
+            state.spinner.coming();
         }
         destination
     };
@@ -1203,6 +1204,7 @@ unsafe fn panel_left(manager: *mut u8) -> bool {
 #[no_mangle]
 pub unsafe extern "aapcs" fn bank_offline_cleanup(raw: *mut u8) -> u32 {
     if let Some(mut state) = STATE.take() {
+        state.spinner.seen(now());
         if state.spinner.idle(now()) {
             return 0;
         }
@@ -1227,6 +1229,8 @@ pub unsafe extern "aapcs" fn bank_offline_load(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return 0;
     };
+    // The scene set-up's panel, for a load.
+    state.spinner.seen(now());
     if state.fault != Fault::None {
         return state.report_failure(task);
     }
@@ -1343,6 +1347,8 @@ pub unsafe extern "aapcs" fn bank_offline_save(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return 0;
     };
+    // Its set-up's panel.
+    state.spinner.seen(now());
     if state.fault != Fault::None {
         return state.report_failure(task);
     }
