@@ -14,7 +14,7 @@ mod linked {
     use transporter_payload::hooks::{
         transporter_check, transporter_deliver, transporter_list_frame, transporter_list_indicator,
         transporter_list_ready, transporter_list_started, transporter_message_text,
-        transporter_message_waits, transporter_next, transporter_version,
+        transporter_message_waits, transporter_next, transporter_update_waits, transporter_version,
     };
     use transporter_payload::language::{
         transporter_language_buttons, transporter_language_chosen, transporter_language_order,
@@ -24,6 +24,7 @@ mod linked {
     use transporter_payload::legacy_shiny::{
         transporter_shiny_build, transporter_shiny_keeps_gender,
     };
+    use transporter_payload::navigation::{QUESTION, READ, TRANSFER};
 
     // Keeps the start-up hook and the entries that are Rust functions in
     // the link; the patched sites call them by name (the builder's profile,
@@ -368,6 +369,64 @@ mod linked {
         vc_wanted = sym transporter_vc_wanted,
         deliver = sym transporter_deliver,
         slot_holds = sym transporter_slot_holds,
+    );
+
+    // The first instruction of three updates (was: their push): reading the
+    // chosen game (002455D0), the question (00247304) and the transfer
+    // (0024A0C4). r0 = task, lr = the caller's. While the entry answers 1
+    // the update returns 0, as on a frame it has nothing to do; else the
+    // instruction is run here and the update goes on with every register
+    // as it came. The six pushed words keep the stack 8-byte aligned.
+    core::arch::global_asm!(
+        ".section .text.transporter_stubs,\"ax\",%progbits",
+        ".arm",
+        ".global transporter_read_stub",
+        ".type transporter_read_stub, %function",
+        "transporter_read_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "mov r1, #{read}",
+        "bl {update_waits}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "movne r0, #0",
+        "bxne lr",
+        "push {{r4-r11, lr}}",
+        "ldr r12, =0x002455d4",
+        "bx r12",
+        ".size transporter_read_stub, .-transporter_read_stub",
+        ".global transporter_question_stub",
+        ".type transporter_question_stub, %function",
+        "transporter_question_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "mov r1, #{question}",
+        "bl {update_waits}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "movne r0, #0",
+        "bxne lr",
+        "push {{r3-r11, lr}}",
+        "ldr r12, =0x00247308",
+        "bx r12",
+        ".size transporter_question_stub, .-transporter_question_stub",
+        ".global transporter_transfer_stub",
+        ".type transporter_transfer_stub, %function",
+        "transporter_transfer_stub:",
+        "push {{r0-r3, r12, lr}}",
+        "mov r1, #{transfer}",
+        "bl {update_waits}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "movne r0, #0",
+        "bxne lr",
+        "push {{r4, r5, r6, lr}}",
+        "ldr r12, =0x0024a0c8",
+        "bx r12",
+        ".size transporter_transfer_stub, .-transporter_transfer_stub",
+        ".ltorg",
+        update_waits = sym transporter_update_waits,
+        read = const READ,
+        question = const QUESTION,
+        transfer = const TRANSFER,
     );
 
     // The Gen 1 converter (0024F428), the Easter egg in legacy_shiny.rs.

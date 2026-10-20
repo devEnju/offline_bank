@@ -1,4 +1,5 @@
-//! When the loading panel after START goes up, and who ends it.
+//! When the loading panel after START goes up, and who ends it; and when
+//! the steps behind the other loading panels wait for theirs (`waits`).
 //!
 //! After START the original searches for games (`00246F04`) without an
 //! indicator. The game list's own indicator can only come once its set-up
@@ -18,6 +19,7 @@
 //!   before a message that waits (a refusal, "Could not find a game…"), or
 //!   when the search ends in any step but the game list.
 
+use crate::navigation::{QUESTION, READ, TRANSFER};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The panel the patch started: the UI it is on, or 0 while there is none,
@@ -93,6 +95,29 @@ impl Default for Panel {
 pub fn handed_on(next: u32) -> bool {
     next == crate::navigation::LIST
 }
+
+/// Whether a frame of `step`'s update in its state `state` waits, and the
+/// update returns without running (`hooks::transporter_update_waits`):
+/// - reading the chosen game, and the transfer's delivery (its sub-state 0),
+///   stand while their loading panel is `idle`, its first 0.5 s;
+/// - the question's first state, which ends the panel that reading the game
+///   put up (`00247394`), and the transfer's closing message (sub-state
+///   `0x10`, `0024A4F0`), which ends its own, wait while the panel is
+///   `held`, its first 1.5 s. Every other ending of these panels is an
+///   error, which comes as soon as it is found.
+pub fn waits(step: u32, state: u32, idle: bool, held: bool) -> bool {
+    match (step, state) {
+        (READ, _) | (TRANSFER, TRANSFER_DELIVERS) => idle,
+        (QUESTION, QUESTION_PANEL_ENDS) | (TRANSFER, TRANSFER_DONE) => held,
+        _ => false,
+    }
+}
+/// The question's state that ends the panel of reading the game.
+pub const QUESTION_PANEL_ENDS: u32 = 0;
+/// The transfer's sub-state that delivers, and the one that shows its
+/// closing message.
+pub const TRANSFER_DELIVERS: u32 = 0;
+pub const TRANSFER_DONE: u32 = 0x10;
 
 /// The time the game list counts its minimum time from (`task + 0x70`, in
 /// ms), once it has noted `noted` and the panel has been up for `elapsed`
@@ -175,6 +200,35 @@ mod tests {
         // Never before the clock began.
         assert_eq!(list_start(1_000, 4_000), 0);
         assert!(list_start(10_000, 500) > list_start(10_000, 2_000));
+    }
+
+    #[test]
+    fn the_steps_behind_a_panel_wait_for_it_only_where_it_begins_and_ends() {
+        use crate::navigation::{BANK_STEP, DISCONNECT};
+        for state in 0..0x20 {
+            // The first 0.5 s: reading and the delivery wait, nothing else.
+            assert!(waits(READ, state, true, true));
+            assert_eq!(
+                waits(TRANSFER, state, true, true),
+                matches!(state, TRANSFER_DELIVERS | TRANSFER_DONE)
+            );
+            assert_eq!(
+                waits(QUESTION, state, true, true),
+                state == QUESTION_PANEL_ENDS
+            );
+            // Up to 1.5 s: only the two endings of a success.
+            assert!(!waits(READ, state, false, true));
+            assert_eq!(waits(TRANSFER, state, false, true), state == TRANSFER_DONE);
+            assert_eq!(
+                waits(QUESTION, state, false, true),
+                state == QUESTION_PANEL_ENDS
+            );
+            // After that nothing waits.
+            for step in [READ, TRANSFER, QUESTION, BANK_STEP, DISCONNECT] {
+                assert!(!waits(step, state, false, false));
+            }
+            assert!(!waits(BANK_STEP, state, true, true));
+        }
     }
 
     #[test]

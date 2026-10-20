@@ -48,6 +48,9 @@ const SCAN_UPDATE: usize = 0x002a_be08;
 /// The original's update of task 9, `002ae568`: its welcome and the request
 /// for a new Bank.
 const OPEN_UPDATE: usize = 0x002a_e568;
+/// The original's end of cleanup (tasks 0x14 and 0x15), `002abc7c`: once
+/// 1.5 s have passed since its set-up it takes the screens down.
+const CLEANUP_END: usize = 0x002a_bc7c;
 /// `002ae8b0(task)`: the defaults and translated names of a new Bank.
 const NEW_BANK_DEFAULTS: usize = 0x002a_e8b0;
 /// The updates of the reward guard (task 0xc, `002ad1bc`) and of the claim
@@ -1144,13 +1147,37 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         destination
     };
     // Every session ends in cleanup (task 0x14), and from there the start
-    // screen follows. The files are closed on the way in; the way out
-    // collects the reply, and closes them if that could not be asked before.
+    // screen follows. Its end closes the files (`bank_offline_cleanup`); the
+    // way out collects the reply, and closes them if that could not be
+    // asked before.
     state.files_closed();
-    if destination == 0x14 || current == 0x14 {
+    if current == 0x14 {
         state.close_files();
     }
     destination
+}
+
+/// Replaces the end of cleanup (tasks 0x14 and 0x15, `00361aa4`), which the
+/// manager calls every frame until it answers "done". Once its loading
+/// screen has stood for 0.5 s the worker closes the session's files; the
+/// original's end, which waits for its own 1.5 s and then takes the screens
+/// down, runs once their reply is collected.
+/// # Safety
+/// The trusted Bank task driver supplies the live cleanup task on the main
+/// thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_offline_cleanup(raw: *mut u8) -> u32 {
+    if let Some(mut state) = STATE.take() {
+        if state.spinner.idle(now()) {
+            return 0;
+        }
+        state.close_files();
+        if !state.files_closed() {
+            return 0;
+        }
+    }
+    let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(CLEANUP_END) };
+    unsafe { original(raw) }
 }
 
 /// Replaces task9 and task10 update virtuals; constructors/init/end stay native.

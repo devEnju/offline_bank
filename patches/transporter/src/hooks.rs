@@ -38,6 +38,10 @@ const MANAGER_TASK: usize = 0x10;
 const MANAGER_CANCELLED: usize = 0x1a;
 const TASK_OUTCOME: usize = 0x30;
 
+/// A task's state, and the transfer's flag that it is to end (set by
+/// `0025CDC0`; its update then selects sub-state `0x14`, `0024A0CC`).
+const TASK_STATE: usize = 0x10;
+const TRANSFER_ENDING: usize = 0x45;
 /// Where the game list notes the time it began, in ms (`00245180`..
 /// `0024524C`), for its minimum time of 3 s (`00244B24`).
 const LIST_BEGAN: usize = 0x70;
@@ -278,6 +282,32 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
     }
 }
 
+/// The first instruction of the update of `step`: reading the chosen game,
+/// the question, or the transfer (the stubs of the patched sites at
+/// 002455D0, 00247304, 0024A0C4, link.rs). 1 while this frame waits for the
+/// loading panel (`panel::waits`): the update returns 0 without running, as
+/// on a frame it has nothing to do. 0 runs it. A transfer the original is
+/// ending is not held up.
+/// # Safety
+/// Called only from those stubs, on the main thread, with the live task.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_update_waits(task: *mut u8, step: u32) -> u32 {
+    if step == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
+        return 0;
+    }
+    let Some(state) = STATE.take() else {
+        return 0;
+    };
+    let now = now();
+    let task_state = unsafe { task.add(TASK_STATE).cast::<u32>().read() };
+    u32::from(panel::waits(
+        step,
+        task_state,
+        state.spinner.idle(now),
+        state.spinner.held(now),
+    ))
+}
+
 /// Shows an original message the way the game search shows its own. It
 /// waits for an answer, so HOME and sleep work on it
 /// (`transporter_message_waits`). `false` when the task's dialog owner is
@@ -329,11 +359,6 @@ pub unsafe extern "aapcs" fn transporter_deliver(task: *mut u8) -> u32 {
         return DELIVER_PENDING;
     };
     if state.job.is_none() {
-        // The transfer's set-up has put up its loading panel; nothing is
-        // asked before it has stood for 0.5 s (`spinner`).
-        if state.spinner.idle(now()) {
-            return DELIVER_PENDING;
-        }
         let Some(manager) = (unsafe { follow(task, TASK_MANAGER) }) else {
             return DELIVER_FAILED;
         };

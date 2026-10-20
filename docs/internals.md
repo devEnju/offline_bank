@@ -60,8 +60,9 @@ The **offline patch** is the rest of this part. The **migration patch** converts
 | Task 3, busy poll (`00361ad4`) | original | `bank_migrate_scan` |
 | Scan state 0 starts no panel (`002ac00c`, `002ac018`) | yes | no: task 3's update is replaced |
 | Tasks `0x10`, 7, `0xC`, `0xD`, `0xB`, the timestamp helper (8 regions) | yes | no |
+| The end of cleanup (`00361aa4`) | `bank_offline_cleanup` | original |
 | No-game notice without the HOME question (`002ac7a4`, `002ac7a8`) | `bank_offline_no_game` | no |
-| Regions / entry functions | 29 / 9 | 10 / 4 |
+| Regions / entry functions | 30 / 10 | 10 / 4 |
 
 `bank_message_shown` is `bank-common`'s and the same in both; every other entry function is a patch's own. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`patch-common`'s `ui::version`, the same in Transporter). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", or "Ver. 1.5-test" in a test build.
 
@@ -121,7 +122,7 @@ What the code cannot show: how the original behaves online with about 0.8 MB les
 
 ### Edits to the original
 
-The offline patch: 29 regions (28 words and the start-up hook) and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
+The offline patch: 30 regions (29 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -139,6 +140,7 @@ The offline patch: 29 regions (28 words and the start-up hook) and nine entry fu
 | `00361be4` | Task `0xC` update `002ad1bc`, reward guard | `bank_offline_rewards` |
 | `00361a08` | Task `0xD` update `002a9750`, reward claim | `bank_offline_rewards` |
 | `00361ac4` | Task 3 update `002abe08`, the game scan | `bank_offline_scan`: the scan's loading panel one frame before its first state, then the original ([Screens](#screens)) |
+| `00361aa4` | The end of cleanup, tasks `0x14` and `0x15`, `002abc7c` | `bank_offline_cleanup`: the session's files are closed once the loading screen has stood for 0.5 s, then the original ([Loading screens](#loading-screens)) |
 | `002ac00c`, `002ac018` | Scan state 0, after the extdata mount: `BL 001d5b44` (loading panel) and `BL 0025da24` (its text `0x20`) | `nop`: the panel is up already |
 | `002ac7a4` | Scan state `0x18`: show message `0x00` | `bank_offline_no_game`: original message, acknowledged, ending before its second page break |
 | `002ac7a8` | Continue at state `0x21`, the HOME question | State `0x19`, native acknowledgment and unsuccessful-scan exit |
@@ -258,7 +260,7 @@ What the main thread has to do behind a loading screen takes one heavy native st
 
 What stays on one frame is one call of the original that cannot be cut: rotate and prepare, a Pokédex reload, a count, the copy of the body. The original's own states behind its panels (the game scan, game selection) run as they always did. Between two of these frames only the patch's hook runs for the task: the original's update and busy poll of tasks 9, `0x10` and 7 are replaced, so nothing reads the Bank's Pokédex views between its restore and their reload.
 
-The thread is started with the first storage job and waits for jobs until Bank is closed; no job ends it. The files belong to a session. Every session that ends does so in the cleanup task `0x14`, whatever it did: Save and Quit, leaving without saving, no usable game, a save that waits for its game, a save without its Game Card. When the routing hook sends a session there, it submits `Job::Close`, and the worker closes the Bank container and its archive handle (the smaller containers are never held open). The reply is collected when the router leaves cleanup for the start screen, or by task 9 at the next START before it opens the files again, as a first START does. A worker that refuses `Job::Close` has no job out, so nothing reads or writes the files; they stay marked as used, and the next session's end asks again ([open_files.rs](../patches/bank/src/open_files.rs)). On the start screen, where HOME works and Bank can be closed from the HOME Menu, the patch therefore holds no file and no archive handle. Closing writes nothing: a save has made its writes durable before it ends, and a unit is flushed before it is closed. A session that ends in an error never gets to cleanup, since its screen stays. `Runtime::report_failure` therefore closes the files itself, before the screen lets HOME through: it waits for a job that is still out, submits `Job::Close` and collects the reply, with the loading screen up and HOME refused until then. A job that fails leaves the worker refusing every later job but `Job::Close` until Bank is closed; a Game Card taken out before Save and Quit wrote anything is a reply, not a failure ([Screens](#screens)).
+The thread is started with the first storage job and waits for jobs until Bank is closed; no job ends it. The files belong to a session. Every session that ends does so in the cleanup task `0x14`, whatever it did: Save and Quit, leaving without saving, no usable game, a save that waits for its game, a save without its Game Card. Cleanup's end, which the manager calls every frame until it is done, submits `Job::Close` once cleanup's loading screen has stood for 0.5 s (`bank_offline_cleanup`), and the worker closes the Bank container and its archive handle (the smaller containers are never held open). The end collects the reply before the original's end runs, which waits for its own 1.5 s and takes the screens down. A close that could not be asked there (a job still out) is asked when the router leaves cleanup, and its reply is collected by task 9 at the next START before it opens the files again, as a first START does. A worker that refuses `Job::Close` has no job out, so nothing reads or writes the files; they stay marked as used, and the next session's end asks again ([open_files.rs](../patches/bank/src/open_files.rs)). On the start screen, where HOME works and Bank can be closed from the HOME Menu, the patch therefore holds no file and no archive handle. Closing writes nothing: a save has made its writes durable before it ends, and a unit is flushed before it is closed. A session that ends in an error never gets to cleanup, since its screen stays. `Runtime::report_failure` therefore closes the files itself, before the screen lets HOME through: it waits for a job that is still out, submits `Job::Close` and collects the reply, with the loading screen up and HOME refused until then. A job that fails leaves the worker refusing every later job but `Job::Close` until Bank is closed; a Game Card taken out before Save and Quit wrote anything is a reply, not a failure ([Screens](#screens)).
 
 The games' saves are another matter: the original leaves every found game's save mounted until the next scan (`001D5344` unmounts and mounts; nothing unmounts at cleanup), and the patch reads `main` through those mounts.
 
@@ -272,7 +274,7 @@ Every loading screen stands for 0.5 s before its work begins: it slides in while
 | Creating a Bank | in task 9 state 4 | in state 6, before the defaults | `Step::Done`, before game selection |
 | Loading the chosen game | in the scene set-up (`002af1c8`); it stays through task `0x10` into the reward step | in task `0x10`'s first step, before `Job::LoadGame` | `Step::Done`, before the reward step |
 | Save and Quit | in task 7's set-up (`002b2540`) | in its first step, before `Job::Detect` | `save_steps::Step::Saved`, before the success message |
-| Cleanup | in its set-up (`002abd6c`) | `Job::Close` is handed over as the routing entry chooses cleanup; it reads and writes nothing | its own 1.5 s (`002abc7c`), after which it does its work |
+| Cleanup | in its set-up (`002abd6c`) | in its end, before `Job::Close` (`bank_offline_cleanup`); the original's own work comes after its 1.5 s | its own 1.5 s (`002abc7c`) |
 | Migration | in the scan hook's first frame | in the scan hook, before the conversion | the result `600D`; any other at once |
 | Download: the look at the card | in task 3's first frame | in task 3, before `Job::Look` | the result `D0AD 2` |
 | Download: the result after cleanup | in task 9's first frame | nothing to do | the result `D0AD 1` |
@@ -566,12 +568,12 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 | [patches/transporter/](../patches/transporter/src/) | ARMv6K code injected into Transporter. Bank check and delivery in [hooks.rs](../patches/transporter/src/hooks.rs) on the worker of [storage_worker.rs](../patches/transporter/src/storage_worker.rs), the search's loading panel in [panel.rs](../patches/transporter/src/panel.rs) with the original's screen calls in [ui.rs](../patches/transporter/src/ui.rs), Transporter's addresses for the shared code in [program.rs](../patches/transporter/src/program.rs), Bank's files through `bank-common`, the SD card in [fs.rs](../patches/transporter/src/fs.rs), SD saves in [cart.rs](../patches/transporter/src/cart.rs) with their rules in [sdsave.rs](../patches/transporter/src/sdsave.rs), the language of the listed games in [language.rs](../patches/transporter/src/language.rs), the shiny rule of Transporter 1.2 for Gen 1 in [legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs), the assembly stubs in [link.rs](../patches/transporter/src/link.rs), the layout check beside the start-up hook in [bootstrap.rs](../patches/transporter/src/bootstrap.rs). |
 | [crates/offline-core/](../crates/offline-core/src/) | `transport::deliver` and the side-file format, shared with Bank. |
 | [crates/bank-common/](../crates/bank-common/src/) | Bank's files (`fs::Visit`), reached as every patch of Bank reaches them. |
-| [crates/patch-common/](../crates/patch-common/src/) | The start-up hook, the worker thread, its kernel calls, the hooks' shared state, the refusal of HOME and sleep and the version line, shared with Bank. |
+| [crates/patch-common/](../crates/patch-common/src/) | The start-up hook, the worker thread, its kernel calls, the hooks' shared state, the refusal of HOME and sleep, the timing of loading screens and the version line, shared with Bank. |
 | [crates/patch-builder/](../crates/patch-builder/src/) | Host tool, the same as for Bank. [transporter15.rs](../crates/patch-builder/src/transporter15.rs) holds the program and its one profile, with every edit and its original word. |
 
 ### Edits to the original
 
-49 instruction words, each checked against its original value by the builder, plus the start-up hook. A site that goes to the patch branches to an entry function by its name, as in the Bank patch: the builder's profile ([transporter15.rs](../crates/patch-builder/src/transporter15.rs), `ENTRIES`) names twenty-eight, Rust functions and assembly stubs, and takes their addresses from the linked ELF, which must define each as a global ARM function. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One entry, the layout check for `0013AEE4`, lies beside the start-up hook (see [Placement](#placement-1)).
+55 instruction words, each checked against its original value by the builder, plus the start-up hook. A site that goes to the patch branches to an entry function by its name, as in the Bank patch: the builder's profile ([transporter15.rs](../crates/patch-builder/src/transporter15.rs), `ENTRIES`) names twenty-eight, Rust functions and assembly stubs, and takes their addresses from the linked ELF, which must define each as a global ARM function. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One entry, the layout check for `0013AEE4`, lies beside the start-up hook (see [Placement](#placement-1)).
 
 | Address | Purpose | Replacement |
 | --- | --- | --- |
@@ -585,6 +587,8 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 | `00246F48` | Game search, first step: start of the cartridge scan | Check entry: asks Bank first, then goes on with the search or shows the original's message for a refusal |
 | `00248CDC` | Bank step, sub-state 0: create the server request | Branch to `00248E44`, where the original continues after a "yes" |
 | `00248EBC`, `00248F88` | Bank step: no Game Card before the note save (`mov r1, #0x22`, its message); a note save that failed (`beq 00248F60`, the end without a message) | `mov r1, #0xB`, the failure message; `beq 00248E78`, the same path with that message |
+| `002455D0`, `00247304`, `0024A0C4` | The first instruction (`push`) of the updates of reading the chosen game, the question and the transfer | Update-waits entry: the update returns 0 while this frame waits for the loading panel, else the instruction and on ([Loading screens](#loading-screens-1)) |
+| `00246208`, `00246278`, `002462E8` | Reading the chosen game, states `0xB`, `0xC`, `0xD`: `BL 0019B758`, 1.5 s before a damaged save, no save or no Game Card is shown | `mov r0, #1`: the error is shown at once |
 | `00245728`, `002460B8` | Reading Gen 5 and Gen 1/2: remote validation | Skipped |
 | `002488A0` | Step `0xA`, the server's question whether a transfer is open: its request | Counts as made (`mov r0, #1`); the step is never entered |
 | `002458DC` | Reading Gen 5: per-slot result code | Slot entry: answers the "skip" code for empty slots |
@@ -725,14 +729,16 @@ Behind its loading screens the patch's own work on the main thread takes one ste
 
 ### Loading screens
 
-The same rule as Bank's ([Loading screens](#loading-screens)): 0.5 s before the work, at least 1.5 s for a success, an error at once. The clock is Transporter's, as its minimum time `0019B758` reads it: `00233854` copies the time at `002F4E38`, `0025A77C` gives it in ms. A screen goes up where the patch starts its panel, or where the router entry chooses a step whose set-up starts one (`navigation::spins`: reading the chosen game `00246A6C`, the transfer `0024A700`, disconnect and the reload `00247268`).
+The same rule as Bank's ([Loading screens](#loading-screens)): 0.5 s before the work, at least 1.5 s for a success, an error at once. The clock is Transporter's, as its minimum time `0019B758` reads it: `00233854` copies the time at `002F4E38`, `0025A77C` gives it in ms. A screen goes up where the patch starts its panel, or where the router entry chooses a step whose set-up starts one (`navigation::spins`: reading the chosen game `00246A6C`, the transfer `0024A700`, disconnect and the reload `00247268`). Where a step of the original waits, its update's first instruction asks the update-waits entry, which decides by `panel::waits`; the update then returns 0, as on a frame with nothing to do. A transfer whose flag `+0x45` is set (`0025CDC0`), which its update answers by ending it, never waits.
 
 | Loading screen | Goes up | Its work waits | A success ends it no earlier than |
 | --- | --- | --- | --- |
 | START: the search, then the game list | in the check entry ([Session flow](#session-flow)) | in the check entry, before the worker starts | the list's own 3 s, counted from START |
-| The transfer | in its set-up | in the deliver entry, before the card check | its work |
+| Reading the chosen game, then the Bank step | in the reader's set-up; it stays through the Bank step | in the reader's update | the question's first state, which ends it (`00247394`) |
+| The transfer | in its set-up | in its update's sub-state 0, before the deliver entry | its closing message, sub-state `0x10` (`0024A4F0`) |
+| Disconnect, the reload after the language screen | in their set-up | nothing: their update ends on its first frame offline (no request at `+0x38`), and their work comes after their 1.5 s | their own 1.5 s (`00247100`) |
 
-What ends a screen early is an error: a refusal at START, "Could not find a game…", a card gone before the delivery, a failed delivery. Reading the chosen game and disconnect keep the original's timing.
+What ends a screen early is an error: a refusal at START, "Could not find a game…", the reader's damaged save, missing save or missing Game Card (whose 1.5 s the original waited, `00246208`, `00246278`, `002462E8`, now answered "passed"), the Bank step's missing Game Card or failed note save, a card gone before the delivery, a failed delivery, and a failed save of the game after it.
 
 ### File access
 
