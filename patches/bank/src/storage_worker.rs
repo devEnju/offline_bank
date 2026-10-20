@@ -378,7 +378,13 @@ mod arm {
             if self.poisoned {
                 return Err(Fault::StorageInvalid.with(0));
             }
+            // Between two jobs nothing of the Bank is open either: the
+            // screens between them let HOME through, and the HOME Menu
+            // fails while Bank holds its archive open after a game ran
+            // before it. The next job opens what it needs again.
             let result = self.execute(job, staging);
+            let rested = self.files.rest().map_err(|e| Fault::StorageOpen.files(e));
+            let result = result.and_then(|reply| rested.map(|()| reply));
             if result.is_err() {
                 self.poisoned = true;
             }
@@ -1053,7 +1059,13 @@ mod tests {
 
     #[test]
     fn two_saves_in_a_row_each_commit_their_own_image() {
-        let (_, mut files, _) = bank();
+        let (disk, mut files, _) = bank();
+        // The worker lets the Bank file rest after every job.
+        let between_jobs = |files: &mut BankFiles<Shared>| {
+            files.rest().unwrap();
+            assert_eq!(disk.0.borrow().open, 0);
+        };
+        between_jobs(&mut files);
         let mut game = Simulated::loaded(false);
         let mut secure = WRITTEN;
         for (round, after) in [(1u8, AFTER), (2, OTHER)] {
@@ -1067,6 +1079,7 @@ mod tests {
                 panic!("round {round} not prepared");
             };
             let in_progress = pending(&mut files).unwrap();
+            between_jobs(&mut files);
             game.write(secure);
             finalize(
                 &mut files,
@@ -1077,6 +1090,7 @@ mod tests {
                 Some(staged),
             )
             .unwrap();
+            between_jobs(&mut files);
             assert!(load(&mut files).0 == body, "round {round}");
             assert_eq!(game.value, secure.current);
             secure = SecureValues {

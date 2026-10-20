@@ -2,7 +2,7 @@
 //! and of the patches built on it (feature `test-support`).
 
 extern crate std;
-use crate::bank_files::{BankFiles, FileName, Files, Loaded};
+use crate::bank_files::{BankFiles, FileName, Files, Loaded, Rest};
 use offline_core::{
     native_blob::BLOB_SIZE,
     sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
@@ -46,15 +46,23 @@ pub struct Disk {
 }
 #[derive(Clone, Default)]
 pub struct Shared(pub Rc<RefCell<Disk>>);
-/// An open container. The third field says that it counts as one of
-/// Bank's; the Transporter patch is another program with handles of its own.
-pub struct Handle(pub Shared, pub FileName, bool);
+/// An open container, and how it is held.
+pub struct Handle(pub Shared, pub FileName, Hold);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// One of Bank's, with its handles open: it counts in `Disk::open`.
+    Bank,
+    /// One of Bank's that rests: it holds nothing open until its next use.
+    Resting,
+    /// The Transporter patch's, another program with handles of its own.
+    Visitor,
+}
 /// The console gives out only so many handles, and a container takes one
 /// archive handle and one open file. Bank holds its Bank container and one
 /// other at a time, as it did when every container was one file.
 pub const MOST_CONTAINERS: usize = 2;
 impl Handle {
-    fn held(disk: &Shared, file: FileName) -> Self {
+    fn count(disk: &Shared) {
         let mut state = disk.0.borrow_mut();
         state.open += 1;
         assert!(
@@ -62,22 +70,54 @@ impl Handle {
             "{} containers open at once",
             state.open
         );
-        drop(state);
-        Self(disk.clone(), file, true)
+    }
+    fn held(disk: &Shared, file: FileName) -> Self {
+        Self::count(disk);
+        Self(disk.clone(), file, Hold::Bank)
     }
     /// The same container in the hands of the Transporter patch.
     fn visiting(mut self) -> Self {
-        if core::mem::take(&mut self.2) {
+        self.release();
+        self.2 = Hold::Visitor;
+        self
+    }
+    fn release(&mut self) {
+        if self.2 == Hold::Bank {
             (self.0).0.borrow_mut().open -= 1;
         }
-        self
+    }
+    /// A container that rests opens its handles again when it is used.
+    fn take_up(&mut self) {
+        if self.2 == Hold::Resting {
+            Self::count(&self.0);
+            self.2 = Hold::Bank;
+        }
     }
 }
 impl Drop for Handle {
     fn drop(&mut self) {
-        if self.2 {
-            (self.0).0.borrow_mut().open -= 1;
+        self.release();
+    }
+}
+impl Rest for Handle {
+    /// The open unit file is flushed if it holds writes, as on the console.
+    fn rest(&mut self) -> Result<(), ()> {
+        if self.2 != Hold::Bank {
+            return Ok(());
         }
+        let file = self.1 as u8;
+        if (self.0)
+            .0
+            .borrow()
+            .unsynced
+            .iter()
+            .any(|unit| unit.0 == file)
+        {
+            self.sync()?;
+        }
+        self.release();
+        self.2 = Hold::Resting;
+        Ok(())
     }
 }
 impl Shared {
@@ -153,6 +193,7 @@ impl Handle {
 impl Storage for Handle {
     type Error = ();
     fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+        self.take_up();
         let units = self.units(at, out.len() as u64);
         let disk = (self.0).0.borrow();
         if units.iter().any(|unit| disk.unreadable.contains(unit)) {
@@ -163,6 +204,7 @@ impl Storage for Handle {
         Ok(())
     }
     fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
+        self.take_up();
         let units = self.units(at, bytes.len() as u64);
         let [unit] = units[..] else {
             panic!("a write must lie in one unit file");
@@ -190,6 +232,7 @@ impl Storage for Handle {
         }
     }
     fn sync(&mut self) -> Result<(), ()> {
+        self.take_up();
         self.0.tick()?;
         let file = self.1 as u8;
         (self.0)
@@ -200,6 +243,7 @@ impl Storage for Handle {
         Ok(())
     }
     fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+        self.take_up();
         let unit = self
             .unit(at, length)
             .expect("only a whole unit is recreated");

@@ -212,6 +212,10 @@ impl<S: Storage> BankSession<S> {
         self.store.into_inner()
     }
 
+    pub fn storage_mut(&mut self) -> &mut S {
+        self.store.storage_mut()
+    }
+
     fn ensure_usable(&self) -> Result<(), Error<S::Error>> {
         if self.poisoned {
             Err(Error::Poisoned)
