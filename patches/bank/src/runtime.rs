@@ -460,7 +460,9 @@ impl Runtime {
         if unsafe { read_word(task.raw(), 0) } == TASK_OPEN {
             self.opened(task)
         } else {
-            Ok(self.complete(task))
+            // Loading hands its panel to the reward step: HOME and sleep
+            // stay refused until that takes it down (`panel_taken_down`).
+            Ok(self.end_task(task))
         }
     }
     /// The opening's end, once the live object is the Bank: no save is in
@@ -654,13 +656,19 @@ impl Runtime {
             refuse_home(false);
         }
     }
+    /// The task's work is done, and HOME and sleep are let through.
     fn complete(&mut self, task: Task) -> bool {
+        self.end_task(task);
+        refuse_home(false);
+        true
+    }
+    /// The task's work is done; nothing of it is with the worker any more.
+    fn end_task(&mut self, task: Task) -> bool {
         self.owner = 0;
         self.step = Step::Idle;
         self.job = None;
         self.game = None;
         task.end_busy();
-        refuse_home(false);
         true
     }
     /// The welcome the original gives before it creates a Bank. Its own
