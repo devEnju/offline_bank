@@ -7,7 +7,6 @@ use crate::{
     native_game::{
         self, GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll,
     },
-    open_files::Files,
     panel::{self, Panel},
     save_steps,
     storage_worker::{BankWorker, GameEvidence, Job, Reply},
@@ -48,9 +47,6 @@ const SCAN_UPDATE: usize = 0x002a_be08;
 /// The original's update of task 9, `002ae568`: its welcome and the request
 /// for a new Bank.
 const OPEN_UPDATE: usize = 0x002a_e568;
-/// The original's end of cleanup (tasks 0x14 and 0x15), `002abc7c`: once
-/// 1.5 s have passed since its set-up it takes the screens down.
-const CLEANUP_END: usize = 0x002a_bc7c;
 /// `002ae8b0(task)`: the defaults and translated names of a new Bank.
 const NEW_BANK_DEFAULTS: usize = 0x002a_e8b0;
 /// The updates of the reward guard (task 0xc, `002ad1bc`) and of the claim
@@ -111,7 +107,6 @@ struct Runtime {
     owner: usize,
     step: Step,
     job: Option<JobId>,
-    files: Files<JobId>,
     baseline: Option<Baseline>,
     fault: Fault,
     native_result: u32,
@@ -186,7 +181,6 @@ static STATE: Exclusive<Runtime> = unsafe {
         owner: 0,
         step: Step::Idle,
         job: None,
-        files: Files::Closed,
         baseline: None,
         fault: Fault::None,
         native_result: 0,
@@ -298,10 +292,10 @@ fn gen6_gift(game: *mut u8) -> Result<*mut u8, Fault> {
     Ok(gift)
 }
 impl Runtime {
-    /// One frame of a task after an error: the session is over. Its files
-    /// are closed first, as cleanup closes them for a session that ends
-    /// there, since the error screen lets HOME through and nothing follows
-    /// it. Until they are, the loading screen stays and HOME is refused.
+    /// One frame of a task after an error: the session is over. A job that
+    /// is still out is waited for first, since the error screen lets HOME
+    /// through: it lets go of the files when it ends (`rest`). Until then
+    /// the loading screen stays and HOME is refused.
     fn report_failure(&mut self, task: Task) -> u32 {
         if !self.stopped {
             if let (Some(_), Some(worker)) = (self.job, self.worker.as_mut()) {
@@ -309,10 +303,6 @@ impl Runtime {
                 if let Ok(None) = worker.collect(&mut self.job) {
                     return 0;
                 }
-            }
-            self.close_files();
-            if !self.files_closed() {
-                return 0;
             }
             self.stopped = true;
         }
@@ -346,34 +336,7 @@ impl Runtime {
         self.owner = task.raw() as usize;
         self.step = step;
         self.job = Some(id);
-        self.files = Files::Used;
         Ok(())
-    }
-    /// A session ends: the worker closes the Bank's files, so that nothing
-    /// of them is open on the start screen, where HOME works and Bank can be
-    /// closed. The next session opens them as a first one does.
-    fn close_files(&mut self) {
-        if !self.files.to_close(self.job.is_some()) {
-            return;
-        }
-        let Some(worker) = self.worker.as_mut() else {
-            return;
-        };
-        // The worker refuses if its thread has ended, a wait on it failed,
-        // or its mailbox is not free (`open_files`).
-        self.files.asked(unsafe { worker.submit(Job::Close) }.ok());
-    }
-    /// Collects the reply of `close_files`. False while it is still out.
-    fn files_closed(&mut self) -> bool {
-        let Some(id) = self.files.closing() else {
-            return true;
-        };
-        let Some(worker) = self.worker.as_mut() else {
-            self.files = Files::Closed;
-            return true;
-        };
-        let out = matches!(worker.collect(&mut Some(id)), Ok(None));
-        self.files.collected(out)
     }
     fn poll(&mut self, task: Task) -> Result<Option<Reply>, Fault> {
         if self.owner != task.raw() as usize {
@@ -775,10 +738,6 @@ impl Runtime {
             if self.spinner.idle(now()) {
                 return Ok(false);
             }
-            // The files of the session before are closed first.
-            if !self.files_closed() {
-                return Ok(false);
-            }
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
             if opening {
                 self.turn_back = false;
@@ -1133,49 +1092,38 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         state.step = Step::Idle;
         state.owner = 0;
     }
-    let destination = 'route: {
-        if cancelled {
-            break 'route 0x14;
+    if cancelled {
+        return crate::navigation::CLEANUP;
+    }
+    // After an error nothing is opened again in this session. Its
+    // screen does not end, so a task only gets here if that screen
+    // could not be shown: the game scan then still leads to task 9,
+    // whose hook tries again, and everything else ends in cleanup.
+    if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
+        return crate::navigation::CLEANUP;
+    }
+    if (current, outcome) == (3, 4) {
+        unsafe {
+            manager.add(0x1c).write(0);
         }
-        // After an error nothing is opened again in this session. Its
-        // screen does not end, so a task only gets here if that screen
-        // could not be shown: the game scan then still leads to task 9,
-        // whose hook tries again, and everything else ends in cleanup.
-        if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
-            break 'route 0x14;
-        }
-        if (current, outcome) == (3, 4) {
-            unsafe {
-                manager.add(0x1c).write(0);
-            }
-        }
-        // The main menu (task 4) is never created, but in the console test
-        // build; see navigation.rs.
-        let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
-        // Refuse HOME and sleep across a whole chain of loading tasks, not
-        // only while one of their jobs runs, and into the reward step while
-        // the loading panel is still up.
-        if crate::navigation::loads(destination)
-            || (crate::navigation::takes_panel(destination) && unsafe { panel_left(manager) })
-        {
-            refuse_home(true);
-        } else if state.job.is_none() {
-            refuse_home(false);
-        }
-        // The task's set-up puts up its loading panel on a later frame; its
-        // time is taken on the first frame of the patch behind it.
-        if crate::navigation::spins(destination) {
-            state.spinner.coming();
-        }
-        destination
-    };
-    // Every session ends in cleanup (task 0x14), and from there the start
-    // screen follows. Its end closes the files (`bank_offline_cleanup`); the
-    // way out collects the reply, and closes them if that could not be
-    // asked before.
-    state.files_closed();
-    if current == 0x14 {
-        state.close_files();
+    }
+    // The main menu (task 4) is never created, but in the console test
+    // build; see navigation.rs.
+    let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
+    // Refuse HOME and sleep across a whole chain of loading tasks, not
+    // only while one of their jobs runs, and into the reward step while
+    // the loading panel is still up.
+    if crate::navigation::loads(destination)
+        || (crate::navigation::takes_panel(destination) && unsafe { panel_left(manager) })
+    {
+        refuse_home(true);
+    } else if state.job.is_none() {
+        refuse_home(false);
+    }
+    // The task's set-up puts up its loading panel on a later frame; its
+    // time is taken on the first frame of the patch behind it.
+    if crate::navigation::spins(destination) {
+        state.spinner.coming();
     }
     destination
 }
@@ -1191,30 +1139,6 @@ unsafe fn panel_left(manager: *mut u8) -> bool {
     };
     task.ui()
         .is_ok_and(|ui| unsafe { bank_common::ui::loading_shown(ui) }.unwrap_or(false))
-}
-
-/// Replaces the end of cleanup (tasks 0x14 and 0x15, `00361aa4`), which the
-/// manager calls every frame until it answers "done". Once its loading
-/// screen has stood for 0.5 s the worker closes the session's files; the
-/// original's end, which waits for its own 1.5 s and then takes the screens
-/// down, runs once their reply is collected.
-/// # Safety
-/// The trusted Bank task driver supplies the live cleanup task on the main
-/// thread.
-#[no_mangle]
-pub unsafe extern "aapcs" fn bank_offline_cleanup(raw: *mut u8) -> u32 {
-    if let Some(mut state) = STATE.take() {
-        state.spinner.seen(now());
-        if state.spinner.idle(now()) {
-            return 0;
-        }
-        state.close_files();
-        if !state.files_closed() {
-            return 0;
-        }
-    }
-    let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(CLEANUP_END) };
-    unsafe { original(raw) }
 }
 
 /// Replaces task9 and task10 update virtuals; constructors/init/end stay native.

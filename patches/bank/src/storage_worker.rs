@@ -63,7 +63,6 @@ pub enum Job {
     Finalize {
         game: GameIoDescriptor,
     },
-    Close,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,7 +98,6 @@ pub enum Reply {
         title: u64,
         trainer: Trainer,
     },
-    Closed,
 }
 
 /// A game's save and its secure value on the console, as the worker reaches
@@ -299,7 +297,6 @@ mod arm {
         bank_files::ExtFiles,
         fs::{self, GameMainReader},
         program::Bank15,
-        worker::WorkerErrorKind,
     };
     use core::{cell::UnsafeCell, mem::transmute};
     use offline_core::{
@@ -362,19 +359,6 @@ mod arm {
             }
         }
         fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
-            // A session has ended: nothing of the Bank stays open. This is
-            // done whatever state an error left, and the thread goes on
-            // waiting for the next session.
-            if matches!(job, Job::Close) {
-                if let Some(mut storage) = self.files.close() {
-                    storage.close().map_err(|e| Fault::StorageOpen.io(e))?;
-                }
-                self.fs_session = 0;
-                self.missing = false;
-                self.written = None;
-                self.staged = None;
-                return Ok(Reply::Closed);
-            }
             if self.poisoned {
                 return Err(Fault::StorageInvalid.with(0));
             }
@@ -450,20 +434,19 @@ mod arm {
         fn execute(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             match job {
                 Job::Open { session } => {
-                    if !self.files.is_open() {
-                        if self.missing {
-                            return Err(Fault::StorageInvalid.with(0));
-                        }
-                        if session == 0 {
-                            // Bank's own FS session is not initialized yet.
-                            return Err(Fault::StorageOpen.with(0x7800_0000));
-                        }
-                        self.fs_session = session;
-                        self.files.files_mut().session = session;
-                    } else if self.fs_session != session {
-                        // Bank's FS session changed while our file was open.
-                        return Err(Fault::StorageOpen.with(0x7700_0000));
+                    // Every session opens the Bank as a first one does:
+                    // what the session before read of it is dropped. None
+                    // of its files is open (`rest`).
+                    drop(self.files.close());
+                    self.missing = false;
+                    self.written = None;
+                    self.staged = None;
+                    if session == 0 {
+                        // Bank's own FS session is not initialized yet.
+                        return Err(Fault::StorageOpen.with(0x7800_0000));
                     }
+                    self.fs_session = session;
+                    self.files.files_mut().session = session;
                     let opened = self.files.open().map_err(|error| match error {
                         bank_files::Error::Io(error) => Fault::StorageOpen.io(error),
                         error => Fault::StorageInvalid.files(error),
@@ -615,7 +598,6 @@ mod arm {
                     self.written = Some(prepared.secure);
                     Ok(Reply::ReadyToWrite)
                 }
-                Job::Close => Err(WorkerError::control(WorkerErrorKind::Stopped)),
             }
         }
     }

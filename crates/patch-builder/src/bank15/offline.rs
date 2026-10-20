@@ -17,12 +17,11 @@ pub const PROFILE: Profile = Profile {
         "bank_offline_timestamp",
         "bank_offline_no_game",
         "bank_offline_scan",
-        "bank_offline_cleanup",
         MESSAGE_ENTRY,
         VERSION_ENTRY,
     ],
-    // Twenty-nine edited words plus the linked bootstrap bytes.
-    regions: 30,
+    // Twenty-eight edited words plus the linked bootstrap bytes.
+    regions: 29,
     menu_edits: &[],
     edits,
 };
@@ -35,11 +34,6 @@ pub const SCENE_UPDATE_SLOT: u32 = 0x00361e84;
 pub const SCENE_UPDATE: u32 = 0x002af034;
 pub const NATIVE_FINISHED: u32 = 0x002af124;
 pub const NATIVE_FINISHED_BODY: [u32; 2] = [0xe3a00001, 0xe12fff1e];
-
-/// Cleanup (tasks 0x14 and 0x15): the end slot of its vtable and the end it
-/// holds, which waits for 1.5 s since its set-up and takes the screens down.
-pub const CLEANUP_END_SLOT: u32 = 0x00361aa4;
-pub const CLEANUP_END: u32 = 0x002abc7c;
 
 /// Claim state 0x1b reads and writes the Bank field at body offset 174 only
 /// behind this test of the session's count: `cmn r0, #1; beq 002aac54`. The
@@ -99,7 +93,6 @@ pub(super) fn edits(code: &[u8], payload: &PayloadElf) -> crate::Result<Vec<Chec
         timestamp: payload.export("bank_offline_timestamp")?,
         no_game: payload.export("bank_offline_no_game")?,
         scan: payload.export("bank_offline_scan")?,
-        cleanup: payload.export("bank_offline_cleanup")?,
         message: payload.export(MESSAGE_ENTRY)?,
         version: payload.export(VERSION_ENTRY)?,
     })
@@ -115,7 +108,6 @@ struct HookTargets {
     timestamp: u32,
     no_game: u32,
     scan: u32,
-    cleanup: u32,
     message: u32,
     version: u32,
 }
@@ -153,9 +145,7 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
         ));
     }
     // Original read-only vtables: taskC/D rewards, task9 open, task0x10 load, task7 normal /
-    // forced-busy updates, and the end of cleanup, task 0x14 (shared with 0x15), which
-    // closes the session's files behind its loading screen. Native constructors and
-    // init callbacks remain intact.
+    // forced-busy updates. Native constructors and init callbacks remain intact.
     // The main menu (task 4) is never created, so none of its code is edited.
     // Task 0xb keeps its native start-up routine, which orders the character
     // scene and the text window; only its server check is replaced.
@@ -170,7 +160,6 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
         (0x00361ee4, 0x002b4a20, targets.load),
         (0x00362034, 0x002b1cf8, targets.save),
         (0x00362044, 0x002b4a20, targets.save),
-        (CLEANUP_END_SLOT, CLEANUP_END, targets.cleanup),
     ] {
         edits.push(word(address, expected, target.to_le_bytes()));
     }
@@ -190,7 +179,6 @@ pub(super) fn sample_edits() -> Vec<CheckedEdit> {
         timestamp: 0x3fbc00,
         no_game: 0x3fbe00,
         scan: 0x3fbe40,
-        cleanup: 0x3fbe80,
         message: 0x3fca00,
         version: 0x3fcc00,
     })
@@ -247,7 +235,6 @@ mod tests {
             timestamp: 0x3fbc00,
             no_game: 0x3fbe00,
             scan: 0x3fbe40,
-            cleanup: 0x3fbe80,
             message: 0x3fca00,
             version: 0x3fcc00,
         };
@@ -287,7 +274,6 @@ mod tests {
             (0x362034, targets.save),
             (0x362044, targets.save),
             (0x361ac4, targets.scan),
-            (0x361aa4, targets.cleanup),
         ] {
             let edit = edits
                 .iter()

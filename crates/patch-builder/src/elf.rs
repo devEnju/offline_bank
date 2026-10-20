@@ -700,7 +700,7 @@ mod tests {
             (3, ".data", 1, 3, 0x3fc000, 0x2000, 4, 0, 4, 0),
             (4, ".bss", 8, 3, 0x3fc004, 0x2004, 0xffc, 0, 4, 0),
             (5, ".ARM.attributes", 0x70000003, 0, 0, 0x2100, 24, 0, 1, 0),
-            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 368, 8, 4, 16),
+            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 352, 8, 4, 16),
             (7, ".shstrtab", 3, 0, 0, 0x2400, 0, 0, 1, 0),
             (8, ".strtab", 3, 0, 0, 0x2500, 0, 0, 1, 0),
         ] {
@@ -750,7 +750,6 @@ mod tests {
             ("bank_version_shown", 0x3fb038, 4, 0x12, 2),
             ("bank_offline_no_game", 0x3fb01c, 4, 0x12, 2),
             ("bank_offline_scan", 0x3fb020, 4, 0x12, 2),
-            ("bank_offline_cleanup", 0x3fb024, 4, 0x12, 2),
         ]
         .into_iter()
         .enumerate()
@@ -772,7 +771,7 @@ mod tests {
         let parsed = inspect(&elf).unwrap();
         assert_eq!(parsed.entry, 0x3fb000);
         assert_eq!(parsed.export("bank_offline_timestamp"), Ok(0x3fb018));
-        assert_eq!(parsed.entries.len(), 10);
+        assert_eq!(parsed.entries.len(), 9);
         assert_eq!(parsed.export("bank_message_shown"), Ok(0x3fb034));
         assert_eq!(parsed.export("bank_version_shown"), Ok(0x3fb038));
         assert!(parsed.export("bank_offline_menu").is_err());

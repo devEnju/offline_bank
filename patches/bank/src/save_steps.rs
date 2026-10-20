@@ -132,7 +132,6 @@ mod tests {
                     id: 0,
                 },
             },
-            Reply::Closed,
         ]
     }
 
