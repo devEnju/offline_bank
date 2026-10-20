@@ -34,6 +34,7 @@ use offline_core::{
 };
 use patch_common::{
     exclusive::Exclusive,
+    spinner::{self, Spinner},
     worker::{JobId, Worker},
 };
 
@@ -95,6 +96,9 @@ enum Step {
     Counted {
         game: Option<u32>,
     },
+    /// The work of the opening or the load is done: it ends once its
+    /// loading screen has stood for 1.5 s (`spinner`).
+    Done,
     /// Save and Quit (`save_steps`).
     Save(save_steps::Step),
 }
@@ -120,6 +124,8 @@ struct Runtime {
     blank: Option<([u8; RECORD_SIZE], u8)>,
     /// The game scan's loading panel (`panel`).
     panel: Panel,
+    /// When the loading screen that is up went up.
+    spinner: Spinner,
 }
 /// The game the Bank was loaded with, as it was then: a save in progress is
 /// bound to both.
@@ -188,6 +194,7 @@ static STATE: Exclusive<Runtime> = unsafe {
         rewards: RewardSession::NONE,
         blank: None,
         panel: Panel::new(),
+        spinner: Spinner::new(),
     })
 };
 
@@ -238,6 +245,10 @@ fn bank_count(task: Task) -> Result<u32, Fault> {
     Ok(unsafe { count(helper) })
 }
 /// The console's date and time, to the minute.
+/// The original's clock in ms (`spinner::now`).
+fn now() -> u32 {
+    spinner::now::<Bank15>()
+}
 fn clock() -> Result<Moment, Fault> {
     let mut words = [0u32; 2];
     let local_date: unsafe extern "aapcs" fn(*mut u32) = unsafe { transmute(LOCAL_DATE) };
@@ -434,6 +445,20 @@ impl Runtime {
         bank.restore_preserving_detected_games(bytes)
             .map_err(|_| Fault::StorageLoad)?;
         Ok(())
+    }
+    /// The work of an opening or a load is done. The task ends once its
+    /// loading screen has stood for 1.5 s, and waits in `Step::Done` until
+    /// then.
+    fn done(&mut self, task: Task) -> Result<bool, Fault> {
+        if self.spinner.held(now()) {
+            self.step = Step::Done;
+            return Ok(false);
+        }
+        if unsafe { read_word(task.raw(), 0) } == TASK_OPEN {
+            self.opened(task)
+        } else {
+            Ok(self.complete(task))
+        }
     }
     /// The opening's end, once the live object is the Bank: no save is in
     /// progress any more, and the loading panel ends.
@@ -644,10 +669,13 @@ impl Runtime {
                 refuse_home(true);
                 unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::CREATING_MESSAGE) }
                     .map_err(|_| Fault::NativeObject)?;
+                self.spinner.up(now());
                 task.begin_busy();
                 unsafe { write_word(task.raw(), 0x10, 6) };
                 Ok(false)
             }
+            // The panel stands for 0.5 s before the work begins.
+            6 if self.spinner.idle(now()) => Ok(false),
             6 => {
                 // Only a missing private Bank permits fresh initialization.
                 // Native defaults/translated names stay on the UI thread.
@@ -687,7 +715,7 @@ impl Runtime {
         }
         if matches!(
             self.step,
-            Step::Restored | Step::Loaded | Step::Counted { .. }
+            Step::Restored | Step::Loaded | Step::Counted { .. } | Step::Done
         ) && self.owner != task.raw() as usize
         {
             return Err(Fault::NativeObject);
@@ -695,7 +723,7 @@ impl Runtime {
         match self.step {
             Step::Restored => {
                 self.reload_dex(task)?;
-                return self.opened(task);
+                return self.done(task);
             }
             // The counts of the game and the Bank as they were loaded, a
             // frame each.
@@ -713,11 +741,18 @@ impl Runtime {
                 }
                 unsafe { write_word(coordinator, 0xf8, bank) };
                 self.begin_rewards(task, bank)?;
-                return Ok(self.complete(task));
+                return self.done(task);
             }
+            Step::Done => return self.done(task),
             _ => {}
         }
         if self.step == Step::Idle {
+            // The loading screen stands for 0.5 s before the work begins:
+            // the scene set-up's for a load; an opening's has stood since
+            // the scan.
+            if self.spinner.idle(now()) {
+                return Ok(false);
+            }
             // The files of the session before are closed first.
             if !self.files_closed() {
                 return Ok(false);
@@ -844,7 +879,7 @@ impl Runtime {
                     // A newly created Bank: the live object is the body that
                     // was just written. Copying it back would only stall the
                     // first start.
-                    None if self.step == Step::Initialize => self.opened(task),
+                    None if self.step == Step::Initialize => self.done(task),
                     None => Err(Fault::StorageInvalid),
                 }
             }
@@ -869,10 +904,29 @@ impl Runtime {
             _ => Err(Fault::StorageInvalid),
         }
     }
+    /// The worker has checked the Bank it read back; the live object is the
+    /// body it saved, and the session ends here once the loading screen has
+    /// stood for 1.5 s. The original's ending of a successful save: its
+    /// sound and message, which waits. Nothing is read or written now.
+    fn saved(&mut self, task: Task) -> Result<Option<bool>, Fault> {
+        if self.spinner.held(now()) {
+            return Ok(None);
+        }
+        self.step = Step::Save(save_steps::Step::Ended { saved: true });
+        task.end_busy();
+        refuse_home(false);
+        unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
+        Ok(None)
+    }
     unsafe fn save(&mut self, task: Task) -> Result<Option<bool>, Fault> {
         use save_steps::Step as Save;
         let step = match self.step {
             Step::Idle => {
+                // The set-up's loading screen stands for 0.5 s before the
+                // work begins.
+                if self.spinner.idle(now()) {
+                    return Ok(None);
+                }
                 // Whether the Game Card is there comes before anything else.
                 self.baseline.ok_or(Fault::GameRead)?;
                 let coordinator = task.pointer(8)?;
@@ -897,6 +951,7 @@ impl Runtime {
             return Err(Fault::NativeObject);
         }
         match step {
+            Save::Saved => return self.saved(task),
             Save::Ended { saved } => {
                 return match unsafe { bank_common::ui::acknowledged(task.ui()?) } {
                     Ok(false) => Ok(None),
@@ -1018,22 +1073,15 @@ impl Runtime {
                 unsafe { bank_common::ui::notice_rest(ui, bank_common::ui::FAILURE_NOTICE) }
                     .map_err(|_| Fault::NativeObject)?;
             }
-            Save::Ended { saved: true } => {
-                // The worker has checked the Bank it read back; the live
-                // object is the body it saved, and the session ends here.
-                // The original's ending of a successful save: its sound and
-                // message, which waits. Nothing is read or written now.
-                task.end_busy();
-                refuse_home(false);
-                unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
-            }
+            Save::Saved => return self.saved(task),
             Save::Detect
             | Save::CountBank { .. }
             | Save::StageGame
             | Save::StageDex
             | Save::StageBank
             | Save::Prepare
-            | Save::Finalize => return Err(Fault::JournalRecovery),
+            | Save::Finalize
+            | Save::Ended { saved: true } => return Err(Fault::JournalRecovery),
         }
         Ok(None)
     }
@@ -1089,6 +1137,10 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         } else if state.job.is_none() {
             refuse_home(false);
         }
+        // The task's set-up puts up its loading panel on this frame.
+        if crate::navigation::spins(destination) {
+            state.spinner.up(now());
+        }
         destination
     };
     // Every session ends in cleanup (task 0x14), and from there the start
@@ -1143,17 +1195,24 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
         let Some(mut state) = STATE.take() else {
             return 0;
         };
-        if state.panel.frame(before) == panel::Frame::Show {
-            let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
-                bank_common::ui::loading(ui, panel::MESSAGE).map_err(|_| Fault::NativeObject)
-            });
-            return match shown {
-                Ok(()) => 0,
-                Err(fault) => {
-                    state.fault = fault;
-                    state.report_failure(task)
-                }
-            };
+        let idle = state.spinner.idle(now());
+        match state.panel.frame(before, idle) {
+            panel::Frame::Show => {
+                let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
+                    bank_common::ui::loading(ui, panel::MESSAGE).map_err(|_| Fault::NativeObject)
+                });
+                state.spinner.up(now());
+                return match shown {
+                    Ok(()) => 0,
+                    Err(fault) => {
+                        state.fault = fault;
+                        state.report_failure(task)
+                    }
+                };
+            }
+            // The panel stands for 0.5 s before the first state.
+            panel::Frame::Wait => return 0,
+            panel::Frame::Original => {}
         }
     }
     // The state is free while the original runs: its no-game notice

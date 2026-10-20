@@ -33,6 +33,10 @@ pub enum Step {
     Write,
     /// `Job::Finalize` is out: the game is read back and the save resolved.
     Finalize,
+    /// The save is resolved: its message waits until the loading screen has
+    /// stood for 1.5 s (`patch_common::spinner`). A save that ends without
+    /// one shows its message at once.
+    Saved,
     /// Save and Quit has ended, saved or not, and the original's message for
     /// that ending is up.
     Ended { saved: bool },
@@ -51,7 +55,7 @@ impl Step {
             (Self::Detect | Self::Prepare, Reply::CardRemoved) => Err(Fault::GameRead),
             (Self::Detect, Reply::Detected) => Ok(Self::CountGame),
             (Self::Prepare, Reply::ReadyToWrite) => Ok(Self::Write),
-            (Self::Finalize, Reply::Saved) => Ok(Self::Ended { saved: true }),
+            (Self::Finalize, Reply::Saved) => Ok(Self::Saved),
             _ => Err(Fault::JournalRecovery),
         }
     }
@@ -72,7 +76,7 @@ mod tests {
     use offline_core::{Part, Phase, Save, Slot};
     use std::vec::Vec;
 
-    const STEPS: [Step; 12] = [
+    const STEPS: [Step; 13] = [
         Step::Detect,
         Step::CountGame,
         Step::CountBank { game: None },
@@ -83,6 +87,7 @@ mod tests {
         Step::Prepare,
         Step::Write,
         Step::Finalize,
+        Step::Saved,
         Step::Ended { saved: false },
         Step::Ended { saved: true },
     ];
@@ -142,7 +147,9 @@ mod tests {
         let step = Step::Prepare.after(Reply::ReadyToWrite, true).unwrap();
         assert_eq!(step, Step::Write);
         let step = Step::Finalize.after(Reply::Saved, true).unwrap();
-        assert_eq!(step, Step::Ended { saved: true });
+        assert_eq!(step, Step::Saved);
+        // Its message follows, once the loading screen has stood long
+        // enough.
     }
 
     #[test]

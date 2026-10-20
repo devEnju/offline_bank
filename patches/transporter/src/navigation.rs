@@ -4,7 +4,8 @@
 //! Steps of the task factory (`0019CEE4`): 2 title screen, 7 game search,
 //! 8 game list, 9 reading the chosen game, 0xb the original's Bank step,
 //! 0xc the question, 6 the transfer, 0x10 disconnect, which leads back to
-//! the title screen. 3 is the original's connect step; with 4, 5, 0xa, 0xd,
+//! the title screen, and 0x11, which reloads the screens after the language
+//! screen with disconnect's code. 3 is the original's connect step; with 4, 5, 0xa, 0xd,
 //! 0xe and 0xf it belongs to the server and is never a destination. Neither
 //! is 0x12, the failure step.
 
@@ -17,6 +18,7 @@ pub const READ: u32 = 9;
 pub const BANK_STEP: u32 = 0xb;
 pub const QUESTION: u32 = 0xc;
 pub const DISCONNECT: u32 = 0x10;
+pub const RELOAD: u32 = 0x11;
 /// The server step that cancels a transfer that was begun (`00248360`),
 /// after the Bank step or the question ended without one (outcome `0x10`):
 /// it asks the server and keeps its panel ("Datenübertragung über den
@@ -65,6 +67,16 @@ pub const fn loads(next: u32) -> bool {
     matches!(next, SEARCH | LIST | READ | BANK_STEP | TRANSFER)
 }
 
+/// Steps whose set-up puts up the general loading panel (`0019B340`):
+/// reading the chosen game (`00246A6C`), the transfer (`0024A700`), and
+/// disconnect and the reload (`00247268`). The panel of the reading stays
+/// through the Bank step until the question ends it (`00247394`). The
+/// search's panel is the patch's own (`panel`), and the server steps that
+/// have one are never a destination.
+pub const fn spins(next: u32) -> bool {
+    matches!(next, READ | TRANSFER | DISCONNECT | RELOAD)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,7 +88,7 @@ mod tests {
         match (current, outcome) {
             (0, 4) => TITLE,
             (0, _) => EXIT,
-            (1, 4) => 0x11,
+            (1, 4) => RELOAD,
             (1, _) => EXIT,
             (TITLE, 3) => SEARCH,
             (TITLE, 0x12) => 1,
@@ -98,7 +110,7 @@ mod tests {
             (0xd, 3) => BANK_STEP,
             (0xd, 0xf) => FAILURE,
             (0xe, 3) => 0xd,
-            (DISCONNECT | 0x11, _) => TITLE,
+            (DISCONNECT | RELOAD, _) => TITLE,
             (0x13.., _) => EXIT,
             _ => DISCONNECT,
         }
@@ -193,5 +205,19 @@ mod tests {
             assert!(!loads(next));
         }
         assert!(!loads(TITLE) && !loads(QUESTION) && !loads(DISCONNECT) && !loads(EXIT));
+    }
+
+    #[test]
+    fn the_steps_whose_set_up_puts_up_the_loading_panel() {
+        let panel = [TRANSFER, READ, DISCONNECT, RELOAD];
+        for next in 0..=0x14 {
+            assert_eq!(spins(next), panel.contains(&next), "{next:#x}");
+        }
+        // Every way into one of them is a destination the router entry
+        // answers.
+        assert!(spins(destination(LIST, 4, CONNECT, false)));
+        assert!(spins(destination(QUESTION, 4, TRANSFER, false)));
+        assert!(spins(destination(QUESTION, 0x10, CANCEL, false)));
+        assert!(spins(destination(1, 4, RELOAD, false)));
     }
 }

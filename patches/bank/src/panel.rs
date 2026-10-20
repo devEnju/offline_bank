@@ -5,7 +5,8 @@
 //! loading panel with message `0x20` ("Checking the Game Card...",
 //! `002ac00c`, `002ac018`). The patch starts that panel itself, one frame
 //! earlier, and those two calls of the original are gone (`nop`): the panel
-//! is on screen before the mount, and it is started once.
+//! is on screen before the mount, and it is started once. The first state
+//! waits until the panel has stood for 0.5 s (`patch_common::spinner`).
 
 /// The panel's text: message `0x20` of text file 39, as the original's.
 pub const MESSAGE: u32 = 0x20;
@@ -20,6 +21,8 @@ pub const MOUNT_FAILED: u32 = 0x19;
 pub enum Frame {
     /// Start the panel and come back next frame; the original does not run.
     Show,
+    /// The panel stands before the first state; the original does not run.
+    Wait,
     /// The original's update.
     Original,
 }
@@ -35,11 +38,16 @@ impl Panel {
     pub const fn new() -> Self {
         Self { shown: false }
     }
-    /// The frame of a scan in `state`. `Show` marks the panel up.
-    pub fn frame(&mut self, state: u32) -> Frame {
-        if state == PREPARE && !self.shown {
+    /// The frame of a scan in `state`, `idle` while the panel has stood
+    /// for less than 0.5 s. `Show` marks the panel up.
+    pub fn frame(&mut self, state: u32, idle: bool) -> Frame {
+        if state != PREPARE {
+            Frame::Original
+        } else if !self.shown {
             self.shown = true;
             Frame::Show
+        } else if idle {
+            Frame::Wait
         } else {
             Frame::Original
         }
@@ -59,14 +67,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_panel_comes_one_frame_before_the_first_state_and_only_once() {
+    fn the_panel_stands_before_the_first_state_and_comes_only_once() {
         let mut panel = Panel::new();
-        assert_eq!(panel.frame(PREPARE), Frame::Show);
-        // The next frame runs the original's first state, behind the panel.
-        assert_eq!(panel.frame(PREPARE), Frame::Original);
+        assert_eq!(panel.frame(PREPARE, true), Frame::Show);
+        // Until it has stood for 0.5 s nothing runs behind it.
+        assert_eq!(panel.frame(PREPARE, true), Frame::Wait);
+        assert_eq!(panel.frame(PREPARE, true), Frame::Wait);
+        // Then the original's first state runs, behind the panel.
+        assert_eq!(panel.frame(PREPARE, false), Frame::Original);
         assert!(!panel.ran(PREPARE, 1));
         for state in 1..0x26 {
-            assert_eq!(panel.frame(state), Frame::Original);
+            assert_eq!(panel.frame(state, false), Frame::Original);
             assert!(!panel.ran(state, state + 1));
         }
     }
@@ -75,10 +86,10 @@ mod tests {
     fn every_new_scan_gets_its_panel() {
         let mut panel = Panel::new();
         for _ in 0..3 {
-            assert_eq!(panel.frame(PREPARE), Frame::Show);
-            assert_eq!(panel.frame(PREPARE), Frame::Original);
+            assert_eq!(panel.frame(PREPARE, true), Frame::Show);
+            assert_eq!(panel.frame(PREPARE, false), Frame::Original);
             panel.ran(PREPARE, 1);
-            panel.frame(1);
+            panel.frame(1, false);
             panel.ran(1, 2);
         }
     }
@@ -86,8 +97,8 @@ mod tests {
     #[test]
     fn a_failed_mount_ends_the_panel_before_its_message() {
         let mut panel = Panel::new();
-        assert_eq!(panel.frame(PREPARE), Frame::Show);
-        assert_eq!(panel.frame(PREPARE), Frame::Original);
+        assert_eq!(panel.frame(PREPARE, true), Frame::Show);
+        assert_eq!(panel.frame(PREPARE, false), Frame::Original);
         assert!(panel.ran(PREPARE, MOUNT_FAILED));
         // Waiting for the message ends nothing more.
         assert!(!panel.ran(MOUNT_FAILED, MOUNT_FAILED));

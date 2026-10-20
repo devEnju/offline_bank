@@ -28,6 +28,7 @@ use core::mem::transmute;
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
+    spinner::{self, Spinner},
     worker::{JobId, Service, Shared, Worker},
 };
 
@@ -114,9 +115,12 @@ struct Runtime {
     stage: Stage,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
-    /// Whether the task 9 that shows the result has brought up the loading
-    /// panel, as the task that looked at the card did.
+    /// Whether the patch's loading panel is up: the one the look at the card
+    /// puts up, and the one the task 9 that shows the result brings up as
+    /// the look did.
     panel: bool,
+    /// When the patch's loading panel went up.
+    spinner: Spinner,
     notice: Notice,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
@@ -129,9 +133,20 @@ static STATE: Exclusive<Runtime> = unsafe {
         stage: Stage::Looking,
         numbers: None,
         panel: false,
+        spinner: Spinner::new(),
         notice: Notice::new(PACKAGE),
     })
 };
+
+/// The original's clock in ms (`spinner::now`).
+fn now() -> u32 {
+    spinner::now::<Bank15>()
+}
+/// Whether a result waits before it is shown: one that is no error comes
+/// once the loading panel has stood for 1.5 s.
+fn held(first: u32, spinner: &Spinner) -> bool {
+    first == DONE && spinner.held(now())
+}
 
 impl Runtime {
     fn worker(&mut self) -> Result<&mut Worker<Files>, [u32; 2]> {
@@ -163,20 +178,29 @@ impl Runtime {
         self.job = job;
         polled.map_err(WorkerError::numbers)
     }
-    /// Task 3 before anything is contacted: the loading panel, and the
-    /// worker looks at the card.
+    /// Task 3 before anything is contacted: the loading panel, and once it
+    /// has stood for 0.5 s the worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
-        unsafe {
-            self.job(task, |state| {
+        if self.job.is_none() {
+            if !self.panel {
                 let panel = task.ui().map_err(|_| NATIVE)?;
-                ui::loading(panel, ui::CREATING_MESSAGE).map_err(|_| NATIVE)?;
+                unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
+                self.spinner.up(now());
+                self.panel = true;
+                return Ok(None);
+            }
+            if self.spinner.idle(now()) {
+                return Ok(None);
+            }
+        }
+        unsafe {
+            self.job(task, |_| {
                 // The task's +1c continuation is this patch's poller while
                 // it looks. No FS call occurs here.
                 task.begin_busy();
                 write_word(task.raw(), 0x10, 1);
                 // Files are read until the reply.
                 refuse_home(true);
-                state.panel = true;
                 Ok(Job::Look {
                     session: FS_SESSION.read(),
                 })
@@ -261,6 +285,9 @@ unsafe fn scan(raw: *mut u8, original: usize) -> u32 {
         }
     }
     if let Some([first, second]) = state.numbers {
+        if held(first, &state.spinner) {
+            return 0;
+        }
         let shown = state.notice.done(task, first, second);
         if shown != 0 {
             state.stage = Stage::Looking;
@@ -315,8 +342,12 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
             if let Ok(panel) = task.ui() {
                 let _ = unsafe { ui::loading(panel, ui::CREATING_MESSAGE) };
             }
+            state.spinner.up(now());
             task.begin_busy();
             unsafe { write_word(raw, 0x10, 1) };
+            return 0;
+        }
+        if held(first, &state.spinner) {
             return 0;
         }
         // The numbers are the result, under the original's line about the
