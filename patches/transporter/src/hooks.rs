@@ -287,7 +287,8 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
 /// 002455D0, 00247304, 0024A0C4, link.rs). 1 while this frame waits for the
 /// loading panel (`panel::waits`): the update returns 0 without running, as
 /// on a frame it has nothing to do. 0 runs it. A transfer the original is
-/// ending is not held up.
+/// ending is not held up. The frame the question's first state runs, which
+/// takes down the panel of the reading, lets HOME and sleep through.
 /// # Safety
 /// Called only from those stubs, on the main thread, with the live task.
 #[no_mangle]
@@ -300,12 +301,16 @@ pub unsafe extern "aapcs" fn transporter_update_waits(task: *mut u8, step: u32) 
     };
     let now = now();
     let task_state = unsafe { task.add(TASK_STATE).cast::<u32>().read() };
-    u32::from(panel::waits(
+    let waits = panel::waits(
         step,
         task_state,
         state.spinner.idle(now),
         state.spinner.held(now),
-    ))
+    );
+    if !waits && panel::ends_panel(step, task_state) {
+        refuse_home(false);
+    }
+    u32::from(waits)
 }
 
 /// Shows an original message the way the game search shows its own. It

@@ -643,6 +643,17 @@ impl Runtime {
             }
         }
     }
+    /// A reward step has taken down the loading panel Bank loading handed it,
+    /// as the guard's state 0, the claim's states 0 and `0x1b`, or the silent
+    /// entry do, whatever it shows next: HOME and sleep are let through.
+    fn panel_taken_down(&self, task: Task) {
+        let down = task
+            .ui()
+            .is_ok_and(|ui| !unsafe { bank_common::ui::loading_shown(ui) }.unwrap_or(false));
+        if down && self.job.is_none() {
+            refuse_home(false);
+        }
+    }
     fn complete(&mut self, task: Task) -> bool {
         self.owner = 0;
         self.step = Step::Idle;
@@ -1134,8 +1145,11 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         // build; see navigation.rs.
         let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
         // Refuse HOME and sleep across a whole chain of loading tasks, not
-        // only while one of their jobs runs.
-        if crate::navigation::loads(destination) {
+        // only while one of their jobs runs, and into the reward step while
+        // the loading panel is still up.
+        if crate::navigation::loads(destination)
+            || (crate::navigation::takes_panel(destination) && unsafe { panel_left(manager) })
+        {
             refuse_home(true);
         } else if state.job.is_none() {
             refuse_home(false);
@@ -1155,6 +1169,19 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         state.close_files();
     }
     destination
+}
+
+/// Whether the task that has just ended leaves the loading panel on screen:
+/// Bank loading hands its panel to the reward step (`navigation::takes_panel`).
+unsafe fn panel_left(manager: *mut u8) -> bool {
+    let Ok(raw) = checked_pointer(unsafe { read_word(manager, 0x10) }) else {
+        return false;
+    };
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_LOAD, TASK_REWARD_GUARD]) }) else {
+        return false;
+    };
+    task.ui()
+        .is_ok_and(|ui| unsafe { bank_common::ui::loading_shown(ui) }.unwrap_or(false))
 }
 
 /// Replaces the end of cleanup (tasks 0x14 and 0x15, `00361aa4`), which the
@@ -1446,7 +1473,9 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
     if is_guard {
         let original: unsafe extern "aapcs" fn(*mut u8) -> u32 =
             unsafe { transmute(REWARD_GUARD_UPDATE) };
-        return unsafe { original(raw) };
+        let result = unsafe { original(raw) };
+        state.panel_taken_down(task);
+        return result;
     }
     let before_gift = match state.welcome_before(task) {
         Ok(balance) => balance,
@@ -1488,6 +1517,7 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             return state.report_failure(task);
         }
     }
+    state.panel_taken_down(task);
     result
 }
 

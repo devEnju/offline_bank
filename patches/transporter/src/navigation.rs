@@ -59,12 +59,14 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
 /// cartridge scan), the game list while it is set up (it reads every listed
 /// save; `hooks::transporter_list_ready` lets HOME through again once it is
 /// on screen), reading the chosen game, the Bank step (it saves its record
-/// into the game), and the transfer. HOME and sleep are refused from the
+/// into the game), and the transfer; and the question, whose first state
+/// takes down the panel of the reading (`hooks::transporter_update_waits`
+/// lets HOME through on that frame). HOME and sleep are refused from the
 /// moment one of them is chosen, until it ends or shows a message that
 /// waits for an answer (`hooks::transporter_message_waits`). Every other
 /// step waits for the user.
 pub const fn loads(next: u32) -> bool {
-    matches!(next, SEARCH | LIST | READ | BANK_STEP | TRANSFER)
+    matches!(next, SEARCH | LIST | READ | BANK_STEP | QUESTION | TRANSFER)
 }
 
 /// Steps whose set-up puts up the general loading panel (`0019B340`):
@@ -171,17 +173,18 @@ mod tests {
 
     #[test]
     fn home_is_refused_exactly_while_files_are_read_or_written() {
-        let loading = [SEARCH, LIST, READ, BANK_STEP, TRANSFER];
+        let loading = [SEARCH, LIST, READ, BANK_STEP, QUESTION, TRANSFER];
         for next in 0..=0x14 {
             assert_eq!(loads(next), loading.contains(&next), "{next:#x}");
         }
-        // START to the game list, and a chosen game to the question, are
-        // refused without a gap; the screens that wait are not.
+        // START to the game list, and a chosen game to the end of its panel
+        // in the question, are refused without a gap; the screens that wait
+        // are not.
         assert!(loads(destination(TITLE, 3, SEARCH, false)));
         assert!(loads(destination(SEARCH, 3, LIST, false)));
         assert!(loads(destination(LIST, 4, CONNECT, false)));
         assert!(loads(destination(READ, 3, 0xa, false)));
-        assert!(!loads(destination(BANK_STEP, 4, QUESTION, false)));
+        assert!(loads(destination(BANK_STEP, 4, QUESTION, false)));
         assert!(loads(destination(QUESTION, 4, TRANSFER, false)));
         // Every way back to the title screen ends the refusal: no game
         // found after START, Back on the list, a refusal of the original,
@@ -204,7 +207,7 @@ mod tests {
             assert_eq!(next, DISCONNECT, "{current:#x} {outcome:#x}");
             assert!(!loads(next));
         }
-        assert!(!loads(TITLE) && !loads(QUESTION) && !loads(DISCONNECT) && !loads(EXIT));
+        assert!(!loads(TITLE) && !loads(DISCONNECT) && !loads(EXIT));
     }
 
     #[test]

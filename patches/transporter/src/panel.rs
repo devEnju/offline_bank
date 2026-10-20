@@ -112,6 +112,13 @@ pub fn waits(step: u32, state: u32, idle: bool, held: bool) -> bool {
         _ => false,
     }
 }
+/// Whether the original's update of `step` in `state` takes down the panel
+/// of reading the game on this frame: the question's first state does, and
+/// shows the question, which waits for the user and comes through no
+/// message the patch sees.
+pub fn ends_panel(step: u32, state: u32) -> bool {
+    (step, state) == (QUESTION, QUESTION_PANEL_ENDS)
+}
 /// The question's state that ends the panel of reading the game.
 pub const QUESTION_PANEL_ENDS: u32 = 0;
 /// The transfer's sub-state that delivers, and the one that shows its
@@ -228,6 +235,17 @@ mod tests {
                 assert!(!waits(step, state, false, false));
             }
             assert!(!waits(BANK_STEP, state, true, true));
+        }
+    }
+
+    #[test]
+    fn only_the_question_takes_down_the_panel_of_the_reading() {
+        use crate::navigation::{BANK_STEP, DISCONNECT};
+        for state in 0..0x20 {
+            assert_eq!(ends_panel(QUESTION, state), state == QUESTION_PANEL_ENDS);
+            for step in [READ, BANK_STEP, TRANSFER, DISCONNECT] {
+                assert!(!ends_panel(step, state));
+            }
         }
     }
 
