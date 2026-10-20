@@ -24,6 +24,7 @@ use bank_common::{
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
+    spinner::{self, Spinner},
     worker::{JobId, Service, Shared, Worker},
 };
 
@@ -106,6 +107,8 @@ struct Runtime {
     job: Option<JobId>,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
+    /// When the loading panel went up.
+    spinner: Spinner,
     notice: Notice,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
@@ -116,22 +119,37 @@ static STATE: Exclusive<Runtime> = unsafe {
         owner: 0,
         job: None,
         numbers: None,
+        spinner: Spinner::new(),
         notice: Notice::new(PACKAGE),
     })
 };
+
+/// The original's clock in ms (`spinner::now`).
+fn now() -> u32 {
+    spinner::now::<Bank15>()
+}
 
 impl Runtime {
     fn worker(&mut self) -> Result<&mut Worker<Converter>, [u32; 2]> {
         unsafe { Worker::get(&mut self.worker) }.map_err(WorkerError::numbers)
     }
-    /// One frame of the utility task. `Ok(None)` while the conversion runs.
+    /// One frame of the utility task. `Ok(None)` while the conversion runs,
+    /// which begins once the loading panel has stood for 0.5 s.
     unsafe fn open(
         &mut self,
         task: Task,
     ) -> Result<Option<<Converter as Service>::Reply>, [u32; 2]> {
         if self.job.is_none() {
-            let panel = task.ui().map_err(|_| NATIVE)?;
-            unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
+            let now = now();
+            if self.spinner.elapsed(now).is_none() {
+                let panel = task.ui().map_err(|_| NATIVE)?;
+                unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
+                self.spinner.up(now);
+                return Ok(None);
+            }
+            if self.spinner.idle(now) {
+                return Ok(None);
+            }
             // The task's +1c continuation is patched to this same poller
             // before enabling busy protection. No FS call occurs here.
             task.begin_busy();
@@ -214,9 +232,14 @@ pub unsafe extern "aapcs" fn bank_migrate_scan(raw: *mut u8) -> u32 {
         }
     }
     let [first, second] = state.numbers.unwrap_or(NATIVE);
-    // Every result comes at once, as numbers under the original's line
-    // about the HOME Menu. That screen does not end: nothing can go on in
-    // this patch. Bank is closed from the HOME Menu.
+    // A conversion that is done shows its result once the loading panel has
+    // stood for 1.5 s; an error at once.
+    if first == migrate::DONE && state.spinner.held(now()) {
+        return 0;
+    }
+    // Every result is numbers under the original's line about the HOME
+    // Menu. That screen does not end: nothing can go on in this patch. Bank
+    // is closed from the HOME Menu.
     state.notice.done(task, first, second)
 }
 

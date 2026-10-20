@@ -42,6 +42,12 @@ pub trait Program: 'static {
     /// `(pane, string, -1)`: sets a text pane's text.
     const PANE_TEXT: usize;
 
+    /// The original's clock, as its minimum times read it (`spinner::now`):
+    /// `CLOCK_NOW(&moment)` copies the time the main loop keeps into an
+    /// 8-byte moment, `CLOCK_MILLISECONDS(&moment)` gives it in ms.
+    const CLOCK_NOW: usize;
+    const CLOCK_MILLISECONDS: usize;
+
     /// The SDK's file system calls. The first argument is the `fs:USER`
     /// session for the archive calls and the open, the file handle for the
     /// others: `OPEN_ARCHIVE(session, &archive, id, path)`,

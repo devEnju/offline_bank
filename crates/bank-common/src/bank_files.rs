@@ -109,6 +109,12 @@ pub trait Files {
     ) -> Result<Self::Storage, <Self::Storage as Storage>::Error>;
 }
 
+/// A container that can let go of everything it holds open between uses
+/// and takes it up again when it is next read or written.
+pub trait Rest: Storage {
+    fn rest(&mut self) -> Result<(), Self::Error>;
+}
+
 /// The files in Bank's extdata, opened through the session borrowed from
 /// the original (`task::FS_SESSION`).
 #[cfg(target_arch = "arm")]
@@ -175,6 +181,21 @@ fn side<E>(file: FileName) -> impl Fn(PairError<E>) -> Error<E> {
     move |error| match error {
         PairError::Io(error) => Error::Io(error),
         _ => Error::Side(file, Problem::Damaged),
+    }
+}
+
+impl<F: Files> BankFiles<F>
+where
+    F::Storage: Rest,
+{
+    /// Lets go of the Bank file's archive handle and open file between two
+    /// uses: what was written is flushed, and the file stays this Bank's,
+    /// with the journal as it was read. The next use opens them again.
+    pub fn rest(&mut self) -> Outcome<(), F> {
+        match &mut self.bank {
+            Some(bank) => bank.storage_mut().rest().map_err(Error::Io),
+            None => Ok(()),
+        }
     }
 }
 
@@ -1464,6 +1485,43 @@ mod tests {
         // A session that only looks is closed the same way.
         end_session(&mut files, &disk);
         assert!(!files.is_open());
+    }
+
+    #[test]
+    fn a_bank_that_rests_between_jobs_holds_nothing_open_and_keeps_the_same_bytes() {
+        let old = body(0x31, 0x44, 0);
+        let new = body(0x52, 0x66, 0);
+        let mut stored = Vec::new();
+        for rests in [false, true] {
+            let disk = fresh(&old);
+            let mut files = BankFiles::new(disk.clone());
+            // What the worker does after every job.
+            let between_jobs = |files: &mut BankFiles<Shared>| {
+                if rests {
+                    files.rest().unwrap();
+                    assert_eq!(disk.0.borrow().open, 0);
+                }
+            };
+            assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
+            between_jobs(&mut files);
+            assert!(load(&mut files).0 == old);
+            between_jobs(&mut files);
+            files
+                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
+                .unwrap();
+            between_jobs(&mut files);
+            assert!(matches!(files.phase(), Ok(Phase::Prepared(_))));
+            files.reconcile(AFTER).unwrap();
+            assert!(load(&mut files).0 == new);
+            between_jobs(&mut files);
+            // A session that rests is closed as any other.
+            end_session(&mut files, &disk);
+            assert!(matches!(files.open(), Ok(Some(Phase::Clean(_)))));
+            assert!(load(&mut files).0 == new);
+            end_session(&mut files, &disk);
+            stored.push(disk.0.borrow().files.clone());
+        }
+        assert!(stored[0] == stored[1]);
     }
 
     #[test]

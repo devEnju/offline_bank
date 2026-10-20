@@ -261,6 +261,30 @@ pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
     Ok(())
 }
 
+/// `001d7ed8(layout, pane)`: a pane of a layout, or null, as `001e7084`
+/// finds the pane it shows or hides.
+const FIND_PANE: usize = 0x001d_7ed8;
+
+/// Whether the loading panel is on screen: its pane 0x97, which `001d5b44`
+/// shows and every end of loading hides, through `001e7084(context, 0,
+/// 0x97, shown)`, which keeps it in bit 0 of the pane's byte `+0xb7`. The
+/// pane is found as `001e7084` finds it: in the layout of group 0 of the
+/// UI's context (`[[context + 0x1c]]`).
+/// # Safety
+/// `ui` is the live shared UI, on the main task thread.
+pub unsafe fn loading_shown(ui: *mut u8) -> Result<bool, Error> {
+    let context = unsafe { ready(ui) }?;
+    let groups = pointer(unsafe { word(context, 0x1c) })?;
+    let layout = pointer(unsafe { word(groups, 0) })?;
+    let find: unsafe extern "aapcs" fn(*mut u8, u32) -> *mut u8 = unsafe { transmute(FIND_PANE) };
+    let pane = unsafe { find(layout, 0x97) };
+    if pane.is_null() {
+        return Ok(false);
+    }
+    pointer(pane as u32)?;
+    Ok(unsafe { pane.add(0xb7).read() } & 1 != 0)
+}
+
 /// Native message 9: "Success! Changes saved."
 const SAVED_NOTICE: u32 = 9;
 

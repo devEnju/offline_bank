@@ -90,6 +90,9 @@ $allowed = @{
     0x0024BAE8 = 'bl:transporter_version'
     0x00246F48 = 'b:transporter_check_stub'; 0x00248CDC = 'b:00248E44'
     0x00248EBC = 0xE3A0100B; 0x00248F88 = 0x0AFFFFBA
+    0x002455D0 = 'b:transporter_read_stub'; 0x00247304 = 'b:transporter_question_stub'
+    0x0024A0C4 = 'b:transporter_transfer_stub'
+    0x00246208 = 0xE3A00001; 0x00246278 = 0xE3A00001; 0x002462E8 = 0xE3A00001
     0x00245728 = 'b:00245800'; 0x002460B8 = 'b:002461D0'
     0x002488A0 = 0xE3A00001
     0x002458DC = 'bl:transporter_slot'
@@ -278,7 +281,7 @@ Assert-Check ((Hash $patched ($rx.address - $base) $payloadImageLength) -eq $man
 $placement = $manifest.placement
 Assert-Check ($placement.payload_file_offset -eq $rx.address - $base -and $placement.payload_rw_address -eq $rw.address -and $placement.payload_rw_bytes -eq $rw.memory_bytes -and $placement.bootstrap_address -eq $boot.address -and $placement.bootstrap_bytes -eq $boot.file_bytes) 'manifest placement'
 $entryNames = @($allowed.Values | Where-Object { $_ -is [string] } | ForEach-Object { $_.Split(':')[1] } | Where-Object { $_ -like 'transporter_*' } | Sort-Object -Unique)
-Assert-Check ($entryNames.Count -eq 28 -and $manifest.runtime_exports -eq $entryNames.Count -and @($manifest.exports.psobject.Properties).Count -eq $entryNames.Count) 'manifest entry count'
+Assert-Check ($entryNames.Count -eq 31 -and $manifest.runtime_exports -eq $entryNames.Count -and @($manifest.exports.psobject.Properties).Count -eq $entryNames.Count) 'manifest entry count'
 foreach ($name in $entryNames) {
     Assert-Check ($manifest.exports.$name -eq $symbols[$name].value) "manifest export $name"
 }

@@ -14,6 +14,8 @@ use patch_common::program::Program;
 ///   (`001044D0`);
 /// - the title screen's call for its version line, message 0x29
 ///   (`0024BAE8`), and the two calls it hands the line to the pane with;
+/// - its clock, as its minimum time `0019B758` reads it: `00233854`
+///   copies the time at `002F4E38`, `0025A77C` gives it in ms;
 /// - its file system calls, the same code as Bank's (found by comparing
 ///   their instructions with Bank's), without create and delete: the patch
 ///   neither creates nor deletes a file.
@@ -30,6 +32,8 @@ impl Program for Transporter15 {
     const PANE_MESSAGE: usize = 0x001d_33cc;
     const FIND_PANE: usize = 0x0019_f834;
     const PANE_TEXT: usize = 0x0023_75d0;
+    const CLOCK_NOW: usize = 0x0023_3854;
+    const CLOCK_MILLISECONDS: usize = 0x0025_a77c;
     const OPEN_ARCHIVE: usize = 0x001d_b7dc;
     const CLOSE_ARCHIVE: usize = 0x001d_b7ac;
     const CREATE_FILE: Option<usize> = None;

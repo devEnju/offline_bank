@@ -74,6 +74,21 @@ pub const fn loads(destination: u32) -> bool {
     matches!(destination, 3 | OPEN | SCENE | LOAD | SAVE)
 }
 
+/// The reward guard and claim, which Bank loading hands its loading panel
+/// to; one of them takes it down. HOME and sleep stay refused into them
+/// while the panel is still up (`runtime::panel_left`), until it is down.
+pub const fn takes_panel(destination: u32) -> bool {
+    matches!(destination, 0xc | 0xd)
+}
+
+/// Tasks whose set-up puts up the loading panel (`001d5b44`): the scene
+/// set-up (`002af1c8`), whose panel stays through Bank loading into the
+/// reward step, saving (`002b2540`), and cleanup (`002abd6c`). The game
+/// scan's panel is the patch's own (`panel`), and opening keeps it.
+pub const fn spins(destination: u32) -> bool {
+    matches!(destination, SCENE | SAVE | CLEANUP)
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -188,6 +203,28 @@ mod tests {
         assert!(!loads(destination(LOAD, 4, 0xc, false)));
         assert!(loads(destination(0x19, 4, 7, false)));
         assert!(!loads(destination(SAVE, 4, CLEANUP, false)));
+    }
+
+    #[test]
+    fn loading_hands_its_panel_to_the_reward_step() {
+        assert!(takes_panel(destination(LOAD, 4, 0xc, false)));
+        assert!(takes_panel(0xd));
+        for destination in 0..=0x1d {
+            assert_eq!(takes_panel(destination), matches!(destination, 0xc | 0xd));
+            // The reward step is no loading task of its own.
+            assert!(!(takes_panel(destination) && loads(destination)));
+        }
+    }
+
+    #[test]
+    fn the_tasks_whose_set_up_puts_up_the_loading_panel() {
+        let panel: [u32; 3] = [SCENE, SAVE, CLEANUP];
+        for destination in 0..=0x1d {
+            assert_eq!(spins(destination), panel.contains(&destination));
+        }
+        assert!(spins(destination(SELECT, 5, 0xb, false)));
+        assert!(spins(destination(0x19, 4, 7, false)));
+        assert!(spins(destination(SAVE, 4, CLEANUP, false)));
     }
 
     #[test]

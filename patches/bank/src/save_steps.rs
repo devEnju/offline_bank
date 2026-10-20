@@ -10,17 +10,33 @@ use bank_common::fault::Fault;
 pub enum Step {
     /// `Job::Detect` is out: is the game's Game Card there? Nothing of the
     /// save is done before its answer.
+    ///
+    /// From its answer on, each of the following steps is one frame with one
+    /// heavy native call on the main thread, as the original's states are.
     Detect,
-    /// The Game Card is there and the counts and Miles are settled: the game
-    /// and the Bank are staged on this frame, and `Job::Prepare` is handed
-    /// over.
-    Stage,
+    /// The Game Card is there: the game's Pokémon are counted on this frame.
+    CountGame,
+    /// The game's Pokémon are counted (`None` without a game count): the
+    /// Bank's are counted, the Miles settled and the counts recorded on this
+    /// frame.
+    CountBank { game: Option<u32> },
+    /// The counts and Miles are settled: the game is prepared on this frame.
+    StageGame,
+    /// The game is prepared: the Pokédex is refreshed on this frame.
+    StageDex,
+    /// The Pokédex is refreshed: the Bank is staged on this frame, and
+    /// `Job::Prepare` is handed over.
+    StageBank,
     /// `Job::Prepare` is out: the journal is prepared and the game checked.
     Prepare,
     /// The original writes the game.
     Write,
     /// `Job::Finalize` is out: the game is read back and the save resolved.
     Finalize,
+    /// The save is resolved: its message waits until the loading screen has
+    /// stood for 1.5 s (`patch_common::spinner`). A save that ends without
+    /// one shows its message at once.
+    Saved,
     /// Save and Quit has ended, saved or not, and the original's message for
     /// that ending is up.
     Ended { saved: bool },
@@ -37,9 +53,9 @@ impl Step {
                 Ok(Self::Ended { saved: false })
             }
             (Self::Detect | Self::Prepare, Reply::CardRemoved) => Err(Fault::GameRead),
-            (Self::Detect, Reply::Detected) => Ok(Self::Stage),
+            (Self::Detect, Reply::Detected) => Ok(Self::CountGame),
             (Self::Prepare, Reply::ReadyToWrite) => Ok(Self::Write),
-            (Self::Finalize, Reply::Saved) => Ok(Self::Ended { saved: true }),
+            (Self::Finalize, Reply::Saved) => Ok(Self::Saved),
             _ => Err(Fault::JournalRecovery),
         }
     }
@@ -60,12 +76,18 @@ mod tests {
     use offline_core::{Part, Phase, Save, Slot};
     use std::vec::Vec;
 
-    const STEPS: [Step; 7] = [
+    const STEPS: [Step; 13] = [
         Step::Detect,
-        Step::Stage,
+        Step::CountGame,
+        Step::CountBank { game: None },
+        Step::CountBank { game: Some(31) },
+        Step::StageGame,
+        Step::StageDex,
+        Step::StageBank,
         Step::Prepare,
         Step::Write,
         Step::Finalize,
+        Step::Saved,
         Step::Ended { saved: false },
         Step::Ended { saved: true },
     ];
@@ -110,20 +132,23 @@ mod tests {
                     id: 0,
                 },
             },
-            Reply::Closed,
         ]
     }
 
     #[test]
     fn a_save_goes_from_the_game_card_to_its_message() {
         let step = Step::Detect.after(Reply::Detected, true).unwrap();
-        assert_eq!(step, Step::Stage);
-        // The hook hands `Job::Prepare` over from `Stage`, and starts the
-        // original's writer, whose end hands `Job::Finalize` over.
+        assert_eq!(step, Step::CountGame);
+        // The hook goes on by itself, a frame each, through `CountBank`,
+        // `StageGame` and `StageDex` to `StageBank`, which hands
+        // `Job::Prepare` over, and starts the original's writer, whose end
+        // hands `Job::Finalize` over.
         let step = Step::Prepare.after(Reply::ReadyToWrite, true).unwrap();
         assert_eq!(step, Step::Write);
         let step = Step::Finalize.after(Reply::Saved, true).unwrap();
-        assert_eq!(step, Step::Ended { saved: true });
+        assert_eq!(step, Step::Saved);
+        // Its message follows, once the loading screen has stood long
+        // enough.
     }
 
     #[test]

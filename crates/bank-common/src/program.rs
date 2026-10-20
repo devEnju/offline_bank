@@ -13,6 +13,8 @@ use patch_common::program::Program;
 ///   (`0010ba7c`);
 /// - the start screen's call for its version line, message 0x4E
 ///   (`002b49c4`), and the two calls it hands the line to the pane with;
+/// - its clock, as its minimum time `001d5bb0` reads it: `00229dc4` copies
+///   the time at `00372fe0`, `002c8ea4` gives it in ms;
 /// - its file system calls (docs/internals.md, "Filesystem calls").
 pub struct Bank15;
 impl Program for Bank15 {
@@ -27,6 +29,8 @@ impl Program for Bank15 {
     const PANE_MESSAGE: usize = 0x001e_21c8;
     const FIND_PANE: usize = 0x001e_264c;
     const PANE_TEXT: usize = 0x0029_a628;
+    const CLOCK_NOW: usize = 0x0022_9dc4;
+    const CLOCK_MILLISECONDS: usize = 0x002c_8ea4;
     const OPEN_ARCHIVE: usize = 0x0020_a468;
     const CLOSE_ARCHIVE: usize = 0x0020_a438;
     const CREATE_FILE: Option<usize> = Some(0x0016_54f8);

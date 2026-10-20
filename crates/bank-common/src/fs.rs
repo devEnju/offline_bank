@@ -338,12 +338,18 @@ enum Unit {
 /// handles, creating a file failed with an out-of-resource result
 /// (`D860466C`); five and five had worked. One container of this kind and
 /// another, two and two, is what a Bank of one file per container used.
+///
+/// Between uses it can rest (`rest`): it holds nothing open then, and the
+/// next read or write opens the archive and the unit file again.
 #[cfg(any(test, target_arch = "arm"))]
 struct Split<R: Reach> {
     reach: R,
     files: &'static [UnitFile],
-    /// The container's archive handle, with the means to close it.
+    /// The container's archive handle, with the means to close it. `None`
+    /// while the container rests, and once it is closed.
     archive: Option<(R::Api, u64)>,
+    /// Closed (`close`): nothing is opened again.
+    closed: bool,
     units: [Unit; MAX_UNITS],
     /// The unit file that is open, and whether it holds writes that are not
     /// flushed yet.
@@ -361,24 +367,32 @@ impl<R: Reach> Split<R> {
         if files.is_empty() || files.len() > MAX_UNITS {
             return Err(Error::InvalidLength);
         }
-        let mut api = reach.api(&files[0])?;
-        let archive = api.open_archive()?;
-        Ok(Self {
+        let mut this = Self {
             reach,
             files,
-            archive: Some((api, archive)),
+            archive: None,
+            closed: false,
             units: [Unit::Absent; MAX_UNITS],
             open: None,
             unflushed: None,
             visiting: false,
-        })
+        };
+        this.archive()?;
+        Ok(this)
     }
 
-    fn archive(&self) -> Result<u64, Error> {
-        self.archive
-            .as_ref()
-            .map(|(_, archive)| *archive)
-            .ok_or(Error::Closed)
+    /// The archive handle, opened if the container rests.
+    fn archive(&mut self) -> Result<u64, Error> {
+        if self.closed {
+            return Err(Error::Closed);
+        }
+        if let Some((_, archive)) = &self.archive {
+            return Ok(*archive);
+        }
+        let mut api = self.reach.api(&self.files[0])?;
+        let archive = api.open_archive()?;
+        self.archive = Some((api, archive));
+        Ok(archive)
     }
 
     /// `None` when not one of the files exists. A file of another size, or an
@@ -464,14 +478,21 @@ impl<R: Reach> Split<R> {
         }
     }
 
-    fn close(&mut self) -> Result<(), Error> {
+    /// Closes the open unit file, flushed, and the archive handle. What is
+    /// known of the units stays; the next use opens what it needs again.
+    fn rest(&mut self) -> Result<(), Error> {
         let released = self.release();
-        self.units = [Unit::Absent; MAX_UNITS];
         let closed = match self.archive.take() {
             Some((mut api, archive)) => api.close_archive(archive),
             None => Ok(()),
         };
         released.and(closed)
+    }
+
+    fn close(&mut self) -> Result<(), Error> {
+        self.closed = true;
+        self.units = [Unit::Absent; MAX_UNITS];
+        self.rest()
     }
 }
 
@@ -680,6 +701,15 @@ impl<P: Program> Storage for ExtdataStorage<P> {
     }
     fn recreate(&mut self, offset: u64, length: u64) -> Result<(), Error> {
         self.split.recreate(offset, length)
+    }
+}
+
+#[cfg(target_arch = "arm")]
+impl<P: Program> crate::bank_files::Rest for ExtdataStorage<P> {
+    /// The archive handle and the open unit file, flushed first if it holds
+    /// writes.
+    fn rest(&mut self) -> Result<(), Error> {
+        self.split.rest()
     }
 }
 
@@ -1748,6 +1778,43 @@ mod split_tests {
             (card.archives.most(), card.handles.most().max(before)),
             (1, 1)
         );
+    }
+
+    #[test]
+    fn a_container_that_rests_holds_nothing_and_opens_again_when_used() {
+        let card = card();
+        let mut split = open(&card);
+        split.write(4, b"EF").unwrap();
+        split.rest().unwrap();
+        // Nothing open, and what was written is flushed.
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
+        assert_eq!(card.files.borrow()["/two.bin"].flushed, b"EFghij");
+        // A second rest has nothing to let go of.
+        split.rest().unwrap();
+        let mut all = [0; 15];
+        split.read(0, &mut all).unwrap();
+        assert_eq!(&all, b"abcdEFghijklmno");
+        assert_eq!((card.archives.now(), card.handles.now()), (1, 1));
+        drop(split);
+        // What it knew of the units stays: an absent unit reads as zeros
+        // after a rest and is created by its first write.
+        card.files.borrow_mut().remove("/one.bin");
+        let mut split = open(&card);
+        split.rest().unwrap();
+        split.read(0, &mut all).unwrap();
+        assert_eq!(&all, b"\0\0\0\0EFghijklmno");
+        split.rest().unwrap();
+        split.write(0, b"ab").unwrap();
+        split.rest().unwrap();
+        assert_eq!(card.files.borrow()["/one.bin"].flushed, b"ab\0\0");
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
+        // One that is closed does not open again.
+        split.close().unwrap();
+        assert_eq!(split.read(0, &mut all), Err(Error::Closed));
+        assert_eq!(split.write(0, b"x"), Err(Error::Closed));
+        drop(split);
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
+        assert_eq!((card.archives.most(), card.handles.most()), (1, 1));
     }
 
     #[test]

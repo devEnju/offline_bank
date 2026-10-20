@@ -12,9 +12,14 @@ use crate::{
     storage_worker::{DeliveryWorker, Failed, Job, Reply},
     ui::{end_panel, start_panel, UI_CONTEXT},
 };
-use core::{cell::UnsafeCell, mem::transmute, slice};
+use core::{mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
-use patch_common::{exclusive::Exclusive, native::follow, worker::JobId};
+use patch_common::{
+    exclusive::Exclusive,
+    native::follow,
+    spinner::{self, Spinner},
+    worker::JobId,
+};
 
 /// The original's "show this message and wait": `(ui, message, 1)`, as the
 /// game search calls it for its own message 0 (`00246FFC`).
@@ -33,43 +38,22 @@ const MANAGER_TASK: usize = 0x10;
 const MANAGER_CANCELLED: usize = 0x1a;
 const TASK_OUTCOME: usize = 0x30;
 
-/// The original's clock, as `0019B758` reads it: `00233854(&moment)` copies
-/// the current time (`002F4E38`) into an 8-byte moment, `0025A77C(&moment)`
-/// gives it in ms.
-const NOW: usize = 0x0023_3854;
-const MILLISECONDS: usize = 0x0025_a77c;
+/// A task's state, and the transfer's flag that it is to end (set by
+/// `0025CDC0`; its update then selects sub-state `0x14`, `0024A0CC`).
+const TASK_STATE: usize = 0x10;
+const TRANSFER_ENDING: usize = 0x45;
 /// Where the game list notes the time it began, in ms (`00245180`..
 /// `0024524C`), for its minimum time of 3 s (`00244B24`).
 const LIST_BEGAN: usize = 0x70;
-
-/// A moment of the original's clock.
-#[repr(C, align(8))]
-struct Moment(UnsafeCell<[u32; 2]>);
-// SAFETY: only the main thread uses it.
-unsafe impl Sync for Moment {}
-impl Moment {
-    /// Notes the current time.
-    unsafe fn note(&self) {
-        let now: unsafe extern "aapcs" fn(*mut [u32; 2]) = unsafe { transmute(NOW) };
-        unsafe { now(self.0.get()) };
-    }
-    /// The noted time in ms.
-    unsafe fn milliseconds(&self) -> u32 {
-        let ms: unsafe extern "aapcs" fn(*const [u32; 2]) -> u32 =
-            unsafe { transmute(MILLISECONDS) };
-        unsafe { ms(self.0.get()) }
-    }
-}
-/// When the search's panel went up.
-static PANEL_SINCE: Moment = Moment(UnsafeCell::new([0; 2]));
-
 /// The panel the search started (`panel`).
 static PANEL: Panel = Panel::new();
 
-/// The worker and the job it has out. Only the main thread takes it.
+/// The worker and the job it has out, and when the loading screen that is
+/// up went up. Only the main thread takes it.
 struct Runtime {
     worker: Option<DeliveryWorker>,
     job: Option<(JobId, Job)>,
+    spinner: Spinner,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
 // main thread.
@@ -77,6 +61,7 @@ static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
         worker: None,
         job: None,
+        spinner: Spinner::new(),
     })
 };
 
@@ -122,6 +107,10 @@ impl Runtime {
     }
 }
 
+/// The original's clock in ms (`spinner::now`).
+fn now() -> u32 {
+    spinner::now::<Transporter15>()
+}
 /// The transport box the original filled while reading the source game.
 unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> {
     unsafe {
@@ -162,6 +151,13 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     };
     let next = navigation::destination(current, outcome, native, cancelled);
     refuse_home(navigation::loads(next));
+    // The step's set-up puts up its loading panel on a later frame; its
+    // time is taken on the first frame of the patch behind it.
+    if navigation::spins(next) {
+        if let Some(mut state) = STATE.take() {
+            state.spinner.coming();
+        }
+    }
     // The search's panel stays into the game list, until the list is on
     // screen; after anything else it ends here.
     if !panel::handed_on(next) {
@@ -204,16 +200,18 @@ pub unsafe extern "aapcs" fn transporter_list_indicator() -> u32 {
 
 /// The game list has noted when it began, while the search's panel is up
 /// (link.rs): it counts its minimum time from when the panel went up
-/// instead, so the panel is not kept 3 s longer than the list needs.
+/// instead, so the panel is not kept 3 s longer than the list needs. The
+/// search's 0.5 s before its work count towards those 3 s.
 /// # Safety
 /// Called only from the stub of the patched site at 00244EAC (link.rs), on
 /// the main thread, with the live game-list task.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_list_started(task: *mut u8) {
+    let elapsed = STATE
+        .take()
+        .and_then(|state| state.spinner.elapsed(now()))
+        .unwrap_or(0);
     unsafe {
-        let now = Moment(UnsafeCell::new([0; 2]));
-        now.note();
-        let elapsed = now.milliseconds().wrapping_sub(PANEL_SINCE.milliseconds());
         let began = task.add(LIST_BEGAN).cast::<u64>();
         began.write(panel::list_start(began.read(), elapsed));
     }
@@ -253,22 +251,24 @@ pub unsafe extern "aapcs" fn transporter_list_ready() {
 /// the live game-search task in `r0`.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
-    // The loading panel goes up before anything is read: on the first
-    // frame, before the check is handed over (`panel`).
+    // The loading panel goes up before anything is read, on a frame of its
+    // own, as Bank's scan puts up its panel (`panel`). The worker's start
+    // and the check follow once it has stood for 0.5 s (`spinner`).
+    let Some(mut state) = STATE.take() else {
+        return SEARCH_PENDING;
+    };
     if let Some(ui) = unsafe { follow(task, TASK_UI) } {
         if unsafe { follow(ui, UI_CONTEXT) }.is_some() && PANEL.start(ui as usize) {
-            unsafe {
-                start_panel(ui);
-                PANEL_SINCE.note();
-            }
+            unsafe { start_panel(ui) };
+            state.spinner.up(now());
+            return SEARCH_PENDING;
         }
     }
-    let answer = {
-        let Some(mut state) = STATE.take() else {
-            return SEARCH_PENDING;
-        };
-        unsafe { state.step(Job::Check, |_| Some(())) }
-    };
+    if state.job.is_none() && state.spinner.idle(now()) {
+        return SEARCH_PENDING;
+    }
+    let answer = unsafe { state.step(Job::Check, |_| Some(())) };
+    drop(state);
     // A worker that failed refuses as a file that does not read does.
     match answer.map(|reply| reply.unwrap_or(MESSAGE_OPEN_BANK)) {
         None => SEARCH_PENDING,
@@ -281,6 +281,39 @@ pub unsafe extern "aapcs" fn transporter_check(task: *mut u8) -> u32 {
             }
         }
     }
+}
+
+/// The first instruction of the update of `step`: reading the chosen game,
+/// the question, or the transfer (the stubs of the patched sites at
+/// 002455D0, 00247304, 0024A0C4, link.rs). 1 while this frame waits for the
+/// loading panel (`panel::waits`): the update returns 0 without running, as
+/// on a frame it has nothing to do. 0 runs it. A transfer the original is
+/// ending is not held up. The frame the question's first state runs, which
+/// takes down the panel of the reading, lets HOME and sleep through.
+/// # Safety
+/// Called only from those stubs, on the main thread, with the live task.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_update_waits(task: *mut u8, step: u32) -> u32 {
+    if step == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
+        return 0;
+    }
+    let Some(mut state) = STATE.take() else {
+        return 0;
+    };
+    let now = now();
+    // The panel of reading the game or of the transfer.
+    state.spinner.seen(now);
+    let task_state = unsafe { task.add(TASK_STATE).cast::<u32>().read() };
+    let waits = panel::waits(
+        step,
+        task_state,
+        state.spinner.idle(now),
+        state.spinner.held(now),
+    );
+    if !waits && panel::ends_panel(step, task_state) {
+        refuse_home(false);
+    }
+    u32::from(waits)
 }
 
 /// Shows an original message the way the game search shows its own. It

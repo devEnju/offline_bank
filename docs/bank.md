@@ -225,7 +225,6 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `78000000` | Bank's own filesystem session was not ready. |
 | `710000oo` | A call succeeded but returned no handle (`oo`: 0 open archive, 3 open file). |
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
-| `77000000` | Bank's filesystem session changed between two opens. |
 | `79000000` | A file that is needed exists but cannot be opened. |
 | `7A00ffpp` | A problem with one of the files. `ff`: 0 boxes, 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows, 5 not ready: the boxes are not open, or a save is still in progress. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |

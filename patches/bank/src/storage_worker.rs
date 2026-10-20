@@ -63,7 +63,6 @@ pub enum Job {
     Finalize {
         game: GameIoDescriptor,
     },
-    Close,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,12 +98,15 @@ pub enum Reply {
         title: u64,
         trainer: Trainer,
     },
-    Closed,
 }
 
 /// A game's save and its secure value on the console, as the worker reaches
 /// them: `arm::Console` on the console, a simulated game in the tests.
 pub trait Game {
+    /// The original's check of the prepared game in memory (`002cbea0`),
+    /// which its writer thread makes after the write. Nothing is read from
+    /// the card.
+    fn check(&mut self) -> Result<(), WorkerError>;
     /// The game's save as it is.
     fn inspect(&mut self) -> Result<GameEvidence, WorkerError>;
     /// One read of the game's save: its secure pair, and its image as it is
@@ -144,11 +146,11 @@ pub enum Prepared {
     Ready { staged: u32 },
 }
 
-/// Save and Quit's preparation, with the Bank staged: the game's save is read
-/// once, before anything is written, for the image as it was loaded and the
-/// one about to be written. Only then the journal takes the save in
-/// progress, and after it the game is checked again: nothing may have
-/// changed it in between.
+/// Save and Quit's preparation, with the Bank staged: the prepared game is
+/// checked first, then the game's save is read once, before anything is
+/// written, for the image as it was loaded and the one about to be written.
+/// Only then the journal takes the save in progress, and after it the game is
+/// checked again: nothing may have changed it in between.
 pub fn prepare<F: Files, G: Game>(
     files: &mut BankFiles<F>,
     game: &mut G,
@@ -156,6 +158,7 @@ pub fn prepare<F: Files, G: Game>(
     baseline: GameEvidence,
     trainer: Trainer,
 ) -> Stopped<Prepared, F> {
+    game.check()?;
     let mut read = || {
         let (secure, images) = game.images()?;
         if secure != baseline.secure {
@@ -294,7 +297,6 @@ mod arm {
         bank_files::ExtFiles,
         fs::{self, GameMainReader},
         program::Bank15,
-        worker::WorkerErrorKind,
     };
     use core::{cell::UnsafeCell, mem::transmute};
     use offline_core::{
@@ -357,23 +359,16 @@ mod arm {
             }
         }
         fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
-            // A session has ended: nothing of the Bank stays open. This is
-            // done whatever state an error left, and the thread goes on
-            // waiting for the next session.
-            if matches!(job, Job::Close) {
-                if let Some(mut storage) = self.files.close() {
-                    storage.close().map_err(|e| Fault::StorageOpen.io(e))?;
-                }
-                self.fs_session = 0;
-                self.missing = false;
-                self.written = None;
-                self.staged = None;
-                return Ok(Reply::Closed);
-            }
             if self.poisoned {
                 return Err(Fault::StorageInvalid.with(0));
             }
+            // Between two jobs nothing of the Bank is open either: the
+            // screens between them let HOME through, and the HOME Menu
+            // fails while Bank holds its archive open after a game ran
+            // before it. The next job opens what it needs again.
             let result = self.execute(job, staging);
+            let rested = self.files.rest().map_err(|e| Fault::StorageOpen.files(e));
+            let result = result.and_then(|reply| rested.map(|()| reply));
             if result.is_err() {
                 self.poisoned = true;
             }
@@ -439,20 +434,19 @@ mod arm {
         fn execute(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             match job {
                 Job::Open { session } => {
-                    if !self.files.is_open() {
-                        if self.missing {
-                            return Err(Fault::StorageInvalid.with(0));
-                        }
-                        if session == 0 {
-                            // Bank's own FS session is not initialized yet.
-                            return Err(Fault::StorageOpen.with(0x7800_0000));
-                        }
-                        self.fs_session = session;
-                        self.files.files_mut().session = session;
-                    } else if self.fs_session != session {
-                        // Bank's FS session changed while our file was open.
-                        return Err(Fault::StorageOpen.with(0x7700_0000));
+                    // Every session opens the Bank as a first one does:
+                    // what the session before read of it is dropped. None
+                    // of its files is open (`rest`).
+                    drop(self.files.close());
+                    self.missing = false;
+                    self.written = None;
+                    self.staged = None;
+                    if session == 0 {
+                        // Bank's own FS session is not initialized yet.
+                        return Err(Fault::StorageOpen.with(0x7800_0000));
                     }
+                    self.fs_session = session;
+                    self.files.files_mut().session = session;
                     let opened = self.files.open().map_err(|error| match error {
                         bank_files::Error::Io(error) => Fault::StorageOpen.io(error),
                         error => Fault::StorageInvalid.files(error),
@@ -604,7 +598,6 @@ mod arm {
                     self.written = Some(prepared.secure);
                     Ok(Reply::ReadyToWrite)
                 }
-                Job::Close => Err(WorkerError::control(WorkerErrorKind::Stopped)),
             }
         }
     }
@@ -631,6 +624,12 @@ mod arm {
         }
     }
     impl Game for Console<'_> {
+        fn check(&mut self) -> Result<(), WorkerError> {
+            let prepared = self.prepared.ok_or(Fault::GamePrepare.with(0))?;
+            // The unsafe submit contract keeps the game frozen and live, and
+            // read by nothing else, until this worker publishes completion.
+            unsafe { prepared.check() }.map_err(|_| Fault::GamePrepare.with(0))
+        }
         fn inspect(&mut self) -> Result<GameEvidence, WorkerError> {
             let game = self.game;
             let mut main = unsafe { GameMainReader::open(game.session, game.archive) }
@@ -796,6 +795,8 @@ mod tests {
         value: u64,
         /// The card is taken out after this many calls more.
         out_after: Option<usize>,
+        /// The prepared game passes the original's check.
+        valid: bool,
     }
     impl Simulated {
         fn loaded(cartridge: bool) -> Self {
@@ -805,6 +806,7 @@ mod tests {
                 cartridge,
                 value: LOADED.current,
                 out_after: None,
+                valid: true,
             }
         }
         /// The game as it was loaded, as `LoadGame` saw it.
@@ -833,6 +835,13 @@ mod tests {
         }
     }
     impl Game for Simulated {
+        fn check(&mut self) -> Result<(), WorkerError> {
+            if self.valid {
+                Ok(())
+            } else {
+                Err(Fault::GamePrepare.with(0))
+            }
+        }
         fn inspect(&mut self) -> Result<GameEvidence, WorkerError> {
             let (fingerprint, secure) = self.save()?;
             Ok(GameEvidence {
@@ -956,6 +965,20 @@ mod tests {
     }
 
     #[test]
+    fn a_prepared_game_that_fails_its_check_is_refused_before_anything_is_written() {
+        let (disk, mut files, body) = bank();
+        let mut game = Simulated::loaded(true);
+        let baseline = game.evidence();
+        game.valid = false;
+        let before = stored(&disk);
+        let mut staging = body.clone();
+        let result = prepare(&mut files, &mut game, &mut staging, baseline, trainer());
+        assert_eq!(fault(result), Fault::GamePrepare);
+        assert!(stored(&disk) == before);
+        assert!(pending(&mut files).is_none());
+    }
+
+    #[test]
     fn a_game_that_is_not_the_one_loaded_is_refused_before_anything_is_written() {
         let changed: [&dyn Fn(&mut Simulated); 3] = [
             // Played on since it was loaded.
@@ -1018,7 +1041,13 @@ mod tests {
 
     #[test]
     fn two_saves_in_a_row_each_commit_their_own_image() {
-        let (_, mut files, _) = bank();
+        let (disk, mut files, _) = bank();
+        // The worker lets the Bank file rest after every job.
+        let between_jobs = |files: &mut BankFiles<Shared>| {
+            files.rest().unwrap();
+            assert_eq!(disk.0.borrow().open, 0);
+        };
+        between_jobs(&mut files);
         let mut game = Simulated::loaded(false);
         let mut secure = WRITTEN;
         for (round, after) in [(1u8, AFTER), (2, OTHER)] {
@@ -1032,6 +1061,7 @@ mod tests {
                 panic!("round {round} not prepared");
             };
             let in_progress = pending(&mut files).unwrap();
+            between_jobs(&mut files);
             game.write(secure);
             finalize(
                 &mut files,
@@ -1042,6 +1072,7 @@ mod tests {
                 Some(staged),
             )
             .unwrap();
+            between_jobs(&mut files);
             assert!(load(&mut files).0 == body, "round {round}");
             assert_eq!(game.value, secure.current);
             secure = SecureValues {

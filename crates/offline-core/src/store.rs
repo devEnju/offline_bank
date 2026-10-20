@@ -325,6 +325,9 @@ impl<S: Storage> BankStore<S> {
     pub fn into_inner(self) -> S {
         self.storage
     }
+    pub fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
+    }
 
     /// The record in force, from both journal records. The copies of the
     /// Bank file it names are checked by the single pass of `read_current`

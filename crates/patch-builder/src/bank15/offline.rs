@@ -145,7 +145,7 @@ fn native_hook_edits(targets: HookTargets) -> crate::Result<Vec<CheckedEdit>> {
         ));
     }
     // Original read-only vtables: taskC/D rewards, task9 open, task0x10 load, task7 normal /
-    // forced-busy updates. Native constructors/init/end callbacks remain intact.
+    // forced-busy updates. Native constructors and init callbacks remain intact.
     // The main menu (task 4) is never created, so none of its code is edited.
     // Task 0xb keeps its native start-up routine, which orders the character
     // scene and the text window; only its server check is replaced.

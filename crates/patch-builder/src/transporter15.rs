@@ -111,6 +111,9 @@ pub const ENTRIES: &[&str] = &[
     "transporter_card_removed",
     "transporter_entry_card_removed",
     "transporter_message_text",
+    "transporter_read_stub",
+    "transporter_question_stub",
+    "transporter_transfer_stub",
 ];
 /// The layout check stands in for this instruction at 0013AEE4 and begins
 /// with it: `mov r1, r0`.
@@ -190,6 +193,24 @@ const EDITS: &[(u32, u32, Word)] = &[
     // message) takes the same path.
     (0x0024_8ebc, 0xe3a0_1022, Raw(0xe3a0_100b)),
     (0x0024_8f88, 0x0aff_fff4, Raw(0x0aff_ffba)),
+    // --- Loading screens: 0.5 s before the work, 1.5 s for a success. ---
+    // The first instruction of three updates (was: their push): reading the
+    // chosen game, the question and the transfer. The stub asks the entry
+    // whether this frame waits for the loading panel, and then returns 0 as
+    // the update does on a frame with nothing to do; else it runs the push
+    // and goes on. Reading and the delivery wait for the panel's first
+    // 0.5 s; the question's first state, which ends the panel of the
+    // reading, and the transfer's closing message wait for its 1.5 s.
+    (0x0024_55d0, 0xe92d_4ff0, To("transporter_read_stub")),
+    (0x0024_7304, 0xe92d_4ff8, To("transporter_question_stub")),
+    (0x0024_a0c4, 0xe92d_4070, To("transporter_transfer_stub")),
+    // Reading the chosen game, the 1.5 s before each of its errors: a
+    // damaged save (state 0xB), no save (0xC), no Game Card (0xD) (was:
+    // bl 0019B758 with 1500 ms). An error ends the panel as soon as it is
+    // found: the answer is "passed".
+    (0x0024_6208, 0xebfd_5552, Raw(0xe3a0_0001)),
+    (0x0024_6278, 0xebfd_5536, Raw(0xe3a0_0001)),
+    (0x0024_62e8, 0xebfd_551a, Raw(0xe3a0_0001)),
     // Reading Gen 5 and Gen 1/2: skip the remote validation.
     (0x0024_5728, 0xe59f_0c74, Branch(0x0024_5800)),
     (0x0024_60b8, 0xe59f_02e4, Branch(0x0024_61d0)),

@@ -7,7 +7,6 @@ use crate::{
     native_game::{
         self, GameIoDescriptor, GameKind, NativeGameError, NativeGameSession, NativePoll,
     },
-    open_files::Files,
     panel::{self, Panel},
     save_steps,
     storage_worker::{BankWorker, GameEvidence, Job, Reply},
@@ -34,6 +33,7 @@ use offline_core::{
 };
 use patch_common::{
     exclusive::Exclusive,
+    spinner::{self, Spinner},
     worker::{JobId, Worker},
 };
 
@@ -80,10 +80,24 @@ enum Step {
     Introduce,
     Initialize,
     Recover,
+    /// The opening restored the Bank; its Pokédex views are reloaded on
+    /// this frame and the opening ends.
+    Restored,
     /// A save in progress waits for its game at a native notice, then
     /// returns to the start screen.
     TurnBack,
     Load,
+    /// The chosen game is loaded and its trainer read; its Pokémon are
+    /// counted on this frame.
+    Loaded,
+    /// The game's Pokémon are counted (`None` without a game count); the
+    /// Bank's are counted on this frame and the load ends.
+    Counted {
+        game: Option<u32>,
+    },
+    /// The work of the opening or the load is done: it ends once its
+    /// loading screen has stood for 1.5 s (`spinner`).
+    Done,
     /// Save and Quit (`save_steps`).
     Save(save_steps::Step),
 }
@@ -93,7 +107,6 @@ struct Runtime {
     owner: usize,
     step: Step,
     job: Option<JobId>,
-    files: Files<JobId>,
     baseline: Option<Baseline>,
     fault: Fault,
     native_result: u32,
@@ -109,6 +122,8 @@ struct Runtime {
     blank: Option<([u8; RECORD_SIZE], u8)>,
     /// The game scan's loading panel (`panel`).
     panel: Panel,
+    /// When the loading screen that is up went up.
+    spinner: Spinner,
 }
 /// The game the Bank was loaded with, as it was then: a save in progress is
 /// bound to both.
@@ -166,7 +181,6 @@ static STATE: Exclusive<Runtime> = unsafe {
         owner: 0,
         step: Step::Idle,
         job: None,
-        files: Files::Closed,
         baseline: None,
         fault: Fault::None,
         native_result: 0,
@@ -177,6 +191,7 @@ static STATE: Exclusive<Runtime> = unsafe {
         rewards: RewardSession::NONE,
         blank: None,
         panel: Panel::new(),
+        spinner: Spinner::new(),
     })
 };
 
@@ -196,11 +211,12 @@ fn local_date(task: Task) -> Result<(), Fault> {
     }
     Ok(())
 }
-/// The Pokémon of the selected game, if one is selected, and of the Bank,
-/// counted as the original counts them for its transfer record. The
-/// coordinator keeps them at `+0xf4` and `+0xf8`.
-fn counts(task: Task) -> Result<(Option<u32>, u32), Fault> {
-    let game = match unsafe { native_game::selected(task.pointer(8)?) } {
+/// The Pokémon of the selected game, if one is selected, counted as the
+/// original counts them for its transfer record. The coordinator keeps the
+/// count at `+0xf4`, and the Bank's (`bank_count`) at `+0xf8`. Each count is
+/// a frame's work of its own.
+fn game_count(task: Task) -> Result<Option<u32>, Fault> {
+    match unsafe { native_game::selected(task.pointer(8)?) } {
         Ok((game, kind)) => unsafe {
             let boxes = game.add(if kind.gen7() { 0x769dc } else { 0x1e51c });
             let vtable = checked_pointer(read_word(boxes, 0))?;
@@ -211,12 +227,11 @@ fn counts(task: Task) -> Result<(Option<u32>, u32), Fault> {
             let heap: unsafe extern "aapcs" fn(u32) -> u32 = transmute(HEAP);
             let count: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 =
                 transmute(address as usize);
-            Some(count(boxes, heap(0x17), 1))
+            Ok(Some(count(boxes, heap(0x17), 1)))
         },
-        Err(NativeGameError::NotLoaded) => None,
-        Err(_) => return Err(Fault::NativeObject),
-    };
-    Ok((game, bank_count(task)?))
+        Err(NativeGameError::NotLoaded) => Ok(None),
+        Err(_) => Err(Fault::NativeObject),
+    }
 }
 /// The Pokémon in the Bank's hundred boxes, as native 001d5ec0 counts them
 /// for the transfer record and for the Miles.
@@ -227,6 +242,10 @@ fn bank_count(task: Task) -> Result<u32, Fault> {
     Ok(unsafe { count(helper) })
 }
 /// The console's date and time, to the minute.
+/// The original's clock in ms (`spinner::now`).
+fn now() -> u32 {
+    spinner::now::<Bank15>()
+}
 fn clock() -> Result<Moment, Fault> {
     let mut words = [0u32; 2];
     let local_date: unsafe extern "aapcs" fn(*mut u32) = unsafe { transmute(LOCAL_DATE) };
@@ -273,10 +292,10 @@ fn gen6_gift(game: *mut u8) -> Result<*mut u8, Fault> {
     Ok(gift)
 }
 impl Runtime {
-    /// One frame of a task after an error: the session is over. Its files
-    /// are closed first, as cleanup closes them for a session that ends
-    /// there, since the error screen lets HOME through and nothing follows
-    /// it. Until they are, the loading screen stays and HOME is refused.
+    /// One frame of a task after an error: the session is over. A job that
+    /// is still out is waited for first, since the error screen lets HOME
+    /// through: it lets go of the files when it ends (`rest`). Until then
+    /// the loading screen stays and HOME is refused.
     fn report_failure(&mut self, task: Task) -> u32 {
         if !self.stopped {
             if let (Some(_), Some(worker)) = (self.job, self.worker.as_mut()) {
@@ -284,10 +303,6 @@ impl Runtime {
                 if let Ok(None) = worker.collect(&mut self.job) {
                     return 0;
                 }
-            }
-            self.close_files();
-            if !self.files_closed() {
-                return 0;
             }
             self.stopped = true;
         }
@@ -321,34 +336,7 @@ impl Runtime {
         self.owner = task.raw() as usize;
         self.step = step;
         self.job = Some(id);
-        self.files = Files::Used;
         Ok(())
-    }
-    /// A session ends: the worker closes the Bank's files, so that nothing
-    /// of them is open on the start screen, where HOME works and Bank can be
-    /// closed. The next session opens them as a first one does.
-    fn close_files(&mut self) {
-        if !self.files.to_close(self.job.is_some()) {
-            return;
-        }
-        let Some(worker) = self.worker.as_mut() else {
-            return;
-        };
-        // The worker refuses if its thread has ended, a wait on it failed,
-        // or its mailbox is not free (`open_files`).
-        self.files.asked(unsafe { worker.submit(Job::Close) }.ok());
-    }
-    /// Collects the reply of `close_files`. False while it is still out.
-    fn files_closed(&mut self) -> bool {
-        let Some(id) = self.files.closing() else {
-            return true;
-        };
-        let Some(worker) = self.worker.as_mut() else {
-            self.files = Files::Closed;
-            return true;
-        };
-        let out = matches!(worker.collect(&mut Some(id)), Ok(None));
-        self.files.collected(out)
     }
     fn poll(&mut self, task: Task) -> Result<Option<Reply>, Fault> {
         if self.owner != task.raw() as usize {
@@ -413,17 +401,48 @@ impl Runtime {
         Ok(())
     }
     /// Restores the assembled body into the native object, at opening or
-    /// after a recovery.
+    /// after a recovery. Its Pokédex views follow on the next frame
+    /// (`reload_dex`).
     fn restore_bank(&mut self, task: Task, loaded: Loaded) -> Result<(), Fault> {
         self.fill_defaults(loaded)?;
+        let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+            .map_err(|_| Fault::NativeObject)?;
+        let bytes = self.staged_body()?;
+        bank.restore_preserving_detected_games(bytes)
+            .map_err(|_| Fault::StorageLoad)?;
+        Ok(())
+    }
+    /// The work of an opening or a load is done. The task ends once its
+    /// loading screen has stood for 1.5 s, and waits in `Step::Done` until
+    /// then.
+    fn done(&mut self, task: Task) -> Result<bool, Fault> {
+        if self.spinner.held(now()) {
+            self.step = Step::Done;
+            return Ok(false);
+        }
+        if unsafe { read_word(task.raw(), 0) } == TASK_OPEN {
+            self.opened(task)
+        } else {
+            // Loading hands its panel to the reward step: HOME and sleep
+            // stay refused until that takes it down (`panel_taken_down`).
+            Ok(self.end_task(task))
+        }
+    }
+    /// The opening's end, once the live object is the Bank: no save is in
+    /// progress any more, and the loading panel ends.
+    fn opened(&mut self, task: Task) -> Result<bool, Fault> {
+        self.pending = false;
+        // The original's main-menu initializer, which is skipped, ends the
+        // loading panel; game selection does not.
+        let ui = task.ui()?;
+        unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+        Ok(self.complete(task))
+    }
+    /// After `restore_bank`, with staging still the body it restored: the
+    /// Pokédex views are reloaded from the live object and checked.
+    fn reload_dex(&mut self, task: Task) -> Result<(), Fault> {
         let raw = task.bank_pointer()?;
         let expected = crate::dex::evidence(self.staged_body()?).map_err(|_| Fault::StorageLoad)?;
-        {
-            let mut bank = unsafe { NativeBank::from_raw(raw) }.map_err(|_| Fault::NativeObject)?;
-            let bytes = self.staged_body()?;
-            bank.restore_preserving_detected_games(bytes)
-                .map_err(|_| Fault::StorageLoad)?;
-        }
         // Native helper buffers live outside the serialized body. Reload all
         // eight family views after the body changes, then invalidate aggregates.
         unsafe { crate::dex::refresh_after_restore(raw) }.map_err(|_| Fault::NativeObject)?;
@@ -589,13 +608,30 @@ impl Runtime {
             }
         }
     }
+    /// A reward step has taken down the loading panel Bank loading handed it,
+    /// as the guard's state 0, the claim's states 0 and `0x1b`, or the silent
+    /// entry do, whatever it shows next: HOME and sleep are let through.
+    fn panel_taken_down(&self, task: Task) {
+        let down = task
+            .ui()
+            .is_ok_and(|ui| !unsafe { bank_common::ui::loading_shown(ui) }.unwrap_or(false));
+        if down && self.job.is_none() {
+            refuse_home(false);
+        }
+    }
+    /// The task's work is done, and HOME and sleep are let through.
     fn complete(&mut self, task: Task) -> bool {
+        self.end_task(task);
+        refuse_home(false);
+        true
+    }
+    /// The task's work is done; nothing of it is with the worker any more.
+    fn end_task(&mut self, task: Task) -> bool {
         self.owner = 0;
         self.step = Step::Idle;
         self.job = None;
         self.game = None;
         task.end_busy();
-        refuse_home(false);
         true
     }
     /// The welcome the original gives before it creates a Bank. Its own
@@ -618,10 +654,13 @@ impl Runtime {
                 refuse_home(true);
                 unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::CREATING_MESSAGE) }
                     .map_err(|_| Fault::NativeObject)?;
+                self.spinner.up(now());
                 task.begin_busy();
                 unsafe { write_word(task.raw(), 0x10, 6) };
                 Ok(false)
             }
+            // The panel stands for 0.5 s before the work begins.
+            6 if self.spinner.idle(now()) => Ok(false),
             6 => {
                 // Only a missing private Bank permits fresh initialization.
                 // Native defaults/translated names stay on the UI thread.
@@ -659,9 +698,44 @@ impl Runtime {
                 Err(_) => Err(Fault::NativeObject),
             };
         }
+        if matches!(
+            self.step,
+            Step::Restored | Step::Loaded | Step::Counted { .. } | Step::Done
+        ) && self.owner != task.raw() as usize
+        {
+            return Err(Fault::NativeObject);
+        }
+        match self.step {
+            Step::Restored => {
+                self.reload_dex(task)?;
+                return self.done(task);
+            }
+            // The counts of the game and the Bank as they were loaded, a
+            // frame each.
+            Step::Loaded => {
+                self.step = Step::Counted {
+                    game: game_count(task)?,
+                };
+                return Ok(false);
+            }
+            Step::Counted { game } => {
+                let bank = bank_count(task)?;
+                let coordinator = task.pointer(8)?;
+                if let Some(game) = game {
+                    unsafe { write_word(coordinator, 0xf4, game) };
+                }
+                unsafe { write_word(coordinator, 0xf8, bank) };
+                self.begin_rewards(task, bank)?;
+                return self.done(task);
+            }
+            Step::Done => return self.done(task),
+            _ => {}
+        }
         if self.step == Step::Idle {
-            // The files of the session before are closed first.
-            if !self.files_closed() {
+            // The loading screen stands for 0.5 s before the work begins:
+            // the scene set-up's for a load; an opening's has stood since
+            // the scan.
+            if self.spinner.idle(now()) {
                 return Ok(false);
             }
             let opening = unsafe { read_word(task.raw(), 0) } == TASK_OPEN;
@@ -777,19 +851,18 @@ impl Runtime {
             )
             | (Step::Initialize | Step::Recover, Reply::BankReady { loaded }) => {
                 match loaded {
-                    Some(loaded) => self.restore_bank(task, loaded)?,
+                    // Its Pokédex views follow on the next frame.
+                    Some(loaded) => {
+                        self.restore_bank(task, loaded)?;
+                        self.step = Step::Restored;
+                        Ok(false)
+                    }
                     // A newly created Bank: the live object is the body that
                     // was just written. Copying it back would only stall the
                     // first start.
-                    None if self.step == Step::Initialize => {}
-                    None => return Err(Fault::StorageInvalid),
+                    None if self.step == Step::Initialize => self.done(task),
+                    None => Err(Fault::StorageInvalid),
                 }
-                self.pending = false;
-                // The original's main-menu initializer, which is skipped,
-                // ends the loading panel; game selection does not.
-                let ui = task.ui()?;
-                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
-                Ok(self.complete(task))
             }
             (Step::Load, Reply::Inspected(evidence)) => {
                 // The Bank is the body opening restored: nothing between
@@ -805,22 +878,36 @@ impl Runtime {
                     trainer: Trainer::of_game(&name, id, gen7),
                 });
                 self.pending = false;
-                let (game, bank) = counts(task)?;
-                let coordinator = task.pointer(8)?;
-                if let Some(game) = game {
-                    unsafe { write_word(coordinator, 0xf4, game) };
-                }
-                unsafe { write_word(coordinator, 0xf8, bank) };
-                self.begin_rewards(task, bank)?;
-                Ok(self.complete(task))
+                // The counts follow on the next frame.
+                self.step = Step::Loaded;
+                Ok(false)
             }
             _ => Err(Fault::StorageInvalid),
         }
+    }
+    /// The worker has checked the Bank it read back; the live object is the
+    /// body it saved, and the session ends here once the loading screen has
+    /// stood for 1.5 s. The original's ending of a successful save: its
+    /// sound and message, which waits. Nothing is read or written now.
+    fn saved(&mut self, task: Task) -> Result<Option<bool>, Fault> {
+        if self.spinner.held(now()) {
+            return Ok(None);
+        }
+        self.step = Step::Save(save_steps::Step::Ended { saved: true });
+        task.end_busy();
+        refuse_home(false);
+        unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
+        Ok(None)
     }
     unsafe fn save(&mut self, task: Task) -> Result<Option<bool>, Fault> {
         use save_steps::Step as Save;
         let step = match self.step {
             Step::Idle => {
+                // The set-up's loading screen stands for 0.5 s before the
+                // work begins.
+                if self.spinner.idle(now()) {
+                    return Ok(None);
+                }
                 // Whether the Game Card is there comes before anything else.
                 self.baseline.ok_or(Fault::GameRead)?;
                 let coordinator = task.pointer(8)?;
@@ -845,6 +932,7 @@ impl Runtime {
             return Err(Fault::NativeObject);
         }
         match step {
+            Save::Saved => return self.saved(task),
             Save::Ended { saved } => {
                 return match unsafe { bank_common::ui::acknowledged(task.ui()?) } {
                     Ok(false) => Ok(None),
@@ -867,13 +955,41 @@ impl Runtime {
                     }
                 };
             }
-            Save::Stage => {
+            Save::CountBank { game } => {
+                let coordinator = task.pointer(8)?;
+                // The counts of the load, and the ones now.
+                let old_game = unsafe { read_word(coordinator, 0xf4) };
+                let old_bank = unsafe { read_word(coordinator, 0xf8) };
+                let new_game = game.unwrap_or(old_game);
+                let new_bank = bank_count(task)?;
+                // An earlier clock earns nothing; only an invalid one stops here.
+                self.settle_rewards(task)?;
+                let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
+                    .map_err(|_| Fault::NativeObject)?;
+                bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
+                self.step = Step::Save(Save::StageGame);
+                return Ok(None);
+            }
+            Save::StageGame => {
+                let game = self.game.as_mut().ok_or(Fault::GamePrepare)?;
+                game.prepare().map_err(|_| Fault::GamePrepare)?;
+                self.step = Step::Save(Save::StageDex);
+                return Ok(None);
+            }
+            Save::StageDex => {
+                // A game the Bank knows already, with the same trainer,
+                // brings its records and Pokédex along with the save.
+                unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
+                    .map_err(|_| Fault::NativeObject)?;
+                self.step = Step::Save(Save::StageBank);
+                return Ok(None);
+            }
+            Save::StageBank => {
                 let Baseline {
                     evidence: baseline,
                     trainer,
                 } = self.baseline.ok_or(Fault::GameRead)?;
                 let game = self.game.as_mut().ok_or(Fault::GamePrepare)?;
-                game.prepare().map_err(|_| Fault::GamePrepare)?;
                 let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
                 let prepared = game
                     .prepared()
@@ -883,14 +999,10 @@ impl Runtime {
                 if !self.rewards.settled {
                     return Err(Fault::RewardState);
                 }
-                // A game the Bank knows already, with the same trainer,
-                // brings its records and Pokédex along with the save.
-                unsafe { crate::dex::refresh(task.pointer(8)?, task.bank_pointer()?) }
-                    .map_err(|_| Fault::NativeObject)?;
                 self.stage_bank(task)?;
                 self.pending = Save::Prepare.pending();
-                // The worker reads the game once and compares it with the
-                // game as it was loaded.
+                // The worker checks the prepared game, reads the game once
+                // and compares it with the game as it was loaded.
                 self.submit(
                     task,
                     Step::Save(Save::Prepare),
@@ -903,6 +1015,8 @@ impl Runtime {
                 )?;
                 return Ok(None);
             }
+            // Its reply's frame goes on to `CountBank` by itself.
+            Save::CountGame => return Err(Fault::JournalRecovery),
             Save::Detect | Save::Prepare | Save::Finalize => {}
         }
         let Some(reply) = self.poll(task)? else {
@@ -913,19 +1027,11 @@ impl Runtime {
         self.step = Step::Save(next);
         self.pending = next.pending();
         match next {
-            Save::Stage => {
-                let coordinator = task.pointer(8)?;
-                // The counts of the load, and the ones now.
-                let old_game = unsafe { read_word(coordinator, 0xf4) };
-                let old_bank = unsafe { read_word(coordinator, 0xf8) };
-                let (new_game, new_bank) = counts(task)?;
-                let new_game = new_game.unwrap_or(old_game);
-                // An earlier clock earns nothing; only an invalid one stops here.
-                self.settle_rewards(task)?;
-                let mut bank = unsafe { NativeBank::from_raw(task.bank_pointer()?) }
-                    .map_err(|_| Fault::NativeObject)?;
-                bank.record_transfer_counts(old_game, new_game, old_bank, new_bank);
-                // The game and the Bank are staged on the next frame.
+            Save::CountGame => {
+                // The Bank's count follows on the next frame.
+                self.step = Step::Save(Save::CountBank {
+                    game: game_count(task)?,
+                });
             }
             Save::Write => {
                 // Room for the retained native game-writer thread.
@@ -948,16 +1054,15 @@ impl Runtime {
                 unsafe { bank_common::ui::notice_rest(ui, bank_common::ui::FAILURE_NOTICE) }
                     .map_err(|_| Fault::NativeObject)?;
             }
-            Save::Ended { saved: true } => {
-                // The worker has checked the Bank it read back; the live
-                // object is the body it saved, and the session ends here.
-                // The original's ending of a successful save: its sound and
-                // message, which waits. Nothing is read or written now.
-                task.end_busy();
-                refuse_home(false);
-                unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
-            }
-            Save::Detect | Save::Prepare | Save::Finalize => return Err(Fault::JournalRecovery),
+            Save::Saved => return self.saved(task),
+            Save::Detect
+            | Save::CountBank { .. }
+            | Save::StageGame
+            | Save::StageDex
+            | Save::StageBank
+            | Save::Prepare
+            | Save::Finalize
+            | Save::Ended { saved: true } => return Err(Fault::JournalRecovery),
         }
         Ok(None)
     }
@@ -987,42 +1092,53 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         state.step = Step::Idle;
         state.owner = 0;
     }
-    let destination = 'route: {
-        if cancelled {
-            break 'route 0x14;
+    if cancelled {
+        return crate::navigation::CLEANUP;
+    }
+    // After an error nothing is opened again in this session. Its
+    // screen does not end, so a task only gets here if that screen
+    // could not be shown: the game scan then still leads to task 9,
+    // whose hook tries again, and everything else ends in cleanup.
+    if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
+        return crate::navigation::CLEANUP;
+    }
+    if (current, outcome) == (3, 4) {
+        unsafe {
+            manager.add(0x1c).write(0);
         }
-        // After an error nothing is opened again in this session. Its
-        // screen does not end, so a task only gets here if that screen
-        // could not be shown: the game scan then still leads to task 9,
-        // whose hook tries again, and everything else ends in cleanup.
-        if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
-            break 'route 0x14;
-        }
-        if (current, outcome) == (3, 4) {
-            unsafe {
-                manager.add(0x1c).write(0);
-            }
-        }
-        // The main menu (task 4) is never created, but in the console test
-        // build; see navigation.rs.
-        let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
-        // Refuse HOME and sleep across a whole chain of loading tasks, not
-        // only while one of their jobs runs.
-        if crate::navigation::loads(destination) {
-            refuse_home(true);
-        } else if state.job.is_none() {
-            refuse_home(false);
-        }
-        destination
-    };
-    // Every session ends in cleanup (task 0x14), and from there the start
-    // screen follows. The files are closed on the way in; the way out
-    // collects the reply, and closes them if that could not be asked before.
-    state.files_closed();
-    if destination == 0x14 || current == 0x14 {
-        state.close_files();
+    }
+    // The main menu (task 4) is never created, but in the console test
+    // build; see navigation.rs.
+    let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
+    // Refuse HOME and sleep across a whole chain of loading tasks, not
+    // only while one of their jobs runs, and into the reward step while
+    // the loading panel is still up.
+    if crate::navigation::loads(destination)
+        || (crate::navigation::takes_panel(destination) && unsafe { panel_left(manager) })
+    {
+        refuse_home(true);
+    } else if state.job.is_none() {
+        refuse_home(false);
+    }
+    // The task's set-up puts up its loading panel on a later frame; its
+    // time is taken on the first frame of the patch behind it.
+    if crate::navigation::spins(destination) {
+        state.spinner.coming();
     }
     destination
+}
+
+/// Whether the task that has just ended leaves the loading panel on screen:
+/// Bank loading hands its panel to the reward step (`navigation::takes_panel`).
+unsafe fn panel_left(manager: *mut u8) -> bool {
+    let Ok(raw) = checked_pointer(unsafe { read_word(manager, 0x10) }) else {
+        return false;
+    };
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_LOAD, TASK_REWARD_GUARD]) }) else {
+        return false;
+    };
+    task.ui()
+        .is_ok_and(|ui| unsafe { bank_common::ui::loading_shown(ui) }.unwrap_or(false))
 }
 
 /// Replaces task9 and task10 update virtuals; constructors/init/end stay native.
@@ -1037,6 +1153,8 @@ pub unsafe extern "aapcs" fn bank_offline_load(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return 0;
     };
+    // The scene set-up's panel, for a load.
+    state.spinner.seen(now());
     if state.fault != Fault::None {
         return state.report_failure(task);
     }
@@ -1067,17 +1185,24 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
         let Some(mut state) = STATE.take() else {
             return 0;
         };
-        if state.panel.frame(before) == panel::Frame::Show {
-            let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
-                bank_common::ui::loading(ui, panel::MESSAGE).map_err(|_| Fault::NativeObject)
-            });
-            return match shown {
-                Ok(()) => 0,
-                Err(fault) => {
-                    state.fault = fault;
-                    state.report_failure(task)
-                }
-            };
+        let idle = state.spinner.idle(now());
+        match state.panel.frame(before, idle) {
+            panel::Frame::Show => {
+                let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
+                    bank_common::ui::loading(ui, panel::MESSAGE).map_err(|_| Fault::NativeObject)
+                });
+                state.spinner.up(now());
+                return match shown {
+                    Ok(()) => 0,
+                    Err(fault) => {
+                        state.fault = fault;
+                        state.report_failure(task)
+                    }
+                };
+            }
+            // The panel stands for 0.5 s before the first state.
+            panel::Frame::Wait => return 0,
+            panel::Frame::Original => {}
         }
     }
     // The state is free while the original runs: its no-game notice
@@ -1146,6 +1271,8 @@ pub unsafe extern "aapcs" fn bank_offline_save(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return 0;
     };
+    // Its set-up's panel.
+    state.spinner.seen(now());
     if state.fault != Fault::None {
         return state.report_failure(task);
     }
@@ -1284,7 +1411,9 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
     if is_guard {
         let original: unsafe extern "aapcs" fn(*mut u8) -> u32 =
             unsafe { transmute(REWARD_GUARD_UPDATE) };
-        return unsafe { original(raw) };
+        let result = unsafe { original(raw) };
+        state.panel_taken_down(task);
+        return result;
     }
     let before_gift = match state.welcome_before(task) {
         Ok(balance) => balance,
@@ -1326,6 +1455,7 @@ pub unsafe extern "aapcs" fn bank_offline_rewards(raw: *mut u8) -> u32 {
             return state.report_failure(task);
         }
     }
+    state.panel_taken_down(task);
     result
 }
 

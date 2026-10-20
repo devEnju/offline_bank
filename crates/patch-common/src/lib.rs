@@ -1,9 +1,10 @@
 #![no_std]
 //! What the patches of Bank and of Transporter both use: the start-up hook,
 //! the worker thread that owns the file work, the kernel calls behind it,
-//! the state a patch's hooks share, the refusal of HOME and sleep, the
-//! version line, and the walk over the text of a message. Nothing here is
-//! an address of either program; a patch names its program's
+//! the state a patch's hooks share, the refusal of HOME and sleep, how long
+//! a loading screen stands before its work and stays at least, the version
+//! line, and the walk over the text of a message. Nothing here is an
+//! address of either program; a patch names its program's
 //! (`program::Program`).
 
 pub mod bootstrap;
@@ -13,6 +14,7 @@ pub mod home;
 pub mod message;
 pub mod native;
 pub mod program;
+pub mod spinner;
 #[cfg(target_arch = "arm")]
 pub mod ui;
 pub mod worker;
