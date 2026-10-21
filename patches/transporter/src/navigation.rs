@@ -34,7 +34,8 @@ pub const FAILURE: u32 = 0x12;
 
 /// `outcome` is the finished step's byte `+0x30`; `native` is what the
 /// original router answered for it; `cancelled` is the manager's flag
-/// (`+0x1a`), for which the original answers the disconnect step itself.
+/// (`+0x1a`), for which the disconnect step follows, as the original
+/// answers it.
 ///
 /// The offline flow differs from the original's in four places: a game
 /// chosen on the list is read at once, where the original connected first;
@@ -45,7 +46,7 @@ pub const FAILURE: u32 = 0x12;
 /// where the original's failure step showed another.
 pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u32 {
     if cancelled {
-        return native;
+        return DISCONNECT;
     }
     match (current, outcome) {
         (LIST, 4) => READ,

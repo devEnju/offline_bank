@@ -11,7 +11,8 @@ use crate::{
     storage_worker::{Failed, Job, Reply, TransporterWorker},
     task::*,
     ui::{
-        end_panel, from_second_page, refusal_message, start_panel, MESSAGE_OPEN_BANK, UI_CONTEXT,
+        self, from_second_page, loading, refusal_message, stop_loading, MESSAGE_OPEN_BANK,
+        UI_CONTEXT,
     },
 };
 use core::{mem::transmute, slice};
@@ -23,13 +24,6 @@ use patch_common::{
     worker::JobId,
 };
 
-/// The original's "show this message and wait": `(ui, message, 1)`, as the
-/// game search calls it for its own message 0 (`00246FFC`).
-const SHOW_MESSAGE: usize = 0x0019_b50c;
-/// `(messages, message, string)`: loads a message of the shared UI's text
-/// file into a string object (`001DBEB8`), as "show a message" does before
-/// it hands the string to its dialog (`0019B578`).
-const LOAD_MESSAGE: usize = 0x001d_beb8;
 /// What the version line says behind "Ver. 1.5".
 const VERSION_SUFFIX: &[u8] = b"-offline";
 /// The original's router, `get_next_state(manager, current)`, and what it
@@ -130,18 +124,24 @@ impl Runtime {
 fn now() -> u32 {
     spinner::now::<Transporter15>()
 }
-/// The transport box the original filled while reading the source game.
-unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> {
+/// Copies the transport box the original filled while reading the source
+/// game into `staging`: its records, then its tags.
+/// # Safety
+/// `task` is a live task of the original, on the main thread.
+unsafe fn stage_box(task: *const u8, staging: &mut [u8]) -> Option<()> {
+    let (records, tags) = staging.split_at_mut(RECORDS_LEN);
     unsafe {
         let manager = follow(task, TASK_MANAGER)?;
         let object = follow(manager, MANAGER_BANK_OBJECT)?;
         let accessor = follow(object, BANK_OBJECT_ACCESSOR)?;
         let body = follow(accessor, ACCESSOR_BODY)?;
-        Some((
-            slice::from_raw_parts(body.add(RECORDS_OFFSET), RECORDS_LEN),
-            slice::from_raw_parts(body.add(TAGS_OFFSET), TRANSPORT_SLOTS),
-        ))
+        records.copy_from_slice(slice::from_raw_parts(body.add(RECORDS_OFFSET), RECORDS_LEN));
+        tags.copy_from_slice(slice::from_raw_parts(
+            body.add(TAGS_OFFSET),
+            TRANSPORT_SLOTS,
+        ));
     }
+    Some(())
 }
 
 /// Replaces the one call of the original's router (`00242EF8`). The
@@ -185,7 +185,7 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     // screen; after anything else it ends here.
     if !panel::handed_on(next) {
         if let Some(ui) = PANEL.release() {
-            unsafe { end_panel(ui as *mut u8) };
+            unsafe { stop_loading(ui as *mut u8) };
         }
     }
     next
@@ -205,7 +205,7 @@ extern "aapcs" fn message_waits() {
     // A refusal or "Could not find a game" comes without the search's
     // panel, as the reader's messages come without its own.
     if let Some(ui) = PANEL.release() {
-        unsafe { end_panel(ui as *mut u8) };
+        unsafe { stop_loading(ui as *mut u8) };
     }
     refuse_home(false);
 }
@@ -310,7 +310,7 @@ patch_common::stub!(
 /// waits for the user. The panel that covered its loading ends here.
 extern "aapcs" fn list_ready() {
     if let Some(ui) = PANEL.release() {
-        unsafe { end_panel(ui as *mut u8) };
+        unsafe { stop_loading(ui as *mut u8) };
     }
     refuse_home(false);
 }
@@ -362,7 +362,7 @@ unsafe extern "aapcs" fn check(task: *mut u8) -> u32 {
     };
     if let Some(ui) = unsafe { follow(task, TASK_UI) } {
         if unsafe { follow(ui, UI_CONTEXT) }.is_some() && PANEL.start(ui as usize) {
-            unsafe { start_panel(ui) };
+            unsafe { loading(ui) };
             state.spinner.up(now());
             return SEARCH_PENDING;
         }
@@ -469,8 +469,7 @@ unsafe fn show(task: *const u8, message: u32) -> bool {
     let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
         return false;
     };
-    let show: unsafe extern "aapcs" fn(*const u8, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
-    unsafe { show(ui, message, 1) };
+    unsafe { ui::show(ui, message) };
     true
 }
 
@@ -485,14 +484,11 @@ pub unsafe extern "aapcs" fn transporter_message_text(
     message: u32,
     string: *mut u8,
 ) -> u32 {
-    unsafe {
-        let load: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) -> u32 = transmute(LOAD_MESSAGE);
-        let loaded = load(messages, message, string);
-        if from_second_page(message) {
-            patch_common::ui::keep_rest(string);
-        }
-        loaded
+    let loaded = unsafe { ui::load_message(messages, message, string) };
+    if from_second_page(message) {
+        unsafe { patch_common::ui::keep_rest(string) };
     }
+    loaded
 }
 
 // Transfer, sub-state 0 (0024A150, was: the start of creating the upload
@@ -545,11 +541,7 @@ unsafe extern "aapcs" fn deliver(task: *mut u8) -> u32 {
     // here: the worker touches no object of the original.
     let answer = unsafe {
         state.step(Job::Deliver, |worker| {
-            let (records, tags) = native_box(task)?;
-            let staging = worker.staging_mut().ok()?;
-            staging[..RECORDS_LEN].copy_from_slice(records);
-            staging[RECORDS_LEN..].copy_from_slice(tags);
-            Some(())
+            stage_box(task, worker.staging_mut().ok()?)
         })
     };
     match answer {

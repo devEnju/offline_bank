@@ -134,11 +134,38 @@ mod native {
         }
     }
 
+    /// The original's "show this message and wait": `(ui, message, 1)`, as
+    /// the game search calls it for its own message 0 (`00246FFC`).
+    const SHOW_MESSAGE: usize = 0x0019_b50c;
+    /// `(messages, message, string)`: loads a message of the shared UI's
+    /// text file into a string object (`001DBEB8`), as "show a message" does
+    /// before it hands the string to its dialog (`0019B578`).
+    const LOAD_MESSAGE: usize = 0x001d_beb8;
+
+    /// Shows message `message` of the shared UI on `ui` and waits for an
+    /// answer, as the game search shows its own.
+    /// # Safety
+    /// `ui` is the live shared UI, on the main thread.
+    pub unsafe fn show(ui: *mut u8, message: u32) {
+        let show: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
+        unsafe { show(ui, message, 1) };
+    }
+
+    /// The original's load of `message` into `string`, as "show a message"
+    /// makes it; the original's result.
+    /// # Safety
+    /// The arguments are those of the original's call (`0019B578`).
+    pub unsafe fn load_message(messages: *mut u8, message: u32, string: *mut u8) -> u32 {
+        let load: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) -> u32 =
+            unsafe { transmute(LOAD_MESSAGE) };
+        unsafe { load(messages, message, string) }
+    }
+
     /// Starts the general loading panel on `ui` with the text of the game
     /// scan, as the reader's set-up starts it.
     /// # Safety
     /// `ui` is the live shared UI with its context, on the main thread.
-    pub unsafe fn start_panel(ui: *mut u8) {
+    pub unsafe fn loading(ui: *mut u8) {
         let start: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(PANEL_START) };
         unsafe {
             start(ui);
@@ -183,7 +210,7 @@ mod native {
     /// resting state, so that neither its text frame nor its text is left.
     /// # Safety
     /// `ui` is the live shared UI the panel was started on, on the main thread.
-    pub unsafe fn end_panel(ui: *mut u8) {
+    pub unsafe fn stop_loading(ui: *mut u8) {
         let Some(context) = (unsafe { follow(ui, UI_CONTEXT) }) else {
             return;
         };
