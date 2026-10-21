@@ -7,8 +7,6 @@ use crate::program::Transporter15;
 use core::mem::transmute;
 use patch_common::{kernel::close_handle, program::Program};
 
-/// Transporter's `fs:USER` session handle.
-pub(crate) const FS_SESSION: *const u32 = 0x0031_1f80 as *const u32;
 /// The SDK's "open a file in an archive in one call", `(session, &file, 0,
 /// archive id, path type, path, path size, 3, file path, its size, flags,
 /// 0)`.
@@ -47,7 +45,7 @@ impl File {
         let mut handle = 0;
         let code = unsafe {
             open(
-                FS_SESSION,
+                Transporter15::FS_SESSION as *const u32,
                 &mut handle,
                 0,
                 9,

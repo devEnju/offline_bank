@@ -59,7 +59,10 @@ const DELIVER_FAILED: u32 = 0;
 const DELIVER_DONE: u32 = 1;
 const DELIVER_PENDING: u32 = 2;
 
-/// The panel the search started (`panel`).
+/// The panel the search started (`panel`). It is kept apart from `STATE`,
+/// unlike Bank's scan panel, which only its own hook uses: the entries that
+/// only end it or ask about it run from stubs inside the original's calls
+/// and never depend on whether a hook holds the state.
 static PANEL: Panel = Panel::new();
 
 /// The worker and the job it has out, and when the loading screen that is

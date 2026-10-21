@@ -29,6 +29,8 @@ pub mod lytpatch;
 pub mod navigation;
 pub mod panel;
 pub mod program;
+#[cfg(test)]
+mod router;
 pub mod sdsave;
 pub mod storage_worker;
 pub mod task;

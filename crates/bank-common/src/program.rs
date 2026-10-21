@@ -15,7 +15,8 @@ use patch_common::program::Program;
 ///   (`002b49c4`), and the two calls it hands the line to the pane with;
 /// - its clock, as its minimum time `001d5bb0` reads it: `00229dc4` copies
 ///   the time at `00372fe0`, `002c8ea4` gives it in ms;
-/// - its file system calls (docs/internals.md, "Filesystem calls").
+/// - its file system calls (docs/internals.md, "Filesystem calls") and
+///   its `fs:USER` session.
 pub struct Bank15;
 impl Program for Bank15 {
     const CREATE_THREAD: usize = 0x0023_20d4;
@@ -40,4 +41,5 @@ impl Program for Bank15 {
     const FILE_READ: usize = 0x0016_58c8;
     const FILE_WRITE: usize = 0x0016_594c;
     const FILE_CLOSE: usize = 0x0016_5920;
+    const FS_SESSION: usize = 0x0039_0100;
 }

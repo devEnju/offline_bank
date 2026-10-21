@@ -18,9 +18,8 @@ use bank_common::{
     native_bank::NativeBank,
     program::Bank15,
     task::{
-        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, FS_SESSION,
-        LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
-        TEXT,
+        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, LOCAL_DATE,
+        TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN, TEXT,
     },
     worker::WorkerError,
 };
@@ -33,6 +32,7 @@ use offline_core::{
 };
 use patch_common::{
     exclusive::Exclusive,
+    program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Worker},
 };
@@ -760,7 +760,7 @@ impl Runtime {
             self.rewards = RewardSession::NONE;
             if opening {
                 self.capture_blank(task)?;
-                let session = unsafe { FS_SESSION.read() };
+                let session = unsafe { Bank15::fs_session() };
                 self.submit(task, Step::Open, Job::Open { session })?;
             } else {
                 let game = unsafe {

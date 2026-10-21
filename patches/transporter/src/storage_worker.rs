@@ -38,17 +38,20 @@ pub(crate) use arm::TransporterWorker;
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::*;
-    use crate::{fs::FS_SESSION, program::Transporter15, ui::refusal_message};
+    use crate::{program::Transporter15, ui::refusal_message};
     use bank_common::fs::Visit;
     use offline_core::transport;
-    use patch_common::worker::{Service, Shared, Worker};
+    use patch_common::{
+        program::Program,
+        worker::{Service, Shared, Worker},
+    };
 
     /// Bank's files as the delivery rules reach them, through bank-common
     /// and Transporter's file calls (`bank_common::fs::Visit`): Transporter
     /// neither creates nor replaces a file, and a write to one that is not
     /// there is refused. Bank's next Save and Quit makes it.
     fn bank_files() -> Visit<Transporter15> {
-        unsafe { Visit::new(FS_SESSION.read()) }
+        unsafe { Visit::new(Transporter15::fs_session()) }
     }
 
     /// What the worker thread runs.

@@ -66,4 +66,14 @@ pub trait Program: 'static {
     const FILE_READ: usize;
     const FILE_WRITE: usize;
     const FILE_CLOSE: usize;
+    /// The word that holds the program's `fs:USER` session, which its
+    /// start-up sets up.
+    const FS_SESSION: usize;
+
+    /// The program's `fs:USER` session (`FS_SESSION`).
+    /// # Safety
+    /// Only in the program `Self` describes, after its start-up.
+    unsafe fn fs_session() -> u32 {
+        unsafe { (Self::FS_SESSION as *const u32).read_volatile() }
+    }
 }

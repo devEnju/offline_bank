@@ -18,8 +18,8 @@ use bank_common::{
     native_bank::NativeBank,
     program::Bank15,
     task::{
-        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, FS_SESSION,
-        TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN,
+        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, TASK_OPEN,
+        TASK_REWARD_GUARD, TASK_SCAN,
     },
     ui,
     worker::WorkerError,
@@ -28,6 +28,7 @@ use core::mem::transmute;
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
+    program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Service, Shared, Worker},
 };
@@ -202,7 +203,7 @@ impl Runtime {
                 // Files are read until the reply.
                 refuse_home(true);
                 Ok(Job::Look {
-                    session: FS_SESSION.read(),
+                    session: Bank15::fs_session(),
                 })
             })
         }
@@ -228,7 +229,7 @@ impl Runtime {
                 }
                 staging.copy_from_slice(live);
                 Ok(Job::Write {
-                    session: FS_SESSION.read(),
+                    session: Bank15::fs_session(),
                 })
             })
         }

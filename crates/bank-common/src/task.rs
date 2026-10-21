@@ -16,8 +16,6 @@ pub const TASK_LOAD: u32 = 0x0036_1ec8;
 pub const TASK_SAVE: u32 = 0x0036_2028;
 pub const TASK_REWARDS: u32 = 0x0036_19fc;
 pub const TASK_REWARD_GUARD: u32 = 0x0036_1bd8;
-/// Bank's file system session.
-pub const FS_SESSION: *const u32 = 0x0039_0100 as *const u32;
 /// The original's task router, `002a5580(manager, current)`: the next task
 /// for the one that has ended.
 pub const ROUTER: usize = 0x002a_5580;

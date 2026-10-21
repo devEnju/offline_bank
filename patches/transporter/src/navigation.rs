@@ -82,41 +82,7 @@ pub const fn spins(next: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const EXIT: u32 = 0x13;
-
-    /// The original router, case by case (`00242BCC`..`00242E04`).
-    fn original(current: u32, outcome: u8) -> u32 {
-        match (current, outcome) {
-            (0, 4) => TITLE,
-            (0, _) => EXIT,
-            (1, 4) => RELOAD,
-            (1, _) => EXIT,
-            (TITLE, 3) => SEARCH,
-            (TITLE, 0x12) => 1,
-            (TITLE, _) => EXIT,
-            (CONNECT, 3) => 5,
-            (CONNECT, 0xe) => 4,
-            (5, 3) => READ,
-            (TRANSFER, 0xf) => FAILURE,
-            (SEARCH, 3) => LIST,
-            (LIST, 4) => CONNECT,
-            (READ, 3) => 0xa,
-            (0xa, 8) => 0xe,
-            (0xa, 9) => 0xd,
-            (BANK_STEP, 4) => QUESTION,
-            (BANK_STEP, 0xf) => FAILURE,
-            (BANK_STEP, 0x10) => 0xf,
-            (QUESTION, 4) => TRANSFER,
-            (QUESTION, 0x10) => 0xf,
-            (0xd, 3) => BANK_STEP,
-            (0xd, 0xf) => FAILURE,
-            (0xe, 3) => 0xd,
-            (DISCONNECT | RELOAD, _) => TITLE,
-            (0x13.., _) => EXIT,
-            _ => DISCONNECT,
-        }
-    }
+    use crate::router::{self, EXIT};
 
     /// The routing the two edits inside the router gave (`00242D10`,
     /// `00242D28`), and the cancel and failure steps left out.
@@ -126,7 +92,7 @@ mod tests {
             (READ, _) => BANK_STEP,
             (BANK_STEP | QUESTION, 0x10) => DISCONNECT,
             (TRANSFER | BANK_STEP | 0xd, 0xf) => DISCONNECT,
-            _ => original(current, outcome),
+            _ => router::next(current, outcome),
         }
     }
 
@@ -134,7 +100,7 @@ mod tests {
     fn the_routing_is_the_one_the_two_edits_inside_the_router_gave() {
         for current in 0..=0x14 {
             for outcome in 0..=u8::MAX {
-                let native = original(current, outcome);
+                let native = router::next(current, outcome);
                 assert_eq!(
                     destination(current, outcome, native, false),
                     edited_inside(current, outcome),
@@ -151,7 +117,7 @@ mod tests {
         let mut step = TITLE;
         let mut seen = [0; 8];
         for (index, outcome) in [3, 3, 4, 3, 4, 4, 3, 0].into_iter().enumerate() {
-            step = destination(step, outcome, original(step, outcome), false);
+            step = destination(step, outcome, router::next(step, outcome), false);
             seen[index] = step;
         }
         assert_eq!(
@@ -160,7 +126,7 @@ mod tests {
         );
         for current in 0..=0x14 {
             for outcome in 0..=u8::MAX {
-                let next = destination(current, outcome, original(current, outcome), false);
+                let next = destination(current, outcome, router::next(current, outcome), false);
                 // The server's own steps and the failure step are only ever
                 // left, never entered.
                 let never = [CONNECT, 4, 5, 0xa, 0xd, 0xe, CANCEL, FAILURE];
@@ -203,7 +169,7 @@ mod tests {
             (TRANSFER, 3),
             (TRANSFER, 0xf),
         ] {
-            let next = destination(current, outcome, original(current, outcome), false);
+            let next = destination(current, outcome, router::next(current, outcome), false);
             assert_eq!(next, DISCONNECT, "{current:#x} {outcome:#x}");
             assert!(!loads(next));
         }

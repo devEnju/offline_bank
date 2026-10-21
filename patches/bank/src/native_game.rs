@@ -309,9 +309,13 @@ mod arm {
         FrozenBlock, GameIoDescriptor, GameKind, NativeGameError, NativePoll, PreparedImage,
         SecureValues, MAX_PREPARED_BLOCKS,
     };
-    use bank_common::task::{read_word, SELECTED_GAME, TEXT};
+    use bank_common::{
+        program::Bank15,
+        task::{read_word, SELECTED_GAME, TEXT},
+    };
     use core::{marker::PhantomData, mem::transmute, ptr::NonNull};
     use offline_core::game_image::Overlay;
+    use patch_common::program::Program;
 
     pub const OBJECT_SIZE: usize = 0xb49d0;
     const GAME_VTABLE: u32 = 0x0036_2f88;
@@ -338,8 +342,6 @@ mod arm {
     const MOUNTED_ARCHIVE: usize = 0x0022_9488;
     /// Activity mask byte of the original (`00372988 + 2`).
     const ACTIVITY: *const u8 = 0x0037_298a as *const u8;
-    /// Bank's file system session.
-    const FS_SESSION: *const u32 = bank_common::task::FS_SESSION;
 
     /// The game the save manager has selected, and its kind. `NotLoaded`
     /// when none is.
@@ -634,7 +636,7 @@ mod arm {
                 return Err(NativeGameError::UnalignedPointer);
             }
             let archive = unsafe { pair(archive_object, 8) };
-            let session = unsafe { FS_SESSION.read_volatile() };
+            let session = unsafe { Bank15::fs_session() };
             if archive == 0 || session == 0 {
                 return Err(NativeGameError::MissingArchive);
             }

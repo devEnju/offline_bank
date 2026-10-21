@@ -17,13 +17,14 @@ use bank_common::{
     fs::{self, ExtdataStorage},
     numbers::VERSION,
     program::Bank15,
-    task::{refuse_home, write_word, Ended, Notice, Task, FS_SESSION, TASK_SCAN},
+    task::{refuse_home, write_word, Ended, Notice, Task, TASK_SCAN},
     ui,
     worker::WorkerError,
 };
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
+    program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Service, Shared, Worker},
 };
@@ -154,7 +155,7 @@ impl Runtime {
             // before enabling busy protection. No FS call occurs here.
             task.begin_busy();
             unsafe { write_word(task.raw(), 0x10, 1) };
-            let session = unsafe { FS_SESSION.read() };
+            let session = unsafe { Bank15::fs_session() };
             let submitted = unsafe { self.worker()?.submit(Convert { session }) };
             let id = submitted.map_err(WorkerError::numbers)?;
             // Files are being read and written until the reply.

@@ -18,7 +18,7 @@ use patch_common::program::Program;
 ///   copies the time at `002F4E38`, `0025A77C` gives it in ms;
 /// - its file system calls, the same code as Bank's (found by comparing
 ///   their instructions with Bank's), without create and delete: the patch
-///   neither creates nor deletes a file.
+///   neither creates nor deletes a file; and its `fs:USER` session.
 pub struct Transporter15;
 impl Program for Transporter15 {
     const CREATE_THREAD: usize = 0x001e_3f58;
@@ -43,4 +43,5 @@ impl Program for Transporter15 {
     const FILE_READ: usize = 0x0015_930c;
     const FILE_WRITE: usize = 0x0015_9390;
     const FILE_CLOSE: usize = 0x0015_9364;
+    const FS_SESSION: usize = 0x0031_1f80;
 }
