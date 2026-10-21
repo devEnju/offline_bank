@@ -125,7 +125,7 @@ impl Profile {
 /// other packages for Bank.
 pub const PROFILES: [&Profile; 5] = [
     &bank15::offline::PROFILE,
-    &transporter15::PROFILE,
+    &transporter15::offline::PROFILE,
     &bank15::test::PROFILE,
     &bank15::migrate::PROFILE,
     &bank15::download::PROFILE,
