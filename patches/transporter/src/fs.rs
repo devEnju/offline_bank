@@ -14,8 +14,9 @@ use crate::sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE};
 pub const OPEN_READ: u32 = 1;
 pub const OPEN_READ_WRITE: u32 = 3;
 pub const OPEN_WRITE_CREATE: u32 = 6;
-/// The size of one copy step of a backup.
+/// The size of one copy step of a backup; the steps make up the save.
 pub const COPY_CHUNK: usize = 0x8000;
+const _: () = assert!(SAVE_SIZE % COPY_CHUNK as u64 == 0);
 
 /// An open file on the SD card.
 pub trait SdFile {
@@ -67,7 +68,7 @@ fn in_save(offset: u32, length: usize) -> bool {
 
 /// Copies the untouched save to `<name>.sav.bak`, flushed and closed, before
 /// the first change of a session. `chunk` is the copy buffer.
-fn back_up<C: Card>(card: &mut C, save: Save, chunk: &mut [u8]) -> bool {
+fn back_up<C: Card>(card: &mut C, save: Save, chunk: &mut [u8; COPY_CHUNK]) -> bool {
     let (Some(source), Some(target)) = (
         open_save(card, save, false, OPEN_READ),
         open_save(card, save, true, OPEN_WRITE_CREATE),
@@ -76,11 +77,11 @@ fn back_up<C: Card>(card: &mut C, save: Save, chunk: &mut [u8]) -> bool {
     };
     let mut offset = 0;
     while offset < SAVE_SIZE {
-        let last = offset + chunk.len() as u64 == SAVE_SIZE;
+        let last = offset + COPY_CHUNK as u64 == SAVE_SIZE;
         if !source.read(offset, chunk) || !target.write(offset, chunk, last) {
             return false;
         }
-        offset += chunk.len() as u64;
+        offset += COPY_CHUNK as u64;
     }
     target.size() == Some(SAVE_SIZE) && target.close()
 }
@@ -101,7 +102,7 @@ pub fn write<C: Card>(
     save: Save,
     offset: u32,
     bytes: &[u8],
-    chunk: &mut [u8],
+    chunk: &mut [u8; COPY_CHUNK],
 ) -> bool {
     if !in_save(offset, bytes.len()) {
         return false;
@@ -121,10 +122,7 @@ pub use native::Sd;
 mod native {
     use super::{Card, SdFile};
     use crate::program::Transporter15;
-    use core::{
-        marker::PhantomData,
-        mem::{transmute, ManuallyDrop},
-    };
+    use core::mem::transmute;
     use patch_common::{file, program::Program};
 
     /// The SDK's "open a file in an archive in one call", `(session, &file,
@@ -172,40 +170,29 @@ mod native {
                     0,
                 )
             };
-            (code >= 0 && handle != 0).then(|| File(handle, PhantomData))
+            if code < 0 {
+                return None;
+            }
+            unsafe { file::Handle::new(handle) }.map(File)
         }
     }
 
-    /// An open file on the SD card (`patch_common::file`), on the thread
-    /// that opened it; dropping it closes it.
-    pub struct File(u32, PhantomData<*mut ()>);
+    /// An open file on the SD card (`patch_common::file::Handle`).
+    pub struct File(file::Handle<Transporter15>);
     impl SdFile for File {
         fn size(&self) -> Option<u64> {
-            file::size::<Transporter15>(self.0).ok()
+            self.0.size().ok()
         }
         fn read(&self, offset: u64, bytes: &mut [u8]) -> bool {
-            let length = bytes.len() as u32;
-            let read =
-                unsafe { file::read::<Transporter15>(self.0, offset, bytes.as_mut_ptr(), length) };
-            read == Ok(length)
+            self.0.read(offset, bytes) == Ok(bytes.len() as u32)
         }
         fn write(&self, offset: u64, bytes: &[u8], flush: bool) -> bool {
-            let length = bytes.len() as u32;
             let flags = if flush { file::FLUSH } else { 0 };
-            let written = unsafe {
-                file::write::<Transporter15>(self.0, offset, bytes.as_ptr(), length, flags)
-            };
-            written == Ok(length)
+            self.0.write(offset, bytes, flags) == Ok(bytes.len() as u32)
         }
         fn close(self) -> bool {
-            let file = ManuallyDrop::new(self);
-            let (closed, handle) = file::close::<Transporter15>(file.0);
+            let (closed, handle) = self.0.close();
             closed.is_ok() && handle.is_ok()
-        }
-    }
-    impl Drop for File {
-        fn drop(&mut self) {
-            let _ = file::close::<Transporter15>(self.0);
         }
     }
 }
@@ -325,7 +312,7 @@ mod tests {
     #[test]
     fn the_first_write_backs_the_save_up_and_every_write_is_flushed() {
         let (mut sim, mut saves, save, original) = card();
-        let mut chunk = vec![0; COPY_CHUNK];
+        let mut chunk = [0; COPY_CHUNK];
         assert!(write(
             &mut sim,
             &mut saves,
@@ -365,7 +352,7 @@ mod tests {
         ];
         for faults in failures {
             let (mut sim, mut saves, save, original) = card();
-            let mut chunk = vec![0; COPY_CHUNK];
+            let mut chunk = [0; COPY_CHUNK];
             sim.0.borrow_mut().faults = faults;
             assert!(!write(
                 &mut sim,
@@ -393,7 +380,7 @@ mod tests {
     #[test]
     fn a_read_or_write_past_the_save_or_short_of_it_fails() {
         let (mut sim, mut saves, save, original) = card();
-        let mut chunk = vec![0; COPY_CHUNK];
+        let mut chunk = [0; COPY_CHUNK];
         let mut bytes = [0; 4];
         assert!(read(&mut sim, save, 0x10, &mut bytes));
         assert_eq!(bytes, original[0x10..0x14]);

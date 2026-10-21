@@ -19,7 +19,7 @@ pub use native::*;
 mod native {
     use super::Code;
     use crate::{kernel::close_handle, program::Program};
-    use core::mem::transmute;
+    use core::{marker::PhantomData, mem::transmute};
 
     fn result(code: i32) -> Result<(), Code> {
         if code < 0 {
@@ -79,5 +79,52 @@ mod native {
         let call: Call = unsafe { transmute(P::FILE_CLOSE) };
         let closed = result(unsafe { call(&file) });
         (closed, result(unsafe { close_handle(file) }))
+    }
+
+    /// An open file of program `P`, owned: closed by `close`, which answers
+    /// how the close went, or else when dropped. It stays on the thread that
+    /// opened it, which the SDK's session belongs to.
+    pub struct Handle<P: Program> {
+        file: Option<u32>,
+        _owner: PhantomData<(P, *mut ())>,
+    }
+    impl<P: Program> Handle<P> {
+        /// The file the SDK has just opened; `None` for none (handle 0).
+        /// # Safety
+        /// `file` is an open file of `P`'s SDK that nothing else closes.
+        pub unsafe fn new(file: u32) -> Option<Self> {
+            (file != 0).then(|| Self {
+                file: Some(file),
+                _owner: PhantomData,
+            })
+        }
+        fn file(&self) -> u32 {
+            self.file.unwrap_or(0)
+        }
+        pub fn size(&self) -> Result<u64, Code> {
+            size::<P>(self.file())
+        }
+        /// Reads up to `bytes.len()` bytes at `offset`: the count read.
+        pub fn read(&self, offset: u64, bytes: &mut [u8]) -> Result<u32, Code> {
+            let length = bytes.len() as u32;
+            unsafe { read::<P>(self.file(), offset, bytes.as_mut_ptr(), length) }
+        }
+        /// Writes `bytes` at `offset` with the SDK's `flags`: the count
+        /// written.
+        pub fn write(&self, offset: u64, bytes: &[u8], flags: u32) -> Result<u32, Code> {
+            let length = bytes.len() as u32;
+            unsafe { write::<P>(self.file(), offset, bytes.as_ptr(), length, flags) }
+        }
+        /// Closes it (`close`): the SDK's result, then the kernel's.
+        pub fn close(mut self) -> (Result<(), Code>, Result<(), Code>) {
+            close::<P>(self.file.take().unwrap_or(0))
+        }
+    }
+    impl<P: Program> Drop for Handle<P> {
+        fn drop(&mut self) {
+            if let Some(file) = self.file.take() {
+                let _ = close::<P>(file);
+            }
+        }
     }
 }

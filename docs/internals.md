@@ -230,7 +230,7 @@ The first argument is a pointer to the session or file handle; a negative `i32` 
 | `001659ac` / `00165920` | GetSize / CloseFile | `out: *mut u64` / none |
 | `0016578c` / `0012146c` | Get / Set secure value | `first*, second*, value*, archive: u64, slot` / `archive: u64, slot, value: u64, option: u8` |
 
-`Path` is `{ kind: u32, data: *const u8, byte_len: u32 }`, not libctru's order. The extdata archive is ID 6 with binary path `[1, 0xc9b, 0]`. Sync is a zero-length Write with flags `0x10001`. CloseFile does not close the kernel handle; SVC `23` must follow. The calls on an open file (GetSize, Read, Write, CloseFile with the handle) are `patch-common`'s `file`, for both programs. The filesystem session lives at `00390100` (`Program::FS_SESSION`).
+`Path` is `{ kind: u32, data: *const u8, byte_len: u32 }`, not libctru's order. The extdata archive is ID 6 with binary path `[1, 0xc9b, 0]`. Sync is a zero-length Write with flags `0x10001`. CloseFile does not close the kernel handle; SVC `23` must follow. The calls on an open file (GetSize, Read, Write, CloseFile with the handle) are `patch-common`'s `file`, for both programs; a file held across calls is its owned `file::Handle`, closed explicitly or when dropped, never when it did not open: the games' `main` here and Transporter's saves on the SD card. The filesystem session lives at `00390100` (`Program::FS_SESSION`).
 
 ### HOME button and sleep
 
