@@ -135,12 +135,17 @@ fn back_up(save: Save) -> bool {
     target.size() == Some(SAVE_SIZE)
 }
 
+// 00243528 (was: bl read-cartridge-id). r0 = out, r4 = cartridge task.
+patch_common::stub!(
+    transporter_cart_id_stub,
+    ["mov r1, r4", "b {cart_id}"],
+    cart_id = sym cart_id,
+);
 /// Replaces the call to "read the cartridge's game code" at `00243528`.
 /// `task` is the cartridge task (the caller's `r4`).
 /// # Safety
 /// Called only from that site, on the cartridge task's thread.
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_cart_id(out: *mut u32, task: *const u8) -> i32 {
+unsafe extern "aapcs" fn cart_id(out: *mut u32, task: *const u8) -> i32 {
     let original: unsafe extern "aapcs" fn(*mut u32) -> i32 =
         unsafe { transmute(ORIGINAL_CART_ID) };
     let code = unsafe { original(out) };
@@ -226,6 +231,12 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
     }
 }
 
+// 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.
+patch_common::stub!(
+    transporter_list_next_stub,
+    ["mov r0, r4", "b {list_next}"],
+    list_next = sym list_next,
+);
 /// Replaces "go on to the Virtual Console titles" (`00244F10`) in the
 /// game-list task. After the cartridge step has handled one item (the
 /// cartridge or an SD save), the next one is read the same way, so each gets
@@ -236,8 +247,7 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
 /// read. The list is always built to the end.
 /// # Safety
 /// Called only from that site, with the live game-list task.
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_list_next(task: *mut u8) {
+unsafe extern "aapcs" fn list_next(task: *mut u8) {
     unsafe {
         let state = task.add(LIST_STATE).cast::<u32>();
         if matches!(state.read(), STATE_FIRST_ITEM | STATE_READING_CARTRIDGE) {
@@ -311,11 +321,22 @@ pub unsafe extern "aapcs" fn transporter_entry_card_removed(task: *const u8) -> 
     }
 }
 
+// 00244908 (was: mov r0, #0). r4 = list task; r5, r6 stay live.
+patch_common::stub!(
+    transporter_select_stub,
+    [
+        "push {{r4, lr}}",
+        "mov r0, r4",
+        "bl {select}",
+        "mov r0, #0",
+        "pop {{r4, pc}}",
+    ],
+    select = sym select,
+);
 /// Runs when a DS entry of the game list is confirmed (`00244908`).
 /// # Safety
 /// Called only from that site, with the live game-list task.
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_select(task: *const u8) {
+unsafe extern "aapcs" fn select(task: *const u8) {
     let position = unsafe { task.add(LIST_CURSOR).cast::<u16>().read() };
     saves().select(usize::from(position));
 }

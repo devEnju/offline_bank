@@ -87,7 +87,7 @@ $allowed = @{
     0x00244EAC = 'bl:transporter_list_indicator_stub'; 0x00244D40 = 'b:transporter_list_frame_stub'
     0x001E41C0 = 'bl:transporter_vc_mount_stub'; 0x0010621C = 0xE320F000
     0x0019B50C = 'b:transporter_message_stub'; 0x0019B578 = 'bl:transporter_message_text'
-    0x0024BAE8 = 'bl:transporter_version'
+    0x0024BAE8 = 'bl:transporter_version_shown'
     0x00246F48 = 'b:transporter_check_stub'; 0x00248CDC = 'b:00248E44'
     0x00248EBC = 0xE3A0100B; 0x00248F88 = 0x0AFFFFBA
     0x002455D0 = 'b:transporter_read_stub'; 0x00247304 = 'b:transporter_question_stub'
@@ -95,7 +95,7 @@ $allowed = @{
     0x00246208 = 0xE3A00001; 0x00246278 = 0xE3A00001; 0x002462E8 = 0xE3A00001
     0x00245728 = 'b:00245800'; 0x002460B8 = 'b:002461D0'
     0x002488A0 = 0xE3A00001
-    0x002458DC = 'bl:transporter_slot'
+    0x002458DC = 'bl:transporter_slot_stub'
     0x00247478 = 'b:002474E0'
     0x00243528 = 'bl:transporter_cart_id_stub'; 0x002439A8 = 'bl:transporter_cart_read'
     0x002437F4 = 'bl:transporter_cart_write'; 0x0024397C = 'bl:transporter_cart_write'
@@ -108,7 +108,7 @@ $allowed = @{
     0x0022BEE0 = 'bl:transporter_language_order_stub'; 0x0022B5B0 = 'bl:transporter_language_buttons'
     0x0022B6E0 = 0xE3500007; 0x0022B6E4 = 0x03A01003
     0x002412D4 = 'bl:transporter_vc_scan_stub'
-    0x0022B3B8 = 'b:transporter_language_back_stub'; 0x0013AEE4 = 'bl:transporter_layout_check'
+    0x0022B3B8 = 'b:transporter_language_back_stub'; 0x0013AEE4 = 'bl:transporter_layout_check_stub'
     0x0024BA44 = 'bl:transporter_title_begin_stub'; 0x0024BA74 = 'bl:transporter_title_end_stub'
     0x0024A150 = 'b:transporter_deliver_stub'
     0x0024A3C0 = 0xE3A0000E
@@ -229,7 +229,7 @@ $second = Get-Word $patched ($bootstrapStart + 4)
 Assert-Check ((($second -shr 24) -eq 0xEB) -and ((Get-BranchTarget ($bootstrapStart + 4) $second) -eq $originalAppInit)) 'start-up hook calls the original application init first'
 # The layout check, called from 0013AEE4 before the payload can run, lies in
 # the same executable place and begins with the instruction it stands in for.
-$layoutCheck = $symbols['transporter_layout_check'].value
+$layoutCheck = $symbols['transporter_layout_check_stub'].value
 Assert-Check ($layoutCheck -ge $bootstrapStart -and $layoutCheck + 4 -le $bootstrapEnd -and ([int64](Get-Word $patched $layoutCheck)) -eq 0xE1A01000L) 'layout check lies in the start-up hook and begins with mov r1, r0'
 # The ELF's entry is the router entry; the start-up hook is the linked one.
 Assert-Check ((U32 $elf 24) -eq $symbols['transporter_next'].value) 'ELF entry is transporter_next'

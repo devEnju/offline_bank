@@ -160,44 +160,12 @@ pub fn refuse_home(refuse: bool) {
 }
 
 // The original's "show a message" function, 001d6650(ui, kind, message,
-// wait), begins with `push {r4-r8, lr}`. A patch replaces that instruction
-// by a branch to this entry, which runs it, lets HOME and sleep through if
-// the message waits for an answer, and goes on inside the original.
-//
-// The patches refuse HOME and sleep by the task that comes next, for as
-// long as it reads or writes. A message that waits is where such a task has
-// nothing left to do but end, so the refusal the router hook began ends
-// here. The original's own bit for a game save that is being written is not
-// this one and stays as it is.
-core::arch::global_asm!(
-    ".syntax unified",
-    ".arm",
-    ".section .text.bank.message, \"ax\", %progbits",
-    ".align 2",
-    ".global bank_message_shown",
-    ".type bank_message_shown, %function",
-    "bank_message_shown:",
-    "push {{r4, r5, r6, r7, r8, lr}}",
-    "cmp r3, #0",
-    "beq 1f",
-    "push {{r0-r3, r12, lr}}",
-    "bl {waits}",
-    "pop {{r0-r3, r12, lr}}",
-    "1:",
-    "ldr r12, =0x001d6654",
-    "bx r12",
-    ".ltorg",
-    ".size bank_message_shown, .-bank_message_shown",
-    waits = sym message_waits,
-);
+// wait), as every patch but the download enters it (`patch_common`'s
+// `message_stub!`). The original's own bit for a game save that is being
+// written is not the one let through here and stays as it is.
+patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
 extern "aapcs" fn message_waits() {
     refuse_home(false);
-}
-unsafe extern "aapcs" {
-    /// # Safety
-    /// Only the first instruction of 001d6650 may branch here, with that
-    /// function's arguments and its caller's `lr`.
-    pub fn bank_message_shown();
 }
 
 /// The screen a patch ends on when nothing can go on (`ui::stop`): one

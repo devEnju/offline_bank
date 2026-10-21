@@ -95,7 +95,7 @@ pub(crate) const fn router(entry: &'static str) -> Edit {
 /// instruction, lets HOME and sleep through if the message waits for an
 /// answer, and goes on at 001d6654. A branch, not a call: `lr` is the
 /// caller's.
-pub(crate) const MESSAGE: Edit = (0x001d_6650, 0xe92d_41f0, To("bank_message_shown"));
+pub(crate) const MESSAGE: Edit = (0x001d_6650, 0xe92d_41f0, To("bank_message_stub"));
 
 /// The start screen's call that writes its version line, "Ver. 1.5" (was:
 /// bl 001e21c8, "put message 0x4E into its pane"), to the entry every patch

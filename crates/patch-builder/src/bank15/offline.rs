@@ -46,7 +46,7 @@ pub(super) const OWN: [Edit; 15] = [
     // Only the message call is adapted (was: bl 001d6650); state 0x19 then
     // waits for A and exits through the native unsuccessful-scan route,
     // instead of asking about HOME (was: state 0x21).
-    (0x002a_c7a4, 0xebfc_a7a9, Call("bank_offline_no_game")),
+    (0x002a_c7a4, 0xebfc_a7a9, Call("bank_offline_no_game_stub")),
     (0x002a_c7a8, 0xe3a0_0021, Raw(0xe3a0_0019)),
     // The timestamp helper, whose online-client check fails offline (was:
     // push {r0, r1, r4-r11, lr}).
@@ -111,9 +111,9 @@ mod tests {
             PROFILE.entries(),
             [
                 "bank_offline_next",
-                "bank_message_shown",
+                "bank_message_stub",
                 "bank_version_shown",
-                "bank_offline_no_game",
+                "bank_offline_no_game_stub",
                 "bank_offline_timestamp",
                 "bank_offline_scan",
                 "bank_offline_rewards",
@@ -138,7 +138,7 @@ mod tests {
         // The timestamp and message entries keep the caller's lr: b, not bl.
         for (address, name) in [
             (0x001d_3bf4, "bank_offline_timestamp"),
-            (0x001d_6650, "bank_message_shown"),
+            (0x001d_6650, "bank_message_stub"),
         ] {
             let word = at(&PROFILE, address).unwrap();
             assert_eq!(

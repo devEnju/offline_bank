@@ -1206,7 +1206,7 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
         }
     }
     // The state is free while the original runs: its no-game notice
-    // (`bank_offline_no_game`) takes it.
+    // (`no_game`) takes it.
     let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(SCAN_UPDATE) };
     let result = unsafe { original(raw) };
     let after = unsafe { read_word(raw, 0x10) };
@@ -1222,28 +1222,18 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
     result
 }
 
-// Only scan state 0x18's BL at 002ac7a4 enters here. Its r4 is the live
-// scan task (002abe0c: mov r4, r0); preserve the native caller's LR and
-// callee-saved registers while handing that task to the Rust adapter.
-core::arch::global_asm!(
-    ".syntax unified",
-    ".arm",
-    ".section .text.bank.no_game, \"ax\"",
-    ".align 2",
-    ".global bank_offline_no_game",
-    ".type bank_offline_no_game, %function",
-    "bank_offline_no_game:",
-    "mov r0, r4",
-    "b {notice}",
-    ".size bank_offline_no_game, .-bank_offline_no_game",
-    notice = sym no_game_notice,
+// Scan state 0x18's call of "show a message" (002ac7a4) enters here. Its
+// r4 is the live scan task (002abe0c: mov r4, r0); the stub hands it to
+// `no_game` and keeps the caller's lr and callee-saved
+// registers.
+patch_common::stub!(
+    bank_offline_no_game_stub,
+    ["mov r0, r4", "b {notice}"],
+    notice = sym no_game,
 );
-unsafe extern "aapcs" {
-    /// # Safety
-    /// Called only from the reviewed scan message call, with its live task in r4.
-    pub fn bank_offline_no_game();
-}
-unsafe extern "aapcs" fn no_game_notice(raw: *mut u8) {
+/// The scan found no game it can use: the original's notice, without its
+/// question about Pokémon HOME.
+unsafe extern "aapcs" fn no_game(raw: *mut u8) {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
         return;
     };

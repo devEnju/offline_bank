@@ -6,17 +6,14 @@
 //! 2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf.
 //! The builder must verify the complete input before emitting any patch.
 
+pub mod dex;
 pub mod local_clock;
-pub mod navigation;
-
 pub mod native_game;
+pub mod navigation;
 pub mod panel;
 pub mod save_steps;
-
-#[cfg(target_arch = "arm")]
-pub mod runtime;
-
+pub mod storage_worker;
 pub mod transaction;
 
-pub mod dex;
-pub mod storage_worker;
+#[cfg(target_arch = "arm")]
+pub mod hooks;

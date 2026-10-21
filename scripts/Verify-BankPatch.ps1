@@ -127,10 +127,10 @@ try {
     # The entry functions of each patch; the first is the entry of the ELF.
     # The last is the one every patch has: where the original's "show a
     # message" function goes first.
-    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game','bank_offline_scan','bank_message_shown','bank_version_shown')
+    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game_stub','bank_offline_scan','bank_message_stub','bank_version_shown')
     $exportNames=@{
         bank=$offlineNames
-        migration=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
+        migration=@('bank_migrate_next','bank_migrate_scan','bank_message_stub','bank_version_shown')
         test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
         download=@('bank_download_next','bank_download_scan','bank_download_scan_busy','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
     }[$Kind]
@@ -184,12 +184,12 @@ try {
     # first start keeps its prompts, and the original refuses HOME and
     # sleep for its whole session itself.
     if ($Kind -ne 'download') {
-        $branches+=,@(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
+        $branches+=,@(0x1d6650,0xe92d41f0L,'bank_message_stub',$false)
     }
     if ($Kind -in 'bank','test') {
         $branches+=,@(0x2ac5b0,0xe5945040L,0x2ac8c8,$false)
         $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
-        $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game',$true)
+        $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game_stub',$true)
     }
     # The main menu's locations that only the console test build may edit.
     # Every other package leaves them with their original words.
@@ -371,7 +371,7 @@ try {
         foreach($range in @(@(0x2adc50,0x2adfd8),@(0x2d0fc8,0x2d1084),@(0x2b0098,0x2b0270),@(0x2ae310,0x2ae540))) {
             Assert-Check ((Hash $original ($range[0]-0x100000) ($range[1]-$range[0])) -eq (Hash $patched ($range[0]-0x100000) ($range[1]-$range[0]))) 'Native game selection/progress check changed'
         }
-        $adapter=$symbols.bank_offline_no_game
+        $adapter=$symbols.bank_offline_no_game_stub
         $adapterOffset=$adapter.value-0x100000
         Assert-Check ($adapter.size -eq 8 -and (U32 $patched $adapterOffset) -eq 0xe1a00004L -and ((U32 $patched ($adapterOffset+4)) -band 0xff000000L) -eq 0xea000000L) 'No-game adapter must pass r4 and tail-branch without changing LR/SP'
     }

@@ -173,7 +173,7 @@ const EDITS: &[Edit] = &[
     (0x0024_88a0, 0xebfd_4ca3, Raw(0xe3a0_0001)),
     // Reading Gen 5, per-slot result code (was: ldr r0, [r1, r7]). The stub
     // gives empty slots the skip code the server used to send.
-    (0x0024_58dc, 0xe791_0007, Call("transporter_slot")),
+    (0x0024_58dc, 0xe791_0007, Call("transporter_slot_stub")),
     // Question step, sub-state 2: skip the notice that nicknames and OT names
     // with prohibited words will be erased (message 0x10). Only the server
     // made that decision, so offline it never happens. Continue at the
@@ -263,11 +263,15 @@ const EDITS: &[Edit] = &[
     // The same constructor's call that writes the version line, "Ver. 1.5"
     // (was: bl 001D33CC, "put message 0x29 into its pane"): the entry makes
     // the call and adds the patch's name to the line.
-    (0x0024_bae8, 0xebfe_1e37, Call("transporter_version")),
+    (0x0024_bae8, 0xebfe_1e37, Call("transporter_version_shown")),
     // Building a layout (0013AE2C), the layout binary on its way to
     // Layout::Build (was: mov r1, r0): the check does the same and lets the
     // payload give the language screen's layout its Back button first.
-    (0x0013_aee4, 0xe1a0_1000, Call("transporter_layout_check")),
+    (
+        0x0013_aee4,
+        0xe1a0_1000,
+        Call("transporter_layout_check_stub"),
+    ),
     // The scan of the Virtual Console saves (001E419C): the call that mounts
     // a title's save (was: bl 0010E4A4). The stub skips the titles in another
     // language than the listed one.
@@ -341,7 +345,7 @@ pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
 /// the layout check, which must begin with the instruction it stands in for.
 fn check(code: &[u8], _: &Profile, payload: &PayloadElf) -> Result<()> {
     check_game_list(code)?;
-    let check = payload.export("transporter_layout_check")?;
+    let check = payload.export("transporter_layout_check_stub")?;
     let at = check
         .checked_sub(BOOTSTRAP_ADDRESS)
         .ok_or_else(|| crate::Error("layout check is not in the start-up hook".into()))?;

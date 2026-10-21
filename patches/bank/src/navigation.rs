@@ -76,7 +76,7 @@ pub const fn loads(destination: u32) -> bool {
 
 /// The reward guard and claim, which Bank loading hands its loading panel
 /// to; one of them takes it down. HOME and sleep stay refused into them
-/// while the panel is still up (`runtime::panel_left`), until it is down.
+/// while the panel is still up (`hooks::panel_left`), until it is down.
 pub const fn takes_panel(destination: u32) -> bool {
     matches!(destination, 0xc | 0xd)
 }

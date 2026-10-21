@@ -3,7 +3,7 @@
 //! main thread hands the delivery the transport box in the staging buffer;
 //! the worker touches no object of the original.
 
-use crate::layout::RECORDS_LEN;
+use crate::task::RECORDS_LEN;
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::worker::Control;
 
@@ -33,12 +33,12 @@ impl From<Control> for Failed {
 }
 
 #[cfg(target_arch = "arm")]
-pub use arm::{DeliveryWorker, Files};
+pub(crate) use arm::TransporterWorker;
 
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::*;
-    use crate::{fs::FS_SESSION, layout::refusal_message, program::Transporter15};
+    use crate::{fs::FS_SESSION, program::Transporter15, ui::refusal_message};
     use bank_common::fs::Visit;
     use offline_core::transport;
     use patch_common::worker::{Service, Shared, Worker};
@@ -52,12 +52,12 @@ mod arm {
     }
 
     /// What the worker thread runs.
-    pub struct Files;
-    static SHARED: Shared<Files> = Shared::new([0; STAGING_LEN]);
+    pub(crate) struct StorageWorker;
+    static SHARED: Shared<StorageWorker> = Shared::new([0; STAGING_LEN]);
     /// The worker of the Transporter patch.
-    pub type DeliveryWorker = Worker<Files>;
+    pub(crate) type TransporterWorker = Worker<StorageWorker>;
 
-    impl Service for Files {
+    impl Service for StorageWorker {
         type Program = Transporter15;
         type Job = Job;
         type Reply = Reply;

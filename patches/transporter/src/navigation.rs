@@ -57,13 +57,13 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
 
 /// Steps that read or write files: the search (the Bank check and the
 /// cartridge scan), the game list while it is set up (it reads every listed
-/// save; `hooks::transporter_list_ready` lets HOME through again once it is
+/// save; `hooks::list_ready` lets HOME through again once it is
 /// on screen), reading the chosen game, the Bank step (it saves its record
 /// into the game), and the transfer; and the question, whose first state
-/// takes down the panel of the reading (`hooks::transporter_update_waits`
+/// takes down the panel of the reading (`hooks::update_waits`
 /// lets HOME through on that frame). HOME and sleep are refused from the
 /// moment one of them is chosen, until it ends or shows a message that
-/// waits for an answer (`hooks::transporter_message_waits`). Every other
+/// waits for an answer (`hooks::message_waits`). Every other
 /// step waits for the user.
 pub const fn loads(next: u32) -> bool {
     matches!(next, SEARCH | LIST | READ | BANK_STEP | QUESTION | TRANSFER)

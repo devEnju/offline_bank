@@ -1,29 +1,20 @@
 #![cfg_attr(target_arch = "arm", no_std)]
 #![cfg_attr(target_arch = "arm", no_main)]
 
-// Link roots of the migration patch. This binary is an intermediate ELF,
-// never a standalone application or a complete installable Bank patch.
+// The link roots of the migration patch (`patch_common::link`): the entry
+// functions of its profile in the builder and the start-up hook. This binary
+// is an intermediate ELF, never a standalone application or a complete
+// installable Bank patch.
 #[cfg(target_arch = "arm")]
 mod linked {
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static NEXT: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
-        bank_migrate_payload::runtime::bank_migrate_next;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static SCAN: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_migrate_payload::runtime::bank_migrate_scan;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
-        patch_common::bootstrap::patch_bootstrap_startup;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static MESSAGE: unsafe extern "aapcs" fn() = bank_common::task::bank_message_shown;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static VERSION: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
-        bank_migrate_payload::runtime::bank_version_shown;
+    use bank_migrate_payload::hooks::*;
+    patch_common::link_roots!(
+        patch_common::bootstrap::patch_bootstrap_startup,
+        bank_migrate_next,
+        bank_common::task::bank_message_stub,
+        bank_version_shown,
+        bank_migrate_scan,
+    );
 
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo<'_>) -> ! {

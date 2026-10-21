@@ -1,6 +1,10 @@
-/* Reviewed Bank code 2dce4796...40abf only. No native hook is installed here.
-   The migration patch: the same placement as patches/bank/link/bank15.ld,
-   with its own two entry functions. */
+/* Pokémon Bank 1.5, code 2dce4796...40abf only: the migration patch.
+   - The start-up hook goes into the zero bytes between the end of the
+     original text (0x00313910) and the end of its last page (0x00314000).
+   - The payload goes on the first page after the original zero-initialised
+     data (0x003FA904), allocated by the paired exheader.
+   - The table in .patch.link_roots keeps the entry functions in the link
+     (src/link.rs). */
 OUTPUT_FORMAT(elf32-littlearm)
 OUTPUT_ARCH(arm)
 ENTRY(bank_migrate_next)
@@ -20,14 +24,12 @@ SECTIONS {
         KEEP(*(.patch.bootstrap.*))
     } :bootstrap
     ASSERT(SIZEOF(.patch.bootstrap) > 0, "missing bootstrap")
-    ASSERT(SIZEOF(.patch.bootstrap) <= 0x6f0, "bootstrap exceeds reviewed text padding")
+    ASSERT(SIZEOF(.patch.bootstrap) <= 0x6f0, "bootstrap exceeds the zero bytes after the original text")
 
     . = 0x003fb000;
     __patch_payload_start = .;
     .text : {
         FILL(0)
-        KEEP(*(.text.bank_migrate_next))
-        KEEP(*(.text.bank_migrate_scan))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } :payload_rx
@@ -41,7 +43,7 @@ SECTIONS {
     __patch_payload_rx_size = __patch_payload_rx_end - __patch_payload_start;
 
     .data : {
-        KEEP(*(.bank.link_roots))
+        KEEP(*(.patch.link_roots))
         *(.data .data.*)
         *(.got .got.*)
     } :payload_rw

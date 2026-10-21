@@ -259,22 +259,61 @@ mod native {
         choose(id as u8);
     }
 
+    // 002412D4 (was: bl 002512A8, "is the title of this row installed?",
+    // r0 = version, r1 = language id). A row in another language than the
+    // listed one answers no; the original answers for the others. It runs
+    // on the scanner's thread and only reads the filter.
+    patch_common::stub!(
+        transporter_vc_scan_stub,
+        [
+            "push {{r0, r1, r4, lr}}",
+            "mov r0, r1",
+            "bl {vc_scan_listed}",
+            "movs r12, r0",
+            "pop {{r0, r1, r4, lr}}",
+            "moveq r0, #0",
+            "bxeq lr",
+            "ldr r12, =0x002512a8",
+            "bx r12",
+        ],
+        vc_scan_listed = sym vc_scan_listed,
+    );
     /// Whether the scanner of the Virtual Console titles (`0024120C`) looks
     /// at a row of its table in `language` at all (`002412D4`). It numbers
     /// the titles it finds and files their trainer names under that number,
     /// so a title that is not listed must not be found.
-    #[no_mangle]
-    pub extern "aapcs" fn transporter_vc_listed(language: u32) -> u32 {
+    extern "aapcs" fn vc_scan_listed(language: u32) -> u32 {
         u32::from(vc_listed(filter(), language))
     }
 
+    // The scan of the Virtual Console saves (001E419C), for title r5: the
+    // call that mounts its save (001E41C0, was: bl 0010E4A4, r0 = the mount
+    // name, r1 = the title). Application init's scan, the one before the
+    // payload can run, is skipped (0010621C). A title the entry does not
+    // want: on with the next title (001E42D0), with nothing mounted or
+    // unmounted; its entry in the scan's table was cleared at 001E41B4.
+    // Otherwise the call, which returns to the scan.
+    patch_common::stub!(
+        transporter_vc_mount_stub,
+        [
+            "push {{r0, r1, r12, lr}}",
+            "mov r0, r5",
+            "bl {vc_wanted}",
+            "cmp r0, #0",
+            "pop {{r0, r1, r12, lr}}",
+            "ldreq r12, =0x001e42d0",
+            "bxeq r12",
+            "ldr r12, =0x0010e4a4",
+            "bx r12",
+        ],
+        vc_wanted = sym vc_wanted,
+    );
     /// Whether the scan of the Virtual Console saves (`001E419C`) mounts
     /// the save of title `index` at all (`001E41C0`): a title in another
     /// language than the listed one is never listed, so its save need not
     /// be looked at. An index outside the table is looked at, as by the
     /// original.
-    #[no_mangle]
-    pub extern "aapcs" fn transporter_vc_wanted(index: u32) -> u32 {
+    extern "aapcs" fn vc_wanted(index: u32) -> u32 {
         VC_TITLE_LANGUAGES
             .get(index as usize)
             .map_or(1, |&language| {
@@ -282,12 +321,40 @@ mod native {
             })
     }
 
+    // The title screen's constructor (0024B9E4), around its call that loads
+    // its archives and builds its layouts (0024BA70): 0024BA44 (was:
+    // mov r7, #3), while the call's arguments are set up, and 0024BA74
+    // (was: mov r3, #0x27), right after the call. Every register is
+    // returned as it came.
+    patch_common::stub!(
+        transporter_title_begin_stub,
+        [
+            "push {{r0-r3, r12, lr}}",
+            "mov r0, #1",
+            "bl {title_language}",
+            "pop {{r0-r3, r12, lr}}",
+            "mov r7, #3",
+            "bx lr",
+        ],
+        title_language = sym title_language,
+    );
+    patch_common::stub!(
+        transporter_title_end_stub,
+        [
+            "push {{r0-r3, r12, lr}}",
+            "mov r0, #0",
+            "bl {title_language}",
+            "pop {{r0-r3, r12, lr}}",
+            "mov r3, #0x27",
+            "bx lr",
+        ],
+        title_language = sym title_language,
+    );
     /// Brackets the title screen's loading of its archives (`0024BA44`,
     /// `0024BA74`): one of them holds the logo and the start prompt once per
     /// language. With `chosen` it is read in the chosen language; afterwards
     /// archives are read in the screens' language again, as always.
-    #[no_mangle]
-    pub extern "aapcs" fn transporter_title_language(chosen: u32) {
+    extern "aapcs" fn title_language(chosen: u32) {
         let ui = ui_language();
         let language = if chosen != 0 {
             title(FILTER.load(Ordering::Relaxed), ui)
@@ -298,13 +365,26 @@ mod native {
         unsafe { set(u32::from(language)) };
     }
 
+    // Reached from the layout check beside the start-up hook (bootstrap.rs)
+    // for a layout binary of the language screen's size, with the lr of the
+    // patched site 0013AEE4. r0 and r1 are the layout binary and are
+    // returned as they came, with every other register.
+    patch_common::stub!(
+        transporter_layout_adjust_stub,
+        [
+            "push {{r0-r3, r12, lr}}",
+            "bl {layout_built}",
+            "pop {{r0-r3, r12, lr}}",
+            "bx lr",
+        ],
+        layout_built = sym layout_built,
+    );
     /// Runs on a layout binary of the language screen's size before the
     /// original builds a layout from it (`0013AEE4`, through
-    /// `transporter_layout_check`); only that screen's is changed.
+    /// `transporter_layout_check_stub`); only that screen's is changed.
     /// # Safety
     /// `layout` is the layout resource the original just looked up.
-    #[no_mangle]
-    pub unsafe extern "aapcs" fn transporter_layout_built(layout: *mut u8) {
+    unsafe extern "aapcs" fn layout_built(layout: *mut u8) {
         unsafe {
             let size = layout
                 .add(lytpatch::SIZE_FIELD)
@@ -338,13 +418,35 @@ mod native {
         }
     }
 
+    // 0022BEE0 (was: bl 0022BC0C). r0 = screen; r6 = the constructor's
+    // parameter, whose heap the screen's objects come from.
+    patch_common::stub!(
+        transporter_language_order_stub,
+        ["mov r1, r6", "b {language_order}"],
+        language_order = sym language_order,
+    );
+    // 0022B3B8 (was: b 0022B510, B pressed on a part of the screen that has
+    // no Back button; r0 = the part). On the list, part 0, B now presses the
+    // Back button, button 7, as the original does for the two other parts at
+    // 0022B3BC..0022B3DC. r4 = screen.
+    patch_common::stub!(
+        transporter_language_back_stub,
+        [
+            "cmp r0, #0",
+            "ldrne r12, =0x0022b510",
+            "bxne r12",
+            "ldr r0, [r4, #0x10]",
+            "mov r1, #7",
+            "ldr r12, =0x0022b3dc",
+            "bx r12",
+        ],
+    );
     /// Replaces the original's ordering of the list (`0022BEE0`, was
     /// `bl 0022BC0C`), which put the current language first and showed all
     /// nine entries. `parameter` is the constructor's own (its `r6`).
     /// # Safety
     /// `screen` is the language screen under construction.
-    #[no_mangle]
-    pub unsafe extern "aapcs" fn transporter_language_order(screen: *mut u8, parameter: *const u8) {
+    unsafe extern "aapcs" fn language_order(screen: *mut u8, parameter: *const u8) {
         let order = order(filter());
         unsafe {
             let place: unsafe extern "aapcs" fn(*mut u8, u32, u32, *const [f32; 3]) =
