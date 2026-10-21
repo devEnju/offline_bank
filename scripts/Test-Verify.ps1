@@ -1,6 +1,7 @@
 <#
 Tests the two verify scripts: each built package passes, and a copy with one
-thing changed is refused for that thing. Where a change touches bytes, the
+thing changed is refused for that thing, by both with the same message
+(Verify-Package.ps1). Where a change touches bytes, the
 copy's manifest gets the new hashes, so that the refusal comes from the
 independent comparison and not from a hash. The changes are made to Bank's
 and Transporter's packages, which must be built (Build-Patches.ps1); of the
@@ -38,12 +39,14 @@ function Get-Original([string]$program) {
 }
 
 # The IPS records: offset, length and where the data begins in the file.
+# The builder writes no RLE record, so every record carries its data.
 function Get-IpsRecords([byte[]]$ips) {
     $records = @()
     $at = 5
     while ([Text.Encoding]::ASCII.GetString($ips, $at, 3) -ne 'EOF') {
         $offset = ([int]$ips[$at] -shl 16) -bor ([int]$ips[$at + 1] -shl 8) -bor [int]$ips[$at + 2]
         $length = ([int]$ips[$at + 3] -shl 8) -bor [int]$ips[$at + 4]
+        if ($length -eq 0) { throw 'Test-Verify.ps1 expects no RLE record' }
         $records += [pscustomobject]@{ Offset = $offset; Length = $length; Data = $at + 5 }
         $at += 5 + $length
     }
@@ -135,65 +138,53 @@ try {
             Write-Host ('{0,-12} {1,-28} {2}' -f $kind, 'unchanged', 'not built')
         }
     }
-    # Where each script refuses each change.
+    # Where both scripts refuse each change (Verify-Package.ps1).
     $expected = @{
-        bank        = @{
-            'ELF header'          = 'ELF32 little-endian header'
-            'start-up hook byte'  = 'Expanded image differs from independent expected image'
-            'payload byte'        = 'Expanded image differs from independent expected image'
-            'exheader size field' = 'Unexpected paired-exheader edit'
-            'manifest export'     = 'ELF export bank_offline_next'
-            'manifest placement'  = 'Manifest placement'
-            'manifest kind'       = 'Manifest names another patch'
-            'package name'        = 'Package is not the one of the current payload and profile'
-        }
-        transporter = @{
-            'ELF header'          = 'ELF32 little-endian header'
-            'start-up hook byte'  = 'ELF LOAD bytes at 0028D1AC'
-            'payload byte'        = 'ELF LOAD bytes at 00364000'
-            'exheader size field' = 'exheader BSS size'
-            'manifest export'     = 'manifest export transporter_next'
-            'manifest placement'  = 'manifest placement'
-            'manifest kind'       = 'manifest names this patch and version'
-            'package name'        = 'package is not the one of the current payload and profile'
-        }
+        'ELF header'          = 'ELF32 little-endian header'
+        'start-up hook byte'  = 'Expanded image differs from independent expected image'
+        'payload byte'        = 'Expanded image differs from independent expected image'
+        'exheader size field' = 'Unexpected paired-exheader edit'
+        'manifest export'     = 'Manifest export '
+        'manifest placement'  = 'Manifest placement'
+        'manifest kind'       = 'Manifest names another patch'
+        'package name'        = 'Package is not the one of the current payload and profile'
     }
     foreach ($kind in 'bank', 'transporter') {
         $kindNow = $kind
-        Test-Case $kind 'ELF header' { param($dir) Edit-Byte $dir 'payload.elf' 4; Update-Hashes $dir $kindNow } $expected[$kind]['ELF header']
+        Test-Case $kind 'ELF header' { param($dir) Edit-Byte $dir 'payload.elf' 4; Update-Hashes $dir $kindNow } $expected['ELF header']
         Test-Case $kind 'start-up hook byte' {
             param($dir)
             Edit-Byte $dir 'code.ips' (Get-IpsByte $dir ([int](Read-Manifest $dir).placement.bootstrap_address + 8))
             Update-Hashes $dir $kindNow
-        } $expected[$kind]['start-up hook byte']
+        } $expected['start-up hook byte']
         Test-Case $kind 'payload byte' {
             param($dir)
             Edit-Byte $dir 'code.ips' (Get-IpsByte $dir ([int](Read-Manifest $dir).placement.payload_address + 0x40))
             Update-Hashes $dir $kindNow
-        } $expected[$kind]['payload byte']
-        Test-Case $kind 'exheader size field' { param($dir) Edit-Byte $dir 'exheader.bin' 0x3d; Update-Hashes $dir $kindNow } $expected[$kind]['exheader size field']
+        } $expected['payload byte']
+        Test-Case $kind 'exheader size field' { param($dir) Edit-Byte $dir 'exheader.bin' 0x3d; Update-Hashes $dir $kindNow } $expected['exheader size field']
         Test-Case $kind 'manifest export' {
             param($dir)
             $manifest = Read-Manifest $dir
             $first = @($manifest.exports.psobject.Properties)[0].Name
             $manifest.exports.$first = 0
             Write-Manifest $dir $manifest
-        } $expected[$kind]['manifest export']
+        } $expected['manifest export']
         Test-Case $kind 'manifest placement' {
             param($dir)
             $manifest = Read-Manifest $dir
             $manifest.placement.payload_rw_bytes += 0x1000
             Write-Manifest $dir $manifest
-        } $expected[$kind]['manifest placement']
+        } $expected['manifest placement']
         Test-Case $kind 'manifest kind' {
             param($dir)
             $manifest = Read-Manifest $dir
             $manifest.patch = 'download'
             Write-Manifest $dir $manifest
-        } $expected[$kind]['manifest kind']
+        } $expected['manifest kind']
         Test-Case $kind 'package name' {
             param($dir) Set-Content -LiteralPath (Join-Path $dir 'PACKAGE.txt') -Encoding utf8 -Value '0000000000000000'
-        } $expected[$kind]['package name']
+        } $expected['package name']
     }
     # The original is found by its hash, whatever its extraction's folder
     # is called, as for a CIA that holds the same program packed otherwise.
