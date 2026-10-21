@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 offline-core = { path = "../offline-core" }
+# For the factory's bound and the task vtables the Bank hooks check, which
+# the builder compares with the input.
+bank-common = { path = "../bank-common" }
 # For the tables the Transporter hooks copied from the original, which the
 # builder compares with the input.
 transporter-payload = { path = "../../patches/transporter" }

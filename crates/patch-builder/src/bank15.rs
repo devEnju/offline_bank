@@ -14,6 +14,9 @@ use crate::{
     profile::{Edit, Program, Word::*},
     Result,
 };
+use bank_common::task::{
+    TASK_COUNT, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
+};
 
 pub mod download;
 pub mod migrate;
@@ -61,7 +64,7 @@ pub const BANK: Program = Program {
     code_length: CODE_LENGTH,
     identity: INPUT_IDENTITY,
     contract: &CONTRACT,
-    relies: &[&SDK_PRIORITY_CODE, &MENU_LOCATIONS],
+    relies: &[&SDK_PRIORITY_CODE, &MENU_LOCATIONS, &NATIVE_OBJECTS],
     check,
 };
 
@@ -169,6 +172,30 @@ pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
     (0x0023_2178, 0x83e0_0000),
     (0x0023_21b8, 0xaef6_2b00),
     (0x0023_21bc, 0x9372_5b00),
+];
+
+/// Factory bound, case targets and constructor vtable literals of the
+/// tasks the checked task views accept. Tasks 0x10 and 0x1C share one
+/// literal; the reward claim (0xD) is built by its constructor 002ABB10.
+/// The update slots are edits, which name their original words.
+pub(crate) const NATIVE_OBJECTS: [(u32, u32); 17] = [
+    (0x002a_5a80, 0xe351_0000 | TASK_COUNT),
+    (0x002a_5aa4, 0x002a_5bdc),
+    (0x002a_5ab4, 0x002a_5da4),
+    (0x002a_5abc, 0x002a_5e50),
+    (0x002a_5ac8, 0x002a_5ebc),
+    (0x002a_5acc, 0x002a_5f08),
+    (0x002a_5ad8, 0x002a_6130),
+    (0x002a_5b08, 0x002a_63a8),
+    (0x002a_6534, TASK_SCAN),
+    (0x002a_6548, TASK_SAVE),
+    (0x002a_6550, TASK_OPEN),
+    (0x002a_6554, TASK_REWARD_GUARD),
+    (0x002a_6570, TASK_LOAD),
+    (0x002a_5f1c, 0x1b00_16fb),
+    (0x002a_bbf0, TASK_REWARDS),
+    (0x002a_bb40, 0xe580_6000),
+    (0x002a_5c1c, 0xe580_3000),
 ];
 
 /// The main menu's locations that only the console test build may edit:

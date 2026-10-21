@@ -128,6 +128,15 @@ if ($Kind -eq 'test') {
 # redemption, and on the scan's no-game route and acknowledgment.
 $menuLocations = @(@(0x001d6554, 0xeb0000efL), @(0x002b33a4, 0xebfc853eL), @(0x002b33d4, 0xebfc8532L), @(0x003617bc, 0x002a6750L), @(0x003617dc, 0x002a6c84L))
 $relies = @(@(0x00232144, 0xe3550020L), @(0x0023214c, 0x92850020L), @(0x00232154, 0x9a000008L), @(0x00232160, 0xe3500027L), @(0x00232164, 0x92800018L), @(0x00232174, 0xe3500040L), @(0x00232178, 0x83e00000L), @(0x002321b8, 0xaef62b00L), @(0x002321bc, 0x93725b00L)) + $menuLocations
+# Checked native objects: the factory's bound and the cases of the tasks the
+# hooks check, their vtable literals, and the reward claim's constructor.
+$relies += @(
+    @(0x002a5a80, 0xe351001eL),
+    @(0x002a5aa4, 0x002a5bdcL), @(0x002a5ab4, 0x002a5da4L), @(0x002a5abc, 0x002a5e50L), @(0x002a5ac8, 0x002a5ebcL),
+    @(0x002a5acc, 0x002a5f08L), @(0x002a5ad8, 0x002a6130L), @(0x002a5b08, 0x002a63a8L),
+    @(0x002a6534, 0x00361ab8L), @(0x002a6548, 0x00362028L), @(0x002a6550, 0x00361cf0L), @(0x002a6554, 0x00361bd8L), @(0x002a6570, 0x00361ec8L),
+    @(0x002a5f1c, 0x1b0016fbL), @(0x002abbf0, 0x003619fcL), @(0x002abb40, 0xe5806000L), @(0x002a5c1c, 0xe5803000L)
+)
 if ($offline) {
     $relies += @(@(0x002af124, 0xe3a00001L), @(0x002af128, 0xe12fff1eL), @(0x002aac04, 0xe3700001L), @(0x002aac08, 0x0a000011L),
         @(0x002abe0c, 0xe1a04000L), @(0x002ac560, 0x03a00018L), @(0x002ac7b4, 0xe5940040L), @(0x002ac7c0, 0xe3500004L), @(0x002ac7c8, 0x0a0000b0L), @(0x002ac924, 0xe3a00003L), @(0x002aca90, 0xe3a00020L))
@@ -137,6 +146,10 @@ if ($offline) {
 # build's own two, and for the offline patch the scan's no-game route and
 # acknowledgment and the code of game selection and its progress check.
 $protected = @($menuLocations | Where-Object { -not ($Kind -eq 'test' -and $_[0] -in 0x003617bc, 0x003617dc) } | ForEach-Object { , @($_[0], 4) })
+# The factory, the reward claim's constructor and the vtables' first three
+# words stay native too; their update slots are edits.
+$protected += @(@(0x002a5a7c, 0xb14), @(0x002abb10, 0xe4),
+    @(0x00361ab8, 0xc), @(0x00361cf0, 0xc), @(0x00361ec8, 0xc), @(0x00362028, 0xc), @(0x003619fc, 0xc), @(0x00361bd8, 0xc))
 if ($offline) {
     $protected += @(@(0x002abe0c, 4), @(0x002ac560, 4), @(0x002ac7b4, 4), @(0x002ac7c0, 4), @(0x002ac7c8, 4), @(0x002ac924, 4), @(0x002aca90, 4),
         @(0x002adc50, 0x388), @(0x002d0fc8, 0xbc), @(0x002b0098, 0x1d8), @(0x002ae310, 0x230))

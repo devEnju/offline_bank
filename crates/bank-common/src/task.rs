@@ -5,8 +5,12 @@
 //! named at its top. See docs/internals.md, "Tasks and routing" and "HOME
 //! button and sleep".
 
-use core::{mem::transmute, ptr::NonNull};
+#[cfg(target_arch = "arm")]
+use core::mem::transmute;
+use core::ptr::NonNull;
 
+/// Factory `002a5a7c` accepts IDs below 0x1e (`002a5a80`).
+pub const TASK_COUNT: u32 = 0x1e;
 /// Vtables of the tasks a patch replaces the update of: opening the Bank
 /// (task 9), loading it (0x10), saving (7), reward claim (0xd) and reward
 /// guard (0xc).
@@ -30,7 +34,9 @@ pub const LOCAL_DATE: usize = 0x0023_a754;
 pub const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
 /// Busy protection of a task: `0025c420(task, 1, 0)` begins it,
 /// `0025c3e8(task)` ends it.
+#[cfg(target_arch = "arm")]
 const BEGIN_BUSY: usize = 0x0025_c420;
+#[cfg(target_arch = "arm")]
 const END_BUSY: usize = 0x0025_c3e8;
 
 pub use patch_common::native::NotNative;
@@ -84,12 +90,14 @@ impl Task {
         };
         self.pointer(offset)
     }
+    #[cfg(target_arch = "arm")]
     pub fn begin_busy(self) {
         let begin: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe { transmute(BEGIN_BUSY) };
         unsafe {
             begin(self.raw(), 1, 0);
         }
     }
+    #[cfg(target_arch = "arm")]
     pub fn end_busy(self) {
         if unsafe { self.raw().add(0x25).read() } != 0 {
             let end: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(END_BUSY) };
@@ -117,6 +125,7 @@ pub struct Ended {
     /// The original router's answer.
     pub native: u32,
 }
+#[cfg(target_arch = "arm")]
 impl Ended {
     /// Reads the ended task of `manager` (`+0x10`) and the manager's flag,
     /// then asks the original router. `None` for a manager or task that is
@@ -127,7 +136,7 @@ impl Ended {
     /// thread.
     pub unsafe fn route(manager: *mut u8, current: u32) -> Option<Self> {
         checked_pointer(manager as u32).ok()?;
-        if current > 0x1d {
+        if current >= TASK_COUNT {
             return None;
         }
         let task = checked_pointer(unsafe { read_word(manager, 0x10) }).ok()?;
@@ -144,6 +153,7 @@ impl Ended {
 
 /// Refuses HOME and sleep, or lets them through again
 /// (`patch_common::home`).
+#[cfg(target_arch = "arm")]
 pub fn refuse_home(refuse: bool) {
     patch_common::home::refuse::<crate::program::Bank15>(refuse);
 }
@@ -152,7 +162,9 @@ pub fn refuse_home(refuse: bool) {
 // wait), as every patch but the download enters it (`patch_common`'s
 // `message_stub!`). The original's own bit for a game save that is being
 // written is not the one let through here and stays as it is.
+#[cfg(target_arch = "arm")]
 patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
+#[cfg(target_arch = "arm")]
 extern "aapcs" fn message_waits() {
     refuse_home(false);
 }
@@ -163,10 +175,12 @@ extern "aapcs" fn message_waits() {
 /// under it; or that line alone, for numbers that are a result and no error. It stays, as the
 /// original's own message with that line does (task 0, 002a9204, message
 /// 0x1C): its task shows it without a wait and never ends.
+#[cfg(target_arch = "arm")]
 pub struct Notice {
     shown: bool,
     label: crate::numbers::Label,
 }
+#[cfg(target_arch = "arm")]
 impl Notice {
     /// `suffix` is the package's own, as "-test"; the offline patch has
     /// none.

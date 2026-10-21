@@ -157,7 +157,7 @@ The payload links at `003fb000`, after the original BSS. The paired exheader enl
 
 ### Tasks and routing
 
-Task object: vtable `+8` init, `+c` update, `+14` end, `+1c` busy poll; state at `+10`, outcome byte at `+30`. Factory `002a5a7c`, router `002a5580`. The factory makes tasks `0..0x1D` (`cmp r1, #0x1e` at `002a5a80`). Every hook that is given a task first checks that its vtable is one of the tasks it patches (`Task::from_raw`) and fails otherwise.
+Task object: vtable `+8` init, `+c` update, `+14` end, `+1c` busy poll; state at `+10`, outcome byte at `+30`. Factory `002a5a7c`, router `002a5580`. The factory makes tasks `0..0x1D` (`cmp r1, #0x1e` at `002a5a80`). Every hook that is given a task first checks that its vtable is one of the tasks it patches (`Task::from_raw`) and fails otherwise. The builder and the verify script hold the factory's bound, its cases for these tasks and their vtables' addresses (`0xD` through its constructor `002abb10`); the update slots are edits, which name their original words. The verify script also keeps the factory, that constructor and each vtable's first three words unchanged.
 
 | ID | Task | ID | Task |
 | --- | --- | --- | --- |
