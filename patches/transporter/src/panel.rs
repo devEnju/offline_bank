@@ -90,14 +90,8 @@ impl Default for Panel {
     }
 }
 
-/// Whether the panel stays when the search ends: into the game list, whose
-/// loading it covers; after anything else the patch ends it.
-pub fn handed_on(next: u32) -> bool {
-    next == crate::navigation::LIST
-}
-
 /// Whether a frame of `step`'s update in its state `state` waits, and the
-/// update returns without running (`hooks::update_waits`):
+/// update returns without running (`hooks::waits`):
 /// - reading the chosen game, and the transfer's delivery (its sub-state 0),
 ///   stand while their loading panel is `idle`, its first 0.5 s;
 /// - the question's first state, which ends the panel that reading the game
@@ -137,7 +131,6 @@ pub fn list_start(noted: u64, elapsed: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::navigation::{DISCONNECT, LIST, TITLE};
 
     const UI: usize = 0x0830_0000;
 
@@ -247,12 +240,5 @@ mod tests {
                 assert!(!ends_panel(step, state));
             }
         }
-    }
-
-    #[test]
-    fn only_the_game_list_keeps_it() {
-        assert!(handed_on(LIST));
-        assert!(!handed_on(TITLE));
-        assert!(!handed_on(DISCONNECT));
     }
 }

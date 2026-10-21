@@ -91,10 +91,12 @@ pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
     (0x001e_4040, 0x9372_5b00),
 ];
 
-/// Factory bound, case targets, constructor vtable literals and native update
-/// slots used by the checked task views. Bank data comes from constructor
-/// 0010D8EC: it installs BANK_VTABLE and startup stores its result at +0xCC.
-pub(crate) const NATIVE_OBJECTS: [(u32, u32); 26] = [
+/// Factory bound, case targets and constructor vtable literals of the
+/// tasks the checked task views accept, and the update slots that are no
+/// edits; the others name their original words. Bank data comes from
+/// constructor 0010D8EC: it installs BANK_VTABLE and startup stores its
+/// result at +0xCC.
+pub(crate) const NATIVE_OBJECTS: [(u32, u32); 22] = [
     (0x0019_cee8, 0xe351_0000 | TASK_COUNT),
     (0x0019_cf04, 0x0019_cf8c),
     (0x0019_cf18, 0x0019_d1a4),
@@ -111,12 +113,8 @@ pub(crate) const NATIVE_OBJECTS: [(u32, u32); 26] = [
     (0x0019_d64c, TASK_BANK_STEP),
     (0x0019_d650, TASK_QUESTION),
     (TASK_LANGUAGE + 0xc, 0x0024_538c),
-    (TASK_TRANSFER + 0xc, 0x0024_a0c4),
-    (TASK_SEARCH + 0xc, 0x0024_6f04),
     (TASK_LIST + 0xc, 0x0024_45a4),
-    (TASK_READ + 0xc, 0x0024_55d0),
     (TASK_BANK_STEP + 0xc, 0x0024_8c68),
-    (TASK_QUESTION + 0xc, 0x0024_7304),
     (0x0010_da38, BANK_VTABLE),
     (0x0010_d8fc, 0xe584_0000),
     (0x0010_624c, 0xe584_00cc),

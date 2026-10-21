@@ -61,13 +61,20 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
 /// save; `hooks::list_ready` lets HOME through again once it is
 /// on screen), reading the chosen game, the Bank step (it saves its record
 /// into the game), and the transfer; and the question, whose first state
-/// takes down the panel of the reading (`hooks::update_waits`
+/// takes down the panel of the reading (`hooks::waits`
 /// lets HOME through on that frame). HOME and sleep are refused from the
 /// moment one of them is chosen, until it ends or shows a message that
 /// waits for an answer (`hooks::message_waits`). Every other
 /// step waits for the user.
 pub const fn loads(next: u32) -> bool {
     matches!(next, SEARCH | LIST | READ | BANK_STEP | QUESTION | TRANSFER)
+}
+
+/// The game list, which the search hands its loading panel to; the list
+/// takes it down once it is on screen (`hooks::list_ready`). After every
+/// other step the search ends in, the router entry ends it.
+pub const fn takes_panel(next: u32) -> bool {
+    matches!(next, LIST)
 }
 
 /// Steps whose set-up puts up the general loading panel (`0019B340`):
@@ -175,6 +182,13 @@ mod tests {
             assert!(!loads(next));
         }
         assert!(!loads(TITLE) && !loads(DISCONNECT) && !loads(EXIT));
+    }
+
+    #[test]
+    fn only_the_game_list_takes_the_search_panel() {
+        assert!(takes_panel(LIST));
+        assert!(!takes_panel(TITLE));
+        assert!(!takes_panel(DISCONNECT));
     }
 
     #[test]

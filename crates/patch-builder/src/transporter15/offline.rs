@@ -63,11 +63,10 @@ const EDITS: &[Edit] = &[
     // only the second page of the failure message 0x0B, whose first is
     // about a server.
     (0x0019_b578, 0xeb01_024e, Call("transporter_message_text")),
-    // Game search, first step (was: ldr r0, [r0], the start of the cartridge
-    // scan). The stub asks the check entry with the task (r4) whether Bank
-    // can take a delivery, and either goes on with the search or ends it
-    // through the search's own steps.
-    (0x0024_6f48, 0xe590_0000, To("transporter_check_stub")),
+    // Game search, its update in its vtable (was: 00246F04). In its first
+    // state the entry asks whether Bank can take a delivery, and either runs
+    // the original update or ends the search through its own states.
+    (0x002e_6780, 0x0024_6f04, Entry("transporter_search")),
     // Bank step, sub-state 0 (was: the start of creating the server
     // request): on to where the original continues after a "yes", which
     // stores its record in the chosen game and saves it. Sub-states 1 to 3,
@@ -81,16 +80,16 @@ const EDITS: &[Edit] = &[
     (0x0024_8ebc, 0xe3a0_1022, Raw(0xe3a0_100b)),
     (0x0024_8f88, 0x0aff_fff4, Raw(0x0aff_ffba)),
     // --- Loading screens: 0.5 s before the work, 1.5 s for a success. ---
-    // The first instruction of three updates (was: their push): reading the
-    // chosen game, the question and the transfer. The stub asks the entry
-    // whether this frame waits for the loading panel, and then returns 0 as
-    // the update does on a frame with nothing to do; else it runs the push
-    // and goes on. Reading and the delivery wait for the panel's first
-    // 0.5 s; the question's first state, which ends the panel of the
-    // reading, and the transfer's closing message wait for its 1.5 s.
-    (0x0024_55d0, 0xe92d_4ff0, To("transporter_read_stub")),
-    (0x0024_7304, 0xe92d_4ff8, To("transporter_question_stub")),
-    (0x0024_a0c4, 0xe92d_4070, To("transporter_transfer_stub")),
+    // Three updates in their vtables (was: the original updates): reading
+    // the chosen game, the question and the transfer. While this frame waits
+    // for the loading panel the entry returns 0, as the update does on a
+    // frame with nothing to do; else it runs the original update. Reading
+    // and the delivery wait for the panel's first 0.5 s; the question's
+    // first state, which ends the panel of the reading, and the transfer's
+    // closing message wait for its 1.5 s.
+    (0x002e_66c4, 0x0024_55d0, Entry("transporter_read")),
+    (0x002e_67d0, 0x0024_7304, Entry("transporter_question")),
+    (0x002e_6a9c, 0x0024_a0c4, Entry("transporter_transfer")),
     // Reading the chosen game, the 1.5 s before each of its errors: a
     // damaged save (state 0xB), no save (0xC), no Game Card (0xD) (was:
     // bl 0019B758 with 1500 ms). An error ends the panel as soon as it is
@@ -269,10 +268,13 @@ mod tests {
     fn fifty_five_words_and_thirty_one_entry_functions() {
         assert_eq!(PROFILE.regions(), 56);
         assert_eq!(PROFILE.entries().len(), 31);
-        // Every edit lies in the original text.
+        // Every edit lies in the original text or, for the four updates in
+        // their vtables, its read-only data, which ends where its data
+        // begins (002EC000).
         assert!(EDITS
             .iter()
-            .all(|(address, _, _)| *address < BOOTSTRAP_ADDRESS));
+            .all(|(address, _, _)| *address < BOOTSTRAP_ADDRESS
+                || (0x002e_6618..0x002e_c000).contains(address)));
     }
 
     #[test]

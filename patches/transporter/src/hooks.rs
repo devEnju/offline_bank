@@ -12,11 +12,11 @@ use crate::{
     task::*,
     ui::{self, from_second_page, loading, refusal_message, stop_loading, MESSAGE_OPEN_BANK},
 };
-use core::slice;
+use core::{mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
     exclusive::Exclusive,
-    native::{follow, read_word, Ended},
+    native::{follow, read_word, write_word, Ended},
     spinner::{self, Spinner},
     worker::JobId,
 };
@@ -31,14 +31,21 @@ const TRANSFER_ENDING: usize = 0x45;
 /// `0024524C`), for its minimum time of 3 s (`00244B24`).
 const LIST_BEGAN: usize = 0x70;
 
-/// Answers of the check entry, as its stub tests them: go on with the game
-/// search; come back next frame; a message is on screen, so wait for it and
-/// end the search, which leads back to the title screen; end the search at
-/// once.
-const SEARCH_GO: u32 = 0;
-const SEARCH_PENDING: u32 = 1;
-const SEARCH_SHOWN: u32 = 2;
-const SEARCH_END: u32 = 3;
+/// The original updates the entries replace in their vtables and run
+/// behind their own work: the game search, reading the chosen game, the
+/// question and the transfer.
+const SEARCH_UPDATE: usize = 0x0024_6f04;
+const READ_UPDATE: usize = 0x0024_55d0;
+const QUESTION_UPDATE: usize = 0x0024_7304;
+const TRANSFER_UPDATE: usize = 0x0024_a0c4;
+/// The game search's first state, which starts the cartridge scan; its
+/// state that waits for the acknowledgement of a message and ends the
+/// search (selected at `00247000`); and the outcome "none" it ends with
+/// (`0024702C`), which the router answers with the disconnect step.
+const SEARCH_START: u32 = 0;
+const SEARCH_MESSAGE: u32 = 5;
+const SEARCH_NONE: u8 = 2;
+const TASK_OUTCOME: usize = 0x30;
 /// Answers of the delivery entry, as its stub tests them.
 const DELIVER_FAILED: u32 = 0;
 const DELIVER_DONE: u32 = 1;
@@ -171,7 +178,7 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     }
     // The search's panel stays into the game list, until the list is on
     // screen; after anything else it ends here.
-    if !panel::handed_on(next) {
+    if !navigation::takes_panel(next) {
         if let Some(ui) = PANEL.release() {
             unsafe { stop_loading(ui as *mut u8) };
         }
@@ -318,53 +325,58 @@ unsafe extern "aapcs" fn list_ready(raw: *mut u8) {
     refuse_home(false);
 }
 
-// Game search, first step (00246F48, was: ldr r0, [r0], the start of the
-// cartridge scan). r4 = task; lr is free, the original function saved its
-// own. Pending: the search's "nothing this frame" return. Shown: a message
-// is on screen; 00247000 selects the search's own step that waits for it
-// and ends the search. End: its ending without a message. Else: the
-// replaced instruction, with r0 as the search had loaded it, and on with the
-// search.
-patch_common::stub!(
-    transporter_check_stub,
-    [
-        "mov r0, r4",
-        "bl {check}",
-        "cmp r0, #{pending}",
-        "ldreq r12, =0x00247024",
-        "bxeq r12",
-        "cmp r0, #{shown}",
-        "ldreq r12, =0x00247000",
-        "bxeq r12",
-        "cmp r0, #{end}",
-        "ldreq r12, =0x0024702c",
-        "bxeq r12",
-        "ldr r0, =0x00329380",
-        "ldr r0, [r0]",
-        "ldr r12, =0x00246f4c",
-        "bx r12",
-    ],
-    check = sym check,
-    pending = const SEARCH_PENDING,
-    shown = const SEARCH_SHOWN,
-    end = const SEARCH_END,
-);
-/// Asks, when START was pressed and before the original searches for games,
-/// whether Bank can take a delivery: the question the original put to the
-/// server after a game was chosen. If not, the original's message for it is
-/// shown here and the search ends as it does for "no game found": back to
-/// the title screen.
+/// Replaces the game search's update in its vtable (`002E6780`, was
+/// `00246F04`), as Bank's scan entry replaces the scan's. In its first
+/// state, before the original searches for games, it asks whether Bank can
+/// take a delivery: the question the original put to the server after a
+/// game was chosen. If not, the original's message for it is shown here and
+/// the search goes to its own state that waits for it and ends as for "no
+/// game found": back to the title screen. Every other frame is the
+/// original's update.
+/// # Safety
+/// The original's task driver supplies the live game-search task, on the
+/// main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_search(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SEARCH]) }) else {
+        // Finished, with nothing read or written, as Bank's task hooks
+        // answer an unexpected task.
+        return 1;
+    };
+    if unsafe { read_word(raw, TASK_STATE) } == SEARCH_START {
+        match unsafe { check(task) } {
+            Check::Pending => return 0,
+            Check::Go => {}
+            Check::Shown => {
+                unsafe { write_word(raw, TASK_STATE, SEARCH_MESSAGE) };
+                return 0;
+            }
+            Check::End => {
+                unsafe { raw.add(TASK_OUTCOME).write(SEARCH_NONE) };
+                return 1;
+            }
+        }
+    }
+    unsafe { original(SEARCH_UPDATE, raw) }
+}
+
+/// What the check at START answers: come back next frame; go on with the
+/// search; a message is on screen; end the search without one.
+enum Check {
+    Pending,
+    Go,
+    Shown,
+    End,
+}
+/// The check in the search's first state.
 /// # Safety
 /// `task` is the live game-search task, on the main thread.
-unsafe extern "aapcs" fn check(raw: *mut u8) -> u32 {
-    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SEARCH]) }) else {
-        return SEARCH_END;
-    };
+unsafe fn check(task: Task) -> Check {
     // The loading panel goes up before anything is read, on a frame of its
     // own, as Bank's scan puts up its panel (`panel`). The worker's start
     // and the check follow once it has stood for 0.5 s (`spinner`).
     let Some(mut state) = STATE.take() else {
-        return SEARCH_PENDING;
+        return Check::Pending;
     };
     if !PANEL.up() {
         // No file work without its panel: without one the search refuses
@@ -373,105 +385,87 @@ unsafe extern "aapcs" fn check(raw: *mut u8) -> u32 {
         if let Some(ui) = ui.filter(|&ui| unsafe { loading(ui) }.is_ok()) {
             PANEL.start(ui as usize);
             state.spinner.up(now());
-            return SEARCH_PENDING;
+            return Check::Pending;
         }
         drop(state);
-        return if unsafe { show(task, MESSAGE_OPEN_BANK) } {
-            SEARCH_SHOWN
-        } else {
-            SEARCH_END
-        };
+        return unsafe { show(task, MESSAGE_OPEN_BANK) };
     }
     if state.job.is_none() && state.spinner.idle(now()) {
-        return SEARCH_PENDING;
+        return Check::Pending;
     }
     let answer = unsafe { state.step(Job::Check, |_| Some(())) };
     drop(state);
     // A worker that failed refuses as a file that does not read does.
     let message = match answer {
-        None => return SEARCH_PENDING,
-        Some(Ok(Reply::Ready)) => return SEARCH_GO,
+        None => return Check::Pending,
+        Some(Ok(Reply::Ready)) => return Check::Go,
         Some(Ok(Reply::Refused(refusal))) => refusal_message(refusal),
         Some(_) => MESSAGE_OPEN_BANK,
     };
-    if unsafe { show(task, message) } {
-        SEARCH_SHOWN
-    } else {
-        SEARCH_END
-    }
+    unsafe { show(task, message) }
 }
 
-// The first instruction of three updates (was: their push): reading the
-// chosen game (002455D0), the question (00247304) and the transfer
-// (0024A0C4). r0 = task, lr = the caller's. While the entry answers 1 the
-// update returns 0, as on a frame it has nothing to do; else the instruction
-// is run here and the update goes on with every register as it came. The
-// six pushed words keep the stack 8-byte aligned.
-macro_rules! update_stub {
-    ($name:ident, $step:expr, $push:literal, $resume:literal) => {
-        patch_common::stub!(
-            $name,
-            [
-                "push {{r0-r3, r12, lr}}",
-                "mov r1, #{step}",
-                "bl {update_waits}",
-                "cmp r0, #0",
-                "pop {{r0-r3, r12, lr}}",
-                "movne r0, #0",
-                "bxne lr",
-                $push,
-                concat!("ldr r12, =", $resume),
-                "bx r12",
-            ],
-            update_waits = sym update_waits,
-            step = const $step,
-        );
-    };
-}
-update_stub!(
-    transporter_read_stub,
-    navigation::READ,
-    "push {{r4-r11, lr}}",
-    "0x002455d4"
-);
-update_stub!(
-    transporter_question_stub,
-    navigation::QUESTION,
-    "push {{r3-r11, lr}}",
-    "0x00247308"
-);
-update_stub!(
-    transporter_transfer_stub,
-    navigation::TRANSFER,
-    "push {{r4, r5, r6, lr}}",
-    "0x0024a0c8"
-);
-/// The first instruction of the update of `step`: reading the chosen game,
-/// the question, or the transfer. 1 while this frame waits for the loading
-/// panel (`panel::waits`): the update returns 0 without running, as on a
-/// frame it has nothing to do. 0 runs it. A transfer the original is ending
-/// is not held up. The frame the question's first state runs, which takes
-/// down the panel of the reading, lets HOME and sleep through.
+/// Replace the updates of reading the chosen game (`002E66C4`, was
+/// `002455D0`), the question (`002E67D0`, was `00247304`) and the transfer
+/// (`002E6A9C`, was `0024A0C4`) in their vtables. While this frame waits for
+/// the loading panel (`waits`) the update returns 0, as on a frame it has
+/// nothing to do; otherwise the original's update runs.
 /// # Safety
-/// `task` is the live task of `step`, on the main thread.
-unsafe extern "aapcs" fn update_waits(raw: *mut u8, step: u32) -> u32 {
+/// The original's task driver supplies the live task of the step, on the
+/// main thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_read(raw: *mut u8) -> u32 {
+    unsafe { update(raw, navigation::READ, READ_UPDATE) }
+}
+/// # Safety
+/// As `transporter_read`.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_question(raw: *mut u8) -> u32 {
+    unsafe { update(raw, navigation::QUESTION, QUESTION_UPDATE) }
+}
+/// # Safety
+/// As `transporter_read`.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_transfer(raw: *mut u8) -> u32 {
+    unsafe { update(raw, navigation::TRANSFER, TRANSFER_UPDATE) }
+}
+/// One frame of `step`'s update: none while it waits, else the original's.
+unsafe fn update(raw: *mut u8, step: u32, update: usize) -> u32 {
+    if unsafe { waits(raw, step) } {
+        return 0;
+    }
+    unsafe { original(update, raw) }
+}
+/// The original update at `address`.
+unsafe fn original(address: usize, raw: *mut u8) -> u32 {
+    let update: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(address) };
+    unsafe { update(raw) }
+}
+
+/// Whether this frame of `step`'s update waits for its loading panel
+/// (`panel::waits`). A transfer the original is ending is not held up. The
+/// frame the question's first state runs, which takes down the panel of
+/// the reading, lets HOME and sleep through.
+/// # Safety
+/// `raw` is the live task of `step`, on the main thread.
+unsafe fn waits(raw: *mut u8, step: u32) -> bool {
     let expected = match step {
         navigation::READ => TASK_READ,
         navigation::QUESTION => TASK_QUESTION,
         navigation::TRANSFER => TASK_TRANSFER,
-        _ => return 0,
+        _ => return false,
     };
     let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
         // The original update runs unchanged for an unexpected task.
-        return 0;
+        return false;
     };
     let task = task.raw();
     if step == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
-        return 0;
+        return false;
     }
     let Some(mut state) = STATE.take() else {
         // Its state is a hook's: this frame waits, as Bank's hooks do.
-        return 1;
+        return true;
     };
     let now = now();
     // The panel of reading the game or of the transfer.
@@ -486,18 +480,19 @@ unsafe extern "aapcs" fn update_waits(raw: *mut u8, step: u32) -> u32 {
     if !waits && panel::ends_panel(step, task_state) {
         refuse_home(false);
     }
-    u32::from(waits)
+    waits
 }
 
 /// Shows an original message the way the game search shows its own. It
 /// waits for an answer, so HOME and sleep work on it (`message_waits`).
-/// `false` when the task's dialog owner is not a pointer.
-unsafe fn show(task: Task, message: u32) -> bool {
+/// The search ends without one when the task's dialog owner is not a
+/// pointer.
+unsafe fn show(task: Task, message: u32) -> Check {
     let Ok(ui) = task.pointer(TASK_UI) else {
-        return false;
+        return Check::End;
     };
     unsafe { ui::show(ui, message) };
-    true
+    Check::Shown
 }
 
 /// Replaces the load of a message in the original's "show a message"
