@@ -1,6 +1,7 @@
 //! The journal of this version of the stored files, as every release of it
 //! wrote it. A later release of the same version reads all of it; one that
-//! does not is a new version (docs/internals.md, "Rule for new features").
+//! does not is a new version (docs/internals.md, "Files", its rule for new
+//! features).
 
 use offline_core::{Metadata, Phase, METADATA_SIZE, SCHEMA_VERSION};
 

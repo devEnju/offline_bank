@@ -48,12 +48,36 @@ pub fn holds_pokemon(record: &[u8; RECORD_SIZE]) -> bool {
     species(record) != 0
 }
 
-/// Called from the slot entry in `link.rs`.
+// Gen 5 reader, per-slot result code (was: ldr r0, [r1, r7]). Without a
+// code, a slot that holds no species gets the original skip code 0x14, as
+// the server used to answer. r8 is the slot; in the caller's frame
+// [sp, #0xcc] is the record size and [sp, #0xd8] Box 1. Every register but
+// r0 is returned as it came; the six pushed words keep the stack 8-byte
+// aligned and restore r0 = 0.
+#[cfg(target_arch = "arm")]
+patch_common::stub!(
+    transporter_slot_stub,
+    [
+        "ldr r0, [r1, r7]",
+        "cmp r0, #0",
+        "bxne lr",
+        "push {{r0-r3, r12, lr}}",
+        "ldr r2, [sp, #0xcc + 24]",
+        "ldr r3, [sp, #0xd8 + 24]",
+        "mla r0, r2, r8, r3",
+        "bl {slot_holds}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "moveq r0, #0x14",
+        "bx lr",
+    ],
+    slot_holds = sym slot_holds,
+);
+/// Whether the record at `record` holds a Pokémon, for the slot stub.
 /// # Safety
 /// `record` points to one readable box record of the original's save copy.
 #[cfg(target_arch = "arm")]
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_slot_holds(record: *const u8) -> u32 {
+unsafe extern "aapcs" fn slot_holds(record: *const u8) -> u32 {
     u32::from(holds_pokemon(unsafe {
         &*record.cast::<[u8; RECORD_SIZE]>()
     }))

@@ -34,7 +34,8 @@ pub const FAILURE: u32 = 0x12;
 
 /// `outcome` is the finished step's byte `+0x30`; `native` is what the
 /// original router answered for it; `cancelled` is the manager's flag
-/// (`+0x1a`), for which the original answers the disconnect step itself.
+/// (`+0x1a`), for which the disconnect step follows, as the original
+/// answers it.
 ///
 /// The offline flow differs from the original's in four places: a game
 /// chosen on the list is read at once, where the original connected first;
@@ -45,7 +46,7 @@ pub const FAILURE: u32 = 0x12;
 /// where the original's failure step showed another.
 pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u32 {
     if cancelled {
-        return native;
+        return DISCONNECT;
     }
     match (current, outcome) {
         (LIST, 4) => READ,
@@ -57,16 +58,23 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
 
 /// Steps that read or write files: the search (the Bank check and the
 /// cartridge scan), the game list while it is set up (it reads every listed
-/// save; `hooks::transporter_list_ready` lets HOME through again once it is
+/// save; `hooks::list_ready` lets HOME through again once it is
 /// on screen), reading the chosen game, the Bank step (it saves its record
 /// into the game), and the transfer; and the question, whose first state
-/// takes down the panel of the reading (`hooks::transporter_update_waits`
+/// takes down the panel of the reading (`hooks::waits`
 /// lets HOME through on that frame). HOME and sleep are refused from the
 /// moment one of them is chosen, until it ends or shows a message that
-/// waits for an answer (`hooks::transporter_message_waits`). Every other
+/// waits for an answer (`hooks::message_waits`). Every other
 /// step waits for the user.
 pub const fn loads(next: u32) -> bool {
     matches!(next, SEARCH | LIST | READ | BANK_STEP | QUESTION | TRANSFER)
+}
+
+/// The game list, which the search hands its loading panel to; the list
+/// takes it down once it is on screen (`hooks::list_ready`). After every
+/// other step the search ends in, the router entry ends it.
+pub const fn takes_panel(next: u32) -> bool {
+    matches!(next, LIST)
 }
 
 /// Steps whose set-up puts up the general loading panel (`0019B340`):
@@ -82,41 +90,7 @@ pub const fn spins(next: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const EXIT: u32 = 0x13;
-
-    /// The original router, case by case (`00242BCC`..`00242E04`).
-    fn original(current: u32, outcome: u8) -> u32 {
-        match (current, outcome) {
-            (0, 4) => TITLE,
-            (0, _) => EXIT,
-            (1, 4) => RELOAD,
-            (1, _) => EXIT,
-            (TITLE, 3) => SEARCH,
-            (TITLE, 0x12) => 1,
-            (TITLE, _) => EXIT,
-            (CONNECT, 3) => 5,
-            (CONNECT, 0xe) => 4,
-            (5, 3) => READ,
-            (TRANSFER, 0xf) => FAILURE,
-            (SEARCH, 3) => LIST,
-            (LIST, 4) => CONNECT,
-            (READ, 3) => 0xa,
-            (0xa, 8) => 0xe,
-            (0xa, 9) => 0xd,
-            (BANK_STEP, 4) => QUESTION,
-            (BANK_STEP, 0xf) => FAILURE,
-            (BANK_STEP, 0x10) => 0xf,
-            (QUESTION, 4) => TRANSFER,
-            (QUESTION, 0x10) => 0xf,
-            (0xd, 3) => BANK_STEP,
-            (0xd, 0xf) => FAILURE,
-            (0xe, 3) => 0xd,
-            (DISCONNECT | RELOAD, _) => TITLE,
-            (0x13.., _) => EXIT,
-            _ => DISCONNECT,
-        }
-    }
+    use crate::router::{self, EXIT};
 
     /// The routing the two edits inside the router gave (`00242D10`,
     /// `00242D28`), and the cancel and failure steps left out.
@@ -126,7 +100,7 @@ mod tests {
             (READ, _) => BANK_STEP,
             (BANK_STEP | QUESTION, 0x10) => DISCONNECT,
             (TRANSFER | BANK_STEP | 0xd, 0xf) => DISCONNECT,
-            _ => original(current, outcome),
+            _ => router::next(current, outcome),
         }
     }
 
@@ -134,7 +108,7 @@ mod tests {
     fn the_routing_is_the_one_the_two_edits_inside_the_router_gave() {
         for current in 0..=0x14 {
             for outcome in 0..=u8::MAX {
-                let native = original(current, outcome);
+                let native = router::next(current, outcome);
                 assert_eq!(
                     destination(current, outcome, native, false),
                     edited_inside(current, outcome),
@@ -151,7 +125,7 @@ mod tests {
         let mut step = TITLE;
         let mut seen = [0; 8];
         for (index, outcome) in [3, 3, 4, 3, 4, 4, 3, 0].into_iter().enumerate() {
-            step = destination(step, outcome, original(step, outcome), false);
+            step = destination(step, outcome, router::next(step, outcome), false);
             seen[index] = step;
         }
         assert_eq!(
@@ -160,7 +134,7 @@ mod tests {
         );
         for current in 0..=0x14 {
             for outcome in 0..=u8::MAX {
-                let next = destination(current, outcome, original(current, outcome), false);
+                let next = destination(current, outcome, router::next(current, outcome), false);
                 // The server's own steps and the failure step are only ever
                 // left, never entered.
                 let never = [CONNECT, 4, 5, 0xa, 0xd, 0xe, CANCEL, FAILURE];
@@ -203,11 +177,18 @@ mod tests {
             (TRANSFER, 3),
             (TRANSFER, 0xf),
         ] {
-            let next = destination(current, outcome, original(current, outcome), false);
+            let next = destination(current, outcome, router::next(current, outcome), false);
             assert_eq!(next, DISCONNECT, "{current:#x} {outcome:#x}");
             assert!(!loads(next));
         }
         assert!(!loads(TITLE) && !loads(DISCONNECT) && !loads(EXIT));
+    }
+
+    #[test]
+    fn only_the_game_list_takes_the_search_panel() {
+        assert!(takes_panel(LIST));
+        assert!(!takes_panel(TITLE));
+        assert!(!takes_panel(DISCONNECT));
     }
 
     #[test]

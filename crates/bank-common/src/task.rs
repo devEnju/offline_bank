@@ -5,8 +5,12 @@
 //! named at its top. See docs/internals.md, "Tasks and routing" and "HOME
 //! button and sleep".
 
-use core::{mem::transmute, ptr::NonNull};
+#[cfg(target_arch = "arm")]
+use core::mem::transmute;
+use core::ptr::NonNull;
 
+/// Factory `002a5a7c` accepts IDs below 0x1e (`002a5a80`).
+pub const TASK_COUNT: u32 = 0x1e;
 /// Vtables of the tasks a patch replaces the update of: opening the Bank
 /// (task 9), loading it (0x10), saving (7), reward claim (0xd) and reward
 /// guard (0xc).
@@ -16,11 +20,6 @@ pub const TASK_LOAD: u32 = 0x0036_1ec8;
 pub const TASK_SAVE: u32 = 0x0036_2028;
 pub const TASK_REWARDS: u32 = 0x0036_19fc;
 pub const TASK_REWARD_GUARD: u32 = 0x0036_1bd8;
-/// Bank's file system session.
-pub const FS_SESSION: *const u32 = 0x0039_0100 as *const u32;
-/// The original's task router, `002a5580(manager, current)`: the next task
-/// for the one that has ended.
-pub const ROUTER: usize = 0x002a_5580;
 /// `00233a6c(save manager)`: the game object of the selected game.
 pub const SELECTED_GAME: usize = 0x0023_3a6c;
 /// `0023a754(words)`: the console's date and time as the original's packed
@@ -32,50 +31,34 @@ pub const LOCAL_DATE: usize = 0x0023_a754;
 pub const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
 /// Busy protection of a task: `0025c420(task, 1, 0)` begins it,
 /// `0025c3e8(task)` ends it.
+#[cfg(target_arch = "arm")]
 const BEGIN_BUSY: usize = 0x0025_c420;
+#[cfg(target_arch = "arm")]
 const END_BUSY: usize = 0x0025_c3e8;
 
-/// A pointer or object of the original that is not what a hook expects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotNative;
+use patch_common::native::read_word;
+pub use patch_common::native::NotNative;
 impl From<NotNative> for crate::fault::Fault {
     fn from(_: NotNative) -> Self {
         Self::NativeObject
     }
 }
 
-/// # Safety
-/// `base + offset` must be four readable bytes of a live native object.
-pub unsafe fn read_word(base: *mut u8, offset: usize) -> u32 {
-    unsafe { base.add(offset).cast::<u32>().read() }
-}
-/// # Safety
-/// `base + offset` must be four writable bytes of a live native object.
-pub unsafe fn write_word(base: *mut u8, offset: usize, value: u32) {
-    unsafe { base.add(offset).cast::<u32>().write(value) }
-}
+/// `value` as a pointer of the original (`patch_common::native::pointer`).
 pub fn checked_pointer(value: u32) -> Result<*mut u8, NotNative> {
-    if value == 0 || value & 3 != 0 {
-        Err(NotNative)
-    } else {
-        Ok(value as *mut u8)
-    }
+    patch_common::native::pointer(value).ok_or(NotNative)
 }
 
 #[derive(Clone, Copy)]
 pub struct Task(NonNull<u8>);
 impl Task {
-    // Only trusted native hook callers may supply object pointers. These checks
-    // detect a wrong hook/type; they are not a general memory-access validator.
+    /// The task a hook is given, if its vtable is one of `expected`
+    /// (`patch_common::native::object`).
     /// # Safety
     /// `raw` is the live task object the original's task driver passes to
     /// the hooked virtual function, on the main thread.
     pub unsafe fn from_raw(raw: *mut u8, expected: &[u32]) -> Result<Self, NotNative> {
-        checked_pointer(raw as u32)?;
-        if !expected.contains(&unsafe { read_word(raw, 0) }) {
-            return Err(NotNative);
-        }
-        Ok(Self(NonNull::new(raw).ok_or(NotNative)?))
+        unsafe { patch_common::native::object(raw, expected) }.map(Self)
     }
     pub fn raw(self) -> *mut u8 {
         self.0.as_ptr()
@@ -95,12 +78,14 @@ impl Task {
         };
         self.pointer(offset)
     }
+    #[cfg(target_arch = "arm")]
     pub fn begin_busy(self) {
         let begin: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe { transmute(BEGIN_BUSY) };
         unsafe {
             begin(self.raw(), 1, 0);
         }
     }
+    #[cfg(target_arch = "arm")]
     pub fn end_busy(self) {
         if unsafe { self.raw().add(0x25).read() } != 0 {
             let end: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(END_BUSY) };
@@ -117,87 +102,22 @@ impl Task {
     }
 }
 
-/// A task that has ended, as the router hook sees it, and what the
-/// original router answered for it.
-#[derive(Clone, Copy)]
-pub struct Ended {
-    /// The ended task's byte `+0x30`.
-    pub outcome: u8,
-    /// The manager's flag `+0x1a`, which the original router clears.
-    pub cancelled: bool,
-    /// The original router's answer.
-    pub native: u32,
-}
-impl Ended {
-    /// Reads the ended task of `manager` (`+0x10`) and the manager's flag,
-    /// then asks the original router. `None` for a manager or task that is
-    /// not a pointer, or a task ID the factory does not know; the original
-    /// is not asked then.
-    /// # Safety
-    /// Called from the router call site with its arguments, on the main
-    /// thread.
-    pub unsafe fn route(manager: *mut u8, current: u32) -> Option<Self> {
-        checked_pointer(manager as u32).ok()?;
-        if current > 0x1d {
-            return None;
-        }
-        let task = checked_pointer(unsafe { read_word(manager, 0x10) }).ok()?;
-        let cancelled = unsafe { manager.add(0x1a).read() } != 0;
-        let outcome = unsafe { task.add(0x30).read() };
-        let router: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(ROUTER) };
-        Some(Self {
-            outcome,
-            cancelled,
-            native: unsafe { router(manager, current) },
-        })
-    }
-}
-
 /// Refuses HOME and sleep, or lets them through again
 /// (`patch_common::home`).
+#[cfg(target_arch = "arm")]
 pub fn refuse_home(refuse: bool) {
     patch_common::home::refuse::<crate::program::Bank15>(refuse);
 }
 
 // The original's "show a message" function, 001d6650(ui, kind, message,
-// wait), begins with `push {r4-r8, lr}`. A patch replaces that instruction
-// by a branch to this entry, which runs it, lets HOME and sleep through if
-// the message waits for an answer, and goes on inside the original.
-//
-// The patches refuse HOME and sleep by the task that comes next, for as
-// long as it reads or writes. A message that waits is where such a task has
-// nothing left to do but end, so the refusal the router hook began ends
-// here. The original's own bit for a game save that is being written is not
-// this one and stays as it is.
-core::arch::global_asm!(
-    ".syntax unified",
-    ".arm",
-    ".section .text.bank.message, \"ax\", %progbits",
-    ".align 2",
-    ".global bank_message_shown",
-    ".type bank_message_shown, %function",
-    "bank_message_shown:",
-    "push {{r4, r5, r6, r7, r8, lr}}",
-    "cmp r3, #0",
-    "beq 1f",
-    "push {{r0-r3, r12, lr}}",
-    "bl {waits}",
-    "pop {{r0-r3, r12, lr}}",
-    "1:",
-    "ldr r12, =0x001d6654",
-    "bx r12",
-    ".ltorg",
-    ".size bank_message_shown, .-bank_message_shown",
-    waits = sym message_waits,
-);
+// wait), as every patch but the download enters it (`patch_common`'s
+// `message_stub!`). The original's own bit for a game save that is being
+// written is not the one let through here and stays as it is.
+#[cfg(target_arch = "arm")]
+patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
+#[cfg(target_arch = "arm")]
 extern "aapcs" fn message_waits() {
     refuse_home(false);
-}
-unsafe extern "aapcs" {
-    /// # Safety
-    /// Only the first instruction of 001d6650 may branch here, with that
-    /// function's arguments and its caller's `lr`.
-    pub fn bank_message_shown();
 }
 
 /// The screen a patch ends on when nothing can go on (`ui::stop`): one
@@ -206,10 +126,12 @@ unsafe extern "aapcs" {
 /// under it; or that line alone, for numbers that are a result and no error. It stays, as the
 /// original's own message with that line does (task 0, 002a9204, message
 /// 0x1C): its task shows it without a wait and never ends.
+#[cfg(target_arch = "arm")]
 pub struct Notice {
     shown: bool,
     label: crate::numbers::Label,
 }
+#[cfg(target_arch = "arm")]
 impl Notice {
     /// `suffix` is the package's own, as "-test"; the offline patch has
     /// none.

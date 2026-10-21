@@ -19,4 +19,4 @@ pub mod download;
 pub mod navigation;
 
 #[cfg(target_arch = "arm")]
-pub mod runtime;
+pub mod hooks;

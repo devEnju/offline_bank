@@ -107,7 +107,7 @@ pub fn build(
         parsed.bootstrap_bytes().len(),
         exports,
         parsed.entries.len(),
-        profile.regions,
+        profile.regions(),
         profile.menu_edits.len(),
     );
     let report = format!(
@@ -150,7 +150,7 @@ pub fn build(
         layout.executable_size,
         layout.memory_size,
         parsed.entries.len(),
-        profile.regions,
+        profile.regions(),
     );
     write_artifacts(
         output,

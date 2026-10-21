@@ -195,6 +195,11 @@ The message only comes for a Save and Quit that was cut off. A cartridge taken o
 
 ## Troubleshooting
 
+| What you see | Likely cause |
+| --- | --- |
+| Bank does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Bank is not version 1.5. |
+| "Press HOME to return to the HOME Menu" with two numbers under it. | An error; the numbers say where (below). |
+
 An error ends this run of Bank. Stored data is kept. Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
 
 After A the original's line "Press HOME to return to the HOME Menu" appears with two lines under it, and it stays: nothing else reacts, because nothing can go on.

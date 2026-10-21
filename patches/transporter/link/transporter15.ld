@@ -1,8 +1,10 @@
-/* Reviewed Transporter code 001c20ad...f0fd2f only.
+/* Poké Transporter 1.5, code 001c20ad...f0fd2f only: the offline patch.
    - The start-up hook goes into the zero bytes between the end of the
      original text (0x0028D1AC) and the end of its last page (0x0028E000).
    - The payload goes on the first page after the original zero-initialised
-     data (which ends at 0x003638A4), allocated by the paired exheader. */
+     data (0x003638A4), allocated by the paired exheader.
+   - The table in .patch.link_roots keeps the entry functions in the link
+     (src/link.rs). */
 OUTPUT_FORMAT(elf32-littlearm)
 OUTPUT_ARCH(arm)
 ENTRY(transporter_next)
@@ -22,17 +24,12 @@ SECTIONS {
         KEEP(*(.patch.bootstrap.*))
     } :bootstrap
     ASSERT(SIZEOF(.patch.bootstrap) > 0, "missing bootstrap")
-    ASSERT(SIZEOF(.patch.bootstrap) <= 0xE54, "bootstrap exceeds the unused bytes of the code section")
+    ASSERT(SIZEOF(.patch.bootstrap) <= 0xE54, "bootstrap exceeds the zero bytes after the original text")
 
     . = 0x00364000;
     __patch_payload_start = .;
     .text : {
         FILL(0)
-        KEEP(*(.text.transporter_next))
-        KEEP(*(.text.transporter_cart_stubs))
-        KEEP(*(.text.transporter_language_stubs))
-        KEEP(*(.text.transporter_stubs))
-        KEEP(*(.text.transporter_shiny_stubs))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } :payload_rx
@@ -46,7 +43,7 @@ SECTIONS {
     __patch_payload_rx_size = __patch_payload_rx_end - __patch_payload_start;
 
     .data : {
-        KEEP(*(.transporter.link_roots))
+        KEEP(*(.patch.link_roots))
         *(.data .data.*)
         *(.got .got.*)
     } :payload_rw

@@ -116,7 +116,7 @@ pub trait Rest: Storage {
 }
 
 /// The files in Bank's extdata, opened through the session borrowed from
-/// the original (`task::FS_SESSION`).
+/// the original (`Program::fs_session`).
 #[cfg(target_arch = "arm")]
 pub struct ExtFiles {
     pub session: u32,

@@ -1,4 +1,4 @@
-//! Save and Quit on the main thread (`runtime` carries this out): the order
+//! Save and Quit on the main thread (`hooks` carries this out): the order
 //! of its steps, the worker's reply each one waits for, and when a save may
 //! be in progress in the Bank's journal. The worker's side is
 //! `storage_worker`.

@@ -1,15 +1,15 @@
 <#
 Independent check of the built package of one patch for Bank, in
-build/binary/bank, build/migration, build/download or build/test. This script shares no code
-with patch-builder: it parses the ELF and IPS itself, rebuilds the expected image
-from hardcoded reviewed addresses, and compares every byte. It reads only local
-build inputs and writes verification.json into the package folder.
+build/binary/bank, build/migration, build/download or build/test
+(Verify-Package.ps1, which shares no code with patch-builder). Writes
+verification.json into the package folder.
 
 -Kind says which package for Bank it is: the offline patch (bank), the
 migration patch (migration), the download patch (download), or the console
-test build of the offline patch (test). Each has its own entry functions
-and its own list of regions it may edit, written out below. The test build is the offline patch with two more entry functions and
-two more regions, in the main menu, which only it shows.
+test build of the offline patch (test). Each has its own list of edits,
+written out below with their original words. The test build is the offline
+patch with two more entry functions and two more edits, in the main menu,
+which only it shows.
 #>
 [CmdletBinding()]
 param(
@@ -21,399 +21,162 @@ param(
     # build/extracted whose code.bin has the reviewed hash, whatever its name.
     [string]$InputPath = ''
 )
-Set-Location -LiteralPath ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')))
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-function Assert-Check([bool]$condition, [string]$message) {
-    if (-not $condition) { throw "Verification failed: $message" }
-}
-function U16([byte[]]$bytes,[int]$offset) { [BitConverter]::ToUInt16($bytes,$offset) }
-function U32([byte[]]$bytes,[int]$offset) { [BitConverter]::ToUInt32($bytes,$offset) }
-function Hash([byte[]]$bytes,[int]$offset=0,[int]$length=-1) {
-    if($length -lt 0){$length=$bytes.Length-$offset}
-    $algorithm=[Security.Cryptography.SHA256]::Create()
-    try { [Convert]::ToHexString($algorithm.ComputeHash($bytes,$offset,$length)).ToLowerInvariant() }
-    finally {$algorithm.Dispose()}
-}
-function CString([byte[]]$bytes,[int]$offset) {
-    $end=[Array]::IndexOf[byte]($bytes,0,$offset)
-    Assert-Check ($end -ge $offset) 'Unterminated ELF string'
-    [Text.Encoding]::ASCII.GetString($bytes,$offset,$end-$offset)
-}
-# Where the package and its payload lie (packages.psd1); what they must
-# contain is written out below.
-$package=(Import-PowerShellDataFile (Join-Path $PSScriptRoot 'packages.psd1'))[$Kind]
-if (-not $ElfPath) { $ElfPath="build/intermediate/$Kind/$($package.Crate).elf" }
-if (-not $PackagePath) { $PackagePath=$package.Folder }
-$reportPath=Join-Path $packagePath 'verification.json'
-try {
-    $packageName='unknown'
-    $packageName=(Get-Content -LiteralPath (Join-Path $packagePath 'PACKAGE.txt') -Raw).Trim()
-    $manifest=Get-Content -LiteralPath (Join-Path $packagePath 'manifest.json') -Raw | ConvertFrom-Json
-    $expectedCode='2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf'
-    if (-not $InputPath) {
-        $candidates=@(Get-ChildItem -LiteralPath (Join-Path (Get-Location) 'build/extracted') -Directory |
-            Where-Object {
-                $code=Join-Path $_.FullName 'exefs/code.bin'
-                (Test-Path -LiteralPath $code) -and ((Get-FileHash -LiteralPath $code -Algorithm SHA256).Hash.ToLowerInvariant() -eq $expectedCode)
-            })
-        Assert-Check ($candidates.Count -ge 1) 'No extracted Bank input with the reviewed code hash'
-        $InputPath=$candidates[0].FullName
-    }
-    [byte[]]$original=[IO.File]::ReadAllBytes((Join-Path $InputPath 'exefs/code.bin'))
-    [byte[]]$originalHeader=[IO.File]::ReadAllBytes((Join-Path $InputPath 'exheader.bin'))
-    [byte[]]$elf=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $ElfPath))
-    [byte[]]$ips=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $packagePath, 'code.ips'))
-    [byte[]]$header=[IO.File]::ReadAllBytes([IO.Path]::Combine((Get-Location).Path, $packagePath, 'exheader.bin'))
-    $codeHash=Hash $original
-    $headerHash=Hash $originalHeader
-    $elfHash=Hash $elf
-    Assert-Check ($codeHash -eq $expectedCode) 'Original code hash'
-    Assert-Check ($headerHash -eq '39d93584b07901dfa7ea2fc8ce1236cdd92476584ee2dbb60c11a4ae9402abf7') 'Original exheader hash'
-    Assert-Check ($original.Length -eq 0x2ac000 -and $originalHeader.Length -eq 0x800) 'Original input lengths'
-    Assert-Check ($manifest.source_code_sha256 -eq $codeHash -and $manifest.source_exheader_sha256 -eq $headerHash) 'Manifest input hashes'
-    Assert-Check ($manifest.source_elf_sha256 -eq $elfHash) 'Manifest ELF hash'
-    Assert-Check ($packageName -eq (& (Join-Path $PSScriptRoot 'Get-PackageId.ps1') -Kind $Kind)) 'Package is not the one of the current payload and profile'
-    Assert-Check ($manifest.patch -eq $Kind) 'Manifest names another patch'
-    Assert-Check ($manifest.title_id -eq '00040000000c9b00' -and $manifest.tmd_version -eq 6272 -and $manifest.remaster_version -eq 6) 'Manifest version'
-    foreach($name in @('code.ips','exheader.bin')) {
-        $bytes=if($name -eq 'code.ips'){$ips}else{$header}
-        $artifact=$manifest.artifacts.$name
-        Assert-Check ($artifact.sha256 -eq (Hash $bytes) -and $artifact.bytes -eq $bytes.Length) ('Artifact '+$name)
-    }
-    Assert-Check ($manifest.paired_files_required -eq $true -and $manifest.hardware_tested_by_builder -eq $false) 'Manifest validation status'
+. (Join-Path $PSScriptRoot 'Verify-Package.ps1')
 
-    # Parse ELF headers and symbols independently of patch-builder.
-    Assert-Check ([Text.Encoding]::ASCII.GetString($elf,1,3) -eq 'ELF' -and $elf[0] -eq 0x7f -and $elf[4] -eq 1 -and $elf[5] -eq 1) 'ELF32 little-endian header'
-    Assert-Check ((U16 $elf 16) -eq 2 -and (U16 $elf 18) -eq 40) 'ARM executable ELF'
-    $phoff=U32 $elf 28; $phsize=U16 $elf 42; $phcount=U16 $elf 44
-    $shoff=U32 $elf 32; $shsize=U16 $elf 46; $shcount=U16 $elf 48
-    Assert-Check ($phsize -eq 32 -and $shsize -eq 40) 'ELF table sizes'
-    $loads=@()
-    for($index=0;$index -lt $phcount;$index++) {
-        $at=$phoff+$index*$phsize
-        if((U32 $elf $at) -ne 1){continue}
-        $load=[pscustomobject]@{offset=(U32 $elf ($at+4));address=(U32 $elf ($at+8));file_bytes=(U32 $elf ($at+16));memory_bytes=(U32 $elf ($at+20));flags=(U32 $elf ($at+24));alignment=(U32 $elf ($at+28))}
-        Assert-Check ($load.address -eq (U32 $elf ($at+12)) -and $load.file_bytes -le $load.memory_bytes) 'ELF LOAD mapping'
-        Assert-Check ($load.offset+$load.file_bytes -le $elf.Length -and $load.alignment -eq 0x1000) 'ELF LOAD file range'
-        Assert-Check (($load.address%0x1000) -eq ($load.offset%0x1000)) 'ELF LOAD congruence'
-        $loads+=$load
-    }
-    $loads=@($loads | Sort-Object address)
-    Assert-Check ($loads.Count -eq 3) 'Expected bootstrap/RX/RW LOADs'
-    $boot=$loads[0]; $rx=$loads[1]; $rw=$loads[2]
-    Assert-Check ($boot.address -eq 0x313910 -and $boot.flags -eq 5 -and $boot.memory_bytes -eq $boot.file_bytes -and $boot.address+$boot.memory_bytes -le 0x314000) 'Bootstrap LOAD'
-    Assert-Check ($rx.address -eq 0x3fb000 -and $rx.flags -eq 5 -and $rx.memory_bytes -eq $rx.file_bytes -and $rx.memory_bytes%0x1000 -eq 0) 'Payload RX LOAD'
-    Assert-Check ($rw.address -eq $rx.address+$rx.memory_bytes -and $rw.flags -eq 6 -and $rw.memory_bytes%0x1000 -eq 0) 'Payload RW LOAD'
-    $imageEnd=$rw.address+$rw.memory_bytes
-    $expandedSize=$imageEnd-0x100000
-    Assert-Check ($expandedSize -eq $manifest.expanded_code_bytes -and $imageEnd -lt 0x08000000) 'Expanded allocation'
-    $symbols=@{}
-    $symbolsFound=0
-    for($index=0;$index -lt $shcount;$index++) {
-        $at=$shoff+$index*$shsize
-        if((U32 $elf ($at+4)) -ne 2){continue}
-        $symbolsFound++
-        $symbolOffset=U32 $elf ($at+16); $symbolBytes=U32 $elf ($at+20); $stringIndex=U32 $elf ($at+24)
-        Assert-Check ((U32 $elf ($at+36)) -eq 16 -and $symbolBytes%16 -eq 0) 'ELF symbol entries'
-        $stringAt=$shoff+$stringIndex*$shsize
-        $stringOffset=U32 $elf ($stringAt+16)
-        for($entry=$symbolOffset;$entry -lt $symbolOffset+$symbolBytes;$entry+=16) {
-            $name=CString $elf ($stringOffset+(U32 $elf $entry))
-            if($name){$symbols[$name]=[pscustomobject]@{value=(U32 $elf ($entry+4));size=(U32 $elf ($entry+8));info=$elf[$entry+12];section=(U16 $elf ($entry+14))}}
-        }
-    }
-    Assert-Check ($symbolsFound -eq 1) 'One ELF symbol table'
-    # The entry functions of each patch; the first is the entry of the ELF.
-    # The last is the one every patch has: where the original's "show a
-    # message" function goes first.
-    $offlineNames=@('bank_offline_next','bank_offline_load','bank_offline_save','bank_offline_rewards','bank_offline_timestamp','bank_offline_no_game','bank_offline_scan','bank_message_shown','bank_version_shown')
-    $exportNames=@{
-        bank=$offlineNames
-        migration=@('bank_migrate_next','bank_migrate_scan','bank_message_shown','bank_version_shown')
-        test=$offlineNames+@('bank_test_menu_chosen','bank_test_menu_update')
-        download=@('bank_download_next','bank_download_scan','bank_download_scan_busy','bank_download_open','bank_download_open_busy','bank_download_save','bank_version_shown')
-    }[$Kind]
-    $exportCount=@{bank=9;migration=4;test=11;download=7}[$Kind]
-    Assert-Check ($exportNames.Count -eq $exportCount -and $manifest.runtime_exports -eq $exportCount) 'Runtime export count'
-    # No entry function of another patch is linked into this one.
-    $foreign=@{bank=@('bank_migrate_*','bank_download_*');migration=@('bank_offline_*','bank_download_*');test=@('bank_migrate_*','bank_download_*');download=@('bank_offline_*','bank_migrate_*')}[$Kind]
-    foreach($pattern in $foreign) {
-        Assert-Check (@($symbols.Keys | Where-Object { $_ -like $pattern }).Count -eq 0) ('Entry function of another patch is linked: '+$pattern)
-    }
-    Assert-Check (@($symbols.Keys | Where-Object { $_ -like 'bank_offline_menu*' }).Count -eq 0) 'Removed menu wrappers still linked'
-    # The test build's menu entry is in no package that is released.
-    foreach($name in @('bank_test_menu_chosen','bank_test_menu_update')) {
-        Assert-Check (($Kind -eq 'test') -eq $symbols.ContainsKey($name)) ('Menu entry of the test build '+$name)
-    }
-    $wrapperNames=@('patch_svc_close_handle','patch_svc_wait_thread','patch_svc_get_resource_limit','patch_svc_get_resource_limit_values','patch_svc_get_resource_current_values')
-    foreach($name in $wrapperNames) {
-        Assert-Check ($symbols.ContainsKey($name)) ('Missing system-call wrapper '+$name)
-        $symbol=$symbols[$name]
-        Assert-Check ($symbol.value%4 -eq 0 -and $symbol.value -ge $rx.address -and $symbol.value+$symbol.size -le $rx.address+$rx.file_bytes -and $symbol.info -eq 0x12 -and $symbol.size -gt 0) ('System-call wrapper '+$name)
-    }
-    Assert-Check (@($manifest.exports.psobject.Properties).Count -eq $exportNames.Count) 'Manifest export count'
-    foreach($name in $exportNames) {
-        Assert-Check ($symbols.ContainsKey($name)) ('Missing ELF export '+$name)
-        $symbol=$symbols[$name]
-        Assert-Check ($symbol.value -eq $manifest.exports.$name -and $symbol.value%4 -eq 0 -and $symbol.value -ge $rx.address -and $symbol.value+$symbol.size -le $rx.address+$rx.file_bytes -and $symbol.info -eq 0x12 -and $symbol.size -gt 0) ('ELF export '+$name)
-    }
-    Assert-Check ($symbols.patch_bootstrap_startup.value -eq $boot.address -and (U32 $elf 24) -eq $symbols[$exportNames[0]].value) 'ELF entry points'
-    foreach($bound in @(@('__patch_payload_start',$rx.address),@('__patch_payload_rx_end',$rw.address),@('__patch_payload_rx_size',$rx.memory_bytes),@('__patch_payload_end',$imageEnd),@('__patch_original_app_init',0x10494c))) {
-        Assert-Check ($symbols[$bound[0]].value -eq $bound[1]) ('ELF bound '+$bound[0])
-    }
+$program = @{
+    Name = 'Bank'; CodeLength = 0x2ac000; TitleId = '00040000000c9b00'; TmdVersion = 6272; Remaster = 6
+    CodeHash = '2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf'
+    ExheaderHash = '39d93584b07901dfa7ea2fc8ce1236cdd92476584ee2dbb60c11a4ae9402abf7'
+    Bootstrap = 0x00313910; BootstrapEnd = 0x00314000; Payload = 0x003fb000
+    AppInit = 0x0010494c; StartupCall = 0x001040a4
+}
+$offline = $Kind -in 'bank', 'test'
+$router = @{ bank = 'bank_offline_next'; test = 'bank_offline_next'; migration = 'bank_migrate_next'; download = 'bank_download_next' }[$Kind]
 
-    # Hardcoded reviewed native edits, separate from the builder implementation.
-    # What every patch edits: the archive is kept, the start-up hook is
-    # called, the router is the patch's own, and the start screen's call
-    # that writes its version line (002b49c4, bl 001e21c8) goes to the
-    # entry that adds the patch's name to it. What every patch but the
-    # download edits: the "show a message" function (001d6650,
-    # push {r4-r8, lr}) goes to the entry that lets HOME and sleep through
-    # for a message that waits. The offline and test patches also skip the
-    # first start's notice to where accepting it continues; the migration
-    # replaces task 3's update, where that notice is.
-    $router=$exportNames[0]
-    $branches=@(
-        @(0x29f338,0xe594002cL,0x29f4fc,$false),
-        @(0x1040a4,0xeb000228L,'patch_bootstrap_startup',$true),
-        @(0x2a5a2c,0xebfffed3L,$router,$true),
-        @(0x2b49c4,0xebfcb5ffL,'bank_version_shown',$true)
+# What every patch edits: the start-up hook is called, the archive is kept,
+# the router is the patch's own, and the start screen's call that writes its
+# version line goes to the entry that adds the patch's name to it.
+$edits = @(
+    @(0x001040a4, 0xeb000228L, 'bl:patch_bootstrap_startup'),
+    @(0x0029f338, 0xe594002cL, 'b:0029f4fc'),
+    @(0x002a5a2c, 0xebfffed3L, "bl:$router"),
+    @(0x002b49c4, 0xebfcb5ffL, 'bl:bank_version_shown')
+)
+# Every patch but the download, which runs the original online (there the
+# first start keeps its prompts, and the original refuses HOME and sleep for
+# its whole session itself): the "show a message" function lets HOME and
+# sleep through for a message that waits, and the manager's set-up does not
+# ask for a language (nop; mov r5, #1).
+if ($Kind -ne 'download') {
+    $edits += @(
+        @(0x001d6650, 0xe92d41f0L, 'b:bank_message_stub'),
+        @(0x002a4898, 0xebfeddfbL, 0xe320f000L),
+        @(0x002a4940, 0xe1a05007L, 0xe3a05001L)
     )
-    # Not the download patch, which runs the original online: there the
-    # first start keeps its prompts, and the original refuses HOME and
-    # sleep for its whole session itself.
-    if ($Kind -ne 'download') {
-        $branches+=,@(0x1d6650,0xe92d41f0L,'bank_message_shown',$false)
+}
+switch ($Kind) {
+    'migration' {
+        # Task 3's update and busy poll run the conversion.
+        $edits += @(
+            @(0x00361ac4, 0x002abe08L, 'ptr:bank_migrate_scan'),
+            @(0x00361ad4, 0x002b4a20L, 'ptr:bank_migrate_scan')
+        )
     }
-    if ($Kind -in 'bank','test') {
-        $branches+=,@(0x2ac5b0,0xe5945040L,0x2ac8c8,$false)
-        $branches+=,@(0x1d3bf4,0xe92d4ff3L,'bank_offline_timestamp',$false)
-        $branches+=,@(0x2ac7a4,0xebfca7a9L,'bank_offline_no_game',$true)
+    'download' {
+        # Task 9 and task 3 each have an entry for their update and their
+        # busy poll; the reward step's update writes the files and ends as
+        # cancelled.
+        $edits += @(
+            @(0x00361cfc, 0x002ae568L, 'ptr:bank_download_open'),
+            @(0x00361d0c, 0x002b4a20L, 'ptr:bank_download_open_busy'),
+            @(0x00361ac4, 0x002abe08L, 'ptr:bank_download_scan'),
+            @(0x00361ad4, 0x002b4a20L, 'ptr:bank_download_scan_busy'),
+            @(0x00361be4, 0x002ad1bcL, 'ptr:bank_download_save')
+        )
     }
-    # The main menu's locations that only the console test build may edit.
-    # Every other package leaves them with their original words.
-    $menuLocations=@(
-        @(0x1d6554,0xeb0000efL),
-        @(0x2b33a4,0xebfc853eL),
-        @(0x2b33d4,0xebfc8532L),
-        @(0x3617bc,0x002a6750L),
-        @(0x3617dc,0x002a6c84L)
+    default {
+        # The offline patch: the first start's notice is skipped to where
+        # accepting it continues, and a saved language is cleared through
+        # the original's store and write in task 3 (ldr r6, [r0, #0x74];
+        # ldrh r5, [r0, #0x30]; cmp r5, #0; mov r2, #0; mov r1, #0). The
+        # scan's no-game notice without its HOME question, its first state
+        # without the loading panel (bl 001d5b44, bl 0025da24 -> nop), the
+        # clock, and the updates of opening, loading, saving, rewards and
+        # the scene set-up's server check (the original's "finished" stub).
+        $edits += @(
+            @(0x002ac5b0, 0xe5945040L, 'b:002ac8c8'),
+            @(0x002ac61c, 0xe59060f0L, 0xe5906074L),
+            @(0x002ac628, 0xe1b05000L, 0xe1d053b0L),
+            @(0x002ac62c, 0xe320f000L, 0xe3550000L),
+            @(0x002ac640, 0xe1a02000L, 0xe3a02000L),
+            @(0x002ac648, 0xe6ff1075L, 0xe3a01000L),
+            @(0x002ac7a4, 0xebfca7a9L, 'bl:bank_offline_no_game_stub'),
+            @(0x002ac7a8, 0xe3a00021L, 0xe3a00019L),
+            @(0x001d3bf4, 0xe92d4ff3L, 'b:bank_offline_timestamp'),
+            @(0x002ac00c, 0xebfca6ccL, 0xe320f000L),
+            @(0x002ac018, 0xebfec681L, 0xe320f000L),
+            @(0x00361ac4, 0x002abe08L, 'ptr:bank_offline_scan'),
+            @(0x00361a08, 0x002a9750L, 'ptr:bank_offline_rewards'),
+            @(0x00361be4, 0x002ad1bcL, 'ptr:bank_offline_rewards'),
+            @(0x00361cfc, 0x002ae568L, 'ptr:bank_offline_load'),
+            @(0x00361d0c, 0x002b4a20L, 'ptr:bank_offline_load'),
+            @(0x00361ed4, 0x002af460L, 'ptr:bank_offline_load'),
+            @(0x00361ee4, 0x002b4a20L, 'ptr:bank_offline_load'),
+            @(0x00362034, 0x002b1cf8L, 'ptr:bank_offline_save'),
+            @(0x00362044, 0x002b4a20L, 'ptr:bank_offline_save'),
+            @(0x00361e84, 0x002af034L, 0x002af124L)
+        )
+    }
+}
+# Only the test build: the main menu's update (its table slot) and its
+# listener "an entry was chosen" are the build's own.
+if ($Kind -eq 'test') {
+    $edits += @(
+        @(0x003617bc, 0x002a6750L, 'ptr:bank_test_menu_update'),
+        @(0x003617dc, 0x002a6c84L, 'ptr:bank_test_menu_chosen')
     )
-    # Task 9, "open Bank": its update and busy poll. The download patch has
-    # an entry for each, as each calls the function its slot held.
-    $open=@{bank='bank_offline_load';migration='bank_migrate_scan';test='bank_offline_load';download='bank_download_open'}[$Kind]
-    $openBusy=if ($Kind -eq 'download') { 'bank_download_open_busy' } else { $open }
-    $pointers=@()
-    if ($Kind -eq 'migration') {
-        $pointers+=@(
-            @(0x361ac4,0x2abe08,'bank_migrate_scan'),
-            @(0x361ad4,0x2b4a20,'bank_migrate_scan')
-        )
-    } else {
-        $pointers+=@(
-            @(0x361cfc,0x2ae568,$open),
-            @(0x361d0c,0x2b4a20,$openBusy)
-        )
-    }
-    if ($Kind -eq 'download') {
-        # The reward step's update writes the files and ends as cancelled.
-        # Local preflight replaces the scan before game detection; its
-        # native archive/first-start preparation runs only after absence.
-        $pointers+=@(
-            @(0x361be4,0x2ad1bc,'bank_download_save'),
-            @(0x361ac4,0x2abe08,'bank_download_scan'),
-            @(0x361ad4,0x2b4a20,'bank_download_scan_busy')
-        )
-    } else {
-        $pointers+=@(
-            # First start, whole instruction words: a saved language is not
-            # applied (nop) and the language is always "known" (mov r5, #1).
-            @(0x2a4898,0xebfeddfbL,0xe320f000L),
-            @(0x2a4940,0xe1a05007L,0xe3a05001L)
-        )
-    }
-    if ($Kind -in 'bank','test') {
-        $pointers+=@(
-            # A saved language is cleared through the original's store and
-            # write in task 3: ldr r6, [r0, #0x74]; ldrh r5, [r0, #0x30];
-            # cmp r5, #0; mov r2, #0; mov r1, #0.
-            @(0x2ac61c,0xe59060f0L,0xe5906074L),
-            @(0x2ac628,0xe1b05000L,0xe1d053b0L),
-            @(0x2ac62c,0xe320f000L,0xe3550000L),
-            @(0x2ac640,0xe1a02000L,0xe3a02000L),
-            @(0x2ac648,0xe6ff1075L,0xe3a01000L)
-        )
-    }
-    # Only the offline patch: loading, saving and rewards.
-    if ($Kind -in 'bank','test') {
-        $pointers+=@(
-            # Native no-game notice, then its own acknowledgment/error exit.
-            @(0x2ac7a8,0xe3a00021L,0xe3a00019L),
-            # The scan's update; its first state no longer starts the
-            # loading panel and its text (bl 001d5b44, bl 0025da24 -> nop).
-            @(0x361ac4,0x2abe08,'bank_offline_scan'),
-            @(0x2ac00c,0xebfca6ccL,0xe320f000L),
-            @(0x2ac018,0xebfec681L,0xe320f000L),
-            @(0x361a08,0x2a9750,'bank_offline_rewards'),
-            @(0x361be4,0x2ad1bc,'bank_offline_rewards'),
-            @(0x361ed4,0x2af460,'bank_offline_load'),
-            @(0x361ee4,0x2b4a20,'bank_offline_load'),
-            @(0x362034,0x2b1cf8,'bank_offline_save'),
-            @(0x362044,0x2b4a20,'bank_offline_save'),
-            # Task 0xb update (server check) -> the native "finished" stub.
-            @(0x361e84,0x2af034,0x2af124)
-        )
-    }
-    # Only the test build: the main menu's update (its table slot, holding
-    # 002a6750) and its listener "an entry was chosen" (holding 002a6c84)
-    # are the build's own.
-    $menuEdits=@()
-    if ($Kind -eq 'test') {
-        $menuEdits=@(0x3617bc,0x3617dc)
-        $pointers+=@(
-            @(0x3617bc,0x2a6750,'bank_test_menu_update'),
-            @(0x3617dc,0x2a6c84,'bank_test_menu_chosen')
-        )
-    }
-    $regions=@{bank=29;migration=10;test=31;download=10}[$Kind]
-    # SDK CreateThread adds 0x20 to the worker's SDK argument before SVC 08.
-    foreach($check in @(@(0x232144,0xe3550020L),@(0x23214c,0x92850020L),@(0x232154,0x9a000008L),@(0x232160,0xe3500027L),@(0x232164,0x92800018L),@(0x232174,0xe3500040L),@(0x232178,0x83e00000L),@(0x2321b8,0xaef62b00L),@(0x2321bc,0x93725b00L))) {
-        Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1]) 'Native SDK thread-priority conversion'
-    }
-    Assert-Check ((U32 $original 0x1af124) -eq 0xe3a00001L -and (U32 $original 0x1af128) -eq 0xe12fff1eL) 'Native finished stub 002af124'
-    # Claim state 0x1b reaches the Bank field at 174 only behind this test of
-    # the session's count (cmn r0, #1; beq 002aac54). The patch keeps the
-    # day of the last redemption in that field.
-    Assert-Check ((U32 $original 0x1aac04) -eq 0xe3700001L -and (U32 $original 0x1aac08) -eq 0x0a000011L) 'Claim state 0x1b count test 002aac04'
-    [byte[]]$expected=[byte[]]::new($expandedSize)
-    [Array]::Copy($original,0,$expected,0,$original.Length)
-    [byte[]]$allowed=[byte[]]::new($original.Length)
-    foreach($edit in $branches) {
-        $address=[int]$edit[0];$offset=$address-0x100000
-        Assert-Check ((U32 $original $offset) -eq $edit[1]) ('Original branch/prologue '+$address.ToString('x8'))
-        $target=if($edit[2] -is [string]){$symbols[$edit[2]].value}else{$edit[2]}
-        $delta=[int64]$target-$address-8
-        Assert-Check ($delta%4 -eq 0 -and $delta -ge -0x2000000 -and $delta -lt 0x2000000) 'ARM branch reach'
-        $opcode=if($edit[3]){0xeb000000L}else{0xea000000L}
-        $word=[uint32]($opcode -bor (($delta -shr 2) -band 0xffffff))
-        [Array]::Copy([BitConverter]::GetBytes($word),0,$expected,$offset,4)
-        [Array]::Fill[byte]($allowed,1,$offset,4)
-    }
-    foreach($edit in $pointers) {
-        $offset=$edit[0]-0x100000
-        Assert-Check ((U32 $original $offset) -eq $edit[1]) ('Original pointer '+$edit[0].ToString('x8'))
-        $target=if($edit[2] -is [string]){$symbols[$edit[2]].value}else{$edit[2]}
-        [Array]::Copy([BitConverter]::GetBytes([uint32]$target),0,$expected,$offset,4)
-        [Array]::Fill[byte]($allowed,1,$offset,4)
-    }
-    $bootOffset=$boot.address-0x100000
-    Assert-Check ((Hash $original $bootOffset $boot.file_bytes) -eq (Hash ([byte[]]::new($boot.file_bytes)))) 'Original bootstrap padding'
-    [Array]::Fill[byte]($allowed,1,$bootOffset,$boot.file_bytes)
-    foreach($load in $loads) {
-        [Array]::Copy($elf,$load.offset,$expected,$load.address-0x100000,$load.file_bytes)
-    }
-
-    # Apply IPS to dirty extension memory, never assuming allocation is zero.
-    [byte[]]$patched=[byte[]]::new($expandedSize)
-    [Array]::Fill[byte]($patched,0xa5)
-    [Array]::Copy($original,0,$patched,0,$original.Length)
-    [byte[]]$covered=[byte[]]::new($expandedSize)
-    Assert-Check ([Text.Encoding]::ASCII.GetString($ips,0,5) -eq 'PATCH') 'IPS magic'
-    $at=5;$records=0
-    while($true) {
-        Assert-Check ($at+3 -le $ips.Length) 'IPS truncated offset'
-        if([Text.Encoding]::ASCII.GetString($ips,$at,3) -eq 'EOF'){$at+=3;break}
-        $offset=([int]$ips[$at] -shl 16)-bor([int]$ips[$at+1] -shl 8)-bor[int]$ips[$at+2];$at+=3
-        Assert-Check ($at+2 -le $ips.Length) 'IPS truncated length'
-        $length=([int]$ips[$at] -shl 8)-bor[int]$ips[$at+1];$at+=2
-        $rle=$length -eq 0
-        if($rle) {
-            Assert-Check ($at+3 -le $ips.Length) 'IPS truncated RLE'
-            $length=([int]$ips[$at] -shl 8)-bor[int]$ips[$at+1];$value=$ips[$at+2];$at+=3
-        }
-        Assert-Check ($length -gt 0 -and $offset+$length -le $expandedSize) 'IPS bounds'
-        Assert-Check ([Array]::IndexOf[byte]($covered,1,$offset,$length) -eq -1) 'Overlapping IPS records'
-        if($offset -lt $original.Length) {
-            Assert-Check ($offset+$length -le $original.Length) 'IPS native/extension boundary'
-            Assert-Check ([Array]::IndexOf[byte]($allowed,0,$offset,$length) -eq -1) 'IPS writes an unapproved native region'
-        }
-        [Array]::Fill[byte]($covered,1,$offset,$length)
-        if($rle){[Array]::Fill[byte]($patched,$value,$offset,$length)}
-        else {
-            Assert-Check ($at+$length -le $ips.Length) 'IPS truncated data'
-            [Array]::Copy($ips,$at,$patched,$offset,$length);$at+=$length
-        }
-        $records++
-    }
-    Assert-Check ($at -eq $ips.Length) 'Unexpected IPS EOF trailer'
-    Assert-Check ([Array]::IndexOf[byte]($covered,0,$original.Length,$expandedSize-$original.Length) -eq -1) 'Uninitialized extension byte'
-    $patchedHash=Hash $patched
-    Assert-Check ($patchedHash -eq (Hash $expected) -and $patchedHash -eq $manifest.expanded_code_sha256) 'Expanded image differs from independent expected image'
-    foreach($load in $loads) {
-        Assert-Check ((Hash $patched ($load.address-0x100000) $load.file_bytes) -eq (Hash $elf $load.offset $load.file_bytes)) 'ELF LOAD file bytes'
-        $bss=$load.memory_bytes-$load.file_bytes
-        if($bss -gt 0) {
-            Assert-Check ((Hash $patched ($load.address-0x100000+$load.file_bytes) $bss) -eq (Hash ([byte[]]::new($bss)))) 'ELF BSS bytes'
-        }
-    }
-    foreach($location in $menuLocations) {
-        $offset=$location[0]-0x100000
-        Assert-Check ((U32 $original $offset) -eq $location[1]) ('Original menu word '+$location[0].ToString('x8'))
-        if ($menuEdits -contains $location[0]) { continue }
-        Assert-Check ((U32 $patched $offset) -eq $location[1]) ('Menu location is not original '+$location[0].ToString('x8'))
-        Assert-Check ([Array]::IndexOf[byte]($allowed,1,$offset,4) -eq -1 -and [Array]::IndexOf[byte]($covered,1,$offset,4) -eq -1) ('Menu location still patched '+$location[0].ToString('x8'))
-    }
-    if ($Kind -in 'bank','test') {
-        foreach($check in @(@(0x2abe0c,0xe1a04000L),@(0x2ac560,0x03a00018L),@(0x2ac7b4,0xe5940040L),@(0x2ac7c0,0xe3500004L),@(0x2ac7c8,0x0a0000b0L),@(0x2ac924,0xe3a00003L),@(0x2aca90,0xe3a00020L))) {
-            Assert-Check ((U32 $original ($check[0]-0x100000)) -eq $check[1] -and (U32 $patched ($check[0]-0x100000)) -eq $check[1]) 'Native no-game route changed'
-        }
-        foreach($range in @(@(0x2adc50,0x2adfd8),@(0x2d0fc8,0x2d1084),@(0x2b0098,0x2b0270),@(0x2ae310,0x2ae540))) {
-            Assert-Check ((Hash $original ($range[0]-0x100000) ($range[1]-$range[0])) -eq (Hash $patched ($range[0]-0x100000) ($range[1]-$range[0]))) 'Native game selection/progress check changed'
-        }
-        $adapter=$symbols.bank_offline_no_game
-        $adapterOffset=$adapter.value-0x100000
-        Assert-Check ($adapter.size -eq 8 -and (U32 $patched $adapterOffset) -eq 0xe1a00004L -and ((U32 $patched ($adapterOffset+4)) -band 0xff000000L) -eq 0xea000000L) 'No-game adapter must pass r4 and tail-branch without changing LR/SP'
-    }
-    $payloadFileOffset=$rx.address-0x100000
-    $payloadMemory=$imageEnd-$rx.address
-    $payloadImageLength=$rw.address+$rw.file_bytes-$rx.address
-    Assert-Check ((Hash $patched $payloadFileOffset $payloadImageLength) -eq $manifest.payload_image_sha256) 'Payload image hash'
-    $placement=$manifest.placement
-    Assert-Check ($placement.payload_address -eq $rx.address -and $placement.payload_file_offset -eq $payloadFileOffset -and $placement.payload_memory_bytes -eq $payloadMemory -and $placement.payload_rx_bytes -eq $rx.memory_bytes -and $placement.payload_rw_address -eq $rw.address -and $placement.payload_rw_bytes -eq $rw.memory_bytes -and $placement.bootstrap_address -eq $boot.address -and $placement.bootstrap_bytes -eq $boot.file_bytes) 'Manifest placement'
-
-    # Only the data page count, initialized byte count, and BSS size may change.
-    [byte[]]$expectedHeader=$originalHeader.Clone()
-    $dataAddress=U32 $originalHeader 0x30
-    $dataBytes=$imageEnd-$dataAddress
-    [Array]::Copy([BitConverter]::GetBytes([uint32]($dataBytes/0x1000)),0,$expectedHeader,0x34,4)
-    [Array]::Copy([BitConverter]::GetBytes([uint32]$dataBytes),0,$expectedHeader,0x38,4)
-    [Array]::Clear($expectedHeader,0x3c,4)
-    Assert-Check ((Hash $header) -eq (Hash $expectedHeader)) 'Unexpected paired-exheader edit'
-    $textPages=U32 $header 0x14;$roPages=U32 $header 0x24;$dataPages=U32 $header 0x34
-    Assert-Check (($textPages+$roPages+$dataPages)*0x1000 -eq $expandedSize -and (U32 $header 0x3c) -eq 0) 'Paired allocation length/BSS'
-    $originalBssStart=$dataAddress+(U32 $originalHeader 0x38)
-    $originalBssEnd=$originalBssStart+(U32 $originalHeader 0x3c)
-    Assert-Check ((($originalBssEnd+0xfff)-band -4096) -eq $rx.address) 'Payload follows original BSS'
-    Assert-Check ((Hash $patched ($originalBssStart-0x100000) ($rx.address-$originalBssStart)) -eq (Hash ([byte[]]::new($rx.address-$originalBssStart)))) 'Former native BSS and alignment gap initialized'
-
-    Assert-Check ($branches.Count+$pointers.Count+1 -eq $regions -and $manifest.native_edits -eq $regions -and $manifest.main_menu_edits -eq $menuEdits.Count) 'Native region count'
-    $report=[ordered]@{
-        status='passed'; package=$packageName; patch=$Kind; source_elf_sha256=$elfHash
-        ips_sha256=(Hash $ips); paired_exheader_sha256=(Hash $header)
-        ips_records=$records; native_regions=$regions; runtime_exports=$exportNames.Count
-        system_call_wrappers=$wrapperNames.Count
-        original_main_menu_locations=@($menuLocations | Where-Object { $menuEdits -notcontains $_[0] } | ForEach-Object { $_[0].ToString('x8') })
-        expanded_code_bytes=$expandedSize; expanded_code_sha256=$patchedHash
-        initial_extension_fill='a5'; elf_loads=$loads
-        checks=@('original inputs unchanged','all IPS records bounded and disjoint','extension fully initialized from nonzero memory','native bytes preserved outside the allowed regions of this patch','the main-menu locations this patch does not name equal the original executable and receive no IPS record','no menu wrapper symbol and no entry function of another patch is linked; five system-call wrappers are in RX memory','all branch and pointer targets match independently parsed ELF symbols','all ELF LOAD file and BSS bytes match','former native BSS and alignment gap zeroed','only paired exheader fields 0x34/0x38/0x3c changed','paired allocation exactly covers expanded image','manifest hashes, exports, placement, and status match')
-        limitations=@('static artifact verification; hardware behavior not established')
-    }
-    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8
-    $report | ConvertTo-Json -Depth 8
-} catch {
-    [ordered]@{status='failed';package=$packageName;reason=$_.Exception.Message;line=$_.InvocationInfo.ScriptLineNumber} |
-        ConvertTo-Json | Set-Content -LiteralPath $reportPath -Encoding utf8
-    throw
 }
 
+# What every patch relies on: SDK CreateThread adds 0x20 to the worker's SDK
+# argument before SVC 08, and the main menu's locations, which only the test
+# build may edit, hold their original words. The offline patch also relies
+# on the original's "finished" stub (002af124), on claim state 0x1b reaching
+# the Bank field at 174 only behind its test of the session's count
+# (cmn r0, #1; beq 002aac54), where the patch keeps the day of the last
+# redemption, and on the scan's no-game route and acknowledgment.
+$menuLocations = @(@(0x001d6554, 0xeb0000efL), @(0x002b33a4, 0xebfc853eL), @(0x002b33d4, 0xebfc8532L), @(0x003617bc, 0x002a6750L), @(0x003617dc, 0x002a6c84L))
+$relies = @(@(0x00232144, 0xe3550020L), @(0x0023214c, 0x92850020L), @(0x00232154, 0x9a000008L), @(0x00232160, 0xe3500027L), @(0x00232164, 0x92800018L), @(0x00232174, 0xe3500040L), @(0x00232178, 0x83e00000L), @(0x002321b8, 0xaef62b00L), @(0x002321bc, 0x93725b00L)) + $menuLocations
+# Checked native objects: the factory's bound and the cases of the tasks the
+# hooks check, their vtable literals, and the reward claim's constructor.
+$relies += @(
+    @(0x002a5a80, 0xe351001eL),
+    @(0x002a5aa4, 0x002a5bdcL), @(0x002a5ab4, 0x002a5da4L), @(0x002a5abc, 0x002a5e50L), @(0x002a5ac8, 0x002a5ebcL),
+    @(0x002a5acc, 0x002a5f08L), @(0x002a5ad8, 0x002a6130L), @(0x002a5b08, 0x002a63a8L),
+    @(0x002a6534, 0x00361ab8L), @(0x002a6548, 0x00362028L), @(0x002a6550, 0x00361cf0L), @(0x002a6554, 0x00361bd8L), @(0x002a6570, 0x00361ec8L),
+    @(0x002a5f1c, 0x1b0016fbL), @(0x002abbf0, 0x003619fcL), @(0x002abb40, 0xe5806000L), @(0x002a5c1c, 0xe5803000L)
+)
+if ($offline) {
+    $relies += @(@(0x002af124, 0xe3a00001L), @(0x002af128, 0xe12fff1eL), @(0x002aac04, 0xe3700001L), @(0x002aac08, 0x0a000011L),
+        @(0x002abe0c, 0xe1a04000L), @(0x002ac560, 0x03a00018L), @(0x002ac7b4, 0xe5940040L), @(0x002ac7c0, 0xe3500004L), @(0x002ac7c8, 0x0a0000b0L), @(0x002ac924, 0xe3a00003L), @(0x002aca90, 0xe3a00020L))
+}
+
+# What must stay the original's: the main menu's locations but the test
+# build's own two, and for the offline patch the scan's no-game route and
+# acknowledgment and the code of game selection and its progress check.
+$protected = @($menuLocations | Where-Object { -not ($Kind -eq 'test' -and $_[0] -in 0x003617bc, 0x003617dc) } | ForEach-Object { , @($_[0], 4) })
+# The factory, the reward claim's constructor and the vtables' first three
+# words stay native too; their update slots are edits.
+$protected += @(@(0x002a5a7c, 0xb14), @(0x002abb10, 0xe4),
+    @(0x00361ab8, 0xc), @(0x00361cf0, 0xc), @(0x00361ec8, 0xc), @(0x00362028, 0xc), @(0x003619fc, 0xc), @(0x00361bd8, 0xc))
+if ($offline) {
+    $protected += @(@(0x002abe0c, 4), @(0x002ac560, 4), @(0x002ac7b4, 4), @(0x002ac7c0, 4), @(0x002ac7c8, 4), @(0x002ac924, 4), @(0x002aca90, 4),
+        @(0x002adc50, 0x388), @(0x002d0fc8, 0xbc), @(0x002b0098, 0x1d8), @(0x002ae310, 0x230))
+}
+
+$extra = {
+    param([byte[]]$original, [byte[]]$patched, $elf)
+    $symbols = $elf.symbols
+    # No entry function of another patch is linked into this one, nor the
+    # test build's menu entries into a package that is released.
+    $foreign = @{ bank = @('bank_migrate_*', 'bank_download_*'); migration = @('bank_offline_*', 'bank_download_*'); test = @('bank_migrate_*', 'bank_download_*'); download = @('bank_offline_*', 'bank_migrate_*') }[$Kind]
+    foreach ($pattern in $foreign + @('bank_offline_menu*')) {
+        Assert-Check (@($symbols.Keys | Where-Object { $_ -like $pattern }).Count -eq 0) ('Entry function of another patch is linked: ' + $pattern)
+    }
+    foreach ($name in 'bank_test_menu_chosen', 'bank_test_menu_update') {
+        Assert-Check (($Kind -eq 'test') -eq $symbols.ContainsKey($name)) ('Menu entry of the test build ' + $name)
+    }
+    if ($offline) {
+        # The no-game stub hands the task in r4 on and keeps lr and sp.
+        $stub = $symbols.bank_offline_no_game_stub
+        $at = $stub.value - 0x00100000
+        Assert-Check ($stub.size -eq 8 -and (U32 $patched $at) -eq 0xe1a00004L -and ((U32 $patched ($at + 4)) -band 0xff000000L) -eq 0xea000000L) 'No-game stub must pass r4 and tail-branch without changing LR/SP'
+    }
+}
+
+Test-Package -Kind $Kind -Program $program -Edits $edits -Relies $relies -Protected $protected -Router $router `
+    -Entries (@{ bank = 9; migration = 4; test = 11; download = 7 }[$Kind]) `
+    -MenuEdits ($(if ($Kind -eq 'test') { 2 } else { 0 })) -Extra $extra `
+    -PackagePath $PackagePath -ElfPath $ElfPath -InputPath $InputPath `
+    -Checks @('no entry function of another patch is linked; the test build''s menu entries only in the test build', 'the main-menu locations hold their original words, and only the test build edits two of them')

@@ -21,24 +21,23 @@
 //! (`language`); it no longer changes the language of the screens. Its list
 //! ends in a Back button that `lytpatch` makes of an unused entry.
 
+pub mod bootstrap;
+pub mod fs;
 pub mod gen5;
 pub mod language;
-pub mod layout;
 pub mod legacy_shiny;
 pub mod lytpatch;
 pub mod navigation;
 pub mod panel;
 pub mod program;
+#[cfg(test)]
+mod router;
 pub mod sdsave;
 pub mod storage_worker;
-
-pub mod bootstrap;
+pub mod task;
+pub mod ui;
 
 #[cfg(target_arch = "arm")]
 pub mod cart;
 #[cfg(target_arch = "arm")]
-mod fs;
-#[cfg(target_arch = "arm")]
 pub mod hooks;
-#[cfg(target_arch = "arm")]
-mod ui;

@@ -31,6 +31,12 @@ pub trait Program: 'static {
     /// the press out some frames later, whatever the mask says by then.
     const HOME_ACCEPTED: usize;
 
+    /// The original's task router, `ROUTER(manager, current)`: the next
+    /// task for the one that has ended (`native::Ended`). Its factory makes
+    /// the tasks `0..TASK_COUNT`.
+    const ROUTER: usize;
+    const TASK_COUNT: u32;
+
     /// `(context, group, pane, message)`: a message with its values into a
     /// pane, as the title screen writes its version line. It loads the
     /// message into the first of the context's two work strings
@@ -66,4 +72,14 @@ pub trait Program: 'static {
     const FILE_READ: usize;
     const FILE_WRITE: usize;
     const FILE_CLOSE: usize;
+    /// The word that holds the program's `fs:USER` session, which its
+    /// start-up sets up.
+    const FS_SESSION: usize;
+
+    /// The program's `fs:USER` session (`FS_SESSION`).
+    /// # Safety
+    /// Only in the program `Self` describes, after its start-up.
+    unsafe fn fs_session() -> u32 {
+        unsafe { (Self::FS_SESSION as *const u32).read_volatile() }
+    }
 }

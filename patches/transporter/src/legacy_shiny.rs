@@ -35,29 +35,63 @@ pub fn applies(record: &[u8; RECORD_SIZE]) -> bool {
     old(attack_defense, speed_special) && !correct(attack_defense, speed_special)
 }
 
-/// Called from the build stub in `link.rs`, right before the constructor
-/// call (0024F6B0). For a record the Easter egg applies to, the shiny mode of
-/// the construction parameters, the word at `+0x0C` (1 never, 2 shiny; set
-/// at 0024F610), asks for a shiny.
+// 0024F6B0 (was: bl 0019CD3C, the Pokémon constructor; r2 = the
+// construction parameters, r4 = the source record). The entry may ask for a
+// shiny; then the constructor with every register as it came, lr included,
+// so that it returns to 0024F6B4.
+#[cfg(target_arch = "arm")]
+patch_common::stub!(
+    transporter_shiny_build_stub,
+    [
+        "push {{r0-r3, r12, lr}}",
+        "mov r1, r2",
+        "mov r0, r4",
+        "bl {shiny_build}",
+        "pop {{r0-r3, r12, lr}}",
+        "ldr r12, =0x0019cd3c",
+        "bx r12",
+    ],
+    shiny_build = sym shiny_build,
+);
+/// Right before the constructor call (0024F6B0). For a record the Easter
+/// egg applies to, the shiny mode of the construction parameters, the word
+/// at `+0x0C` (1 never, 2 shiny; set at 0024F610), asks for a shiny.
 /// # Safety
 /// `source` is the converter's source record, `params` its construction
 /// parameters on the converter's stack.
 #[cfg(target_arch = "arm")]
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_shiny_build(source: *const u8, params: *mut u32) {
+unsafe extern "aapcs" fn shiny_build(source: *const u8, params: *mut u32) {
     if applies(unsafe { &*source.cast::<[u8; RECORD_SIZE]>() }) {
         unsafe { params.add(3).write(2) };
     }
 }
 
-/// Called from the gender stub in `link.rs` (0024F8E0), where the original
-/// replaces the constructor's gender by one from the Attack DV: 1 keeps the
-/// constructor's gender.
+// 0024F8E0 (was: ldrb r1, [r4, #0x1b], the start of the gender from the
+// Attack DV; r0 = its threshold, r4 = the source record). lr and the flags
+// are not live here. Kept gender: on at 0024F910, behind the gender code.
+// Else the instruction, and back to 0024F8E4.
+#[cfg(target_arch = "arm")]
+patch_common::stub!(
+    transporter_shiny_gender_stub,
+    [
+        "push {{r0-r3, r12, lr}}",
+        "mov r0, r4",
+        "bl {keeps_gender}",
+        "movs r12, r0",
+        "pop {{r0-r3, r12, lr}}",
+        "ldrne r12, =0x0024f910",
+        "bxne r12",
+        "ldrb r1, [r4, #0x1b]",
+        "bx lr",
+    ],
+    keeps_gender = sym shiny_keeps_gender,
+);
+/// Where the original replaces the constructor's gender by one from the
+/// Attack DV (0024F8E0): 1 keeps the constructor's gender.
 /// # Safety
 /// `source` is the converter's source record.
 #[cfg(target_arch = "arm")]
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_shiny_keeps_gender(source: *const u8) -> u32 {
+unsafe extern "aapcs" fn shiny_keeps_gender(source: *const u8) -> u32 {
     u32::from(applies(unsafe { &*source.cast::<[u8; RECORD_SIZE]>() }))
 }
 

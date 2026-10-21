@@ -8,8 +8,12 @@ pub const SCAN: u32 = 3;
 pub const CLEANUP: u32 = 0x14;
 
 /// `outcome` is the finished task's byte `+0x30`; `native` is what the
-/// original router returned for it.
-pub fn destination(current: u32, outcome: u8, native: u32) -> u32 {
+/// original router returned for it; `cancelled` is the manager's flag
+/// (`+0x1a`), for which the original answers cleanup itself.
+pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u32 {
+    if cancelled {
+        return CLEANUP;
+    }
     match (current, outcome) {
         (SCAN, _) => CLEANUP,
         _ => match native {
@@ -32,28 +36,43 @@ mod tests {
 
     #[test]
     fn start_runs_the_conversion_without_scanning_games_then_returns() {
-        assert_eq!(destination(2, 4, 3), 3);
+        assert_eq!(destination(2, 4, 3, false), 3);
         for outcome in 0..=u8::MAX {
             for native in 0..=0x1d {
-                assert_eq!(destination(SCAN, outcome, native), CLEANUP);
+                assert_eq!(destination(SCAN, outcome, native, false), CLEANUP);
             }
         }
         // Native cleanup then selects the start screen, unchanged.
-        assert_eq!(destination(CLEANUP, 3, 2), 2);
+        assert_eq!(destination(CLEANUP, 3, 2, false), 2);
         assert!(loads(SCAN) && !loads(9) && !loads(CLEANUP) && !loads(2));
+    }
+
+    #[test]
+    fn a_cancelled_task_ends_in_cleanup_as_the_original_answers() {
+        for current in 0..=0x1d {
+            for outcome in 0..=u8::MAX {
+                let native = router::next(current, outcome, false);
+                assert_eq!(destination(current, outcome, native, true), CLEANUP);
+            }
+        }
     }
 
     #[test]
     fn a_start_converts_and_returns_to_the_start_screen() {
         // With the original router's answers (`bank_common::router`).
         for outcome in 0..=u8::MAX {
-            assert_eq!(destination(2, 4, router::next(2, 4, false)), SCAN);
+            assert_eq!(destination(2, 4, router::next(2, 4, false), false), SCAN);
             assert_eq!(
-                destination(SCAN, outcome, router::next(SCAN, outcome, false)),
+                destination(SCAN, outcome, router::next(SCAN, outcome, false), false),
                 CLEANUP
             );
             assert_eq!(
-                destination(CLEANUP, outcome, router::next(CLEANUP, outcome, false)),
+                destination(
+                    CLEANUP,
+                    outcome,
+                    router::next(CLEANUP, outcome, false),
+                    false
+                ),
                 2
             );
         }
@@ -70,7 +89,7 @@ mod tests {
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for native in 0..=0x1d {
-                    let chosen = destination(current, outcome, native);
+                    let chosen = destination(current, outcome, native, false);
                     assert!(
                         !never.contains(&chosen),
                         "{current:#x} {outcome:#x} {native:#x}"

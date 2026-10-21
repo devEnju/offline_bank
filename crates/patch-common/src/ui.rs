@@ -1,53 +1,90 @@
 //! The version line on the title screen, which every patch extends by its
 //! name ("Ver. 1.5-offline"), with the original's own calls; and the
-//! original's string objects, in which a message is changed in place.
+//! original's string objects, in which a message is changed in place
+//! (`text`, `end`), here and in Bank's dialogs (`bank_common::ui`).
 
 use crate::{message, native::follow, program::Program};
 use core::{mem::transmute, slice};
 
-/// The text of the original's string object `text` and its room in units:
-/// the text at `+4`, the room at `+8`, the length at `+0xA`, and at `+0xC`
+/// What a string object of the original lacks for its text to be changed
+/// in place: its text is not a pointer, or it holds no text of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringError {
+    NotPointer,
+    NoBuffer,
+}
+
+/// The text of a string object of the original, with its room: the text at
+/// `+4`, the room in units at `+8`, the length at `+0xA`, and at `+0xC`
 /// whether the object holds a text of its own.
-unsafe fn string(text: *mut u8) -> Option<(*mut u16, usize)> {
+pub struct Text<'a> {
+    /// The string object.
+    pub object: *mut u8,
+    /// Its room, for as long as the object holds that text.
+    pub room: &'a mut [u16],
+    /// The length of the text in it.
+    pub len: usize,
+}
+
+/// The room of string object `object`.
+unsafe fn room<'a>(object: *mut u8) -> Result<&'a mut [u16], StringError> {
     unsafe {
-        let data = follow(text, 4)?.cast::<u16>();
-        if text.add(0xc).read() == 0 {
-            return None;
+        let data = follow(object, 4)
+            .ok_or(StringError::NotPointer)?
+            .cast::<u16>();
+        if object.add(0xc).read() == 0 {
+            return Err(StringError::NoBuffer);
         }
-        Some((data, usize::from(text.add(8).cast::<u16>().read())))
+        let capacity = usize::from(object.add(8).cast::<u16>().read());
+        Ok(slice::from_raw_parts_mut(data, capacity))
     }
 }
 
+/// The text of string object `object`, if it can be changed in place: its
+/// length is that of a text that ends in its room. The caller uses it before
+/// the object's text changes again.
+/// # Safety
+/// `object` is a live string object of the original, on the main thread.
+pub unsafe fn text<'a>(object: *mut u8) -> Result<Option<Text<'a>>, StringError> {
+    let room = unsafe { room(object)? };
+    let len = usize::from(unsafe { object.add(0xa).cast::<u16>().read() });
+    if len == 0 || len >= room.len() || room[len] != 0 {
+        return Ok(None);
+    }
+    Ok(Some(Text { object, room, len }))
+}
+
+/// Ends the text of string object `object` at `len` in its `room`.
+/// # Safety
+/// `object` is a live string object of the original whose room is `room`,
+/// and `len` lies inside it.
+pub unsafe fn end(object: *mut u8, room: &mut [u16], len: usize) {
+    room[len] = 0;
+    unsafe { object.add(0xa).cast::<u16>().write(len as u16) };
+}
+
 /// The second of the context's two work strings (`[context + 4]`), which
-/// the original fills and hands to a pane: the string object, its text, and
-/// its room in units.
-unsafe fn work_string(context: *mut u8) -> Option<(*mut u8, *mut u16, usize)> {
+/// the original fills and hands to a pane: the string object and its room.
+unsafe fn work_string<'a>(context: *mut u8) -> Option<(*mut u8, &'a mut [u16])> {
     unsafe {
         let strings = follow(context, 4)?;
-        let text = follow(strings, 4)?;
-        let (data, room) = string(text)?;
-        Some((text, data, room))
+        let object = follow(strings, 4)?;
+        Some((object, room(object).ok()?))
     }
 }
 
 /// Keeps only what follows the first part of the message the original has
-/// just loaded into the string object `text` (`message::keep_rest`). A
+/// just loaded into the string object `object` (`message::keep_rest`). A
 /// string whose length is not that of its text, or a message with nothing
 /// after its first part, stays as it is.
 /// # Safety
-/// `text` is a live string object of the original, on the main thread.
-pub unsafe fn keep_rest(text: *mut u8) {
-    unsafe {
-        let Some((data, room)) = string(text) else {
-            return;
-        };
-        let len = usize::from(text.add(0xa).cast::<u16>().read());
-        if len == 0 || len >= room || data.add(len).read() != 0 {
-            return;
-        }
-        if let Some(len) = message::keep_rest(slice::from_raw_parts_mut(data, room), len) {
-            text.add(0xa).cast::<u16>().write(len as u16);
-        }
+/// `object` is a live string object of the original, on the main thread.
+pub unsafe fn keep_rest(object: *mut u8) {
+    let Ok(Some(Text { room, len, .. })) = (unsafe { text(object) }) else {
+        return;
+    };
+    if let Some(len) = message::keep_rest(room, len) {
+        unsafe { end(object, room, len) };
     }
 }
 
@@ -58,11 +95,10 @@ unsafe fn hand_over<P: Program>(
     context: *mut u8,
     group: u32,
     pane: u32,
-    (text, data, len): (*mut u8, *mut u16, usize),
+    (object, room, len): (*mut u8, &mut [u16], usize),
 ) {
     unsafe {
-        data.add(len).write(0);
-        text.add(0xa).cast::<u16>().write(len as u16);
+        end(object, room, len);
         let Some(layouts) = follow(context, 0x1c) else {
             return;
         };
@@ -70,7 +106,7 @@ unsafe fn hand_over<P: Program>(
         let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, i32) = transmute(P::PANE_TEXT);
         let found = find(layouts.add(group as usize * 8).cast::<u32>().read(), pane);
         if !found.is_null() {
-            set(found, text, -1);
+            set(found, object, -1);
         }
     }
 }
@@ -84,20 +120,20 @@ unsafe fn hand_over<P: Program>(
 /// on the main thread.
 pub unsafe fn add_suffix<P: Program>(context: *mut u8, group: u32, pane: u32, suffix: &[u8]) {
     unsafe {
-        let Some((text, data, room)) = work_string(context) else {
+        let Some((object, room)) = work_string(context) else {
             return;
         };
-        let mut len = 0;
-        while len < room && data.add(len).read() != 0 {
-            len += 1;
-        }
-        if len == 0 || len + suffix.len() >= room {
+        let len = room
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(room.len());
+        if len == 0 || len + suffix.len() >= room.len() {
             return;
         }
-        for (index, &unit) in suffix.iter().enumerate() {
-            data.add(len + index).write(u16::from(unit));
+        for (unit, &letter) in room[len..].iter_mut().zip(suffix) {
+            *unit = u16::from(letter);
         }
-        hand_over::<P>(context, group, pane, (text, data, len + suffix.len()));
+        hand_over::<P>(context, group, pane, (object, room, len + suffix.len()));
     }
 }
 

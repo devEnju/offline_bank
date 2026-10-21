@@ -18,11 +18,13 @@
 //! removed card concerns the cartridge alone (`Saves::card_missing`).
 
 use crate::{
-    fs::{File, FLUSH_FLAGS, OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE},
+    fs::{self, Sd, COPY_CHUNK},
     language,
-    sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE},
+    sdsave::Saves,
+    task::{Task, TASK_LIST},
 };
-use core::{cell::UnsafeCell, mem::transmute};
+use core::{cell::UnsafeCell, mem::transmute, slice};
+use patch_common::native::read_word;
 
 const ORIGINAL_CART_ID: usize = 0x0021_aa0c;
 const ORIGINAL_CART_READ: usize = 0x0021_a7e0;
@@ -62,7 +64,6 @@ const LIST_LIMIT: usize = 0x27;
 /// Any negative value is a failure to the callers; this one is none of the
 /// codes they treat specially.
 const FAILED: i32 = -1;
-const COPY_CHUNK: usize = 0x8000;
 
 struct Shared<T>(UnsafeCell<T>);
 // SAFETY: the cartridge task and the hooks on the main thread never run at
@@ -78,69 +79,23 @@ fn saves() -> &'static mut Saves {
     unsafe { &mut *SAVES.0.get() }
 }
 
-/// For a file of exactly the size of a Gen 5 save that opens for reading and
-/// writing, the two bytes at each offset. Nothing is created.
-fn identity(path: &[u8], offsets: [u64; 2]) -> Option<[[u8; 2]; 2]> {
-    let file = unsafe { File::open(path, OPEN_READ_WRITE) }?;
-    if file.size() != Some(SAVE_SIZE) {
-        return None;
-    }
-    let mut copies = [[0; 2]; 2];
-    for (copy, offset) in copies.iter_mut().zip(offsets) {
-        if !file.read(offset, copy.as_mut_ptr(), 2) {
-            return None;
-        }
-    }
-    Some(copies)
-}
-
-fn open_save(save: Save, backup: bool, flags: u32) -> Option<File> {
-    let mut path = [0; PATH_CAPACITY];
-    let length = save.path(backup, &mut path);
-    let file = unsafe { File::open(&path[..length], flags) }?;
-    // The save itself must still be what the scan found.
-    (backup || file.size() == Some(SAVE_SIZE)).then_some(file)
-}
-
 /// The original's signal that the Game Card was taken out.
 unsafe fn card_removed(manager: *mut u8) -> bool {
     let removed: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(CARD_REMOVED) };
     unsafe { removed(manager) != 0 }
 }
 
-fn in_save(offset: u32, length: u32) -> bool {
-    u64::from(offset) + u64::from(length) <= SAVE_SIZE
-}
-
-/// Copies the untouched save to `<name>.sav.bak`, flushed, before the first
-/// change of a session.
-fn back_up(save: Save) -> bool {
-    let (Some(source), Some(target)) = (
-        open_save(save, false, OPEN_READ),
-        open_save(save, true, OPEN_WRITE_CREATE),
-    ) else {
-        return false;
-    };
-    let chunk = CHUNK.0.get().cast::<u8>();
-    let mut offset = 0;
-    while offset < SAVE_SIZE {
-        let length = COPY_CHUNK as u32;
-        let last = offset + u64::from(length) == SAVE_SIZE;
-        let flags = if last { FLUSH_FLAGS } else { 0 };
-        if !source.read(offset, chunk, length) || !target.write(offset, chunk, length, flags) {
-            return false;
-        }
-        offset += u64::from(length);
-    }
-    target.size() == Some(SAVE_SIZE)
-}
-
+// 00243528 (was: bl read-cartridge-id). r0 = out, r4 = cartridge task.
+patch_common::stub!(
+    transporter_cart_id_stub,
+    ["mov r1, r4", "b {cart_id}"],
+    cart_id = sym cart_id,
+);
 /// Replaces the call to "read the cartridge's game code" at `00243528`.
 /// `task` is the cartridge task (the caller's `r4`).
 /// # Safety
 /// Called only from that site, on the cartridge task's thread.
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_cart_id(out: *mut u32, task: *const u8) -> i32 {
+unsafe extern "aapcs" fn cart_id(out: *mut u32, task: *const u8) -> i32 {
     let original: unsafe extern "aapcs" fn(*mut u32) -> i32 =
         unsafe { transmute(ORIGINAL_CART_ID) };
     let code = unsafe { original(out) };
@@ -150,7 +105,9 @@ pub unsafe extern "aapcs" fn transporter_cart_id(out: *mut u32, task: *const u8)
         // language screen are offered; a Gen 5 cartridge in that language
         // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
-        saves.scan(cartridge, language::filter_letter(), identity);
+        saves.scan(cartridge, language::filter_letter(), |path, offsets| {
+            fs::identity(&mut Sd, path, offsets)
+        });
     }
     match saves.current() {
         Some(save) => {
@@ -182,10 +139,8 @@ pub unsafe extern "aapcs" fn transporter_cart_read(
             unsafe { transmute(ORIGINAL_CART_READ) };
         return unsafe { original(kind, offset, buffer, length) };
     };
-    let done = in_save(offset, length)
-        && open_save(save, false, OPEN_READ)
-            .is_some_and(|file| file.read(u64::from(offset), buffer, length));
-    if done {
+    let bytes = unsafe { slice::from_raw_parts_mut(buffer, length as usize) };
+    if fs::read(&mut Sd, save, offset, bytes) {
         0
     } else {
         FAILED
@@ -209,23 +164,30 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
             unsafe { transmute(ORIGINAL_CART_WRITE) };
         return unsafe { original(kind, offset, buffer, length) };
     };
-    if !in_save(offset, length) {
-        return FAILED;
-    }
-    if saves.take_backup_duty() && !back_up(save) {
-        // Without a backup nothing is changed.
-        saves.backup_failed();
-        return FAILED;
-    }
-    let done = open_save(save, false, OPEN_READ_WRITE)
-        .is_some_and(|file| file.write(u64::from(offset), buffer, length, FLUSH_FLAGS));
-    if done {
+    let bytes = unsafe { slice::from_raw_parts(buffer, length as usize) };
+    // SAFETY: see `Shared`; only this thread uses the copy buffer.
+    let chunk = unsafe { &mut *CHUNK.0.get() };
+    if fs::write(&mut Sd, saves, save, offset, bytes, chunk) {
         0
     } else {
         FAILED
     }
 }
 
+// 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.
+patch_common::stub!(
+    transporter_list_next_stub,
+    [
+        "push {{r0-r3, r12, lr}}",
+        "mov r0, r4",
+        "bl {list_next}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "streq r6, [r4, #0x10]",
+        "bx lr",
+    ],
+    list_next = sym list_next,
+);
 /// Replaces "go on to the Virtual Console titles" (`00244F10`) in the
 /// game-list task. After the cartridge step has handled one item (the
 /// cartridge or an SD save), the next one is read the same way, so each gets
@@ -236,8 +198,12 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
 /// read. The list is always built to the end.
 /// # Safety
 /// Called only from that site, with the live game-list task.
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_list_next(task: *mut u8) {
+unsafe extern "aapcs" fn list_next(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_LIST]) }) else {
+        // The stub runs the replaced state store, as the original.
+        return 0;
+    };
+    let task = task.raw();
     unsafe {
         let state = task.add(LIST_STATE).cast::<u32>();
         if matches!(state.read(), STATE_FIRST_ITEM | STATE_READING_CARTRIDGE) {
@@ -255,13 +221,14 @@ pub unsafe extern "aapcs" fn transporter_list_next(task: *mut u8) {
                 // 00244F34): note the kind, read the item, wait for the read.
                 task.add(LIST_KINDS + count).write(item.kind());
                 let start: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(START_CART_READ);
-                start(manager, task.add(LIST_HEAP).cast::<u32>().read());
+                start(manager, read_word(task, LIST_HEAP));
                 state.write(STATE_READING_CARTRIDGE);
-                return;
+                return 1;
             }
         }
         state.write(STATE_VIRTUAL_CONSOLE);
     }
+    1
 }
 
 /// Whether the chosen game is a cartridge whose card is gone, asked as the
@@ -272,8 +239,8 @@ pub unsafe extern "aapcs" fn transporter_list_next(task: *mut u8) {
 /// task runs.
 pub unsafe fn chosen_card_missing(manager: *mut u8) -> bool {
     unsafe {
-        let version = manager.add(MANAGER_VERSION).cast::<u32>().read();
-        let title = manager.add(MANAGER_TITLE).cast::<u32>().read();
+        let version = read_word(manager, MANAGER_VERSION);
+        let title = read_word(manager, MANAGER_TITLE);
         if version != 0 && title != 0 {
             return false;
         }
@@ -304,6 +271,12 @@ pub unsafe extern "aapcs" fn transporter_card_removed(manager: *mut u8) -> u32 {
 /// task.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_entry_card_removed(task: *const u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(task.cast_mut(), &[TASK_LIST]) }) else {
+        // The original listener loads the manager, then asks about its card.
+        let manager = unsafe { task.add(LIST_MANAGER).cast::<*mut u8>().read() };
+        return u32::from(unsafe { card_removed(manager) });
+    };
+    let task = task.raw();
     unsafe {
         let manager = task.add(LIST_MANAGER).cast::<*mut u8>().read();
         let position = usize::from(task.add(LIST_CURSOR).cast::<u16>().read());
@@ -311,11 +284,26 @@ pub unsafe extern "aapcs" fn transporter_entry_card_removed(task: *const u8) -> 
     }
 }
 
+// 00244908 (was: mov r0, #0). r4 = list task; r5, r6 stay live.
+patch_common::stub!(
+    transporter_select_stub,
+    [
+        "push {{r4, lr}}",
+        "mov r0, r4",
+        "bl {select}",
+        "mov r0, #0",
+        "pop {{r4, pc}}",
+    ],
+    select = sym select,
+);
 /// Runs when a DS entry of the game list is confirmed (`00244908`).
 /// # Safety
 /// Called only from that site, with the live game-list task.
-#[no_mangle]
-pub unsafe extern "aapcs" fn transporter_select(task: *const u8) {
+unsafe extern "aapcs" fn select(task: *const u8) {
+    let Ok(task) = (unsafe { Task::from_raw(task.cast_mut(), &[TASK_LIST]) }) else {
+        return;
+    };
+    let task = task.raw();
     let position = unsafe { task.add(LIST_CURSOR).cast::<u16>().read() };
     saves().select(usize::from(position));
 }

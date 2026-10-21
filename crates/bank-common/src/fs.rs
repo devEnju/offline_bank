@@ -24,7 +24,7 @@ use {crate::program::Bank15, core::marker::PhantomData, patch_common::program::P
 #[cfg(any(test, target_arch = "arm"))]
 const IO_CHUNK: usize = 0x10000;
 #[cfg(any(test, target_arch = "arm"))]
-const FLUSH_FLAGS: u32 = 0x0001_0001;
+use patch_common::file::FLUSH as FLUSH_FLAGS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
@@ -754,8 +754,7 @@ impl<P: Program> offline_core::transport::Files for Visit<P> {
 /// fs:USER session remain owned by native Bank; only this file handle is closed.
 #[cfg(target_arch = "arm")]
 pub struct GameMainReader<'a> {
-    api: native::Native<Bank15>,
-    handle: Option<u32>,
+    handle: Option<patch_common::file::Handle<Bank15>>,
     length: u64,
     archive_borrow: core::marker::PhantomData<&'a ()>,
 }
@@ -773,17 +772,17 @@ impl<'a> GameMainReader<'a> {
         }
         let mut api = native::Native::<Bank15>::new(session, "/main")?;
         let handle = api.open_main(archive)?;
-        let mut this = Self {
-            api,
-            handle: Some(handle),
-            length: 0,
-            archive_borrow: core::marker::PhantomData,
-        };
-        this.length = this.api.size(handle)?;
-        if this.length == 0 {
+        let handle = unsafe { patch_common::file::Handle::new(handle) }
+            .ok_or(Error::InvalidHandle(Operation::OpenFile))?;
+        let length = handle.size().map_err(native::failed(Operation::Size))?;
+        if length == 0 {
             return Err(Error::InvalidLength);
         }
-        Ok(this)
+        Ok(Self {
+            handle: Some(handle),
+            length,
+            archive_borrow: core::marker::PhantomData,
+        })
     }
     pub fn len(&self) -> u64 {
         self.length
@@ -792,17 +791,13 @@ impl<'a> GameMainReader<'a> {
         self.length == 0
     }
     pub fn close(&mut self) -> Result<(), Error> {
-        match self.handle.take() {
-            Some(handle) => self.api.close_file(handle),
-            None => Ok(()),
-        }
-    }
-}
-
-#[cfg(target_arch = "arm")]
-impl Drop for GameMainReader<'_> {
-    fn drop(&mut self) {
-        let _ = self.close();
+        let Some(handle) = self.handle.take() else {
+            return Ok(());
+        };
+        let (closed, kernel) = handle.close();
+        closed
+            .map_err(native::failed(Operation::CloseFile))
+            .and(kernel.map_err(native::failed(Operation::CloseHandle)))
     }
 }
 
@@ -810,7 +805,7 @@ impl Drop for GameMainReader<'_> {
 impl Storage for GameMainReader<'_> {
     type Error = Error;
     fn read(&mut self, mut offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
-        let handle = self.handle.ok_or(Error::Closed)?;
+        let handle = self.handle.as_ref().ok_or(Error::Closed)?;
         if offset
             .checked_add(bytes.len() as u64)
             .is_none_or(|end| end > self.length)
@@ -818,7 +813,9 @@ impl Storage for GameMainReader<'_> {
             return Err(Error::Bounds);
         }
         for chunk in bytes.chunks_mut(IO_CHUNK) {
-            let actual = self.api.read(handle, offset, chunk)?;
+            let actual = handle
+                .read(offset, chunk)
+                .map_err(native::failed(Operation::Read))?;
             let expected = chunk.len() as u32;
             if actual != expected {
                 return Err(Error::Count {
@@ -846,7 +843,7 @@ mod native {
     use super::{Api, Error, Operation, Reach};
     use crate::bank_files::UnitFile;
     use core::{marker::PhantomData, mem::transmute};
-    use patch_common::{kernel::close_handle, program::Program};
+    use patch_common::{file, program::Program};
 
     #[repr(C)]
     struct Path {
@@ -936,12 +933,15 @@ mod native {
 
     fn result(operation: Operation, code: i32) -> Result<(), Error> {
         if code < 0 {
-            Err(Error::Native {
-                operation,
-                code: code as u32,
-            })
+            Err(failed(operation)(code))
         } else {
             Ok(())
+        }
+    }
+    pub(super) fn failed(operation: Operation) -> impl Fn(file::Code) -> Error {
+        move |code| Error::Native {
+            operation,
+            code: code as u32,
         }
     }
 
@@ -1006,26 +1006,12 @@ mod native {
             Ok(handle)
         }
         fn size(&mut self, file: u32) -> Result<u64, Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_SIZE) };
-            let mut size = 0;
-            result(Operation::Size, unsafe { call(&file, &mut size) })?;
-            Ok(size)
+            file::size::<P>(file).map_err(failed(Operation::Size))
         }
         fn read(&mut self, file: u32, offset: u64, bytes: &mut [u8]) -> Result<u32, Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_READ) };
-            let mut count = 0;
-            result(Operation::Read, unsafe {
-                call(
-                    &file,
-                    &mut count,
-                    offset,
-                    bytes.as_mut_ptr(),
-                    bytes.len() as u32,
-                )
-            })?;
-            Ok(count)
+            let length = bytes.len() as u32;
+            unsafe { file::read::<P>(file, offset, bytes.as_mut_ptr(), length) }
+                .map_err(failed(Operation::Read))
         }
         fn write(
             &mut self,
@@ -1034,28 +1020,15 @@ mod native {
             bytes: &[u8],
             flags: u32,
         ) -> Result<u32, Error> {
-            type Call =
-                unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_WRITE) };
-            let mut count = 0;
-            result(Operation::Write, unsafe {
-                call(
-                    &file,
-                    &mut count,
-                    offset,
-                    bytes.as_ptr(),
-                    bytes.len() as u32,
-                    flags,
-                )
-            })?;
-            Ok(count)
+            let length = bytes.len() as u32;
+            unsafe { file::write::<P>(file, offset, bytes.as_ptr(), length, flags) }
+                .map_err(failed(Operation::Write))
         }
         fn close_file(&mut self, file: u32) -> Result<(), Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_CLOSE) };
-            let close_result = result(Operation::CloseFile, unsafe { call(&file) });
-            let handle_result = result(Operation::CloseHandle, unsafe { close_handle(file) });
-            close_result.and(handle_result)
+            let (closed, handle) = file::close::<P>(file);
+            closed
+                .map_err(failed(Operation::CloseFile))
+                .and(handle.map_err(failed(Operation::CloseHandle)))
         }
     }
 }

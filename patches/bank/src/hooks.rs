@@ -18,9 +18,8 @@ use bank_common::{
     native_bank::NativeBank,
     program::Bank15,
     task::{
-        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, FS_SESSION,
-        LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
-        TEXT,
+        checked_pointer, refuse_home, Notice, Task, LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS,
+        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN, TEXT,
     },
     worker::WorkerError,
 };
@@ -33,6 +32,8 @@ use offline_core::{
 };
 use patch_common::{
     exclusive::Exclusive,
+    native::{read_word, write_word, Ended},
+    program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Worker},
 };
@@ -241,11 +242,11 @@ fn bank_count(task: Task) -> Result<u32, Fault> {
     let count: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(BANK_COUNT) };
     Ok(unsafe { count(helper) })
 }
-/// The console's date and time, to the minute.
 /// The original's clock in ms (`spinner::now`).
 fn now() -> u32 {
     spinner::now::<Bank15>()
 }
+/// The console's date and time, to the minute.
 fn clock() -> Result<Moment, Fault> {
     let mut words = [0u32; 2];
     let local_date: unsafe extern "aapcs" fn(*mut u32) = unsafe { transmute(LOCAL_DATE) };
@@ -760,7 +761,7 @@ impl Runtime {
             self.rewards = RewardSession::NONE;
             if opening {
                 self.capture_blank(task)?;
-                let session = unsafe { FS_SESSION.read() };
+                let session = unsafe { Bank15::fs_session() };
                 self.submit(task, Step::Open, Job::Open { session })?;
             } else {
                 let game = unsafe {
@@ -1082,7 +1083,7 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         outcome,
         cancelled,
         native: next,
-    }) = (unsafe { Ended::route(manager, current) })
+    }) = (unsafe { Ended::route::<Bank15>(manager, current) })
     else {
         return crate::navigation::CLEANUP;
     };
@@ -1092,9 +1093,6 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         state.step = Step::Idle;
         state.owner = 0;
     }
-    if cancelled {
-        return crate::navigation::CLEANUP;
-    }
     // After an error nothing is opened again in this session. Its
     // screen does not end, so a task only gets here if that screen
     // could not be shown: the game scan then still leads to task 9,
@@ -1102,14 +1100,17 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
         return crate::navigation::CLEANUP;
     }
-    if (current, outcome) == (3, 4) {
+    // The main menu (task 4) is never created, but in the console test
+    // build; see navigation.rs.
+    let destination =
+        crate::navigation::destination(current, outcome, next, cancelled, state.turn_back);
+    // The scan found a game, so the Bank opens: no transfer to Pokémon HOME
+    // is under way.
+    if (current, destination) == (crate::navigation::SCAN, crate::navigation::OPEN) {
         unsafe {
             manager.add(0x1c).write(0);
         }
     }
-    // The main menu (task 4) is never created, but in the console test
-    // build; see navigation.rs.
-    let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
     // Refuse HOME and sleep across a whole chain of loading tasks, not
     // only while one of their jobs runs, and into the reward step while
     // the loading panel is still up.
@@ -1206,7 +1207,7 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
         }
     }
     // The state is free while the original runs: its no-game notice
-    // (`bank_offline_no_game`) takes it.
+    // (`no_game`) takes it.
     let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(SCAN_UPDATE) };
     let result = unsafe { original(raw) };
     let after = unsafe { read_word(raw, 0x10) };
@@ -1222,28 +1223,18 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
     result
 }
 
-// Only scan state 0x18's BL at 002ac7a4 enters here. Its r4 is the live
-// scan task (002abe0c: mov r4, r0); preserve the native caller's LR and
-// callee-saved registers while handing that task to the Rust adapter.
-core::arch::global_asm!(
-    ".syntax unified",
-    ".arm",
-    ".section .text.bank.no_game, \"ax\"",
-    ".align 2",
-    ".global bank_offline_no_game",
-    ".type bank_offline_no_game, %function",
-    "bank_offline_no_game:",
-    "mov r0, r4",
-    "b {notice}",
-    ".size bank_offline_no_game, .-bank_offline_no_game",
-    notice = sym no_game_notice,
+// Scan state 0x18's call of "show a message" (002ac7a4) enters here. Its
+// r4 is the live scan task (002abe0c: mov r4, r0); the stub hands it to
+// `no_game` and keeps the caller's lr and callee-saved
+// registers.
+patch_common::stub!(
+    bank_offline_no_game_stub,
+    ["mov r0, r4", "b {notice}"],
+    notice = sym no_game,
 );
-unsafe extern "aapcs" {
-    /// # Safety
-    /// Called only from the reviewed scan message call, with its live task in r4.
-    pub fn bank_offline_no_game();
-}
-unsafe extern "aapcs" fn no_game_notice(raw: *mut u8) {
+/// The scan found no game it can use: the original's notice, without its
+/// question about Pokémon HOME.
+unsafe extern "aapcs" fn no_game(raw: *mut u8) {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SCAN]) }) else {
         return;
     };

@@ -13,9 +13,12 @@ use patch_common::program::Program;
 ///   (`0010ba7c`);
 /// - the start screen's call for its version line, message 0x4E
 ///   (`002b49c4`), and the two calls it hands the line to the pane with;
+/// - its task router `002a5580` and its factory's bound
+///   (`task::TASK_COUNT`);
 /// - its clock, as its minimum time `001d5bb0` reads it: `00229dc4` copies
 ///   the time at `00372fe0`, `002c8ea4` gives it in ms;
-/// - its file system calls (docs/internals.md, "Filesystem calls").
+/// - its file system calls (docs/internals.md, "File access") and
+///   its `fs:USER` session.
 pub struct Bank15;
 impl Program for Bank15 {
     const CREATE_THREAD: usize = 0x0023_20d4;
@@ -26,6 +29,8 @@ impl Program for Bank15 {
     const ACTIVITY_SET: usize = 0x001d_4d90;
     const ACTIVITY_CLEAR: usize = 0x0022_9eb4;
     const HOME_ACCEPTED: usize = 0x0037_2989;
+    const ROUTER: usize = 0x002a_5580;
+    const TASK_COUNT: u32 = crate::task::TASK_COUNT;
     const PANE_MESSAGE: usize = 0x001e_21c8;
     const FIND_PANE: usize = 0x001e_264c;
     const PANE_TEXT: usize = 0x0029_a628;
@@ -40,4 +45,5 @@ impl Program for Bank15 {
     const FILE_READ: usize = 0x0016_58c8;
     const FILE_WRITE: usize = 0x0016_594c;
     const FILE_CLOSE: usize = 0x0016_5920;
+    const FS_SESSION: usize = 0x0039_0100;
 }

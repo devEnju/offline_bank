@@ -20,7 +20,7 @@
         Crate    = 'transporter-payload'
         Linker   = 'patches/transporter/link/transporter15.ld'
         Features = @()
-        Profiles = @('transporter15.rs')
+        Profiles = @('transporter15.rs', 'transporter15/offline.rs')
         Folder   = 'build/binary/transporter'
         Verify   = 'Verify-TransporterPatch.ps1'
     }

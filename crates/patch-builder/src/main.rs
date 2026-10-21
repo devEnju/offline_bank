@@ -111,7 +111,7 @@ kinds: bank, transporter, test, migration, download";
             let info = patch_builder::elf::inspect_payload_elf(
                 profile.program.contract,
                 &data,
-                profile.entries,
+                &profile.entries(),
             )
             .map_err(|e| e.to_string())?;
             println!("ELF SHA-256: {}", hex(&info.elf_sha256));

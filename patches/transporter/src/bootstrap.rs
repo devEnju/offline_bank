@@ -2,8 +2,8 @@
 //! in the zero bytes after the original text, which are executable from the
 //! start.
 //!
-//! `transporter_layout_check` stands at 0013AEE4, on the way of every layout
-//! the application builds, and the first layouts are built during start-up,
+//! `transporter_layout_check_stub` stands at 0013AEE4, on the way of every
+//! layout the application builds, and the first layouts are built during start-up,
 //! before the payload can run: branching into the payload from there was a
 //! prefetch abort at its entry word. The check runs in this already
 //! executable place and enters the payload only for the language screen's
@@ -24,9 +24,9 @@ core::arch::global_asm!(
     @ the payload, which checks its content. r2 and r12 are free here: the
     @ original sets r2 next and does not use r12.
     .balign 4
-    .global transporter_layout_check
-    .type transporter_layout_check, %function
-transporter_layout_check:
+    .global transporter_layout_check_stub
+    .type transporter_layout_check_stub, %function
+transporter_layout_check_stub:
     mov r1, r0
     cmp r0, #0
     bxeq lr
@@ -34,11 +34,18 @@ transporter_layout_check:
     ldr r2, =0x3188
     cmp r12, r2
     bxne lr
-    ldr r12, =transporter_layout_adjust
+    ldr r12, =transporter_layout_adjust_stub
     bx r12
-    .size transporter_layout_check, .-transporter_layout_check
     .ltorg
+    .size transporter_layout_check_stub, .-transporter_layout_check_stub
     .popsection
 "#,
     options(raw)
 );
+
+#[cfg(target_arch = "arm")]
+unsafe extern "aapcs" {
+    /// # Safety
+    /// Only the patched site 0013AEE4 may enter it, with its registers.
+    pub fn transporter_layout_check_stub();
+}

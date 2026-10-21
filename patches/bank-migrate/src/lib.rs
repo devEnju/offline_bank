@@ -22,4 +22,4 @@ mod v0_2_1;
 mod v0_4_0;
 
 #[cfg(target_arch = "arm")]
-pub mod runtime;
+pub mod hooks;

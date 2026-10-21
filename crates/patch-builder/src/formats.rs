@@ -5,8 +5,6 @@ use crate::{
     Result,
 };
 
-pub const BANK_TITLE_ID: u64 = 0x0004_0000_000c_9b00;
-
 #[derive(Debug, Clone)]
 pub struct CiaInspection {
     pub sha256: [u8; 32],
@@ -366,7 +364,7 @@ mod tests {
         data[0x20] = if included { 0x80 } else { 0 };
         data[tmd_at..tmd_at + 4].copy_from_slice(&sig.to_be_bytes());
         let body = tmd_at + signature_len;
-        data[body + 0x4c..body + 0x54].copy_from_slice(&BANK_TITLE_ID.to_be_bytes());
+        data[body + 0x4c..body + 0x54].copy_from_slice(&crate::bank15::TITLE_ID.to_be_bytes());
         data[body + 0x9e..body + 0xa0].copy_from_slice(&1_u16.to_be_bytes());
         data[body + 0x9c4 + 8..body + 0x9c4 + 16].copy_from_slice(&16_u64.to_be_bytes());
         let hash = sha256(&[0; 16]);
@@ -385,7 +383,7 @@ mod tests {
             (0x10005, 0x80),
         ] {
             let result = inspect_cia(&fixture(sig, length, true)).unwrap();
-            assert_eq!(result.title_id, BANK_TITLE_ID);
+            assert_eq!(result.title_id, crate::bank15::TITLE_ID);
             assert_eq!(
                 result.contents[0].sha256,
                 Some(result.contents[0].expected_sha256)

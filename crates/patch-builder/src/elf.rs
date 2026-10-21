@@ -629,7 +629,7 @@ mod tests {
 
     /// The checks with the entry functions of the offline patch.
     fn inspect(elf: &[u8]) -> Result<PayloadElf> {
-        inspect_payload_elf(&bank15::CONTRACT, elf, bank15::offline::PROFILE.entries)
+        inspect_payload_elf(&bank15::CONTRACT, elf, &bank15::offline::PROFILE.entries())
     }
     const SHOFF: usize = 0x2d00;
     const SYMOFF: usize = 0x2200;
@@ -746,9 +746,9 @@ mod tests {
                 2,
             ),
             // The entry of `bank-common` that every patch exports.
-            ("bank_message_shown", 0x3fb034, 4, 0x12, 2),
+            ("bank_message_stub", 0x3fb034, 4, 0x12, 2),
             ("bank_version_shown", 0x3fb038, 4, 0x12, 2),
-            ("bank_offline_no_game", 0x3fb01c, 4, 0x12, 2),
+            ("bank_offline_no_game_stub", 0x3fb01c, 4, 0x12, 2),
             ("bank_offline_scan", 0x3fb020, 4, 0x12, 2),
         ]
         .into_iter()
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(parsed.entry, 0x3fb000);
         assert_eq!(parsed.export("bank_offline_timestamp"), Ok(0x3fb018));
         assert_eq!(parsed.entries.len(), 9);
-        assert_eq!(parsed.export("bank_message_shown"), Ok(0x3fb034));
+        assert_eq!(parsed.export("bank_message_stub"), Ok(0x3fb034));
         assert_eq!(parsed.export("bank_version_shown"), Ok(0x3fb038));
         assert!(parsed.export("bank_offline_menu").is_err());
         assert_eq!(parsed.executable_size, 0x1000);

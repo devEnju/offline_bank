@@ -1,42 +1,23 @@
 #![cfg_attr(target_arch = "arm", no_std)]
 #![cfg_attr(target_arch = "arm", no_main)]
 
-// Link roots of the download patch. This binary is an intermediate ELF,
-// never a standalone application or a complete installable Bank patch.
+// The link roots of the download patch (`patch_common::link`): the entry
+// functions of its profile in the builder and the start-up hook. This binary
+// is an intermediate ELF, never a standalone application or a complete
+// installable Bank patch.
 #[cfg(target_arch = "arm")]
 mod linked {
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static NEXT: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 =
-        bank_download_payload::runtime::bank_download_next;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static SCAN: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_download_payload::runtime::bank_download_scan;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static SCAN_BUSY: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_download_payload::runtime::bank_download_scan_busy;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static OPEN: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_download_payload::runtime::bank_download_open;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static OPEN_BUSY: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_download_payload::runtime::bank_download_open_busy;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static SAVE: unsafe extern "aapcs" fn(*mut u8) -> u32 =
-        bank_download_payload::runtime::bank_download_save;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static STARTUP: unsafe extern "aapcs" fn(*mut u8) =
-        patch_common::bootstrap::patch_bootstrap_startup;
-    #[used]
-    #[link_section = ".bank.link_roots"]
-    static VERSION: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
-        bank_download_payload::runtime::bank_version_shown;
+    use bank_download_payload::hooks::*;
+    patch_common::link_roots!(
+        patch_common::bootstrap::patch_bootstrap_startup,
+        bank_download_next,
+        bank_version_shown,
+        bank_download_open,
+        bank_download_open_busy,
+        bank_download_scan,
+        bank_download_scan_busy,
+        bank_download_save,
+    );
 
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo<'_>) -> ! {

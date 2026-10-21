@@ -24,7 +24,6 @@ pub mod rehearsal;
 #[cfg(any(test, feature = "test-support"))]
 pub mod router;
 pub mod session;
-#[cfg(target_arch = "arm")]
 pub mod task;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
