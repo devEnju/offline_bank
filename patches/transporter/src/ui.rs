@@ -94,9 +94,11 @@ mod native {
     /// A text file of the original, opened as the original gives a screen its
     /// messages (`0022EF30`): `(size, heap)` allocates, `(10)` names the text
     /// archive of the screens' language, and `(memory, archive, file, heap, 1,
-    /// 5)` opens the file. `(strings, layout, pane, messages, message)` copies a
-    /// message into a text pane (`001A20C8` calls it with a screen's own
-    /// messages). The object's second virtual function deletes it.
+    /// 5)` makes the file object in that memory and returns it (`001DFB98`),
+    /// as the original stores it without a check (`0022EF88`).
+    /// `(strings, layout, pane, messages, message)` copies a message into a
+    /// text pane (`001A20C8` calls it with a screen's own messages). The
+    /// object's second virtual function deletes it and frees its memory.
     const ALLOCATE: usize = 0x001e_6360;
     const MESSAGES_SIZE: u32 = 0x28;
     const TEXT_ARCHIVE: usize = 0x001e_2540;
@@ -129,9 +131,6 @@ mod native {
                 return Err(Unavailable);
             }
             let messages = open(memory, archive(10), file, heap, 1, 5);
-            if messages.is_null() {
-                return Err(Unavailable);
-            }
             set(strings, layout, pane, messages, message);
             let delete: unsafe extern "aapcs" fn(*mut u8) =
                 transmute(messages.cast::<*const usize>().read().add(1).read());
