@@ -87,6 +87,12 @@ $edits = @(
 # SDK CreateThread (001E3F58) adds 0x20 to the worker's SDK argument before SVC 08.
 $relies = @(@(0x001E3FC8, 0xE3550020L), @(0x001E3FD0, 0x92850020L), @(0x001E3FD8, 0x9A000008L), @(0x001E3FE4, 0xE3500027L), @(0x001E3FE8, 0x92800018L), @(0x001E3FF8, 0xE3500040L), @(0x001E3FFC, 0x83E00000L), @(0x001E403C, 0xAEF62B00L), @(0x001E4040, 0x93725B00L))
 
+# What must stay the original's: the router, which the router entry calls
+# (00242BA0..00242E08), and the two tables of the Virtual Console titles
+# whose languages the hooks copied (39 rows of three words at 002AFE0C, one
+# word each at 002C2B1C).
+$protected = @(@(0x00242BA0, 0x268), @(0x002AFE0C, 39 * 12), @(0x002C2B1C, 39 * 4))
+
 $extra = {
     param([byte[]]$original, [byte[]]$patched, $elf)
     # The layout check, called from 0013AEE4 before the payload can run, lies
@@ -99,6 +105,6 @@ $extra = {
     Assert-Check ($text.Contains('/roms/nds/saves/POKEMON_')) 'Payload names the SD save folder'
 }
 
-Test-Package -Kind $Kind -Program $program -Edits $edits -Relies $relies -Router 'transporter_next' -Entries 31 -Extra $extra `
+Test-Package -Kind $Kind -Program $program -Edits $edits -Relies $relies -Protected $protected -Router 'transporter_next' -Entries 31 -Extra $extra `
     -PackagePath $PackagePath -ElfPath $ElfPath -InputPath $InputPath `
     -Checks @('the layout check lies beside the start-up hook and begins with the instruction it stands in for', 'the payload names the transport-box files and the SD save folder')

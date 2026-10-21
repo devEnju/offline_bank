@@ -119,6 +119,8 @@ Checks the package of `Kind` and writes verification.json into it.
   'b:<target>', 'bl:<target>' or 'ptr:<target>', the target a symbol or a
   hex address. The start-up hook's bytes are one more region.
 - Relies: @(address, word) of the original the patch relies on.
+- Protected: @(address, bytes) of the original that must stay as they are:
+  no listed edit lies in them, and the patched image holds them unchanged.
 - Router: the ELF's entry; Entries: how many entry functions the edits name.
 - MenuEdits: how many edits the manifest counts as main-menu edits.
 - Extra: a script block with checks of the caller's own; it gets the
@@ -130,6 +132,7 @@ function Test-Package {
         [Parameter(Mandatory)][hashtable]$Program,
         [Parameter(Mandatory)][object[]]$Edits,
         [object[]]$Relies = @(),
+        [object[]]$Protected = @(),
         [Parameter(Mandatory)][string]$Router,
         [Parameter(Mandatory)][int]$Entries,
         [int]$MenuEdits = 0,
@@ -260,6 +263,13 @@ function Test-Package {
             $zero = $load.memory_bytes - $load.file_bytes
             if ($zero -gt 0) { Assert-Check ((Hash $patched ($load.address - $base + $load.file_bytes) $zero) -eq (Hash ([byte[]]::new($zero)))) 'ELF zero-initialised bytes' }
         }
+        foreach ($range in $Protected) {
+            $start = [long]$range[0]; $length = [int]$range[1]; $offset = [int]($start - $base)
+            foreach ($edit in $Edits) {
+                Assert-Check (-not ($edit[0] -ge $start -and $edit[0] -lt $start + $length)) ('Edit listed in a protected place {0:x8}' -f $edit[0])
+            }
+            Assert-Check ((Hash $patched $offset $length) -eq (Hash $original $offset $length)) ('Protected original changed at {0:x8}' -f $start)
+        }
         Assert-Check ($Edits.Count + 1 -eq $manifest.native_edits -and $manifest.main_menu_edits -eq $MenuEdits) 'Native region count'
 
         # The manifest's placement and payload hash.
@@ -295,7 +305,7 @@ function Test-Package {
             system_call_wrappers = $wrappers.Count
             expanded_code_bytes = $expandedSize; expanded_code_sha256 = $patchedHash
             initial_extension_fill = 'a5'; elf_loads = $parsed.loads
-            checks = @('original inputs identified by hash', 'every listed edit holds its original word before and its replacement after, branch and pointer targets by their ELF symbols', 'all IPS records bounded and disjoint, none outside the listed edits and the start-up hook', 'added memory fully written over a nonzero fill', 'the expanded image equals the independently built one, byte for byte', 'the start-up hook replaces only zero bytes and calls the original application init first', 'every entry function and system-call wrapper is a global ARM function of the start-up hook or the payload code', 'former zero-initialised data and every zero-initialised ELF byte are zero', 'only paired exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image', 'manifest hashes, exports, placement and status match') + $Checks
+            checks = @('original inputs identified by hash', 'every listed edit holds its original word before and its replacement after, branch and pointer targets by their ELF symbols', 'all IPS records bounded and disjoint, none outside the listed edits and the start-up hook', 'added memory fully written over a nonzero fill', 'the expanded image equals the independently built one, byte for byte', 'no listed edit lies in a protected place, and every protected place is unchanged', 'the start-up hook replaces only zero bytes and calls the original application init first', 'every entry function and system-call wrapper is a global ARM function of the start-up hook or the payload code', 'former zero-initialised data and every zero-initialised ELF byte are zero', 'only paired exheader fields 0x34/0x38/0x3c changed, and they cover the expanded image', 'manifest hashes, exports, placement and status match') + $Checks
             limitations = @('static artifact verification; hardware behavior not established')
         }
         $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding utf8

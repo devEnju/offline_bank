@@ -133,6 +133,15 @@ if ($offline) {
         @(0x002abe0c, 0xe1a04000L), @(0x002ac560, 0x03a00018L), @(0x002ac7b4, 0xe5940040L), @(0x002ac7c0, 0xe3500004L), @(0x002ac7c8, 0x0a0000b0L), @(0x002ac924, 0xe3a00003L), @(0x002aca90, 0xe3a00020L))
 }
 
+# What must stay the original's: the main menu's locations but the test
+# build's own two, and for the offline patch the scan's no-game route and
+# acknowledgment and the code of game selection and its progress check.
+$protected = @($menuLocations | Where-Object { -not ($Kind -eq 'test' -and $_[0] -in 0x003617bc, 0x003617dc) } | ForEach-Object { , @($_[0], 4) })
+if ($offline) {
+    $protected += @(@(0x002abe0c, 4), @(0x002ac560, 4), @(0x002ac7b4, 4), @(0x002ac7c0, 4), @(0x002ac7c8, 4), @(0x002ac924, 4), @(0x002aca90, 4),
+        @(0x002adc50, 0x388), @(0x002d0fc8, 0xbc), @(0x002b0098, 0x1d8), @(0x002ae310, 0x230))
+}
+
 $extra = {
     param([byte[]]$original, [byte[]]$patched, $elf)
     $symbols = $elf.symbols
@@ -153,7 +162,7 @@ $extra = {
     }
 }
 
-Test-Package -Kind $Kind -Program $program -Edits $edits -Relies $relies -Router $router `
+Test-Package -Kind $Kind -Program $program -Edits $edits -Relies $relies -Protected $protected -Router $router `
     -Entries (@{ bank = 9; migration = 4; test = 11; download = 7 }[$Kind]) `
     -MenuEdits ($(if ($Kind -eq 'test') { 2 } else { 0 })) -Extra $extra `
     -PackagePath $PackagePath -ElfPath $ElfPath -InputPath $InputPath `
