@@ -846,7 +846,7 @@ mod native {
     use super::{Api, Error, Operation, Reach};
     use crate::bank_files::UnitFile;
     use core::{marker::PhantomData, mem::transmute};
-    use patch_common::{kernel::close_handle, program::Program};
+    use patch_common::{file, program::Program};
 
     #[repr(C)]
     struct Path {
@@ -936,12 +936,15 @@ mod native {
 
     fn result(operation: Operation, code: i32) -> Result<(), Error> {
         if code < 0 {
-            Err(Error::Native {
-                operation,
-                code: code as u32,
-            })
+            Err(native(operation)(code))
         } else {
             Ok(())
+        }
+    }
+    fn native(operation: Operation) -> impl Fn(file::Code) -> Error {
+        move |code| Error::Native {
+            operation,
+            code: code as u32,
         }
     }
 
@@ -1006,26 +1009,12 @@ mod native {
             Ok(handle)
         }
         fn size(&mut self, file: u32) -> Result<u64, Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_SIZE) };
-            let mut size = 0;
-            result(Operation::Size, unsafe { call(&file, &mut size) })?;
-            Ok(size)
+            file::size::<P>(file).map_err(native(Operation::Size))
         }
         fn read(&mut self, file: u32, offset: u64, bytes: &mut [u8]) -> Result<u32, Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_READ) };
-            let mut count = 0;
-            result(Operation::Read, unsafe {
-                call(
-                    &file,
-                    &mut count,
-                    offset,
-                    bytes.as_mut_ptr(),
-                    bytes.len() as u32,
-                )
-            })?;
-            Ok(count)
+            let length = bytes.len() as u32;
+            unsafe { file::read::<P>(file, offset, bytes.as_mut_ptr(), length) }
+                .map_err(native(Operation::Read))
         }
         fn write(
             &mut self,
@@ -1034,28 +1023,15 @@ mod native {
             bytes: &[u8],
             flags: u32,
         ) -> Result<u32, Error> {
-            type Call =
-                unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_WRITE) };
-            let mut count = 0;
-            result(Operation::Write, unsafe {
-                call(
-                    &file,
-                    &mut count,
-                    offset,
-                    bytes.as_ptr(),
-                    bytes.len() as u32,
-                    flags,
-                )
-            })?;
-            Ok(count)
+            let length = bytes.len() as u32;
+            unsafe { file::write::<P>(file, offset, bytes.as_ptr(), length, flags) }
+                .map_err(native(Operation::Write))
         }
         fn close_file(&mut self, file: u32) -> Result<(), Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32) -> i32;
-            let call: Call = unsafe { transmute(P::FILE_CLOSE) };
-            let close_result = result(Operation::CloseFile, unsafe { call(&file) });
-            let handle_result = result(Operation::CloseHandle, unsafe { close_handle(file) });
-            close_result.and(handle_result)
+            let (closed, handle) = file::close::<P>(file);
+            closed
+                .map_err(native(Operation::CloseFile))
+                .and(handle.map_err(native(Operation::CloseHandle)))
         }
     }
 }

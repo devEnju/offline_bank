@@ -1,6 +1,7 @@
 #![no_std]
 //! What the patches of Bank and of Transporter both use: the start-up hook,
 //! the worker thread that owns the file work, the kernel calls behind it,
+//! the SDK's calls on an open file,
 //! the state a patch's hooks share, the refusal of HOME and sleep, how long
 //! a loading screen stands before its work and stays at least, the version
 //! line, the walk over the text of a message, the entries written in
@@ -10,6 +11,8 @@
 
 pub mod bootstrap;
 pub mod exclusive;
+#[cfg(target_arch = "arm")]
+pub mod file;
 #[cfg(target_arch = "arm")]
 pub mod home;
 pub mod link;

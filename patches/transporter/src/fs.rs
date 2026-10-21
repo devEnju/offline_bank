@@ -1,11 +1,11 @@
 //! The SD card, where the Black/White saves are (docs/internals.md, "Saves
 //! on the SD card"), through Transporter's SDK: a file is opened with its
-//! archive in one call, and the kernel handle is closed with it. Bank's
-//! files are reached through bank-common (`bank_common::fs::Visit`).
+//! archive in one call, and handled by `patch_common::file`, which closes
+//! its kernel handle with it. Bank's files are reached through bank-common (`bank_common::fs::Visit`).
 
 use crate::program::Transporter15;
 use core::mem::transmute;
-use patch_common::{kernel::close_handle, program::Program};
+use patch_common::{file, program::Program};
 
 /// The SDK's "open a file in an archive in one call", `(session, &file, 0,
 /// archive id, path type, path, path size, 3, file path, its size, flags,
@@ -62,34 +62,21 @@ impl File {
         (code >= 0 && handle != 0).then(|| Self(handle))
     }
     pub(crate) fn size(&self) -> Option<u64> {
-        type Size = unsafe extern "aapcs" fn(*const u32, *mut u64) -> i32;
-        let size: Size = unsafe { transmute(Transporter15::FILE_SIZE) };
-        let mut length = 0;
-        (unsafe { size(&self.0, &mut length) } >= 0).then_some(length)
+        file::size::<Transporter15>(self.0).ok()
     }
     /// Whether all `length` bytes were read.
     pub(crate) fn read(&self, offset: u64, bytes: *mut u8, length: u32) -> bool {
-        type Read = unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *mut u8, u32) -> i32;
-        let read: Read = unsafe { transmute(Transporter15::FILE_READ) };
-        let mut count = 0;
-        unsafe { read(&self.0, &mut count, offset, bytes, length) >= 0 && count == length }
+        let read = unsafe { file::read::<Transporter15>(self.0, offset, bytes, length) };
+        read == Ok(length)
     }
     /// Whether all `length` bytes were written.
     pub(crate) fn write(&self, offset: u64, bytes: *const u8, length: u32, flags: u32) -> bool {
-        type Write =
-            unsafe extern "aapcs" fn(*const u32, *mut u32, u64, *const u8, u32, u32) -> i32;
-        let write: Write = unsafe { transmute(Transporter15::FILE_WRITE) };
-        let mut count = 0;
-        unsafe { write(&self.0, &mut count, offset, bytes, length, flags) >= 0 && count == length }
+        let written = unsafe { file::write::<Transporter15>(self.0, offset, bytes, length, flags) };
+        written == Ok(length)
     }
 }
 impl Drop for File {
     fn drop(&mut self) {
-        type Close = unsafe extern "aapcs" fn(*const u32) -> i32;
-        let close: Close = unsafe { transmute(Transporter15::FILE_CLOSE) };
-        unsafe {
-            close(&self.0);
-            close_handle(self.0);
-        }
+        let _ = file::close::<Transporter15>(self.0);
     }
 }
