@@ -20,9 +20,6 @@ pub const TASK_LOAD: u32 = 0x0036_1ec8;
 pub const TASK_SAVE: u32 = 0x0036_2028;
 pub const TASK_REWARDS: u32 = 0x0036_19fc;
 pub const TASK_REWARD_GUARD: u32 = 0x0036_1bd8;
-/// The original's task router, `002a5580(manager, current)`: the next task
-/// for the one that has ended.
-pub const ROUTER: usize = 0x002a_5580;
 /// `00233a6c(save manager)`: the game object of the selected game.
 pub const SELECTED_GAME: usize = 0x0023_3a6c;
 /// `0023a754(words)`: the console's date and time as the original's packed
@@ -39,6 +36,7 @@ const BEGIN_BUSY: usize = 0x0025_c420;
 #[cfg(target_arch = "arm")]
 const END_BUSY: usize = 0x0025_c3e8;
 
+use patch_common::native::read_word;
 pub use patch_common::native::NotNative;
 impl From<NotNative> for crate::fault::Fault {
     fn from(_: NotNative) -> Self {
@@ -46,16 +44,6 @@ impl From<NotNative> for crate::fault::Fault {
     }
 }
 
-/// # Safety
-/// `base + offset` must be four readable bytes of a live native object.
-pub unsafe fn read_word(base: *mut u8, offset: usize) -> u32 {
-    unsafe { base.add(offset).cast::<u32>().read() }
-}
-/// # Safety
-/// `base + offset` must be four writable bytes of a live native object.
-pub unsafe fn write_word(base: *mut u8, offset: usize, value: u32) {
-    unsafe { base.add(offset).cast::<u32>().write(value) }
-}
 /// `value` as a pointer of the original (`patch_common::native::pointer`).
 pub fn checked_pointer(value: u32) -> Result<*mut u8, NotNative> {
     patch_common::native::pointer(value).ok_or(NotNative)
@@ -111,43 +99,6 @@ impl Task {
             self.raw().add(0x30).write(if success { 4 } else { 3 });
         }
         1
-    }
-}
-
-/// A task that has ended, as the router hook sees it, and what the
-/// original router answered for it.
-#[derive(Clone, Copy)]
-pub struct Ended {
-    /// The ended task's byte `+0x30`.
-    pub outcome: u8,
-    /// The manager's flag `+0x1a`, which the original router clears.
-    pub cancelled: bool,
-    /// The original router's answer.
-    pub native: u32,
-}
-#[cfg(target_arch = "arm")]
-impl Ended {
-    /// Reads the ended task of `manager` (`+0x10`) and the manager's flag,
-    /// then asks the original router. `None` for a manager or task that is
-    /// not a pointer, or a task ID the factory does not know; the original
-    /// is not asked then.
-    /// # Safety
-    /// Called from the router call site with its arguments, on the main
-    /// thread.
-    pub unsafe fn route(manager: *mut u8, current: u32) -> Option<Self> {
-        checked_pointer(manager as u32).ok()?;
-        if current >= TASK_COUNT {
-            return None;
-        }
-        let task = checked_pointer(unsafe { read_word(manager, 0x10) }).ok()?;
-        let cancelled = unsafe { manager.add(0x1a).read() } != 0;
-        let outcome = unsafe { task.add(0x30).read() };
-        let router: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(ROUTER) };
-        Some(Self {
-            outcome,
-            cancelled,
-            native: unsafe { router(manager, current) },
-        })
     }
 }
 

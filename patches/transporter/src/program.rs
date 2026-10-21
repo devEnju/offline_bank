@@ -14,6 +14,8 @@ use patch_common::program::Program;
 ///   (`001044D0`);
 /// - the title screen's call for its version line, message 0x29
 ///   (`0024BAE8`), and the two calls it hands the line to the pane with;
+/// - its router `get_next_state` `00242BA0` and its factory's bound
+///   (`task::TASK_COUNT`);
 /// - its clock, as its minimum time `0019B758` reads it: `00233854`
 ///   copies the time at `002F4E38`, `0025A77C` gives it in ms;
 /// - its file system calls, the same code as Bank's (found by comparing
@@ -29,6 +31,8 @@ impl Program for Transporter15 {
     const ACTIVITY_SET: usize = 0x0022_aeec;
     const ACTIVITY_CLEAR: usize = 0x0011_a5fc;
     const HOME_ACCEPTED: usize = 0x002f_49e9;
+    const ROUTER: usize = 0x0024_2ba0;
+    const TASK_COUNT: u32 = crate::task::TASK_COUNT;
     const PANE_MESSAGE: usize = 0x001d_33cc;
     const FIND_PANE: usize = 0x0019_f834;
     const PANE_TEXT: usize = 0x0023_75d0;

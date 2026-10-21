@@ -24,6 +24,7 @@ use crate::{
     task::{Task, TASK_LIST},
 };
 use core::{cell::UnsafeCell, mem::transmute, slice};
+use patch_common::native::read_word;
 
 const ORIGINAL_CART_ID: usize = 0x0021_aa0c;
 const ORIGINAL_CART_READ: usize = 0x0021_a7e0;
@@ -220,7 +221,7 @@ unsafe extern "aapcs" fn list_next(raw: *mut u8) -> u32 {
                 // 00244F34): note the kind, read the item, wait for the read.
                 task.add(LIST_KINDS + count).write(item.kind());
                 let start: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(START_CART_READ);
-                start(manager, task.add(LIST_HEAP).cast::<u32>().read());
+                start(manager, read_word(task, LIST_HEAP));
                 state.write(STATE_READING_CARTRIDGE);
                 return 1;
             }
@@ -238,8 +239,8 @@ unsafe extern "aapcs" fn list_next(raw: *mut u8) -> u32 {
 /// task runs.
 pub unsafe fn chosen_card_missing(manager: *mut u8) -> bool {
     unsafe {
-        let version = manager.add(MANAGER_VERSION).cast::<u32>().read();
-        let title = manager.add(MANAGER_TITLE).cast::<u32>().read();
+        let version = read_word(manager, MANAGER_VERSION);
+        let title = read_word(manager, MANAGER_TITLE);
         if version != 0 && title != 0 {
             return false;
         }

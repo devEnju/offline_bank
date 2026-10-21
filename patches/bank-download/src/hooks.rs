@@ -17,10 +17,7 @@ use bank_common::{
     fs,
     native_bank::NativeBank,
     program::Bank15,
-    task::{
-        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, TASK_OPEN,
-        TASK_REWARD_GUARD, TASK_SCAN,
-    },
+    task::{checked_pointer, refuse_home, Notice, Task, TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN},
     ui,
     worker::WorkerError,
 };
@@ -28,6 +25,7 @@ use core::mem::transmute;
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
+    native::{read_word, write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Service, Shared, Worker},
@@ -247,7 +245,7 @@ pub unsafe extern "aapcs" fn bank_download_next(manager: *mut u8, current: u32) 
     let Some(mut state) = STATE.take() else {
         return navigation::CLEANUP;
     };
-    let Some(Ended { native, .. }) = (unsafe { Ended::route(manager, current) }) else {
+    let Some(Ended { native, .. }) = (unsafe { Ended::route::<Bank15>(manager, current) }) else {
         return navigation::CLEANUP;
     };
     let destination = navigation::destination(current, native, state.stage);

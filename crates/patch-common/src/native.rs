@@ -1,6 +1,8 @@
 //! Objects of the original, as a hook reaches them.
 
 use core::ptr::NonNull;
+#[cfg(target_arch = "arm")]
+use {crate::program::Program, core::mem::transmute};
 
 /// A pointer or object of the original that is not what a hook expects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +27,59 @@ pub unsafe fn object(raw: *mut u8, expected: &[u32]) -> Result<NonNull<u8>, NotN
 /// patch checks a pointer it reads from an object of the original this way.
 pub fn pointer(value: u32) -> Option<*mut u8> {
     (value != 0 && value & 3 == 0).then_some(value as *mut u8)
+}
+
+/// The word at `base + offset`.
+/// # Safety
+/// `base + offset` must be four readable bytes of a live native object.
+pub unsafe fn read_word(base: *mut u8, offset: usize) -> u32 {
+    unsafe { base.add(offset).cast::<u32>().read() }
+}
+/// Writes the word at `base + offset`.
+/// # Safety
+/// `base + offset` must be four writable bytes of a live native object.
+pub unsafe fn write_word(base: *mut u8, offset: usize, value: u32) {
+    unsafe { base.add(offset).cast::<u32>().write(value) }
+}
+
+/// A task that has ended, as a router hook sees it, and what the
+/// original's router answered for it.
+#[derive(Clone, Copy)]
+pub struct Ended {
+    /// The ended task's byte `+0x30`.
+    pub outcome: u8,
+    /// The manager's flag `+0x1a`, which the original's router clears.
+    pub cancelled: bool,
+    /// The original's router's answer.
+    pub native: u32,
+}
+#[cfg(target_arch = "arm")]
+impl Ended {
+    /// Reads the ended task of `manager` (`+0x10`) and the manager's flag,
+    /// then asks the original's router (`Program::ROUTER`). `None` for a
+    /// task ID its factory does not make (`Program::TASK_COUNT`), or a
+    /// manager or task that is not a pointer; the original is not asked
+    /// then. Both programs' managers and tasks keep these at the same
+    /// offsets.
+    /// # Safety
+    /// Called from the router's call site of `P` with its arguments, on the
+    /// main thread.
+    pub unsafe fn route<P: Program>(manager: *mut u8, current: u32) -> Option<Self> {
+        if current >= P::TASK_COUNT {
+            return None;
+        }
+        pointer(manager as u32)?;
+        let task = unsafe { follow(manager, 0x10) }?;
+        // Read before the router runs, which clears the flag.
+        let cancelled = unsafe { manager.add(0x1a).read() } != 0;
+        let outcome = unsafe { task.add(0x30).read() };
+        let router: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(P::ROUTER) };
+        Some(Self {
+            outcome,
+            cancelled,
+            native: unsafe { router(manager, current) },
+        })
+    }
 }
 
 /// The pointer at `base + offset` (`pointer`).

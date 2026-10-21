@@ -31,6 +31,12 @@ pub trait Program: 'static {
     /// the press out some frames later, whatever the mask says by then.
     const HOME_ACCEPTED: usize;
 
+    /// The original's task router, `ROUTER(manager, current)`: the next
+    /// task for the one that has ended (`native::Ended`). Its factory makes
+    /// the tasks `0..TASK_COUNT`.
+    const ROUTER: usize;
+    const TASK_COUNT: u32;
+
     /// `(context, group, pane, message)`: a message with its values into a
     /// pane, as the title screen writes its version line. It loads the
     /// message into the first of the context's two work strings

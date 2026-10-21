@@ -18,8 +18,8 @@ use bank_common::{
     native_bank::NativeBank,
     program::Bank15,
     task::{
-        checked_pointer, read_word, refuse_home, write_word, Ended, Notice, Task, LOCAL_DATE,
-        TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN, TEXT,
+        checked_pointer, refuse_home, Notice, Task, LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS,
+        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN, TEXT,
     },
     worker::WorkerError,
 };
@@ -32,6 +32,7 @@ use offline_core::{
 };
 use patch_common::{
     exclusive::Exclusive,
+    native::{read_word, write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Worker},
@@ -1082,7 +1083,7 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         outcome,
         cancelled,
         native: next,
-    }) = (unsafe { Ended::route(manager, current) })
+    }) = (unsafe { Ended::route::<Bank15>(manager, current) })
     else {
         return crate::navigation::CLEANUP;
     };

@@ -85,11 +85,9 @@ pub fn refreshed_by_a_save(slot: Slot) -> bool {
 #[cfg(target_arch = "arm")]
 mod native {
     use super::*;
-    use bank_common::{
-        native_bank::NativeBank,
-        task::{checked_pointer, read_word as word},
-    };
+    use bank_common::{native_bank::NativeBank, task::checked_pointer};
     use core::mem::transmute;
+    use patch_common::native::read_word as word;
 
     /// The application object's pointer, whose manager is at `+0x1c`.
     const APPLICATION: *const u32 = 0x003a_b90c as *const u32;

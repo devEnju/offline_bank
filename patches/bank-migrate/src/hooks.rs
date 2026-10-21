@@ -17,13 +17,14 @@ use bank_common::{
     fs::{self, ExtdataStorage},
     numbers::VERSION,
     program::Bank15,
-    task::{refuse_home, write_word, Ended, Notice, Task, TASK_SCAN},
+    task::{refuse_home, Notice, Task, TASK_SCAN},
     ui,
     worker::WorkerError,
 };
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
+    native::{write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Service, Shared, Worker},
@@ -189,7 +190,7 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
         outcome,
         cancelled,
         native: next,
-    }) = (unsafe { Ended::route(manager, current) })
+    }) = (unsafe { Ended::route::<Bank15>(manager, current) })
     else {
         return navigation::CLEANUP;
     };

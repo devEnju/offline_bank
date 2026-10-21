@@ -7,13 +7,11 @@
 //! start for lack of its Game Card shows that message's other part, the
 //! advice to check the card. Nothing else is written here.
 
-use crate::{
-    numbers,
-    task::{checked_pointer, read_word as word},
-};
+use crate::{numbers, task::checked_pointer};
 use core::mem::transmute;
 use patch_common::{
     message,
+    native::read_word as word,
     ui::{self as shared, StringError, Text},
 };
 

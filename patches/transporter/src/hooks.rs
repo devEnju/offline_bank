@@ -12,25 +12,17 @@ use crate::{
     task::*,
     ui::{self, from_second_page, loading, refusal_message, stop_loading, MESSAGE_OPEN_BANK},
 };
-use core::{mem::transmute, slice};
+use core::slice;
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
     exclusive::Exclusive,
-    native::{follow, pointer},
+    native::{follow, read_word, Ended},
     spinner::{self, Spinner},
     worker::JobId,
 };
 
 /// What the version line says behind "Ver. 1.5".
 const VERSION_SUFFIX: &[u8] = b"-offline";
-/// The original's router, `get_next_state(manager, current)`, and what it
-/// reads: the finished task at `manager + 0x10` with its outcome byte at
-/// `+0x30`, and the manager's "cancelled" flag, which it clears.
-const NEXT_STATE: usize = 0x0024_2ba0;
-const MANAGER_TASK: usize = 0x10;
-const MANAGER_CANCELLED: usize = 0x1a;
-const TASK_OUTCOME: usize = 0x30;
-
 /// A task's state, and the transfer's flag that it is to end (set by
 /// `0025CDC0`; its update then selects sub-state `0x14`, `0024A0CC`).
 const TASK_STATE: usize = 0x10;
@@ -153,24 +145,17 @@ unsafe fn stage_box(task: Task, staging: &mut [u8]) -> Option<()> {
 /// live manager whose current task has ended.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) -> u32 {
-    if current >= TASK_COUNT {
-        return navigation::DISCONNECT;
-    }
     let Some(mut state) = STATE.take() else {
         return navigation::DISCONNECT;
     };
-    // The manager is checked before anything is read through it.
-    if pointer(manager as u32).is_none() {
-        return navigation::DISCONNECT;
-    }
-    let Some(task) = (unsafe { follow(manager, MANAGER_TASK) }) else {
+    let Some(Ended {
+        outcome,
+        cancelled,
+        native,
+    }) = (unsafe { Ended::route::<Transporter15>(manager, current) })
+    else {
         return navigation::DISCONNECT;
     };
-    // Read before the original runs, which clears the flag.
-    let cancelled = unsafe { manager.add(MANAGER_CANCELLED).read() } != 0;
-    let outcome = unsafe { task.add(TASK_OUTCOME).read() };
-    let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(NEXT_STATE) };
-    let native = unsafe { original(manager, current) };
     let next = navigation::destination(current, outcome, native, cancelled);
     // A step that reads or writes refuses HOME and sleep from the moment it
     // is chosen; one that waits lets them through, unless a job is still out.
@@ -491,7 +476,7 @@ unsafe extern "aapcs" fn update_waits(raw: *mut u8, step: u32) -> u32 {
     let now = now();
     // The panel of reading the game or of the transfer.
     state.spinner.seen(now);
-    let task_state = unsafe { task.add(TASK_STATE).cast::<u32>().read() };
+    let task_state = unsafe { read_word(task, TASK_STATE) };
     let waits = panel::waits(
         step,
         task_state,

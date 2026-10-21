@@ -311,11 +311,11 @@ mod arm {
     };
     use bank_common::{
         program::Bank15,
-        task::{read_word, SELECTED_GAME, TEXT},
+        task::{SELECTED_GAME, TEXT},
     };
     use core::{marker::PhantomData, mem::transmute, ptr::NonNull};
     use offline_core::game_image::Overlay;
-    use patch_common::program::Program;
+    use patch_common::{native::read_word, program::Program};
 
     pub const OBJECT_SIZE: usize = 0xb49d0;
     const GAME_VTABLE: u32 = 0x0036_2f88;

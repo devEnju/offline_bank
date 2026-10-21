@@ -206,6 +206,7 @@ mod native {
     use super::*;
     use crate::lytpatch;
     use core::{mem::transmute, slice};
+    use patch_common::native::read_word;
 
     /// Points at the byte holding the language of the screens (`001E356C`).
     const UI_LANGUAGE: *const *const u8 = 0x0032_938c as *const *const u8;
@@ -488,7 +489,7 @@ mod native {
             let disable: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(DISABLE_BUTTON);
             let buttons = screen.add(SCREEN_BUTTONS).cast::<*mut u8>().read();
             for position in SHOWN..ENTRIES {
-                let index = screen.add(SCREEN_ORDER + position * 4).cast::<u32>().read();
+                let index = read_word(screen, SCREEN_ORDER + position * 4);
                 disable(buttons, index);
             }
             screen
