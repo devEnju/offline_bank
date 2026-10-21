@@ -193,10 +193,7 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
     else {
         return navigation::CLEANUP;
     };
-    if cancelled {
-        return navigation::CLEANUP;
-    }
-    let destination = navigation::destination(current, outcome, next);
+    let destination = navigation::destination(current, outcome, next, cancelled);
     // Refuse HOME and sleep from the scan to the end of the conversion.
     if navigation::loads(destination) {
         refuse_home(true);

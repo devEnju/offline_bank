@@ -52,12 +52,9 @@ pub unsafe fn read_word(base: *mut u8, offset: usize) -> u32 {
 pub unsafe fn write_word(base: *mut u8, offset: usize, value: u32) {
     unsafe { base.add(offset).cast::<u32>().write(value) }
 }
+/// `value` as a pointer of the original (`patch_common::native::pointer`).
 pub fn checked_pointer(value: u32) -> Result<*mut u8, NotNative> {
-    if value == 0 || value & 3 != 0 {
-        Err(NotNative)
-    } else {
-        Ok(value as *mut u8)
-    }
+    patch_common::native::pointer(value).ok_or(NotNative)
 }
 
 #[derive(Clone, Copy)]

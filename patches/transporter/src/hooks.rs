@@ -16,7 +16,7 @@ use core::{mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
     exclusive::Exclusive,
-    native::follow,
+    native::{follow, pointer},
     spinner::{self, Spinner},
     worker::JobId,
 };
@@ -145,29 +145,39 @@ unsafe fn native_box(task: *const u8) -> Option<(&'static [u8], &'static [u8])> 
 /// Replaces the one call of the original's router (`00242EF8`). The
 /// original is asked first; its answer is changed where the offline flow
 /// differs, and HOME and sleep are refused or let through by the kind of
-/// the step that comes next (`navigation`).
+/// the step that comes next (`navigation`). A manager or task that is not a
+/// pointer, or a state a hook holds, ends the session: the disconnect step,
+/// and the original is not asked.
 /// # Safety
 /// Called only from the patched call site, on the main thread, with the
 /// live manager whose current task has ended.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) -> u32 {
-    let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(NEXT_STATE) };
+    let Some(mut state) = STATE.take() else {
+        return navigation::DISCONNECT;
+    };
+    let (Some(_), Some(task)) = (pointer(manager as u32), unsafe {
+        follow(manager, MANAGER_TASK)
+    }) else {
+        return navigation::DISCONNECT;
+    };
     // Read before the original runs, which clears the flag.
     let cancelled = unsafe { manager.add(MANAGER_CANCELLED).read() } != 0;
-    let outcome = unsafe { follow(manager, MANAGER_TASK) }
-        .map(|task| unsafe { task.add(TASK_OUTCOME).read() });
+    let outcome = unsafe { task.add(TASK_OUTCOME).read() };
+    let original: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(NEXT_STATE) };
     let native = unsafe { original(manager, current) };
-    let Some(outcome) = outcome else {
-        return native;
-    };
     let next = navigation::destination(current, outcome, native, cancelled);
-    refuse_home(navigation::loads(next));
+    // A step that reads or writes refuses HOME and sleep from the moment it
+    // is chosen; one that waits lets them through, unless a job is still out.
+    if navigation::loads(next) {
+        refuse_home(true);
+    } else if state.job.is_none() {
+        refuse_home(false);
+    }
     // The step's set-up puts up its loading panel on a later frame; its
     // time is taken on the first frame of the patch behind it.
     if navigation::spins(next) {
-        if let Some(mut state) = STATE.take() {
-            state.spinner.coming();
-        }
+        state.spinner.coming();
     }
     // The search's panel stays into the game list, until the list is on
     // screen; after anything else it ends here.

@@ -34,9 +34,20 @@ pub const MENU: bool = cfg!(feature = "test-build");
 pub const MENU_USE: u8 = 0xc;
 
 /// `outcome` is the finished task's byte `+0x30`; `native` is what the original
-/// router returned for it. `turn_back` is set when opening ended at a notice
-/// that leads back to the start screen: a save in progress waits for its game.
-pub fn destination(current: u32, outcome: u8, native: u32, turn_back: bool) -> u32 {
+/// router returned for it; `cancelled` is the manager's flag (`+0x1a`), for
+/// which the original answers cleanup itself. `turn_back` is set when opening
+/// ended at a notice that leads back to the start screen: a save in progress
+/// waits for its game.
+pub fn destination(
+    current: u32,
+    outcome: u8,
+    native: u32,
+    cancelled: bool,
+    turn_back: bool,
+) -> u32 {
+    if cancelled {
+        return CLEANUP;
+    }
     match (current, outcome) {
         (SCAN, 4) => OPEN,
         // The scan's HOME-transfer outcome must never open an offline Bank.
@@ -115,7 +126,13 @@ mod tests {
         let mut seen = Vec::new();
         while seen.len() < 20 {
             let ended = outcome(current);
-            let next = destination(current, ended, router::next(current, ended, false), false);
+            let next = destination(
+                current,
+                ended,
+                router::next(current, ended, false),
+                false,
+                false,
+            );
             seen.push(next);
             if next == START_SCREEN {
                 break;
@@ -123,6 +140,21 @@ mod tests {
             current = next;
         }
         seen
+    }
+
+    #[test]
+    fn a_cancelled_task_ends_in_cleanup_as_the_original_answers() {
+        for current in 0..=0x1d {
+            for outcome in 0..=u8::MAX {
+                for turn_back in [false, true] {
+                    let native = router::next(current, outcome, false);
+                    assert_eq!(
+                        destination(current, outcome, native, true, turn_back),
+                        CLEANUP
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -180,7 +212,7 @@ mod tests {
                 for home in [false, true] {
                     let native = router::next(current, outcome, home);
                     for turn_back in [false, true] {
-                        let next = destination(current, outcome, native, turn_back);
+                        let next = destination(current, outcome, native, false, turn_back);
                         assert!(
                             !never.contains(&next) && (MENU || next != MAIN_MENU),
                             "{current:#x} {outcome:#x} {native:#x} -> {next:#x}"
@@ -199,19 +231,25 @@ mod tests {
         }
         // The whole way from the start screen to game selection, and from a
         // chosen game to the reward check, is covered without a gap.
-        assert!(loads(destination(START_SCREEN, 4, SCAN, false)));
-        assert!(loads(destination(SCAN, 4, 5, false)));
-        assert!(!loads(destination(OPEN, 4, MAIN_MENU, false)));
-        assert!(loads(destination(SELECT, 5, 0xb, false)));
-        assert!(loads(destination(SCENE, 3, CLEANUP, false)));
-        assert!(!loads(destination(LOAD, 4, REWARD_GUARD, false)));
-        assert!(loads(destination(BOXES, 4, SAVE, false)));
-        assert!(!loads(destination(SAVE, 4, CLEANUP, false)));
+        assert!(loads(destination(START_SCREEN, 4, SCAN, false, false)));
+        assert!(loads(destination(SCAN, 4, 5, false, false)));
+        assert!(!loads(destination(OPEN, 4, MAIN_MENU, false, false)));
+        assert!(loads(destination(SELECT, 5, 0xb, false, false)));
+        assert!(loads(destination(SCENE, 3, CLEANUP, false, false)));
+        assert!(!loads(destination(LOAD, 4, REWARD_GUARD, false, false)));
+        assert!(loads(destination(BOXES, 4, SAVE, false, false)));
+        assert!(!loads(destination(SAVE, 4, CLEANUP, false, false)));
     }
 
     #[test]
     fn loading_hands_its_panel_to_the_reward_step() {
-        assert!(takes_panel(destination(LOAD, 4, REWARD_GUARD, false)));
+        assert!(takes_panel(destination(
+            LOAD,
+            4,
+            REWARD_GUARD,
+            false,
+            false
+        )));
         assert!(takes_panel(REWARD_CLAIM));
         for destination in 0..=0x1d {
             assert_eq!(
@@ -229,9 +267,9 @@ mod tests {
         for destination in 0..=0x1d {
             assert_eq!(spins(destination), panel.contains(&destination));
         }
-        assert!(spins(destination(SELECT, 5, 0xb, false)));
-        assert!(spins(destination(BOXES, 4, SAVE, false)));
-        assert!(spins(destination(SAVE, 4, CLEANUP, false)));
+        assert!(spins(destination(SELECT, 5, 0xb, false, false)));
+        assert!(spins(destination(BOXES, 4, SAVE, false, false)));
+        assert!(spins(destination(SAVE, 4, CLEANUP, false, false)));
     }
 
     #[test]
@@ -244,7 +282,7 @@ mod tests {
                             && ((current, outcome, turn_back) == (OPEN, 4, false)
                                 || (current, outcome) == (SELECT, 0x13));
                         assert_eq!(
-                            destination(current, outcome, native, turn_back) == MAIN_MENU,
+                            destination(current, outcome, native, false, turn_back) == MAIN_MENU,
                             menu,
                             "{current:#x} {outcome:#x} {native:#x}"
                         );
@@ -255,7 +293,7 @@ mod tests {
         // From the menu only "Use Pokémon Bank" leads on, to game selection
         // as in the original; everything else ends the session.
         for outcome in 0..=u8::MAX {
-            let next = destination(MAIN_MENU, outcome, 0xa, false);
+            let next = destination(MAIN_MENU, outcome, 0xa, false, false);
             assert_eq!(next == SELECT, MENU && outcome == MENU_USE, "{outcome:#x}");
             assert!(next == SELECT || next == CLEANUP);
         }
@@ -264,42 +302,51 @@ mod tests {
     #[test]
     fn opening_goes_to_selection_and_back_returns_through_cleanup() {
         // Native 002a5580 answers 4 (menu) for both of these.
-        assert_eq!(destination(OPEN, 4, MAIN_MENU, false), AFTER_OPEN);
-        assert_eq!(destination(SELECT, 0x13, MAIN_MENU, false), AFTER_BACK);
+        assert_eq!(destination(OPEN, 4, MAIN_MENU, false, false), AFTER_OPEN);
+        assert_eq!(
+            destination(SELECT, 0x13, MAIN_MENU, false, false),
+            AFTER_BACK
+        );
         // Native cleanup then selects the start screen, unchanged.
-        assert_eq!(destination(CLEANUP, 3, START_SCREEN, false), START_SCREEN);
-        assert_eq!(destination(START_SCREEN, 4, SCAN, false), SCAN);
+        assert_eq!(
+            destination(CLEANUP, 3, START_SCREEN, false, false),
+            START_SCREEN
+        );
+        assert_eq!(destination(START_SCREEN, 4, SCAN, false, false), SCAN);
         // From the start screen the Bank opens again, or the session ends.
-        assert_eq!(destination(SCAN, 4, 5, false), OPEN);
-        assert_eq!(destination(SCAN, 0x17, 5, false), CLEANUP);
+        assert_eq!(destination(SCAN, 4, 5, false, false), OPEN);
+        assert_eq!(destination(SCAN, 0x17, 5, false, false), CLEANUP);
     }
 
     #[test]
     fn selected_game_follows_load_rewards_boxes_and_save() {
         // The native scene set-up runs between selection and loading, as in
         // the original; whatever its outcome byte holds, loading follows.
-        assert_eq!(destination(SELECT, 5, 0xb, false), SCENE);
+        assert_eq!(destination(SELECT, 5, 0xb, false, false), SCENE);
         for outcome in 0..=u8::MAX {
             for native in 0..=0x1d {
-                assert_eq!(destination(SCENE, outcome, native, false), LOAD);
+                assert_eq!(destination(SCENE, outcome, native, false, false), LOAD);
             }
         }
-        assert_eq!(destination(LOAD, 4, REWARD_GUARD, false), REWARD_GUARD);
         assert_eq!(
-            destination(REWARD_GUARD, 5, REWARD_CLAIM, false),
+            destination(LOAD, 4, REWARD_GUARD, false, false),
+            REWARD_GUARD
+        );
+        assert_eq!(
+            destination(REWARD_GUARD, 5, REWARD_CLAIM, false, false),
             REWARD_CLAIM
         );
-        assert_eq!(destination(REWARD_GUARD, 6, BOXES, false), BOXES);
-        assert_eq!(destination(REWARD_CLAIM, 5, BOXES, false), BOXES);
-        assert_eq!(destination(BOXES, 4, SAVE, false), SAVE);
+        assert_eq!(destination(REWARD_GUARD, 6, BOXES, false, false), BOXES);
+        assert_eq!(destination(REWARD_CLAIM, 5, BOXES, false, false), BOXES);
+        assert_eq!(destination(BOXES, 4, SAVE, false, false), SAVE);
         // Save and Quit, reward cancellation, and box cancellation all clean
         // up; so does a Save and Quit that did not save (outcome 3, as the
         // original's after its message 0xB).
-        assert_eq!(destination(SAVE, 4, CLEANUP, false), CLEANUP);
-        assert_eq!(destination(SAVE, 3, CLEANUP, false), CLEANUP);
-        assert_eq!(destination(REWARD_GUARD, 0x15, 0x13, false), CLEANUP);
-        assert_eq!(destination(REWARD_CLAIM, 0x15, 0x13, false), CLEANUP);
-        assert_eq!(destination(BOXES, 0x15, 0x13, false), CLEANUP);
+        assert_eq!(destination(SAVE, 4, CLEANUP, false, false), CLEANUP);
+        assert_eq!(destination(SAVE, 3, CLEANUP, false, false), CLEANUP);
+        assert_eq!(destination(REWARD_GUARD, 0x15, 0x13, false, false), CLEANUP);
+        assert_eq!(destination(REWARD_CLAIM, 0x15, 0x13, false, false), CLEANUP);
+        assert_eq!(destination(BOXES, 0x15, 0x13, false, false), CLEANUP);
     }
 
     #[test]
@@ -315,7 +362,7 @@ mod tests {
                 for home in [false, true] {
                     for turn_back in [false, true] {
                         let native = router::next(current, outcome, home);
-                        let next = destination(current, outcome, native, turn_back);
+                        let next = destination(current, outcome, native, false, turn_back);
                         assert!(
                             ![SELECT, SCENE, LOAD, MAIN_MENU, OPEN].contains(&next),
                             "{current:#x} {outcome:#x} -> {next:#x}"
@@ -332,21 +379,21 @@ mod tests {
     #[test]
     fn failures_missing_games_and_online_destinations_end_in_cleanup() {
         // Failed opening or loading (outcome 3) uses the native cleanup route.
-        assert_eq!(destination(OPEN, 3, CLEANUP, false), CLEANUP);
-        assert_eq!(destination(LOAD, 3, CLEANUP, false), CLEANUP);
+        assert_eq!(destination(OPEN, 3, CLEANUP, false, false), CLEANUP);
+        assert_eq!(destination(LOAD, 3, CLEANUP, false, false), CLEANUP);
         // A rejected or invalid game in selection (outcome 6).
-        assert_eq!(destination(SELECT, 6, CLEANUP, false), CLEANUP);
-        assert_eq!(destination(OPEN, 4, MAIN_MENU, true), CLEANUP);
+        assert_eq!(destination(SELECT, 6, CLEANUP, false, false), CLEANUP);
+        assert_eq!(destination(OPEN, 4, MAIN_MENU, false, true), CLEANUP);
         // A menu task that somehow ran can only leave through cleanup; the
         // test build's menu also for the original's eShop and HOME results.
         for outcome in [3, 0xd, 0x17] {
-            assert_eq!(destination(MAIN_MENU, outcome, 0xa, false), CLEANUP);
+            assert_eq!(destination(MAIN_MENU, outcome, 0xa, false, false), CLEANUP);
         }
         // Account, purchase, HOME, and service tasks stay unreachable.
         for native in [
             5, 6, 8, 0xb, 0xe, 0xf, 0x11, 0x12, 0x13, 0x17, 0x1a, 0x1b, 0x1c, 0x1d,
         ] {
-            assert_eq!(destination(1, 0, native, false), CLEANUP);
+            assert_eq!(destination(1, 0, native, false, false), CLEANUP);
         }
     }
 
@@ -355,7 +402,7 @@ mod tests {
         for outcome in 0..=u8::MAX {
             for native in 0..=0x1d {
                 assert_eq!(
-                    destination(SCAN, outcome, native, false),
+                    destination(SCAN, outcome, native, false, false),
                     if outcome == 4 { OPEN } else { CLEANUP },
                     "scan outcome {outcome:#x}, native destination {native:#x}"
                 );
@@ -364,9 +411,12 @@ mod tests {
         // No game or a HOME-transfer result returns through cleanup, then
         // START scans again so inserting a game does not require a restart.
         for outcome in [3, 0x17] {
-            assert_eq!(destination(SCAN, outcome, 5, false), CLEANUP);
-            assert_eq!(destination(CLEANUP, 3, START_SCREEN, false), START_SCREEN);
-            assert_eq!(destination(START_SCREEN, 4, SCAN, false), SCAN);
+            assert_eq!(destination(SCAN, outcome, 5, false, false), CLEANUP);
+            assert_eq!(
+                destination(CLEANUP, 3, START_SCREEN, false, false),
+                START_SCREEN
+            );
+            assert_eq!(destination(START_SCREEN, 4, SCAN, false, false), SCAN);
         }
     }
 }

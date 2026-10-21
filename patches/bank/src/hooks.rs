@@ -1092,9 +1092,6 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         state.step = Step::Idle;
         state.owner = 0;
     }
-    if cancelled {
-        return crate::navigation::CLEANUP;
-    }
     // After an error nothing is opened again in this session. Its
     // screen does not end, so a task only gets here if that screen
     // could not be shown: the game scan then still leads to task 9,
@@ -1102,14 +1099,17 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     if state.fault != Fault::None && !matches!(current, 0 | 1 | 2 | 3 | 0x14 | 0x15) {
         return crate::navigation::CLEANUP;
     }
-    if (current, outcome) == (3, 4) {
+    // The main menu (task 4) is never created, but in the console test
+    // build; see navigation.rs.
+    let destination =
+        crate::navigation::destination(current, outcome, next, cancelled, state.turn_back);
+    // The scan found a game, so the Bank opens: no transfer to Pokémon HOME
+    // is under way.
+    if (current, destination) == (crate::navigation::SCAN, crate::navigation::OPEN) {
         unsafe {
             manager.add(0x1c).write(0);
         }
     }
-    // The main menu (task 4) is never created, but in the console test
-    // build; see navigation.rs.
-    let destination = crate::navigation::destination(current, outcome, next, state.turn_back);
     // Refuse HOME and sleep across a whole chain of loading tasks, not
     // only while one of their jobs runs, and into the reward step while
     // the loading panel is still up.
