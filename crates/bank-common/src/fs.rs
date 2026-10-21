@@ -24,7 +24,7 @@ use {crate::program::Bank15, core::marker::PhantomData, patch_common::program::P
 #[cfg(any(test, target_arch = "arm"))]
 const IO_CHUNK: usize = 0x10000;
 #[cfg(any(test, target_arch = "arm"))]
-const FLUSH_FLAGS: u32 = 0x0001_0001;
+use patch_common::file::FLUSH as FLUSH_FLAGS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {

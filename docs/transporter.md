@@ -90,7 +90,7 @@ Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's 
 What happens to the file:
 
 - It is read and checked by the original code exactly as a cartridge's save would be; a damaged save is refused by the original.
-- Before the first change in a session, the untouched save is copied to `<name>.sav.bak` beside it (one copy, replaced the next time). If that copy cannot be written, nothing is changed. The first change is the original's save right after the game is read, so the copy exists before any Pokémon leaves Box 1. It is a way back if a write to the file is cut off, independent of the two copies a Gen 5 save keeps of itself. The name ends in `.bak` so that no program takes it for a save.
+- Before the first change in a session, the untouched save is copied to `<name>.sav.bak` beside it (one copy, replaced the next time). If that copy cannot be written and closed whole, nothing is changed. The first change is the original's save right after the game is read, so the copy exists before any Pokémon leaves Box 1. It is a way back if a write to the file is cut off, independent of the two copies a Gen 5 save keeps of itself. The name ends in `.bak` so that no program takes it for a save.
 - The Pokémon are removed from the file only after the delivery to Bank has been written and verified, as with a cartridge.
 - The file is never created, resized or renamed.
 

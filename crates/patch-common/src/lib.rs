@@ -11,7 +11,6 @@
 
 pub mod bootstrap;
 pub mod exclusive;
-#[cfg(target_arch = "arm")]
 pub mod file;
 #[cfg(target_arch = "arm")]
 pub mod home;

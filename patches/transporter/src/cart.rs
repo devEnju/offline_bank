@@ -18,11 +18,11 @@
 //! removed card concerns the cartridge alone (`Saves::card_missing`).
 
 use crate::{
-    fs::{File, FLUSH_FLAGS, OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE},
+    fs::{self, Sd, COPY_CHUNK},
     language,
-    sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE},
+    sdsave::Saves,
 };
-use core::{cell::UnsafeCell, mem::transmute};
+use core::{cell::UnsafeCell, mem::transmute, slice};
 
 const ORIGINAL_CART_ID: usize = 0x0021_aa0c;
 const ORIGINAL_CART_READ: usize = 0x0021_a7e0;
@@ -62,7 +62,6 @@ const LIST_LIMIT: usize = 0x27;
 /// Any negative value is a failure to the callers; this one is none of the
 /// codes they treat specially.
 const FAILED: i32 = -1;
-const COPY_CHUNK: usize = 0x8000;
 
 struct Shared<T>(UnsafeCell<T>);
 // SAFETY: the cartridge task and the hooks on the main thread never run at
@@ -78,61 +77,10 @@ fn saves() -> &'static mut Saves {
     unsafe { &mut *SAVES.0.get() }
 }
 
-/// For a file of exactly the size of a Gen 5 save that opens for reading and
-/// writing, the two bytes at each offset. Nothing is created.
-fn identity(path: &[u8], offsets: [u64; 2]) -> Option<[[u8; 2]; 2]> {
-    let file = unsafe { File::open(path, OPEN_READ_WRITE) }?;
-    if file.size() != Some(SAVE_SIZE) {
-        return None;
-    }
-    let mut copies = [[0; 2]; 2];
-    for (copy, offset) in copies.iter_mut().zip(offsets) {
-        if !file.read(offset, copy.as_mut_ptr(), 2) {
-            return None;
-        }
-    }
-    Some(copies)
-}
-
-fn open_save(save: Save, backup: bool, flags: u32) -> Option<File> {
-    let mut path = [0; PATH_CAPACITY];
-    let length = save.path(backup, &mut path);
-    let file = unsafe { File::open(&path[..length], flags) }?;
-    // The save itself must still be what the scan found.
-    (backup || file.size() == Some(SAVE_SIZE)).then_some(file)
-}
-
 /// The original's signal that the Game Card was taken out.
 unsafe fn card_removed(manager: *mut u8) -> bool {
     let removed: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(CARD_REMOVED) };
     unsafe { removed(manager) != 0 }
-}
-
-fn in_save(offset: u32, length: u32) -> bool {
-    u64::from(offset) + u64::from(length) <= SAVE_SIZE
-}
-
-/// Copies the untouched save to `<name>.sav.bak`, flushed, before the first
-/// change of a session.
-fn back_up(save: Save) -> bool {
-    let (Some(source), Some(target)) = (
-        open_save(save, false, OPEN_READ),
-        open_save(save, true, OPEN_WRITE_CREATE),
-    ) else {
-        return false;
-    };
-    let chunk = CHUNK.0.get().cast::<u8>();
-    let mut offset = 0;
-    while offset < SAVE_SIZE {
-        let length = COPY_CHUNK as u32;
-        let last = offset + u64::from(length) == SAVE_SIZE;
-        let flags = if last { FLUSH_FLAGS } else { 0 };
-        if !source.read(offset, chunk, length) || !target.write(offset, chunk, length, flags) {
-            return false;
-        }
-        offset += u64::from(length);
-    }
-    target.size() == Some(SAVE_SIZE)
 }
 
 // 00243528 (was: bl read-cartridge-id). r0 = out, r4 = cartridge task.
@@ -155,7 +103,9 @@ unsafe extern "aapcs" fn cart_id(out: *mut u32, task: *const u8) -> i32 {
         // language screen are offered; a Gen 5 cartridge in that language
         // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
-        saves.scan(cartridge, language::filter_letter(), identity);
+        saves.scan(cartridge, language::filter_letter(), |path, offsets| {
+            fs::identity(&mut Sd, path, offsets)
+        });
     }
     match saves.current() {
         Some(save) => {
@@ -187,10 +137,8 @@ pub unsafe extern "aapcs" fn transporter_cart_read(
             unsafe { transmute(ORIGINAL_CART_READ) };
         return unsafe { original(kind, offset, buffer, length) };
     };
-    let done = in_save(offset, length)
-        && open_save(save, false, OPEN_READ)
-            .is_some_and(|file| file.read(u64::from(offset), buffer, length));
-    if done {
+    let bytes = unsafe { slice::from_raw_parts_mut(buffer, length as usize) };
+    if fs::read(&mut Sd, save, offset, bytes) {
         0
     } else {
         FAILED
@@ -214,17 +162,10 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
             unsafe { transmute(ORIGINAL_CART_WRITE) };
         return unsafe { original(kind, offset, buffer, length) };
     };
-    if !in_save(offset, length) {
-        return FAILED;
-    }
-    if saves.take_backup_duty() && !back_up(save) {
-        // Without a backup nothing is changed.
-        saves.backup_failed();
-        return FAILED;
-    }
-    let done = open_save(save, false, OPEN_READ_WRITE)
-        .is_some_and(|file| file.write(u64::from(offset), buffer, length, FLUSH_FLAGS));
-    if done {
+    let bytes = unsafe { slice::from_raw_parts(buffer, length as usize) };
+    // SAFETY: see `Shared`; only this thread uses the copy buffer.
+    let chunk = unsafe { &mut *CHUNK.0.get() };
+    if fs::write(&mut Sd, saves, save, offset, bytes, chunk) {
         0
     } else {
         FAILED

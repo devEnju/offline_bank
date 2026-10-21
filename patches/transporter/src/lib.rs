@@ -22,6 +22,7 @@
 //! ends in a Back button that `lytpatch` makes of an unused entry.
 
 pub mod bootstrap;
+pub mod fs;
 pub mod gen5;
 pub mod language;
 pub mod legacy_shiny;
@@ -38,7 +39,5 @@ pub mod ui;
 
 #[cfg(target_arch = "arm")]
 pub mod cart;
-#[cfg(target_arch = "arm")]
-mod fs;
 #[cfg(target_arch = "arm")]
 pub mod hooks;
