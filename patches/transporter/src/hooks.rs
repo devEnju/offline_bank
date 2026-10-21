@@ -10,10 +10,7 @@ use crate::{
     program::Transporter15,
     storage_worker::{Failed, Job, Reply, TransporterWorker},
     task::*,
-    ui::{
-        self, from_second_page, loading, refusal_message, stop_loading, MESSAGE_OPEN_BANK,
-        UI_CONTEXT,
-    },
+    ui::{self, from_second_page, loading, refusal_message, stop_loading, MESSAGE_OPEN_BANK},
 };
 use core::{mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
@@ -106,15 +103,17 @@ impl Runtime {
             };
         };
         // The check and the delivery are steps of their own and never
-        // overlap; a reply is only ever the job's that asked for it.
-        if out != kind {
-            return Some(Err(Failed));
-        }
+        // overlap; a reply is only ever the job's that asked for it. A job of
+        // another kind is waited for and its reply dropped: what it holds
+        // stays lent until it ends, and only then is this one a failure.
         let worker = self.worker.as_mut()?;
         let mut job = Some(id);
         let polled = worker.collect(&mut job);
         if job.is_none() {
             self.job = None;
+        }
+        if out != kind {
+            return job.is_none().then_some(Err(Failed));
         }
         polled.transpose()
     }
@@ -360,12 +359,21 @@ unsafe extern "aapcs" fn check(task: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return SEARCH_PENDING;
     };
-    if let Some(ui) = unsafe { follow(task, TASK_UI) } {
-        if unsafe { follow(ui, UI_CONTEXT) }.is_some() && PANEL.start(ui as usize) {
-            unsafe { loading(ui) };
+    if !PANEL.up() {
+        // No file work without its panel: without one the search refuses
+        // as a worker that fails does.
+        let ui = unsafe { follow(task, TASK_UI) };
+        if let Some(ui) = ui.filter(|&ui| unsafe { loading(ui) }.is_ok()) {
+            PANEL.start(ui as usize);
             state.spinner.up(now());
             return SEARCH_PENDING;
         }
+        drop(state);
+        return if unsafe { show(task, MESSAGE_OPEN_BANK) } {
+            SEARCH_SHOWN
+        } else {
+            SEARCH_END
+        };
     }
     if state.job.is_none() && state.spinner.idle(now()) {
         return SEARCH_PENDING;
@@ -444,7 +452,8 @@ unsafe extern "aapcs" fn update_waits(task: *mut u8, step: u32) -> u32 {
         return 0;
     }
     let Some(mut state) = STATE.take() else {
-        return 0;
+        // Its state is a hook's: this frame waits, as Bank's hooks do.
+        return 1;
     };
     let now = now();
     // The panel of reading the game or of the transfer.

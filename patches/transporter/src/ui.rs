@@ -42,11 +42,16 @@ pub fn refusal_message(refusal: Refusal) -> u32 {
     }
 }
 
+/// An object of the original a screen needs is not there, or not made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unavailable;
+
 #[cfg(target_arch = "arm")]
 pub use native::*;
 
 #[cfg(target_arch = "arm")]
 mod native {
+    use super::Unavailable;
     use core::mem::transmute;
     use patch_common::native::follow;
 
@@ -69,7 +74,7 @@ mod native {
     /// question step ends the panel with it when no message follows
     /// (`002473D8`).
     const PANEL_HIDE: usize = 0x0019_c814;
-    pub const UI_CONTEXT: usize = 0x5c;
+    const UI_CONTEXT: usize = 0x5c;
     const UI_HEAP: usize = 0x78;
     const CONTEXT_STRINGS: usize = 0x4;
     const CONTEXT_LAYOUTS: usize = 0x1c;
@@ -111,7 +116,7 @@ mod native {
         pane: u32,
         file: u32,
         message: u32,
-    ) {
+    ) -> Result<(), Unavailable> {
         unsafe {
             let allocate: unsafe extern "aapcs" fn(u32, *mut u8) -> *mut u8 = transmute(ALLOCATE);
             let archive: unsafe extern "aapcs" fn(u32) -> u32 = transmute(TEXT_ARCHIVE);
@@ -121,17 +126,18 @@ mod native {
                 transmute(SET_PANE_TEXT);
             let memory = allocate(MESSAGES_SIZE, heap);
             if memory.is_null() {
-                return;
+                return Err(Unavailable);
             }
             let messages = open(memory, archive(10), file, heap, 1, 5);
             if messages.is_null() {
-                return;
+                return Err(Unavailable);
             }
             set(strings, layout, pane, messages, message);
             let delete: unsafe extern "aapcs" fn(*mut u8) =
                 transmute(messages.cast::<*const usize>().read().add(1).read());
             delete(messages);
         }
+        Ok(())
     }
 
     /// The original's "show this message and wait": `(ui, message, 1)`, as
@@ -162,39 +168,32 @@ mod native {
     }
 
     /// Starts the general loading panel on `ui` with the text of the game
-    /// scan, as the reader's set-up starts it.
+    /// scan, as the reader's set-up starts it. Without what the panel needs,
+    /// or without its text, nothing of it stays on screen.
     /// # Safety
     /// `ui` is the live shared UI with its context, on the main thread.
-    pub unsafe fn loading(ui: *mut u8) {
+    pub unsafe fn loading(ui: *mut u8) -> Result<(), Unavailable> {
+        // What the panel and its text need, before anything is started.
+        let (context, strings, layout, heap) = unsafe {
+            let context = follow(ui, UI_CONTEXT).ok_or(Unavailable)?;
+            let strings = follow(context, CONTEXT_STRINGS).ok_or(Unavailable)?;
+            let layouts = follow(context, CONTEXT_LAYOUTS).ok_or(Unavailable)?;
+            let layout = follow(layouts, 0).ok_or(Unavailable)?;
+            let heap = follow(ui, UI_HEAP)
+                .and_then(|owner| follow(owner, 4))
+                .ok_or(Unavailable)?;
+            (context, strings, layout, heap)
+        };
         let start: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(PANEL_START) };
         unsafe {
             start(ui);
-            panel_text(ui);
-        }
-    }
-
-    /// The panel's text frame with message `0x20` of text file 39, as
-    /// `0019C700` shows one of file 23, on the UI's heap (`[[ui + 0x78] + 4]`,
-    /// as `0019C700` allocates).
-    unsafe fn panel_text(ui: *mut u8) {
-        unsafe {
-            let Some(context) = follow(ui, UI_CONTEXT) else {
-                return;
-            };
-            let (Some(strings), Some(layouts), Some(heap)) = (
-                follow(context, CONTEXT_STRINGS),
-                follow(context, CONTEXT_LAYOUTS),
-                follow(ui, UI_HEAP).and_then(|owner| follow(owner, 4)),
-            ) else {
-                return;
-            };
-            let Some(layout) = follow(layouts, 0) else {
-                return;
-            };
+            // The panel's text frame with message `0x20` of text file 39, as
+            // `0019C700` shows one of file 23, on the UI's heap
+            // (`[[ui + 0x78] + 4]`, as `0019C700` allocates).
             let pane: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(PANE_SHOWN);
             pane(context, 0, TEXT_FRAME_PANE, 1);
             pane(context, 0, OTHER_FRAME_PANE, 0);
-            message_text(
+            let text = message_text(
                 heap,
                 strings,
                 layout,
@@ -202,6 +201,10 @@ mod native {
                 PANEL_TEXT_FILE,
                 PANEL_TEXT_MESSAGE,
             );
+            if text.is_err() {
+                stop_loading(ui);
+            }
+            text
         }
     }
 

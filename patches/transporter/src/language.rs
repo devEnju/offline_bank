@@ -407,7 +407,8 @@ mod native {
             let strings = work.add(WORK_STRINGS).cast::<*mut u8>().read();
             let layouts = work.add(WORK_LAYOUTS).cast::<*mut u8>().read();
             let layout = layouts.add(LOWER_LAYOUT).cast::<*mut u8>().read();
-            crate::ui::message_text(
+            // Without the text the button keeps the original's.
+            let _ = crate::ui::message_text(
                 heap,
                 strings,
                 layout,
