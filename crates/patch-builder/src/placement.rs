@@ -259,7 +259,7 @@ fn address_add(base: u32, length: u32) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BANK_TITLE_ID;
+    use crate::bank15::TITLE_ID as BANK_TITLE_ID;
     fn fixture() -> (Vec<u8>, Vec<u8>, InputIdentity) {
         let mut exheader = vec![0; 0x800];
         exheader[0x0d] = 1; // installed .code is compressed; preserve this flag

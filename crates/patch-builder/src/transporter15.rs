@@ -11,8 +11,8 @@
 
 use crate::elf::{Contract, PayloadElf};
 use crate::placement::InputIdentity;
-use crate::profile::{Profile, Program};
-use crate::{encode_arm_branch, fail, le32, CheckedEdit, Result};
+use crate::profile::{Edit, Profile, Program, Word::*};
+use crate::{fail, le32, Result};
 use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES, VC_TITLE_LANGUAGES};
 use transporter_payload::sdsave::GAMES;
 
@@ -56,6 +56,7 @@ pub const TRANSPORTER: Program = Program {
     code_length: CODE_LENGTH,
     identity: INPUT_IDENTITY,
     contract: &CONTRACT,
+    relies: &[&SDK_PRIORITY_CODE],
     check,
 };
 
@@ -63,10 +64,9 @@ pub const TRANSPORTER: Program = Program {
 pub const PROFILE: Profile = Profile {
     name: "transporter",
     program: &TRANSPORTER,
-    entries: ENTRIES,
-    regions: EDITS.len() + 1,
+    edits: &[EDITS],
+    relies: &[],
     menu_edits: &[],
-    edits,
 };
 
 /// The linked payload (`elf::Contract`).
@@ -79,59 +79,13 @@ pub const CONTRACT: Contract = Contract {
     wrappers: crate::elf::KERNEL_WRAPPERS,
 };
 
-/// The entry functions the patched sites branch to, by name; the first is
-/// the entry of the ELF. Each is a function of the payload, or, for the
-/// layout check, of the start-up hook.
-pub const ENTRIES: &[&str] = &[
-    "transporter_next",
-    "transporter_check_stub",
-    "transporter_deliver_stub",
-    "transporter_slot",
-    "transporter_cart_id_stub",
-    "transporter_cart_read",
-    "transporter_cart_write",
-    "transporter_list_next_stub",
-    "transporter_select_stub",
-    "transporter_vc_scan_stub",
-    "transporter_language_chosen",
-    "transporter_language_order_stub",
-    "transporter_language_buttons",
-    "transporter_language_back_stub",
-    "transporter_title_begin_stub",
-    "transporter_title_end_stub",
-    "transporter_list_ready_stub",
-    "transporter_list_indicator_stub",
-    "transporter_list_frame_stub",
-    "transporter_message_stub",
-    "transporter_version",
-    "transporter_shiny_build_stub",
-    "transporter_shiny_gender_stub",
-    "transporter_layout_check",
-    "transporter_vc_mount_stub",
-    "transporter_card_removed",
-    "transporter_entry_card_removed",
-    "transporter_message_text",
-    "transporter_read_stub",
-    "transporter_question_stub",
-    "transporter_transfer_stub",
-];
 /// The layout check stands in for this instruction at 0013AEE4 and begins
 /// with it: `mov r1, r0`.
 const LAYOUT_CHECK_FIRST: u32 = 0xe1a0_1000;
 
-enum Word {
-    Raw(u32),
-    Branch(u32),
-    BranchLink(u32),
-    /// `b` to an entry function, by name.
-    To(&'static str),
-    /// `bl` to an entry function, by name.
-    Call(&'static str),
-}
-use Word::*;
-
-/// (address, original word, replacement).
-const EDITS: &[(u32, u32, Word)] = &[
+/// Every edit but the start-up hook's bytes. Sites that go to the patch
+/// name their entry function; the router comes first, the entry of the ELF.
+const EDITS: &[Edit] = &[
     // --- Start-up: run application init, then make the payload executable. ---
     (STARTUP_CALL, 0xeb00_0228, BranchLink(BOOTSTRAP_ADDRESS)),
     // --- Offline flow: the server steps are removed. ---
@@ -368,32 +322,10 @@ const EDITS: &[(u32, u32, Word)] = &[
     ),
 ];
 
-/// The edit at `address`, whose original word is `original`. `entry` gives
-/// the address of an entry function by its name.
-fn word_edit(
-    address: u32,
-    original: u32,
-    word: &Word,
-    entry: impl Fn(&str) -> Result<u32>,
-) -> Result<CheckedEdit> {
-    let replacement = match *word {
-        Raw(value) => value.to_le_bytes(),
-        Branch(target) => encode_arm_branch(address, target, false)?,
-        BranchLink(target) => encode_arm_branch(address, target, true)?,
-        To(name) => encode_arm_branch(address, entry(name)?, false)?,
-        Call(name) => encode_arm_branch(address, entry(name)?, true)?,
-    };
-    Ok(CheckedEdit {
-        offset: (address - CODE_BASE) as usize,
-        expected: original.to_le_bytes().to_vec(),
-        replacement: replacement.to_vec(),
-    })
-}
-
 // SDK CreateThread's priority conversion (`001E3F58`, the same code as
 // Bank's), including its encoded-priority literals. The worker passes SDK
 // 0x11, which this code turns into kernel 0x31.
-const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
+pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
     (0x001e_3fc8, 0xe355_0020),
     (0x001e_3fd0, 0x9285_0020),
     (0x001e_3fd8, 0x9a00_0008),
@@ -405,15 +337,9 @@ const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
     (0x001e_4040, 0x9372_5b00),
 ];
 
-/// What Transporter relies on beyond its edited words: the SDK's conversion
-/// of the worker's thread priority, the game list, and the layout check,
-/// which must begin with the instruction it stands in for.
-fn check(code: &[u8], _: &Profile, payload: &PayloadElf, _: &[CheckedEdit]) -> Result<()> {
-    for (address, expected) in SDK_PRIORITY_CODE {
-        if le32(code, (address - CODE_BASE) as usize)? != expected {
-            return fail("SDK thread-priority conversion is not the reviewed code");
-        }
-    }
+/// What Transporter relies on beyond its edited words: the game list, and
+/// the layout check, which must begin with the instruction it stands in for.
+fn check(code: &[u8], _: &Profile, payload: &PayloadElf) -> Result<()> {
     check_game_list(code)?;
     let check = payload.export("transporter_layout_check")?;
     let at = check
@@ -423,17 +349,6 @@ fn check(code: &[u8], _: &Profile, payload: &PayloadElf, _: &[CheckedEdit]) -> R
         return fail("layout check does not begin with the instruction it stands in for");
     }
     Ok(())
-}
-
-/// Every edit of the listed words. The start-up hook's bytes and the payload
-/// are added by `profile::prepare_patch`.
-fn edits(_: &[u8], payload: &PayloadElf) -> Result<Vec<CheckedEdit>> {
-    EDITS
-        .iter()
-        .map(|(address, original, word)| {
-            word_edit(*address, *original, word, |name| payload.export(name))
-        })
-        .collect()
 }
 
 /// The original's table of the Virtual Console titles: 39 rows of
@@ -478,107 +393,25 @@ fn check_game_list(code: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::sample::{at, branch_target};
 
-    /// Target of an unconditional `b` (0xEA) or `bl` (0xEB).
-    fn branch_target(address: u32, word: u32, link: bool) -> Option<u32> {
-        let top = if link { 0xeb00_0000 } else { 0xea00_0000 };
-        if word & 0xff00_0000 != top {
-            return None;
-        }
-        let offset = ((word & 0x00ff_ffff) << 8) as i32 >> 6;
-        Some(address.wrapping_add(8).wrapping_add(offset as u32))
-    }
-    /// A stand-in address for each entry function, in the payload.
-    fn entry(name: &str) -> Result<u32> {
-        ENTRIES
+    #[test]
+    fn fifty_five_words_and_thirty_one_entry_functions() {
+        assert_eq!(PROFILE.regions(), 56);
+        assert_eq!(PROFILE.entries().len(), 31);
+        // Every edit lies in the original text.
+        assert!(EDITS
             .iter()
-            .position(|known| *known == name)
-            .map(|index| PAYLOAD_ADDRESS + 0x100 + index as u32 * 0x10)
-            .ok_or_else(|| crate::Error(format!("missing ELF export {name}")))
-    }
-    fn site_edits() -> Vec<CheckedEdit> {
-        EDITS
-            .iter()
-            .map(|(address, original, word)| word_edit(*address, *original, word, entry).unwrap())
-            .collect()
+            .all(|(address, _, _)| *address < BOOTSTRAP_ADDRESS));
     }
 
     #[test]
-    fn every_entry_is_used_by_a_site_and_every_site_names_an_entry() {
-        let named: Vec<&str> = EDITS
-            .iter()
-            .filter_map(|(_, _, word)| match word {
-                To(name) | Call(name) => Some(*name),
-                _ => None,
-            })
-            .collect();
-        for name in ENTRIES {
-            assert!(named.contains(name), "{name} is not used");
-        }
-        for name in &named {
-            assert!(entry(name).is_ok(), "{name} is not an entry");
-        }
-        // The router comes first: it is the entry of the ELF.
-        assert_eq!(ENTRIES[0], "transporter_next");
-    }
-
-    #[test]
-    fn edits_are_whole_words_disjoint_and_inside_the_original_text() {
-        let mut list = site_edits();
-        list.sort_by_key(|edit| edit.offset);
-        for pair in list.windows(2) {
-            assert!(pair[0].offset + pair[0].replacement.len() <= pair[1].offset);
-        }
-        let text_end = (BOOTSTRAP_ADDRESS - CODE_BASE) as usize;
-        for edit in &list {
-            assert_eq!(edit.replacement.len(), 4);
-            assert!(edit.offset % 4 == 0 && edit.offset < text_end);
-            assert_ne!(edit.expected, edit.replacement);
-        }
-    }
-
-    #[test]
-    fn hook_calls_and_conditional_branches_are_encoded_as_intended() {
-        let word = |address: u32, word: &Word| {
-            u32::from_le_bytes(
-                word_edit(address, 0, word, entry)
-                    .unwrap()
-                    .replacement
-                    .try_into()
-                    .unwrap(),
-            )
-        };
-        let at = |name| entry(name).unwrap();
-        for (address, name) in [
-            (0x0024_58dc, "transporter_slot"),
-            (0x0024_3528, "transporter_cart_id_stub"),
-            (0x0024_39a8, "transporter_cart_read"),
-            (0x0024_37f4, "transporter_cart_write"),
-            (0x0024_397c, "transporter_cart_write"),
-            (0x0024_4f10, "transporter_list_next_stub"),
-            (0x0024_4908, "transporter_select_stub"),
-            (0x0025_c5fc, "transporter_language_chosen"),
-            (0x0022_bee0, "transporter_language_order_stub"),
-            (0x0022_b5b0, "transporter_language_buttons"),
-            (0x0024_12d4, "transporter_vc_scan_stub"),
-            (0x0013_aee4, "transporter_layout_check"),
-            (0x001e_41c0, "transporter_vc_mount_stub"),
-            (0x0024_ba44, "transporter_title_begin_stub"),
-            (0x0024_ba74, "transporter_title_end_stub"),
-            (0x0024_f6b0, "transporter_shiny_build_stub"),
-            (0x0024_f8e0, "transporter_shiny_gender_stub"),
-        ] {
-            let call = word(address, &Call(name));
-            assert_eq!(branch_target(address, call, true), Some(at(name)));
-        }
-        let call = word(STARTUP_CALL, &BranchLink(BOOTSTRAP_ADDRESS));
-        assert_eq!(
-            branch_target(STARTUP_CALL, call, true),
-            Some(BOOTSTRAP_ADDRESS)
-        );
-        // The original cartridge calls the entries stand in for.
+    fn the_replaced_instructions_are_the_reviewed_ones() {
+        // The original calls the entries stand in for.
         for (address, original, target) in [
-            (0x0024_3528u32, 0xebff_5d37u32, 0x0021_aa0cu32),
+            (STARTUP_CALL, 0xeb00_0228, ORIGINAL_APP_INIT),
+            (0x0024_2ef8, 0xebff_ff28, 0x0024_2ba0),
+            (0x0024_3528, 0xebff_5d37, 0x0021_aa0c),
             (0x0024_39a8, 0xebff_5b8c, 0x0021_a7e0),
             (0x0024_37f4, 0xebff_5cd5, 0x0021_ab50),
             (0x0024_397c, 0xebff_5c73, 0x0021_ab50),
@@ -592,63 +425,30 @@ mod tests {
             // The Gen 1 converter's call of the Pokémon constructor.
             (0x0024_f6b0, 0xebfd_35a1, 0x0019_cd3c),
         ] {
+            assert!(EDITS
+                .iter()
+                .any(|edit| (edit.0, edit.1) == (address, original)));
             assert_eq!(branch_target(address, original, true), Some(target));
         }
-        // B on the language list: the original branch and its replacement.
+        // B on the language list: the original branch.
         assert_eq!(
             branch_target(0x0022_b3b8, 0xea00_0054, false),
             Some(0x0022_b510)
         );
-        assert_eq!(
-            branch_target(
-                0x0022_b3b8,
-                word(0x0022_b3b8, &To("transporter_language_back_stub")),
-                false
-            ),
-            Some(at("transporter_language_back_stub"))
-        );
-        // Sites that leave the original for good: plain branches to stubs
-        // that go on inside the original themselves.
-        for (address, name) in [
-            (0x0024_6f48, "transporter_check_stub"),
-            (0x0024_a150, "transporter_deliver_stub"),
-            (0x0019_b50c, "transporter_message_stub"),
-        ] {
-            let jump = word(address, &To(name));
-            assert_eq!(branch_target(address, jump, false), Some(at(name)));
-        }
         // The message function's first instruction is push {r4-r8, lr},
         // which its stub runs before it goes on behind it.
         assert!(EDITS
             .iter()
             .any(|(address, original, _)| (*address, *original) == (0x0019_b50c, 0xe92d_41f0)));
-        // The original start-up call that the hook replaces and then makes.
-        assert_eq!(
-            branch_target(STARTUP_CALL, 0xeb00_0228, true),
-            Some(ORIGINAL_APP_INIT)
-        );
         // The router is called through the entry, which calls it in turn;
         // nothing inside it is edited.
-        assert_eq!(
-            branch_target(0x0024_2ef8, 0xebff_ff28, true),
-            Some(0x0024_2ba0)
-        );
-        assert_eq!(
-            branch_target(
-                0x0024_2ef8,
-                word(0x0024_2ef8, &Call("transporter_next")),
-                true
-            ),
-            Some(at("transporter_next"))
-        );
         assert!(EDITS
             .iter()
             .all(|(address, _, _)| !(0x0024_2ba0..0x0024_2e08).contains(address)));
-        assert_eq!(word(0x0024_a15c, &Branch(0x0024_a274)), 0xea00_0044);
         // The Bank step goes from its first instruction to where the
         // original continues after a "yes"; its reply parsing is not edited.
-        assert_eq!(word(0x0024_8cdc, &Branch(0x0024_8e44)), 0xea00_0058);
-        assert!(EDITS.iter().all(|(address, _, _)| *address != 0x0024_8d58));
+        assert_eq!(at(&PROFILE, 0x0024_8cdc), Some(0xea00_0058));
+        assert!(at(&PROFILE, 0x0024_8d58).is_none());
     }
 
     #[test]

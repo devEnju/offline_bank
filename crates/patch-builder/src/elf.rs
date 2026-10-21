@@ -629,7 +629,7 @@ mod tests {
 
     /// The checks with the entry functions of the offline patch.
     fn inspect(elf: &[u8]) -> Result<PayloadElf> {
-        inspect_payload_elf(&bank15::CONTRACT, elf, bank15::offline::PROFILE.entries)
+        inspect_payload_elf(&bank15::CONTRACT, elf, &bank15::offline::PROFILE.entries())
     }
     const SHOFF: usize = 0x2d00;
     const SYMOFF: usize = 0x2200;
