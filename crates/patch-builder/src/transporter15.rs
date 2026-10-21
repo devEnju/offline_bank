@@ -13,6 +13,10 @@ use crate::profile::{Profile, Program};
 use crate::{fail, le32, Result};
 use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES, VC_TITLE_LANGUAGES};
 use transporter_payload::sdsave::GAMES;
+use transporter_payload::task::{
+    BANK_VTABLE, TASK_BANK_STEP, TASK_COUNT, TASK_LANGUAGE, TASK_LIST, TASK_QUESTION, TASK_READ,
+    TASK_SEARCH, TASK_TRANSFER,
+};
 
 pub const TITLE_ID: u64 = 0x0004_0000_000c_9c00;
 pub const TMD_VERSION: u16 = 5200;
@@ -54,7 +58,7 @@ pub const TRANSPORTER: Program = Program {
     code_length: CODE_LENGTH,
     identity: INPUT_IDENTITY,
     contract: &CONTRACT,
-    relies: &[&SDK_PRIORITY_CODE],
+    relies: &[&SDK_PRIORITY_CODE, &NATIVE_OBJECTS],
     check,
 };
 
@@ -85,6 +89,38 @@ pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
     (0x001e_3ffc, 0x83e0_0000),
     (0x001e_403c, 0xaef6_2b00),
     (0x001e_4040, 0x9372_5b00),
+];
+
+/// Factory bound, case targets, constructor vtable literals and native update
+/// slots used by the checked task views. Bank data comes from constructor
+/// 0010D8EC: it installs BANK_VTABLE and startup stores its result at +0xCC.
+pub(crate) const NATIVE_OBJECTS: [(u32, u32); 26] = [
+    (0x0019_cee8, 0xe351_0000 | TASK_COUNT),
+    (0x0019_cf04, 0x0019_cf8c),
+    (0x0019_cf18, 0x0019_d1a4),
+    (0x0019_cf1c, 0x0019_d1fc),
+    (0x0019_cf20, 0x0019_d23c),
+    (0x0019_cf24, 0x0019_d2c8),
+    (0x0019_cf2c, 0x0019_d360),
+    (0x0019_cf30, 0x0019_d3b4),
+    (0x0019_d620, TASK_LANGUAGE),
+    (0x0019_d638, TASK_TRANSFER),
+    (0x0019_d63c, TASK_SEARCH),
+    (0x0019_d640, TASK_LIST),
+    (0x0019_d644, TASK_READ),
+    (0x0019_d64c, TASK_BANK_STEP),
+    (0x0019_d650, TASK_QUESTION),
+    (TASK_LANGUAGE + 0xc, 0x0024_538c),
+    (TASK_TRANSFER + 0xc, 0x0024_a0c4),
+    (TASK_SEARCH + 0xc, 0x0024_6f04),
+    (TASK_LIST + 0xc, 0x0024_45a4),
+    (TASK_READ + 0xc, 0x0024_55d0),
+    (TASK_BANK_STEP + 0xc, 0x0024_8c68),
+    (TASK_QUESTION + 0xc, 0x0024_7304),
+    (0x0010_da38, BANK_VTABLE),
+    (0x0010_d8fc, 0xe584_0000),
+    (0x0010_624c, 0xe584_00cc),
+    (0x0010_6388, 0x000b_b530),
 ];
 
 /// What Transporter relies on beyond its edited words: the game list, and

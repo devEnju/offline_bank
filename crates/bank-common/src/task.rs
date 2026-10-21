@@ -33,9 +33,7 @@ pub const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
 const BEGIN_BUSY: usize = 0x0025_c420;
 const END_BUSY: usize = 0x0025_c3e8;
 
-/// A pointer or object of the original that is not what a hook expects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotNative;
+pub use patch_common::native::NotNative;
 impl From<NotNative> for crate::fault::Fault {
     fn from(_: NotNative) -> Self {
         Self::NativeObject
@@ -60,17 +58,13 @@ pub fn checked_pointer(value: u32) -> Result<*mut u8, NotNative> {
 #[derive(Clone, Copy)]
 pub struct Task(NonNull<u8>);
 impl Task {
-    // Only trusted native hook callers may supply object pointers. These checks
-    // detect a wrong hook/type; they are not a general memory-access validator.
+    /// The task a hook is given, if its vtable is one of `expected`
+    /// (`patch_common::native::object`).
     /// # Safety
     /// `raw` is the live task object the original's task driver passes to
     /// the hooked virtual function, on the main thread.
     pub unsafe fn from_raw(raw: *mut u8, expected: &[u32]) -> Result<Self, NotNative> {
-        checked_pointer(raw as u32)?;
-        if !expected.contains(&unsafe { read_word(raw, 0) }) {
-            return Err(NotNative);
-        }
-        Ok(Self(NonNull::new(raw).ok_or(NotNative)?))
+        unsafe { patch_common::native::object(raw, expected) }.map(Self)
     }
     pub fn raw(self) -> *mut u8 {
         self.0.as_ptr()

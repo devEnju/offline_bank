@@ -86,12 +86,28 @@ $edits = @(
     @(0x0024F8E0, 0xE5D4101BL, 'bl:transporter_shiny_gender_stub'))
 # SDK CreateThread (001E3F58) adds 0x20 to the worker's SDK argument before SVC 08.
 $relies = @(@(0x001E3FC8, 0xE3550020L), @(0x001E3FD0, 0x92850020L), @(0x001E3FD8, 0x9A000008L), @(0x001E3FE4, 0xE3500027L), @(0x001E3FE8, 0x92800018L), @(0x001E3FF8, 0xE3500040L), @(0x001E3FFC, 0x83E00000L), @(0x001E403C, 0xAEF62B00L), @(0x001E4040, 0x93725B00L))
+# Checked native objects: the factory's bound and case targets, constructor
+# vtable literals, update slots, and the Bank object's construction at +0xCC.
+$relies += @(
+    @(0x0019CEE8, 0xE3510013L),
+    @(0x0019CF04, 0x0019CF8CL), @(0x0019CF18, 0x0019D1A4L), @(0x0019CF1C, 0x0019D1FCL),
+    @(0x0019CF20, 0x0019D23CL), @(0x0019CF24, 0x0019D2C8L), @(0x0019CF2C, 0x0019D360L), @(0x0019CF30, 0x0019D3B4L),
+    @(0x0019D620, 0x002E6680L), @(0x0019D638, 0x002E6A90L), @(0x0019D63C, 0x002E6774L),
+    @(0x0019D640, 0x002E6618L), @(0x0019D644, 0x002E66B8L), @(0x0019D64C, 0x002E6970L), @(0x0019D650, 0x002E67C4L),
+    @(0x002E668C, 0x0024538CL), @(0x002E6A9C, 0x0024A0C4L), @(0x002E6780, 0x00246F04L),
+    @(0x002E6624, 0x002445A4L), @(0x002E66C4, 0x002455D0L), @(0x002E697C, 0x00248C68L), @(0x002E67D0, 0x00247304L),
+    @(0x0010DA38, 0x002E6DD0L), @(0x0010D8FC, 0xE5840000L), @(0x0010624C, 0xE58400CCL), @(0x00106388, 0x000BB530L)
+)
 
 # What must stay the original's: the router, which the router entry calls
 # (00242BA0..00242E08), and the two tables of the Virtual Console titles
 # whose languages the hooks copied (39 rows of three words at 002AFE0C, one
 # word each at 002C2B1C).
 $protected = @(@(0x00242BA0, 0x268), @(0x002AFE0C, 39 * 12), @(0x002C2B1C, 39 * 4))
+# The factory, the Bank constructor and the vtables stay native too.
+$protected += @(@(0x0019CEE4, 0x780), @(0x0010D8EC, 0x14C), @(0x0010DA38, 4), @(0x0010624C, 4), @(0x00106388, 4),
+    @(0x002E6680, 0x10), @(0x002E6A90, 0x10), @(0x002E6774, 0x10), @(0x002E6618, 0x10),
+    @(0x002E66B8, 0x10), @(0x002E6970, 0x10), @(0x002E67C4, 0x10), @(0x002E6DD0, 0x18))
 
 $extra = {
     param([byte[]]$original, [byte[]]$patched, $elf)

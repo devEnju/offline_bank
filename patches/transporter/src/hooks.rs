@@ -127,11 +127,10 @@ fn now() -> u32 {
 /// game into `staging`: its records, then its tags.
 /// # Safety
 /// `task` is a live task of the original, on the main thread.
-unsafe fn stage_box(task: *const u8, staging: &mut [u8]) -> Option<()> {
+unsafe fn stage_box(task: Task, staging: &mut [u8]) -> Option<()> {
     let (records, tags) = staging.split_at_mut(RECORDS_LEN);
     unsafe {
-        let manager = follow(task, TASK_MANAGER)?;
-        let object = follow(manager, MANAGER_BANK_OBJECT)?;
+        let object = task.bank_pointer().ok()?;
         let accessor = follow(object, BANK_OBJECT_ACCESSOR)?;
         let body = follow(accessor, ACCESSOR_BODY)?;
         records.copy_from_slice(slice::from_raw_parts(body.add(RECORDS_OFFSET), RECORDS_LEN));
@@ -154,6 +153,9 @@ unsafe fn stage_box(task: *const u8, staging: &mut [u8]) -> Option<()> {
 /// live manager whose current task has ended.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) -> u32 {
+    if current >= TASK_COUNT {
+        return navigation::DISCONNECT;
+    }
     let Some(mut state) = STATE.take() else {
         return navigation::DISCONNECT;
     };
@@ -244,7 +246,10 @@ patch_common::stub!(
 /// screen it has just built. Answers 1 while the search's panel is up: the
 /// list then starts nothing and only notes when it began, for its minimum
 /// time; 0: the list starts its own, as the original.
-extern "aapcs" fn list_indicator() -> u32 {
+unsafe extern "aapcs" fn list_indicator(raw: *mut u8) -> u32 {
+    if unsafe { Task::from_raw(raw, &[TASK_LIST]) }.is_err() {
+        return 0;
+    }
     u32::from(PANEL.list_starts() == panel::ListStart::Quiet)
 }
 /// The game list has noted when it began, while the search's panel is up:
@@ -254,6 +259,10 @@ extern "aapcs" fn list_indicator() -> u32 {
 /// # Safety
 /// `task` is the live game-list task, on the main thread.
 unsafe extern "aapcs" fn list_started(task: *mut u8) {
+    let Ok(task) = (unsafe { Task::from_raw(task, &[TASK_LIST]) }) else {
+        return;
+    };
+    let task = task.raw();
     let elapsed = STATE
         .take()
         .and_then(|state| state.spinner.elapsed(now()))
@@ -273,6 +282,7 @@ patch_common::stub!(
     transporter_list_frame_stub,
     [
         "push {{r0-r3, r12, lr}}",
+        "mov r0, r4",
         "bl {list_frame}",
         "cmp r0, #0",
         "pop {{r0-r3, r12, lr}}",
@@ -286,7 +296,10 @@ patch_common::stub!(
 );
 /// A frame of the game list's set-up: 1 while the search's panel is up,
 /// whose sound plays, so the list's sound check is skipped.
-extern "aapcs" fn list_frame() -> u32 {
+unsafe extern "aapcs" fn list_frame(raw: *mut u8) -> u32 {
+    if unsafe { Task::from_raw(raw, &[TASK_LIST]) }.is_err() {
+        return 0;
+    }
     u32::from(PANEL.up())
 }
 
@@ -299,6 +312,7 @@ patch_common::stub!(
     [
         "push {{r1-r3, r12, lr}}",
         "sub sp, sp, #4",
+        "mov r0, r4",
         "bl {list_ready}",
         "add sp, sp, #4",
         "pop {{r1-r3, r12, lr}}",
@@ -309,7 +323,10 @@ patch_common::stub!(
 );
 /// The game list is set up and on screen: every save has been read, and it
 /// waits for the user. The panel that covered its loading ends here.
-extern "aapcs" fn list_ready() {
+unsafe extern "aapcs" fn list_ready(raw: *mut u8) {
+    if unsafe { Task::from_raw(raw, &[TASK_LIST]) }.is_err() {
+        return;
+    }
     if let Some(ui) = PANEL.release() {
         unsafe { stop_loading(ui as *mut u8) };
     }
@@ -354,7 +371,10 @@ patch_common::stub!(
 /// the title screen.
 /// # Safety
 /// `task` is the live game-search task, on the main thread.
-unsafe extern "aapcs" fn check(task: *mut u8) -> u32 {
+unsafe extern "aapcs" fn check(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_SEARCH]) }) else {
+        return SEARCH_END;
+    };
     // The loading panel goes up before anything is read, on a frame of its
     // own, as Bank's scan puts up its panel (`panel`). The worker's start
     // and the check follow once it has stood for 0.5 s (`spinner`).
@@ -364,7 +384,7 @@ unsafe extern "aapcs" fn check(task: *mut u8) -> u32 {
     if !PANEL.up() {
         // No file work without its panel: without one the search refuses
         // as a worker that fails does.
-        let ui = unsafe { follow(task, TASK_UI) };
+        let ui = task.pointer(TASK_UI).ok();
         if let Some(ui) = ui.filter(|&ui| unsafe { loading(ui) }.is_ok()) {
             PANEL.start(ui as usize);
             state.spinner.up(now());
@@ -449,7 +469,18 @@ update_stub!(
 /// down the panel of the reading, lets HOME and sleep through.
 /// # Safety
 /// `task` is the live task of `step`, on the main thread.
-unsafe extern "aapcs" fn update_waits(task: *mut u8, step: u32) -> u32 {
+unsafe extern "aapcs" fn update_waits(raw: *mut u8, step: u32) -> u32 {
+    let expected = match step {
+        navigation::READ => TASK_READ,
+        navigation::QUESTION => TASK_QUESTION,
+        navigation::TRANSFER => TASK_TRANSFER,
+        _ => return 0,
+    };
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
+        // The original update runs unchanged for an unexpected task.
+        return 0;
+    };
+    let task = task.raw();
     if step == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
         return 0;
     }
@@ -476,8 +507,8 @@ unsafe extern "aapcs" fn update_waits(task: *mut u8, step: u32) -> u32 {
 /// Shows an original message the way the game search shows its own. It
 /// waits for an answer, so HOME and sleep work on it (`message_waits`).
 /// `false` when the task's dialog owner is not a pointer.
-unsafe fn show(task: *const u8, message: u32) -> bool {
-    let Some(ui) = (unsafe { follow(task, TASK_UI) }) else {
+unsafe fn show(task: Task, message: u32) -> bool {
+    let Ok(ui) = task.pointer(TASK_UI) else {
         return false;
     };
     unsafe { ui::show(ui, message) };
@@ -536,12 +567,15 @@ patch_common::stub!(
 /// anything is written, as the original asks again before it saves the game.
 /// # Safety
 /// `task` is the live transfer task, on the main thread.
-unsafe extern "aapcs" fn deliver(task: *mut u8) -> u32 {
+unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_TRANSFER]) }) else {
+        return DELIVER_FAILED;
+    };
     let Some(mut state) = STATE.take() else {
         return DELIVER_PENDING;
     };
     if state.job.is_none() {
-        let Some(manager) = (unsafe { follow(task, TASK_MANAGER) }) else {
+        let Ok(manager) = task.pointer(TASK_MANAGER) else {
             return DELIVER_FAILED;
         };
         if unsafe { cart::chosen_card_missing(manager) } {

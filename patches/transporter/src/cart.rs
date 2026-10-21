@@ -21,6 +21,7 @@ use crate::{
     fs::{self, Sd, COPY_CHUNK},
     language,
     sdsave::Saves,
+    task::{Task, TASK_LIST},
 };
 use core::{cell::UnsafeCell, mem::transmute, slice};
 
@@ -175,7 +176,15 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
 // 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.
 patch_common::stub!(
     transporter_list_next_stub,
-    ["mov r0, r4", "b {list_next}"],
+    [
+        "push {{r0-r3, r12, lr}}",
+        "mov r0, r4",
+        "bl {list_next}",
+        "cmp r0, #0",
+        "pop {{r0-r3, r12, lr}}",
+        "streq r6, [r4, #0x10]",
+        "bx lr",
+    ],
     list_next = sym list_next,
 );
 /// Replaces "go on to the Virtual Console titles" (`00244F10`) in the
@@ -188,7 +197,12 @@ patch_common::stub!(
 /// read. The list is always built to the end.
 /// # Safety
 /// Called only from that site, with the live game-list task.
-unsafe extern "aapcs" fn list_next(task: *mut u8) {
+unsafe extern "aapcs" fn list_next(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_LIST]) }) else {
+        // The stub runs the replaced state store, as the original.
+        return 0;
+    };
+    let task = task.raw();
     unsafe {
         let state = task.add(LIST_STATE).cast::<u32>();
         if matches!(state.read(), STATE_FIRST_ITEM | STATE_READING_CARTRIDGE) {
@@ -208,11 +222,12 @@ unsafe extern "aapcs" fn list_next(task: *mut u8) {
                 let start: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(START_CART_READ);
                 start(manager, task.add(LIST_HEAP).cast::<u32>().read());
                 state.write(STATE_READING_CARTRIDGE);
-                return;
+                return 1;
             }
         }
         state.write(STATE_VIRTUAL_CONSOLE);
     }
+    1
 }
 
 /// Whether the chosen game is a cartridge whose card is gone, asked as the
@@ -255,6 +270,12 @@ pub unsafe extern "aapcs" fn transporter_card_removed(manager: *mut u8) -> u32 {
 /// task.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_entry_card_removed(task: *const u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(task.cast_mut(), &[TASK_LIST]) }) else {
+        // The original listener loads the manager, then asks about its card.
+        let manager = unsafe { task.add(LIST_MANAGER).cast::<*mut u8>().read() };
+        return u32::from(unsafe { card_removed(manager) });
+    };
+    let task = task.raw();
     unsafe {
         let manager = task.add(LIST_MANAGER).cast::<*mut u8>().read();
         let position = usize::from(task.add(LIST_CURSOR).cast::<u16>().read());
@@ -278,6 +299,10 @@ patch_common::stub!(
 /// # Safety
 /// Called only from that site, with the live game-list task.
 unsafe extern "aapcs" fn select(task: *const u8) {
+    let Ok(task) = (unsafe { Task::from_raw(task.cast_mut(), &[TASK_LIST]) }) else {
+        return;
+    };
+    let task = task.raw();
     let position = unsafe { task.add(LIST_CURSOR).cast::<u16>().read() };
     saves().select(usize::from(position));
 }
