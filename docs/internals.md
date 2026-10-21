@@ -40,7 +40,7 @@ A patch for Bank is a crate of its own with its own payload, its own profile in 
 | Hooks | `patch-common`'s `exclusive`: the state a patch's hooks share, one hook at a time | the state |
 | In the builder | `bank15.rs`: identity, placement, the shared edits | a profile: its table of edits, which names its entry functions |
 
-**Rule: a patch writes Bank's files only through `bank-common`.** The byte formats exist once, in `offline-core`; the file names, their sizes and the order in which they are written exist once, in `bank-common`. A patch that writes a Bank has a PC test that loads the result with `BankFiles` and compares every byte. So what one patch writes, every other reads. The Transporter patch holds to it as well ([File access](#file-access)).
+**Rule: a patch writes Bank's files only through `bank-common`.** The byte formats exist once, in `offline-core`; the file names, their sizes and the order in which they are written exist once, in `bank-common`. A patch that writes a Bank has a PC test that loads the result with `BankFiles` and compares every byte. So what one patch writes, every other reads. The Transporter patch holds to it as well ([File access](#file-access-1)).
 
 **Rule: a hook that is entered again while it runs does nothing.** The original's update of a task may call the task's busy poll, which a patch replaces with the same hook. Each patch's hooks share one guard; a task hook that finds it taken answers 0, "not done, next frame", and a router hook answers cleanup (`0x14`), as it does for a manager or task it cannot read. Transporter's router entry does the same with its disconnect step. A pointer a hook reads from an object of the original counts as one when it is not zero and word aligned (`patch_common::native::pointer`), in every patch.
 
@@ -212,13 +212,13 @@ Both first-start prompts depend on Bank's own save data (`data:`, 128 KiB), not 
 
 A save written by the patched Bank is therefore valid with language 0, which to the original means: notice accepted, language not chosen. It then asks for the language only. A save that holds a language loses it at the first patched start, in one write.
 
-### Bank object
+### Bank data object
 
 `0xBB530` bytes with vtable `003626FC`. `002CB870` saves the body, `0023650C` restores it. The transport-box model check is `0022bd54`; the patch counts occupied slots itself (see [Hand-over from Transporter](#hand-over-from-transporter)). The worker reads each file once into its final place in a staging buffer; the main thread only ever sees the whole body.
 
-### Filesystem calls
+### File access
 
-The first argument is a pointer to the session or file handle; a negative `i32` is failure. `bank-common`'s `fs` makes these calls through `program::Bank15`; Transporter has the same calls at other addresses ([File access](#file-access)).
+The first argument is a pointer to the session or file handle; a negative `i32` is failure. `bank-common`'s `fs` makes these calls through `program::Bank15`; Transporter has the same calls at other addresses ([File access](#file-access-1)).
 
 | Address | Call | Arguments after the handle pointer |
 | --- | --- | --- |
@@ -389,7 +389,7 @@ The reason is how the console writes extdata. Each file is its own container wit
 
 - A container counts as missing only when none of its files exists.
 - A container that was closed answers every read, write and sync with an error; an absent unit reads as zeros only while the container is open.
-- **One archive handle and one open file per container.** A container opens its archive once and has at most one unit file open, the one being read or written; one that rests (`rest`) holds neither and opens them again at its next read or write; opening a container only looks at each unit file (there, right size, opens) and closes it again. Leaving a unit flushes it first if it holds writes, so nothing depends on a write staying unflushed, and a flush that fails then is reported by that operation and by the next `sync`. The reason is a limit of the console: with every unit file open under an archive handle of its own, two containers of four units came to eight files and eight archive handles, and creating a file failed with an out-of-resource result (`D860466C`); five and five had worked. Which of the two ran out is not known. Bank holds its Bank container and one other at a time, the migration one source and one destination: two and two, what a Bank of one file per container used. The PC tests count it: the file layer's simulated card counts archive handles and files, the Bank tests' and the migration's count open containers and allow two. Transporter reaches the journal records and the transport box with calls of its own and holds one of the two pairs at a time ([File access](#file-access)); the tests count that too.
+- **One archive handle and one open file per container.** A container opens its archive once and has at most one unit file open, the one being read or written; one that rests (`rest`) holds neither and opens them again at its next read or write; opening a container only looks at each unit file (there, right size, opens) and closes it again. Leaving a unit flushes it first if it holds writes, so nothing depends on a write staying unflushed, and a flush that fails then is reported by that operation and by the next `sync`. The reason is a limit of the console: with every unit file open under an archive handle of its own, two containers of four units came to eight files and eight archive handles, and creating a file failed with an out-of-resource result (`D860466C`); five and five had worked. Which of the two ran out is not known. Bank holds its Bank container and one other at a time, the migration one source and one destination: two and two, what a Bank of one file per container used. The PC tests count it: the file layer's simulated card counts archive handles and files, the Bank tests' and the migration's count open containers and allow two. Transporter reaches the journal records and the transport box with calls of its own and holds one of the two pairs at a time ([File access](#file-access-1)); the tests count that too.
 - `Storage::recreate` deletes one unit file, which leaves it absent. The store and the pairs ask for it when writing, syncing or reading back a unit fails, and then write once more; they only ever write units that are not in use.
 - An unreadable journal record counts as a damaged one, and the other decides. A copy that cannot be read is an error where the record names it for the current save; the one exception is the transport box ([Saving and loading](#saving-and-loading)). Transporter replaces no file: one it would write and cannot read makes it refuse until Bank's next save has written it anew.
 
@@ -571,50 +571,51 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 
 ### Edits to the original
 
-55 instruction words, each checked against its original value by the builder, plus the start-up hook. A site that goes to the patch branches to an entry function by its name, as in the Bank patch: the builder's profile ([transporter15.rs](../crates/patch-builder/src/transporter15.rs), `EDITS`) names thirty-one, Rust functions and assembly stubs, and takes their addresses from the linked ELF, which must define each as a global ARM function. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One entry, the layout check for `0013AEE4`, lies beside the start-up hook (see [Placement](#placement-1)).
+56 regions (55 words and the start-up hook) and thirty-one entry functions. The builder checks every original word before patching. A site that goes to the patch branches to an entry function by its name, as in the Bank patch: the builder's profile ([transporter15.rs](../crates/patch-builder/src/transporter15.rs), `EDITS`) names them, Rust functions and assembly stubs, and takes their addresses from the linked ELF, which must define each as a global ARM function. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One entry, the layout check for `0013AEE4`, lies beside the start-up hook (see [Placement](#placement-1)).
 
-| Address | Purpose | Replacement |
+| Address | Original | Replacement |
 | --- | --- | --- |
-| `00103D9C` | `BL 00104644`, application init | Start-up hook |
-| `00242EF8` | The manager's one call of the router `get_next_state` (`00242BA0`) | Router entry: asks the original, changes its answer in four places, and refuses HOME and sleep for the steps that read or write |
-| `00244D40` | Game list set-up, every frame: its check that restarts its indicator's sound | List-frame entry: skipped while the search's loading panel is up ([Session flow](#session-flow)) |
-| `00244EAC` | Game list set-up, state 0: `BL 002450F4`, start of its loading indicator | List-indicator entry: while the search's loading panel is up, only the list's start time; otherwise the call ([Session flow](#session-flow)) |
-| `002445EC` | Game list, first instruction of its update: its set-up is done | List-ready entry: lets HOME and sleep through again, then the instruction |
-| `0019B50C` | "Show a message", its first instruction (`push {r4-r8, lr}`) | Message entry: the instruction, HOME and sleep let through if the message waits for an answer, and on at `0019B510` |
-| `0019B578` | "Show a message": the load of the message into the string it hands to its dialog (`bl 001DBEB8`) | Message-text entry: the load, then the failure message `0x0B` from its second page ([Session flow](#session-flow)) |
-| `00246F48` | Game search, first step: start of the cartridge scan | Check entry: asks Bank first, then goes on with the search or shows the original's message for a refusal |
+| `00103D9C` | `BL 00104644`, application init | `patch_bootstrap_startup`, as in Bank: runs init, makes payload pages executable, exits on failure |
+| `0028D1AC` | Zero bytes after the original text | Start-up hook and the layout check (220 bytes) |
+| `00242EF8` | The manager's one call of the router `get_next_state` (`00242BA0`) | `transporter_next`: asks the original, changes its answer in four places, and refuses HOME and sleep for the steps that read or write |
+| `00244D40` | Game list set-up, every frame: its check that restarts its indicator's sound | `transporter_list_frame_stub`: skipped while the search's loading panel is up ([Tasks and routing](#tasks-and-routing-1)) |
+| `00244EAC` | Game list set-up, state 0: `BL 002450F4`, start of its loading indicator | `transporter_list_indicator_stub`: while the search's loading panel is up, only the list's start time; otherwise the call ([Tasks and routing](#tasks-and-routing-1)) |
+| `002445EC` | Game list, first instruction of its update: its set-up is done | `transporter_list_ready_stub`: lets HOME and sleep through again, then the instruction |
+| `0019B50C` | "Show a message", its first instruction (`push {r4-r8, lr}`) | `transporter_message_stub`: the instruction, HOME and sleep let through if the message waits for an answer, and on at `0019B510` |
+| `0019B578` | "Show a message": the load of the message into the string it hands to its dialog (`bl 001DBEB8`) | `transporter_message_text`: the load, then the failure message `0x0B` from its second page ([Tasks and routing](#tasks-and-routing-1)) |
+| `00246F48` | Game search, first step: start of the cartridge scan | `transporter_check_stub`: asks Bank first, then goes on with the search or shows the original's message for a refusal |
 | `00248CDC` | Bank step, sub-state 0: create the server request | Branch to `00248E44`, where the original continues after a "yes" |
 | `00248EBC`, `00248F88` | Bank step: no Game Card before the note save (`mov r1, #0x22`, its message); a note save that failed (`beq 00248F60`, the end without a message) | `mov r1, #0xB`, the failure message; `beq 00248E78`, the same path with that message |
-| `002455D0`, `00247304`, `0024A0C4` | The first instruction (`push`) of the updates of reading the chosen game, the question and the transfer | Update-waits entry: the update returns 0 while this frame waits for the loading panel, else the instruction and on ([Loading screens](#loading-screens-1)) |
+| `002455D0`, `00247304`, `0024A0C4` | The first instruction (`push`) of the updates of reading the chosen game, the question and the transfer | `transporter_read_stub`, `transporter_question_stub`, `transporter_transfer_stub`: the update returns 0 while this frame waits for the loading panel, else the instruction and on ([Loading screens](#loading-screens-1)) |
 | `00246208`, `00246278`, `002462E8` | Reading the chosen game, states `0xB`, `0xC`, `0xD`: `BL 0019B758`, 1.5 s before a damaged save, no save or no Game Card is shown | `mov r0, #1`: the error is shown at once |
 | `00245728`, `002460B8` | Reading Gen 5 and Gen 1/2: remote validation | Skipped |
 | `002488A0` | Step `0xA`, the server's question whether a transfer is open: its request | Counts as made (`mov r0, #1`); the step is never entered |
-| `002458DC` | Reading Gen 5: per-slot result code | Slot entry: answers the "skip" code for empty slots |
+| `002458DC` | Reading Gen 5: per-slot result code | `transporter_slot_stub`: answers the "skip" code for empty slots |
 | `00247478` | Question step: nickname notice (message `0x10`) | Branch to the original "go to sub-state 4" (`002474E0`) |
-| `00243528` | Cartridge task: read the game code | Cartridge-id entry |
-| `002439A8` | Cartridge task: read the save | Cartridge-read entry |
-| `002437F4`, `0024397C` | Cartridge task: write part of the save | Cartridge-write entry |
-| `00244F10` | Game list: go on to the Virtual Console titles | List-next entry |
-| `00244908` | Game list: a DS entry was confirmed | Select entry |
-| `00244F00`, `00245658`, `00248E68`, `0024A298`, `0024A474` | The original's question whether the Game Card was taken out (`bl 001DE43C`): before the list reads its first item, before the chosen game is read, before the Bank step saves its note, before each save of the transfer | Card entry: the original's answer for the cartridge slot, no for a save on the SD card ([Saves on the SD card](#saves-on-the-sd-card)) |
-| `0025C5A4`, `0025C5A8` | Game list's listener, a DS entry confirmed: the same question (`ldr r0, [r4, #8]`, `bl 001DE43C`) | `mov r0, r4` and the entry-card entry, which answers for the entry at the cursor |
-| `002412D4` | Scanner of the Virtual Console titles: is this row's title installed? (`bl 002512A8`) | Title-scan entry: no for a row in another language than the listed one, otherwise the original's answer |
-| `001E41C0` | Scan of the Virtual Console saves (`001E419C`): mount the save of title `r5` (`bl 0010E4A4`) | Mount stub: no mount for a title in another language than the listed one ([Language screen](#language-screen)) |
+| `00243528` | Cartridge task: read the game code | `transporter_cart_id_stub` |
+| `002439A8` | Cartridge task: read the save | `transporter_cart_read` |
+| `002437F4`, `0024397C` | Cartridge task: write part of the save | `transporter_cart_write` |
+| `00244F10` | Game list: go on to the Virtual Console titles | `transporter_list_next_stub` |
+| `00244908` | Game list: a DS entry was confirmed | `transporter_select_stub` |
+| `00244F00`, `00245658`, `00248E68`, `0024A298`, `0024A474` | The original's question whether the Game Card was taken out (`bl 001DE43C`): before the list reads its first item, before the chosen game is read, before the Bank step saves its note, before each save of the transfer | `transporter_card_removed`: the original's answer for the cartridge slot, no for a save on the SD card ([Saves on the SD card](#saves-on-the-sd-card)) |
+| `0025C5A4`, `0025C5A8` | Game list's listener, a DS entry confirmed: the same question (`ldr r0, [r4, #8]`, `bl 001DE43C`) | `mov r0, r4` and `transporter_entry_card_removed`, which answers for the entry at the cursor |
+| `002412D4` | Scanner of the Virtual Console titles: is this row's title installed? (`bl 002512A8`) | `transporter_vc_scan_stub`: no for a row in another language than the listed one, otherwise the original's answer |
+| `001E41C0` | Scan of the Virtual Console saves (`001E419C`): mount the save of title `r5` (`bl 0010E4A4`) | `transporter_vc_mount_stub`: no mount for a title in another language than the listed one ([Language screen](#language-screen)) |
 | `0010621C` | Application init: `bl 001E419C`, the scan of the Virtual Console saves | Skipped: nothing reads its result ([Language screen](#language-screen)) |
-| `0025C5FC` | Language screen ended: switch the language of the screens | Language-chosen entry |
+| `0025C5FC` | Language screen ended: switch the language of the screens | `transporter_language_chosen` |
 | `0025C618` | Language screen ended: record the language in the manager | Skipped |
-| `0022BEE0` | Language screen: order and place the nine list entries | Language-order entry |
-| `0022B5B0` | Language screen: cursor range and enabled buttons of the list | Language-buttons entry: the original, then the shown entries only |
+| `0022BEE0` | Language screen: order and place the nine list entries | `transporter_language_order_stub` |
+| `0022B5B0` | Language screen: cursor range and enabled buttons of the list | `transporter_language_buttons`: the original, then the shown entries only |
 | `0022B6E0`, `0022B6E4` | Language screen: list index 5, Japanese, goes to the kana/kanji part | List index 7, Back, goes to part 3, the end; every language goes to the confirm part |
-| `0022B3B8` | Language screen: B on a part without a Back button does nothing | Language-back entry: on the list, presses the Back button |
-| `0024BA44`, `0024BA74` | Title screen: before and after it loads its archives | Title-begin and title-end entries: the archive with logo and start prompt is read in the chosen language |
-| `0024BAE8` | Title screen: the call that writes its version line (`001D33CC(context, 0, 0x26, 0x29)`) | Version entry: the call, then the line again with "-offline" behind it, through the original's pane functions `0019F834` and `002375D0` (`patch-common`'s `ui::version`, as in Bank) |
-| `0013AEE4` | Building a layout: the layout binary on its way to `Layout::Build` | Layout check: the same, and the payload adjusts the language screen's layout first |
-| `0024A150` | Transfer, sub-state 0: create the upload request | Deliver entry: nothing while the chosen cartridge's card is gone; goes on by its result |
+| `0022B3B8` | Language screen: B on a part without a Back button does nothing | `transporter_language_back_stub`: on the list, presses the Back button |
+| `0024BA44`, `0024BA74` | Title screen: before and after it loads its archives | `transporter_title_begin_stub` and `transporter_title_end_stub`: the archive with logo and start prompt is read in the chosen language |
+| `0024BAE8` | Title screen: the call that writes its version line (`001D33CC(context, 0, 0x26, 0x29)`) | `transporter_version_shown`: the call, then the line again with "-offline" behind it, through the original's pane functions `0019F834` and `002375D0` (`patch-common`'s `ui::version`, as in Bank) |
+| `0013AEE4` | Building a layout: the layout binary on its way to `Layout::Build` | `transporter_layout_check_stub`: the same, and the payload adjusts the language screen's layout first |
+| `0024A150` | Transfer, sub-state 0: create the upload request | `transporter_deliver_stub`: nothing while the chosen cartridge's card is gone; goes on by its result |
 | `0024A3C0` | Transfer: `mov r0, #0xa`, the one place that selects the commit request (sub-state `0xA`) | `mov r0, #0xe`: the final save comes next |
 | `0024A3D0`, `0024A4E8` | Transfer: the save without the Pokémon failed (`mov r0, #0xC`, the server's commit); the final save failed (`beq 0024A38C`, the end without a message) | `b 0024A2A8` and `beq 0024A2A8`: the original's message that no Game Card is detected |
-| `0024F6B0` | Gen 1 conversion: the call of the Pokémon constructor (`bl 0019CD3C`) | Shiny-build entry: may ask for a shiny, then the call ([below](#shiny-gen-1-pokémon)) |
-| `0024F8E0` | Gen 1 conversion: start of the gender from the Attack DV (`ldrb r1, [r4, #0x1b]`) | Shiny-gender entry: keeps the constructor's gender, or the instruction |
+| `0024F6B0` | Gen 1 conversion: the call of the Pokémon constructor (`bl 0019CD3C`) | `transporter_shiny_build_stub`: may ask for a shiny, then the call ([below](#shiny-gen-1-pokémon)) |
+| `0024F8E0` | Gen 1 conversion: start of the gender from the Attack DV (`ldrb r1, [r4, #0x1b]`) | `transporter_shiny_gender_stub`: keeps the constructor's gender, or the instruction |
 
 The offline flow follows zaksabeast's Transporter-Offline-Patch. Unlike that patch, the transfer ends with the original final save and success message.
 
@@ -622,19 +623,11 @@ The offline flow follows zaksabeast's Transporter-Offline-Patch. Unlike that pat
 
 Same method as the [Bank patch](#placement). Transporter's main function is the same engine code as Bank's: `00103D9C` is its one `BL` to application init. The start-up hook, the same code as Bank's (`patch-common`), sits at `0028D1AC`, in the zero bytes after the original text. The layout check for `0013AEE4` lies there too, after the hook (section `.patch.bootstrap.check`): that site is on the way of every layout, and the first layouts are built during start-up, before the payload is executable (a branch into the payload from there was a prefetch abort at its entry word). The check hands only a layout binary of the language screen's size to the payload, and that layout is built when the screen is opened. No site that only the language screen runs can stand in for this one: its constructor (`0022BD28`) reaches `Layout::Build` through `001A1964` and the set-up function `0022C438`, which eight screens share (vtable slot `+0x2C`). That function sets up the screen's resources (`0022ECC8`, called with the screen's archive table; taken to be the archive load, not traced) and builds the layouts (`0022E8AC`, then `001DD234`, `0012ECC8` and `0013AE2C`) in one go, and the one call it makes back into the screen (vtable slot `+0x28`) comes before both. The layout binary is first looked up inside `0013AE2C` itself, at `0013AEE0`. The hook flushes the caches whole (Luma SVC `92`/`94`): the payload's code range is small, and a range flush of a small range is carried out by virtual address on every core, which faulted in the kernel on core 1 under another process's address space. The payload links at `00364000`, the first page after the original zero-initialised data, which follows the data section directly (`003293FC..003638A4`) and is not page aligned. The paired exheader enlarges the data segment and sets BSS to zero (fields `0x34`, `0x38`, `0x3c` only); the IPS writes the former BSS as zero, then the payload. `code.ips` and `exheader.bin` only work together.
 
-### Bank data object
+### Tasks and routing
 
-Transporter contains Bank's data object (initialiser `00115410`, body `BB518` bytes).
+The original's tasks are called steps here, after its router `get_next_state`.
 
-- **Reaching it from a task:** `[task + 8]` manager, `[manager + CC]` data object, `[object + BB524]` transport accessor, `[accessor + 4]` body pointer.
-- **Transport box:** record `i` at body pointer `+ AAF1C + i * E8`, tag `i` at `+ AD604 + i` (the body offsets under [Native body](#native-body) plus 8).
-- Reading a game (`00245460` for Gen 5, `002463D8` for Gen 1/2) clears the 30 slots and stores each converted Pokémon at its source position through `0019A6F4`, which also writes the tag from the Pokémon object's `+0x10`.
-
-The patch copies the 30 records and 30 tags as they are.
-
-### Session flow
-
-- **Routing.** The original's router `get_next_state` (`00242BA0`) is called from one place in the manager's step function (`00242EF8`), with the finished step and its outcome byte (`task + 0x30`). The router entry calls it and changes four answers (`navigation::destination`, tested on the PC against a transcription of the router's cases in [router.rs](../patches/transporter/src/router.rs)): after the game list with a chosen game comes the reading of the game, where the original answers "connect"; after the reading comes the Bank step, whatever the outcome, where the original's server steps came in between; where the original answers the cancel step `0xF`, the disconnect step follows ([below](#session-flow)); and so it does where the original answers the failure step `0x12` (`002444BC`), which shows message `0x0B` after the Bank step or the transfer ended with outcome `0xF`: offline each of them has shown its own message by then. A cancelled step (the manager's flag `+0x1A`) is left to the original, which answers the disconnect step. A manager or finished step that is not a pointer gets the disconnect step without the original being asked, as Bank's router hook answers cleanup. Nothing inside the router is edited.
+- **Routing.** The original's router `get_next_state` (`00242BA0`) is called from one place in the manager's step function (`00242EF8`), with the finished step and its outcome byte (`task + 0x30`). The router entry calls it and changes four answers (`navigation::destination`, tested on the PC against a transcription of the router's cases in [router.rs](../patches/transporter/src/router.rs)): after the game list with a chosen game comes the reading of the game, where the original answers "connect"; after the reading comes the Bank step, whatever the outcome, where the original's server steps came in between; where the original answers the cancel step `0xF`, the disconnect step follows ([below](#tasks-and-routing-1)); and so it does where the original answers the failure step `0x12` (`002444BC`), which shows message `0x0B` after the Bank step or the transfer ended with outcome `0xF`: offline each of them has shown its own message by then. A cancelled step (the manager's flag `+0x1A`) is left to the original, which answers the disconnect step. A manager or finished step that is not a pointer gets the disconnect step without the original being asked, as Bank's router hook answers cleanup. Nothing inside the router is edited.
 - **Check at START** (game search, `00246F04`, the task after the title screen). Its steps: 0 start the cartridge scan, 1 wait for it, 2 look for Virtual Console titles, 3 end with "found", 4 show message 0 ("Could not find a game…") through `0019B50C(ui, 0, 1)` with the ui at `task + 0x34`, 5 wait for the acknowledgement and end with "none", which the router answers with the disconnect step and then the title screen. The first instruction of step 0 (`00246F48`) branches to the check entry's stub, which calls the entry with the task (`r4`). The entry asks `transport::check` on the worker thread, which reads Bank's journal, and answers: 0 go on (the stub runs the replaced instruction and continues at `00246F4C`), 1 come back next frame (`00247024`), 2 a message is on screen (`00247000`, which selects step 5), 3 end without a message (`0024702C`; only if the task has no dialog owner). The message is the original's 5 when Pokémon are in the way, in Bank's transport box or in a delivery that waits, and its 3 when there is no Bank, a Bank save is not finished, or a file does not read (`ui::refusal_message`); the entry shows it with the call step 4 makes. The original shows message 3 from a reply listener of its sign-in (`0025C964`) when the server asks for a cleanup. The check runs at every START, so a second transfer in one run meets it again.
 - **Loading panel after START.** The original's search shows none. The game list's own indicator ("Die Spielesoftware wird überprüft…") belongs to the list's screen: the list's set-up builds that screen in its state 0 (`0024264C`, which loads its archives 52, 45 and 43 and their layouts) and only then starts the indicator on it (`002450F4`). The patch reads Bank's files and looks for saves on the SD card in the search, so the check entry starts, on its first frame, which does nothing else, the general loading panel of the shared UI (`task + 0x34`), which needs nothing loaded: `0019B340(ui)`, as the reader's set-up starts it (loop sound `0x50011`, pane `0x1D`, its spinner animation 0). Its text is the list's: message `0x20` of text file 39, which the panel's own file 23 has not; the entry shows the text frame as `0019C700` does (pane `0x1E` shown, `0x25` hidden) and copies the message into pane `0x23` with `0019F7B0`, from the file opened as the language screen's Back text is ([Language screen](#language-screen)), on the UI's heap (`[[ui + 0x78] + 4]`). That one panel stays until the game list is on screen ([panel.rs](../patches/transporter/src/panel.rs)). The list's call of `002450F4` (`00244EAC`) goes to a stub: while the panel is up it enters `002450F4` at `00245180`, with that function's own prologue, which only notes the list's start time at `task + 0x70` for its minimum time, so the list starts no indicator, sound or text of its own; the list-started entry then moves that time back by as long as the panel has been up, measured as `0019B758` measures (`00233854` notes the original's clock when the panel goes up and now, `0025A77C` gives each in ms), so the list's 3 s count from START and it appears as soon as it is built; otherwise it makes the call. The list's set-up checks every frame whether its indicator's animation `0x4F` stands idle at frame 0 and then plays `0x50011` again (`00244D40`..`00244D88`); an animation that was never bound reads so, and `001A220C` would start the loop on another of its 11 players each frame, so while the panel is up the stub at `00244D40` goes on behind the check (`00244D8C`). Once 3 s have passed since the start time, the list's end of loading (`00244B24`) stops `0x50011`, which is the panel's sound, hides its panes `0xB7` and `0x4D`, which were never shown, and unbinds `0x4F`, which `0019B604` skips when it is not bound. The panel ends as the question step ends it when no message follows (`00247394`..`002473D8`: stop `0x50011`, hide `0x1D`, unbind animation 0, then `0019C814(ui)`, which hides the panel, its text frame and the dialog frame, the state the shared UI's constructor leaves it in, `0024B778`): when the list is on screen, through the list-ready entry; before a message that waits, through the message entry (a refusal, "Could not find a game…"), after which `0019B50C` shows its own dialog frame; and when the search ends in any step but the list, through the router entry. It is started once per search and ended once. The entry answers "come back next frame" on the panel's frame and until the panel has stood for 0.5 s ([Loading screens](#loading-screens-1)); then the worker is started, on the first START of a run, and the check handed over.
 - **Bank step** (`00248C68`, after the game is read). The original asked the server here whether Bank can take the Pokémon. Its other messages are `0x23` ("the server has been locked") and `0x22` (no Game Card). After a "yes" it continues at `00248E44`: unless the Game Card was removed (message `0x22`), it writes its note into the chosen game ([below](#the-originals-note-in-the-game)), starts saving that game (`0024B92C`, mode 2) and waits for the save (`0024B868`) before it ends with "allowed". The patch branches from the step's first instruction (`00248CDC`) to `00248E44`, so the request and its reply are never entered and the note and the save happen as before. Nothing has been written to Bank in this step: a Game Card that is gone before the note save (`00248E68`, a card entry) shows the failure message (`00248EBC`) instead of `0x22`, from its second page, and a note save that fails takes the same path (`00248F88`), where the original ended without a message. Either ends with outcome `0xF`, then disconnect.
@@ -646,59 +639,28 @@ The patch copies the 30 records and 30 tags as they are.
   - **After the delivery** a save of the game that fails goes to the original's message that no Game Card is detected (`0024A2A8`: `0x22`, sub-state 4, outcome `0xF`), as a card taken out does there (`0024A298`, `0024A474`). For the save without the Pokémon the original selected the server's commit instead (`0024A3D0`, sub-state `0xC`), whose `0019B7D0([task + 0x3C])` reads a request that offline is never created (zero since the task's constructor, `0019D1E8`); for the final save it ended without a message (`0024A4E8`). The Pokémon are then in Bank and may still be in the game ([The original's note in the game](#the-originals-note-in-the-game)).
 - **Nickname notice.** Sub-state 2 of the question step shows message `0x10` unless a flag in the Bank data object says it was shown. Names were only ever erased on the server's per-slot codes (`0xFA`..`0xFC`, `0xFE`, `0xFF`), which never arrive offline.
 
-### The original's note in the game
+### Screens
 
-The original keeps 32 bytes in the chosen game that are its half of a transaction with the server. `0019BA68(manager, out)` reads them and `0019A13C(manager, in)` stores them: for a Gen 5 game inside the save image the cartridge task holds (`+0x1DA00` in the active copy), for a Virtual Console title through that title's save.
-
-| Offset | Size | Content |
-| --- | --- | --- |
-| 0 | 8 | ID the server gave for this copy and session |
-| 8 | 8 | Transfer number; zero means "nothing in progress" |
-| `0x10` | 12 | Three words of the server's reply; the first is compared together with the ID |
-| `0x1C` | 1 | State: 1 started, 2 sent |
-
-| Moment in the original | Note | Server |
-| --- | --- | --- |
-| Bank step, after a "yes" (`00248ED0`) | ID, number, state 1; the game is saved | remembers an open transfer |
-| Transfer, after the upload (`0024A300`) | state 2; saved with the box without the Pokémon | holds the Pokémon, not yet in the transport box |
-| Transfer, after the commit request (`0024A484`) | number cleared; saved | puts them into the transport box |
-
-At the next session three server steps used the note. Step `0xA` (`00248814`) asked the server whether a transfer was open. Step `0xD` (`00246B68`) read the note: with a number and state 1 it had the server discard its copy, with state 2 it had the server finish, then it cleared the number and saved. Step `0xE` (`00243AF4`) first compared the note's ID with the server's; another copy of the game got message 6 ("You previously used a different copy…"), with the choice of giving up the Pokémon in transit (messages `0x1A`, `0x1B`). The result was a transfer that a power failure could neither lose nor double, sorted out with the same copy of the game.
-
-**Offline** the note is written and never read:
-
-- The values come from the server's reply, which never arrives. The number is taken to be zero (the reply buffer was not traced to its source), so the note reads "nothing in progress"; the state byte becomes 1 and then 2.
-- The three saves still happen, because they are the original's: once after the game is read and before the question, with the box in the transfer, and at the end. Steps `0xA`, `0xD` and `0xE` are never entered ([Session flow](#session-flow)).
-- What takes the transaction's place is the order of the two writes: the delivery is written, flushed and read back before the game is saved without the Pokémon. A power cut in between leaves the Pokémon in Bank and in the game: never lost, but possibly doubled. That is the one guarantee of the original the patch does not give, and it is a decision, not a gap.
-- The order cannot be closed by the journal: the delivery and the game's save are two writes in two places, and a cut between them leaves one done whatever the order. Saving the game first would turn the duplicate into a Pokémon held only by a copy no record names, which needs a recovery that reads the source game again to tell whether its save went through, and keeps the box safe from Bank's next save until then. Whether a cut can tear a Gen 5 save is not known. The patch takes the side that cannot lose a Pokémon, the rule of Bank's own recovery for a save that moved Pokémon one way ([An interrupted save](#an-interrupted-save)).
-- Transporter shows no error numbers. Every refusal concerns Bank's files, and its message sends the user to Bank, which shows its own numbers; a delivery that failed concerns Bank's files or the Game Card, and its message, the failure message's advice to check the card, leaves Bank and the game unchanged ([Session flow](#session-flow)).
-- A swapped Game Card is not what the note guarded against within a session. The original checks its "card removed" signal (`001DE43C`) before each of the three saves and stops with a message; the patch asks it before the delivery as well, so that nothing reaches Bank while the cartridge's card is gone ([Session flow](#session-flow)). A save on the SD card is addressed by its file name for the whole session, whatever cartridge is inserted, and the signal is not asked for it ([Saves on the SD card](#saves-on-the-sd-card)).
-
-### Empty Gen 5 slots
-
-The Gen 5 reader (`002455D0`, sub-state 4) runs 14 local checks (table `002AFFE0`) and a conversion on every slot whose per-slot result code (`[info + 0x48 + 4 * slot]`) is zero. The server sent `0x14` for empty slots, which skips them. Without it, empty slots fail the checks, set the "removed" flags at `info + 0x1C0`, and raise a false dialog. The slot entry answers `0x14` for a slot that holds no species ([gen5.rs](../patches/transporter/src/gen5.rs)). The Gen 1/2 reader skips empty slots itself.
-
-The species has to be decrypted; the stored header does not tell. A box record is 136 bytes: personality value, flags (u16 at 4), checksum (u16 at 6), then four 32-byte blocks, XORed word by word with the LCG stream seeded by the checksum and stored in the order `((personality >> 13) & 31) % 24`. The games store empty slots in two forms: a slot that was cleared has personality value 0 and checksum 0; a slot that was set up and never used has personality value 0 and checksum 4, because a blank record carries the genderless flag (byte `0x40`).
-
-### Shiny Gen 1 Pokémon
-
-Transporter 1.2 (January to September 2017) tested the wrong DV for a shiny Gen 1 Pokémon and kept the constructor's random gender. The patch brings back the Pokémon that only that rule made shiny ([legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs)):
-
-| Rule | Attack | Defense | Speed | Special |
-| --- | --- | --- | --- | --- |
-| The original's (`0024F5B8`) | bit 1 set | 10 | 10 | 10 |
-| Transporter 1.2's | 10 | bit 1 set | 10 | 10 |
-
-The patch applies it where 1.2's rule holds and the original's does not: DV bytes `+0x1B`/`+0x1C` of the source record `A2 AA`, `A3 AA`, `A6 AA`, `A7 AA`, `AB AA`, `AE AA`, `AF AA`. All four DVs 10 (`AA AA`) is shiny by both and stays the original's. Of 65,536 combinations, 15 are shiny instead of 8; every other Pokémon converts as before.
-
-- **Where.** The Gen 1 converter `0024F428`, which has one caller, holds the 33-byte source record in `r4` throughout. The Gen 2 converter (`0024E48C`) and Gen 5 are not touched. Both entries are pure and look only at the record, so a conversion during the game search is harmless.
-- **Shiny.** At the constructor call (`0024F6B0`) the construction parameters are at `sp + 0x18`; their word at `+0x0C` is the shiny mode (1 never, 2 shiny; stored at `0024F610`). The entry sets 2; the constructor makes the shiny personality value as for any other shiny.
-- **Gender.** The constructor (through `0012F8BC`) draws a gender for the species (`random(252) + 1` against the ratio code), and fixed-sex and genderless species get theirs. For the ratio codes `0x1F`, `0x3F`, `0x7F`, `0xBF` the original then replaces it with one from the Attack DV (`0024F8E0`..`0024F90C`): female up to Attack 1, 3, 7 and 11. Since every shiny of the original's rule has Attack 2 or more, no shiny of a species with code `0x1F` (one female in eight) can be female. For these Pokémon the entry continues at `0024F910`, behind that code, for all four codes, and the drawn gender stays: for code `0x1F`, female in 30 of 252 draws. Nothing else is drawn.
-- **Met date.** Unchanged: the converter writes the console's date (`0024F6FC`), and the rule does not depend on it.
-
-### Refusal dialogs
+Texts are in the GARC `a/0/0/6` of the RomFS, file 23 for English (Game Freak text format). Used here: `0x03` the last session did not complete, open Pokémon Bank; `0x05` transport box not empty; `0x08` no Pokémon to move, `0x0A` moved, `0x0B` failure, always from its second page, `0x10` nickname notice, `0x11`..`0x15` and `0x41` Pokémon that cannot be sent, `0x16` held items returned, `0x22` no compatible Game Card detected.
 
 The question step shows one fixed sequence when the reader flagged anything (`002474E8`..`00247648`): message `0x11` (there is a Pokémon that cannot be sent) if `info + 0x1C0` is set; then one message per reason flag, `0x12` for an Egg (`+0x1C1`), `0x13` for a fused Kyurem (`+0x1C2`), `0x14` for a problem with a Pokémon (`+0x1C4`), `0x41` for too many held items (`+0x1C6`); then always `0x15` (the Pokémon were removed from the Transport Box). A Pokémon refused by the local checks therefore produces three dialogs, as it did with the server. The patch does not touch this sequence.
+
+### Bank data object
+
+Transporter contains Bank's data object (initialiser `00115410`, body `BB518` bytes).
+
+- **Reaching it from a task:** `[task + 8]` manager, `[manager + CC]` data object, `[object + BB524]` transport accessor, `[accessor + 4]` body pointer.
+- **Transport box:** record `i` at body pointer `+ AAF1C + i * E8`, tag `i` at `+ AD604 + i` (the body offsets under [Native body](#native-body) plus 8).
+- Reading a game (`00245460` for Gen 5, `002463D8` for Gen 1/2) clears the 30 slots and stores each converted Pokémon at its source position through `0019A6F4`, which also writes the tag from the Pokémon object's `+0x10`.
+
+The patch copies the 30 records and 30 tags as they are.
+
+### File access
+
+Transporter's SDK has the same file calls as Bank's ([File access](#file-access)): OpenArchive `001DB7DC`, CloseArchive `001DB7AC`, OpenFile `00159230`, Read `0015930C`, Write `00159390`, GetSize `001593F0`, CloseFile `00159364`, each with the same instructions and command words as Bank's; it has no CreateFile. Its `fs:USER` session is at `00311F80`. [program.rs](../patches/transporter/src/program.rs) names them (`Transporter15`, with `FS_SESSION`), without CreateFile and DeleteFile.
+
+- Bank's extdata: through `bank-common`, as every patch of Bank reaches it ([fs.rs](../crates/bank-common/src/fs.rs), `fs::Visit` with Transporter's calls): the Bank container for its two journal records, and the transport box, one at a time, each with one archive handle and one open file ([Files](#files)). Transporter visits them (`Split::visit`): it reads and writes the files that are there, and creates, deletes or replaces none. A file that is not there or does not open makes every read of it fail, unlike for Bank, which reads a missing one as zeros; the check then refuses at START, and Bank's next Save and Quit makes the file whole. The host tests run the delivery rules on a simulated card that does the same (`testing::Visit`). Transporter's exheader grants neither archive: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
+- SD card ([fs.rs](../patches/transporter/src/fs.rs)): archive 9 with an empty path, each file opened with its archive in one call (open-directly `001DF448`); the calls on the open file are `patch-common`'s `file`, as for Bank's files.
 
 ### HOME button and sleep
 
@@ -731,19 +693,62 @@ The same rule as Bank's ([Loading screens](#loading-screens)): 0.5 s before the 
 
 | Loading screen | Goes up | Its work waits | A success ends it no earlier than |
 | --- | --- | --- | --- |
-| START: the search, then the game list | in the check entry ([Session flow](#session-flow)) | in the check entry, before the worker starts | the list's own 3 s, counted from START |
+| START: the search, then the game list | in the check entry ([Tasks and routing](#tasks-and-routing-1)) | in the check entry, before the worker starts | the list's own 3 s, counted from START |
 | Reading the chosen game, then the Bank step | in the reader's set-up; it stays through the Bank step | in the reader's update | the question's first state, which ends it (`00247394`) |
 | The transfer | in its set-up | in its update's sub-state 0, before the deliver entry | its closing message, sub-state `0x10` (`0024A4F0`) |
 | Disconnect, the reload after the language screen | in their set-up | nothing: their update ends on its first frame offline (no request at `+0x38`), and their work comes after their 1.5 s | their own 1.5 s (`00247100`) |
 
 What ends a screen early is an error: a refusal at START, "Could not find a game…", the reader's damaged save, missing save or missing Game Card (whose 1.5 s the original waited, `00246208`, `00246278`, `002462E8`, now answered "passed"), the Bank step's missing Game Card or failed note save, a card gone before the delivery, a failed delivery, and a failed save of the game after it.
 
-### File access
+### The original's note in the game
 
-Transporter's SDK has the same file calls as Bank's ([Filesystem calls](#filesystem-calls)): OpenArchive `001DB7DC`, CloseArchive `001DB7AC`, OpenFile `00159230`, Read `0015930C`, Write `00159390`, GetSize `001593F0`, CloseFile `00159364`, each with the same instructions and command words as Bank's; it has no CreateFile. Its `fs:USER` session is at `00311F80`. [program.rs](../patches/transporter/src/program.rs) names them (`Transporter15`, with `FS_SESSION`), without CreateFile and DeleteFile.
+The original keeps 32 bytes in the chosen game that are its half of a transaction with the server. `0019BA68(manager, out)` reads them and `0019A13C(manager, in)` stores them: for a Gen 5 game inside the save image the cartridge task holds (`+0x1DA00` in the active copy), for a Virtual Console title through that title's save.
 
-- Bank's extdata: through `bank-common`, as every patch of Bank reaches it ([fs.rs](../crates/bank-common/src/fs.rs), `fs::Visit` with Transporter's calls): the Bank container for its two journal records, and the transport box, one at a time, each with one archive handle and one open file ([Files](#files)). Transporter visits them (`Split::visit`): it reads and writes the files that are there, and creates, deletes or replaces none. A file that is not there or does not open makes every read of it fail, unlike for Bank, which reads a missing one as zeros; the check then refuses at START, and Bank's next Save and Quit makes the file whole. The host tests run the delivery rules on a simulated card that does the same (`testing::Visit`). Transporter's exheader grants neither archive: its storage info lists only its own extdata id (`C9C`), and its filesystem access mask (`0x10`) has no SD card bit. Both work because Luma3DS's own process manager registers every process with a filesystem access mask of all bits (`sysmodules/pm/source/launch.c`, `loadWithoutDependencies`: "Not in official PM: patch local caps to give access to everything"), whatever the exheader says and for every title. Luma3DS has had its own process manager since v10.0. The paired `exheader.bin` therefore leaves the access fields as they are.
-- SD card ([fs.rs](../patches/transporter/src/fs.rs)): archive 9 with an empty path, each file opened with its archive in one call (open-directly `001DF448`); the calls on the open file are `patch-common`'s `file`, as for Bank's files.
+| Offset | Size | Content |
+| --- | --- | --- |
+| 0 | 8 | ID the server gave for this copy and session |
+| 8 | 8 | Transfer number; zero means "nothing in progress" |
+| `0x10` | 12 | Three words of the server's reply; the first is compared together with the ID |
+| `0x1C` | 1 | State: 1 started, 2 sent |
+
+| Moment in the original | Note | Server |
+| --- | --- | --- |
+| Bank step, after a "yes" (`00248ED0`) | ID, number, state 1; the game is saved | remembers an open transfer |
+| Transfer, after the upload (`0024A300`) | state 2; saved with the box without the Pokémon | holds the Pokémon, not yet in the transport box |
+| Transfer, after the commit request (`0024A484`) | number cleared; saved | puts them into the transport box |
+
+At the next session three server steps used the note. Step `0xA` (`00248814`) asked the server whether a transfer was open. Step `0xD` (`00246B68`) read the note: with a number and state 1 it had the server discard its copy, with state 2 it had the server finish, then it cleared the number and saved. Step `0xE` (`00243AF4`) first compared the note's ID with the server's; another copy of the game got message 6 ("You previously used a different copy…"), with the choice of giving up the Pokémon in transit (messages `0x1A`, `0x1B`). The result was a transfer that a power failure could neither lose nor double, sorted out with the same copy of the game.
+
+**Offline** the note is written and never read:
+
+- The values come from the server's reply, which never arrives. The number is taken to be zero (the reply buffer was not traced to its source), so the note reads "nothing in progress"; the state byte becomes 1 and then 2.
+- The three saves still happen, because they are the original's: once after the game is read and before the question, with the box in the transfer, and at the end. Steps `0xA`, `0xD` and `0xE` are never entered ([Tasks and routing](#tasks-and-routing-1)).
+- What takes the transaction's place is the order of the two writes: the delivery is written, flushed and read back before the game is saved without the Pokémon. A power cut in between leaves the Pokémon in Bank and in the game: never lost, but possibly doubled. That is the one guarantee of the original the patch does not give, and it is a decision, not a gap.
+- The order cannot be closed by the journal: the delivery and the game's save are two writes in two places, and a cut between them leaves one done whatever the order. Saving the game first would turn the duplicate into a Pokémon held only by a copy no record names, which needs a recovery that reads the source game again to tell whether its save went through, and keeps the box safe from Bank's next save until then. Whether a cut can tear a Gen 5 save is not known. The patch takes the side that cannot lose a Pokémon, the rule of Bank's own recovery for a save that moved Pokémon one way ([An interrupted save](#an-interrupted-save)).
+- Transporter shows no error numbers. Every refusal concerns Bank's files, and its message sends the user to Bank, which shows its own numbers; a delivery that failed concerns Bank's files or the Game Card, and its message, the failure message's advice to check the card, leaves Bank and the game unchanged ([Tasks and routing](#tasks-and-routing-1)).
+- A swapped Game Card is not what the note guarded against within a session. The original checks its "card removed" signal (`001DE43C`) before each of the three saves and stops with a message; the patch asks it before the delivery as well, so that nothing reaches Bank while the cartridge's card is gone ([Tasks and routing](#tasks-and-routing-1)). A save on the SD card is addressed by its file name for the whole session, whatever cartridge is inserted, and the signal is not asked for it ([Saves on the SD card](#saves-on-the-sd-card)).
+
+### Empty Gen 5 slots
+
+The Gen 5 reader (`002455D0`, sub-state 4) runs 14 local checks (table `002AFFE0`) and a conversion on every slot whose per-slot result code (`[info + 0x48 + 4 * slot]`) is zero. The server sent `0x14` for empty slots, which skips them. Without it, empty slots fail the checks, set the "removed" flags at `info + 0x1C0`, and raise a false dialog. The slot entry answers `0x14` for a slot that holds no species ([gen5.rs](../patches/transporter/src/gen5.rs)). The Gen 1/2 reader skips empty slots itself.
+
+The species has to be decrypted; the stored header does not tell. A box record is 136 bytes: personality value, flags (u16 at 4), checksum (u16 at 6), then four 32-byte blocks, XORed word by word with the LCG stream seeded by the checksum and stored in the order `((personality >> 13) & 31) % 24`. The games store empty slots in two forms: a slot that was cleared has personality value 0 and checksum 0; a slot that was set up and never used has personality value 0 and checksum 4, because a blank record carries the genderless flag (byte `0x40`).
+
+### Shiny Gen 1 Pokémon
+
+Transporter 1.2 (January to September 2017) tested the wrong DV for a shiny Gen 1 Pokémon and kept the constructor's random gender. The patch brings back the Pokémon that only that rule made shiny ([legacy_shiny.rs](../patches/transporter/src/legacy_shiny.rs)):
+
+| Rule | Attack | Defense | Speed | Special |
+| --- | --- | --- | --- | --- |
+| The original's (`0024F5B8`) | bit 1 set | 10 | 10 | 10 |
+| Transporter 1.2's | 10 | bit 1 set | 10 | 10 |
+
+The patch applies it where 1.2's rule holds and the original's does not: DV bytes `+0x1B`/`+0x1C` of the source record `A2 AA`, `A3 AA`, `A6 AA`, `A7 AA`, `AB AA`, `AE AA`, `AF AA`. All four DVs 10 (`AA AA`) is shiny by both and stays the original's. Of 65,536 combinations, 15 are shiny instead of 8; every other Pokémon converts as before.
+
+- **Where.** The Gen 1 converter `0024F428`, which has one caller, holds the 33-byte source record in `r4` throughout. The Gen 2 converter (`0024E48C`) and Gen 5 are not touched. Both entries are pure and look only at the record, so a conversion during the game search is harmless.
+- **Shiny.** At the constructor call (`0024F6B0`) the construction parameters are at `sp + 0x18`; their word at `+0x0C` is the shiny mode (1 never, 2 shiny; stored at `0024F610`). The entry sets 2; the constructor makes the shiny personality value as for any other shiny.
+- **Gender.** The constructor (through `0012F8BC`) draws a gender for the species (`random(252) + 1` against the ratio code), and fixed-sex and genderless species get theirs. For the ratio codes `0x1F`, `0x3F`, `0x7F`, `0xBF` the original then replaces it with one from the Attack DV (`0024F8E0`..`0024F90C`): female up to Attack 1, 3, 7 and 11. Since every shiny of the original's rule has Attack 2 or more, no shiny of a species with code `0x1F` (one female in eight) can be female. For these Pokémon the entry continues at `0024F910`, behind that code, for all four codes, and the drawn gender stays: for code `0x1F`, female in 30 of 252 draws. Nothing else is drawn.
+- **Met date.** Unchanged: the converter writes the console's date (`0024F6FC`), and the rule does not depend on it.
 
 ### Cartridge and game list
 
@@ -802,6 +807,3 @@ The list holds 40 entries: 40 kind bytes at `task + 0x3C` up to the count at `+0
 
 **A console set to Chinese.** The screens are in Chinese (ids 9 and 10), the listed language is English until one is chosen, so English is the hidden entry. The Chinese entries are never offered as languages: list index 7 is the Back button, index 8 is hidden. Back reports id 9, which is ignored whatever the screens' language is. All ten text archives, both Chinese ones included, have message `0x1F` in file `0x18`.
 
-### Messages
-
-Texts are in the GARC `a/0/0/6` of the RomFS, file 23 for English (Game Freak text format). Used here: `0x03` the last session did not complete, open Pokémon Bank; `0x05` transport box not empty; `0x08` no Pokémon to move, `0x0A` moved, `0x0B` failure, always from its second page, `0x10` nickname notice, `0x11`..`0x15` and `0x41` Pokémon that cannot be sent, `0x16` held items returned, `0x22` no compatible Game Card detected.
