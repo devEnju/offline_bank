@@ -10,7 +10,9 @@ use crate::{
     program::Transporter15,
     storage_worker::{Failed, Job, Reply, TransporterWorker},
     task::*,
-    ui::{end_panel, from_second_page, start_panel, MESSAGE_OPEN_BANK, UI_CONTEXT},
+    ui::{
+        end_panel, from_second_page, refusal_message, start_panel, MESSAGE_OPEN_BANK, UI_CONTEXT,
+    },
 };
 use core::{mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
@@ -371,16 +373,16 @@ unsafe extern "aapcs" fn check(task: *mut u8) -> u32 {
     let answer = unsafe { state.step(Job::Check, |_| Some(())) };
     drop(state);
     // A worker that failed refuses as a file that does not read does.
-    match answer.map(|reply| reply.unwrap_or(MESSAGE_OPEN_BANK)) {
-        None => SEARCH_PENDING,
-        Some(0) => SEARCH_GO,
-        Some(message) => {
-            if unsafe { show(task, message) } {
-                SEARCH_SHOWN
-            } else {
-                SEARCH_END
-            }
-        }
+    let message = match answer {
+        None => return SEARCH_PENDING,
+        Some(Ok(Reply::Ready)) => return SEARCH_GO,
+        Some(Ok(Reply::Refused(refusal))) => refusal_message(refusal),
+        Some(_) => MESSAGE_OPEN_BANK,
+    };
+    if unsafe { show(task, message) } {
+        SEARCH_SHOWN
+    } else {
+        SEARCH_END
     }
 }
 
@@ -552,7 +554,7 @@ unsafe extern "aapcs" fn deliver(task: *mut u8) -> u32 {
     };
     match answer {
         None => DELIVER_PENDING,
-        Some(Ok(1)) => DELIVER_DONE,
+        Some(Ok(Reply::Delivered)) => DELIVER_DONE,
         Some(_) => DELIVER_FAILED,
     }
 }

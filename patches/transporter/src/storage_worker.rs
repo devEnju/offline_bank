@@ -4,7 +4,7 @@
 //! the worker touches no object of the original.
 
 use crate::task::RECORDS_LEN;
-use offline_core::sections::TRANSPORT_SLOTS;
+use offline_core::{sections::TRANSPORT_SLOTS, transport::Refusal};
 use patch_common::worker::Control;
 
 /// The staging buffer: the transport box's records, then its tags.
@@ -17,9 +17,19 @@ pub enum Job {
     /// Deliver the transport box in the staging buffer.
     Deliver,
 }
-/// The check's answer is the message to show, or 0 for none; the
-/// delivery's is 1 when it is written.
-pub type Reply = u32;
+/// What a job found. Which message the screen shows for it is the hooks'
+/// (`ui::refusal_message`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reply {
+    /// Bank can take a delivery.
+    Ready,
+    /// Bank cannot take one now.
+    Refused(Refusal),
+    /// The delivery is written, flushed and read back.
+    Delivered,
+    /// Nothing was delivered.
+    NotDelivered,
+}
 
 /// A job that has no answer: the worker failed. Transporter shows no
 /// numbers, so what failed does not matter: the check refuses and the
@@ -38,7 +48,7 @@ pub(crate) use arm::TransporterWorker;
 #[cfg(target_arch = "arm")]
 mod arm {
     use super::*;
-    use crate::{program::Transporter15, ui::refusal_message};
+    use crate::program::Transporter15;
     use bank_common::fs::Visit;
     use offline_core::transport;
     use patch_common::{
@@ -76,12 +86,16 @@ mod arm {
         }
         fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, Failed> {
             Ok(match job {
-                Job::Check => transport::check(&mut bank_files())
-                    .err()
-                    .map_or(0, refusal_message),
+                Job::Check => match transport::check(&mut bank_files()) {
+                    Ok(()) => Reply::Ready,
+                    Err(refusal) => Reply::Refused(refusal),
+                },
                 Job::Deliver => {
                     let (records, tags) = staging.split_at(RECORDS_LEN);
-                    u32::from(transport::deliver(&mut bank_files(), records, tags).is_ok())
+                    match transport::deliver(&mut bank_files(), records, tags) {
+                        Ok(_) => Reply::Delivered,
+                        Err(_) => Reply::NotDelivered,
+                    }
                 }
             })
         }
