@@ -12,7 +12,10 @@ use crate::{
     task::{checked_pointer, read_word as word},
 };
 use core::mem::transmute;
-use patch_common::message;
+use patch_common::{
+    message,
+    ui::{self as shared, StringError, Text},
+};
 
 /// `001d6650(ui, kind, message, wait)`: shows a message of the original.
 const SHOW_MESSAGE: usize = 0x001d_6650;
@@ -85,41 +88,23 @@ pub const HOME_NOTICE: u32 = 0x4d;
 /// units in the ten languages of the original.
 const HOME_ROOM: usize = 128;
 
-/// The text of a dialog, as `text` finds it in the UI's own string object.
-struct Text<'a> {
-    /// The string object at `ui + 0x94`.
-    object: *mut u8,
-    /// Its room in units, for as long as the dialog holds that string.
-    room: &'a mut [u16],
-    /// The length of the text in it.
-    len: usize,
-}
-
-/// The dialog's own text. `None` if it is not a text that can be changed in
-/// place. The caller uses it before the dialog's string changes again.
+/// The dialog's own text, in the UI's string object at `ui + 0x94`
+/// (`patch_common::ui::text`). `None` if it is not a text that can be
+/// changed in place. The caller uses it before the dialog's string changes
+/// again.
 unsafe fn text<'a>(ui: *mut u8) -> Result<Option<Text<'a>>, Error> {
-    let text = pointer(unsafe { word(ui, 0x94) })?;
-    let data = pointer(unsafe { word(text, 4) })?.cast::<u16>();
-    let capacity = unsafe { text.add(8).cast::<u16>().read() } as usize;
-    let len = unsafe { text.add(0xa).cast::<u16>().read() } as usize;
-    if unsafe { text.add(0xc).read() } == 0 {
-        return Err(Error::MissingBuffer);
-    }
-    if len == 0 || len >= capacity || unsafe { data.add(len).read() } != 0 {
-        return Ok(None);
-    }
-    Ok(Some(Text {
-        object: text,
-        room: unsafe { core::slice::from_raw_parts_mut(data, capacity) },
-        len,
-    }))
+    let object = pointer(unsafe { word(ui, 0x94) })?;
+    unsafe { shared::text(object) }.map_err(|error| match error {
+        StringError::NotPointer => Error::InvalidPointer,
+        StringError::NoBuffer => Error::MissingBuffer,
+    })
 }
 
-/// Terminate the allocated native string and reset the dialog's parser.
+/// Ends the dialog's string at `len` (`patch_common::ui::end`) and resets
+/// the dialog's parser.
 unsafe fn begin(context: *mut u8, text: *mut u8, room: &mut [u16], len: usize) {
-    room[len] = 0;
     unsafe {
-        text.add(0xa).cast::<u16>().write(len as u16);
+        shared::end(text, room, len);
         let begin: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(DIALOG_TEXT);
         begin(context, text);
     }
