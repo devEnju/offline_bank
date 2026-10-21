@@ -241,11 +241,11 @@ fn bank_count(task: Task) -> Result<u32, Fault> {
     let count: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(BANK_COUNT) };
     Ok(unsafe { count(helper) })
 }
-/// The console's date and time, to the minute.
 /// The original's clock in ms (`spinner::now`).
 fn now() -> u32 {
     spinner::now::<Bank15>()
 }
+/// The console's date and time, to the minute.
 fn clock() -> Result<Moment, Fault> {
     let mut words = [0u32; 2];
     let local_date: unsafe extern "aapcs" fn(*mut u32) = unsafe { transmute(LOCAL_DATE) };

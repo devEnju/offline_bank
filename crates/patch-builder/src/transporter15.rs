@@ -136,10 +136,10 @@ const EDITS: &[(u32, u32, Word)] = &[
     (STARTUP_CALL, 0xeb00_0228, BranchLink(BOOTSTRAP_ADDRESS)),
     // --- Offline flow: the server steps are removed. ---
     // The one call of the router, get_next_state (was: bl 00242BA0). The
-    // entry asks the original and changes its answer in three places: after
+    // entry asks the original and changes its answer in four places: after
     // SHOW_GAMES comes GET_POKEMON, where the original connected; after
     // GET_POKEMON comes CHECK_IF_USER_CAN_TRANSFER; and instead of the cancel
-    // step comes the disconnect step. It also refuses HOME and
+    // step and of the failure step comes the disconnect step. It also refuses HOME and
     // sleep for the steps that read or write, as the connect step did for
     // the whole session.
     (0x0024_2ef8, 0xebff_ff28, Call("transporter_next")),

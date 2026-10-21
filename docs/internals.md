@@ -571,12 +571,12 @@ exheader.bin 4b6081a5d0242d43713fd0be3cec21ae73f075441a759af3ed03c5270d1baceb
 
 ### Edits to the original
 
-55 instruction words, each checked against its original value by the builder, plus the start-up hook. A site that goes to the patch branches to an entry function by its name, as in the Bank patch: the builder's profile ([transporter15.rs](../crates/patch-builder/src/transporter15.rs), `ENTRIES`) names twenty-eight, Rust functions and assembly stubs, and takes their addresses from the linked ELF, which must define each as a global ARM function. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One entry, the layout check for `0013AEE4`, lies beside the start-up hook (see [Placement](#placement-1)).
+55 instruction words, each checked against its original value by the builder, plus the start-up hook. A site that goes to the patch branches to an entry function by its name, as in the Bank patch: the builder's profile ([transporter15.rs](../crates/patch-builder/src/transporter15.rs), `ENTRIES`) names thirty-one, Rust functions and assembly stubs, and takes their addresses from the linked ELF, which must define each as a global ARM function. Where a site leaves the original's flow for good, it is one branch to a stub in the payload, and the stub goes on inside the original itself; the original holds no decision logic of the patch. One entry, the layout check for `0013AEE4`, lies beside the start-up hook (see [Placement](#placement-1)).
 
 | Address | Purpose | Replacement |
 | --- | --- | --- |
 | `00103D9C` | `BL 00104644`, application init | Start-up hook |
-| `00242EF8` | The manager's one call of the router `get_next_state` (`00242BA0`) | Router entry: asks the original, changes its answer in three places, and refuses HOME and sleep for the steps that read or write |
+| `00242EF8` | The manager's one call of the router `get_next_state` (`00242BA0`) | Router entry: asks the original, changes its answer in four places, and refuses HOME and sleep for the steps that read or write |
 | `00244D40` | Game list set-up, every frame: its check that restarts its indicator's sound | List-frame entry: skipped while the search's loading panel is up ([Session flow](#session-flow)) |
 | `00244EAC` | Game list set-up, state 0: `BL 002450F4`, start of its loading indicator | List-indicator entry: while the search's loading panel is up, only the list's start time; otherwise the call ([Session flow](#session-flow)) |
 | `002445EC` | Game list, first instruction of its update: its set-up is done | List-ready entry: lets HOME and sleep through again, then the instruction |
