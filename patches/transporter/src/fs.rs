@@ -172,7 +172,7 @@ mod native {
                     0,
                 )
             };
-            (code >= 0 && handle != 0).then_some(File(handle, PhantomData))
+            (code >= 0 && handle != 0).then(|| File(handle, PhantomData))
         }
     }
 

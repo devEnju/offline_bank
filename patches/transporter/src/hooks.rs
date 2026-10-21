@@ -157,9 +157,11 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     let Some(mut state) = STATE.take() else {
         return navigation::DISCONNECT;
     };
-    let (Some(_), Some(task)) = (pointer(manager as u32), unsafe {
-        follow(manager, MANAGER_TASK)
-    }) else {
+    // The manager is checked before anything is read through it.
+    if pointer(manager as u32).is_none() {
+        return navigation::DISCONNECT;
+    }
+    let Some(task) = (unsafe { follow(manager, MANAGER_TASK) }) else {
         return navigation::DISCONNECT;
     };
     // Read before the original runs, which clears the flag.
