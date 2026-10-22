@@ -70,8 +70,8 @@ fn original(package: &Package) -> Result<PathBuf> {
 }
 
 /// Gives the copy's manifest the hashes of its changed files (the ELF,
-/// both package files, and the image the IPS makes of the original) and its
-/// PACKAGE.txt the name of its files.
+/// both package files, the image the IPS makes of the original, and the
+/// payload's part of it) and its PACKAGE.txt the name of its files.
 fn update_hashes(dir: &Path, package: &Package) -> Result<()> {
     let mut manifest = read_manifest(dir)?;
     let ips = read(&dir.join("code.ips"))?;
@@ -98,6 +98,19 @@ fn update_hashes(dir: &Path, package: &Package) -> Result<()> {
         &["expanded_code_sha256"],
         Json::string(sha256(&image)),
     )?;
+    // The payload's part: its code and its data as the ELF loads them.
+    if let Ok(elf) = patch_verify::elf::read(&read(&dir.join("payload.elf"))?) {
+        let (rx, rw) = (elf.rx(), elf.rw());
+        let start = (rx.address - 0x0010_0000) as usize;
+        let end = (rw.address + rw.file_bytes - 0x0010_0000) as usize;
+        if let Some(payload) = image.get(start..end) {
+            set(
+                &mut manifest,
+                &["payload_image_sha256"],
+                Json::string(sha256(payload)),
+            )?;
+        }
+    }
     write_manifest(dir, &manifest)?;
     let name = patch_builder::package_name(&ips, &read(&dir.join("exheader.bin"))?);
     write(&dir.join("PACKAGE.txt"), format!("{name}\n").as_bytes())
@@ -111,6 +124,46 @@ fn flip(dir: &Path, file: &str, at: usize) -> Result<()> {
     write(&path, &bytes)
 }
 
+/// Changes the byte of the image at `address` in the ELF and in code.ips
+/// alike, as a payload linked otherwise would be: the image is still the
+/// ELF's, so only a check of what the payload must hold can refuse it.
+fn change_payload(dir: &Path, address: u64) -> Result<()> {
+    let bytes = read(&dir.join("payload.elf"))?;
+    let elf = patch_verify::elf::read(&bytes)?;
+    let load = elf
+        .loads
+        .iter()
+        .find(|l| (l.address as u64..l.address as u64 + l.file_bytes as u64).contains(&address))
+        .ok_or_else(|| format!("no ELF segment holds {address:08X}"))?;
+    flip(
+        dir,
+        "payload.elf",
+        load.offset as usize + (address - load.address as u64) as usize,
+    )?;
+    flip(dir, "code.ips", ips_byte(dir, address)?)
+}
+
+/// The address of the ELF symbol `name`.
+fn symbol(dir: &Path, name: &str) -> Result<u64> {
+    let elf = patch_verify::elf::read(&read(&dir.join("payload.elf"))?)?;
+    elf.symbols
+        .get(name)
+        .map(|s| s.value as u64)
+        .ok_or_else(|| format!("no ELF symbol {name}"))
+}
+
+/// The address of the first `text` in the payload's code.
+fn text(dir: &Path, text: &[u8]) -> Result<u64> {
+    let bytes = read(&dir.join("payload.elf"))?;
+    let elf = patch_verify::elf::read(&bytes)?;
+    let rx = elf.rx();
+    let code = &bytes[rx.offset as usize..(rx.offset + rx.file_bytes) as usize];
+    code.windows(text.len())
+        .position(|w| w == text)
+        .map(|at| rx.address as u64 + at as u64)
+        .ok_or_else(|| "the payload's code does not hold the text".to_owned())
+}
+
 /// Where in code.ips the byte of the image at `address` lies.
 fn ips_byte(dir: &Path, address: u64) -> Result<usize> {
     let offset = address as usize - 0x0010_0000;
@@ -122,6 +175,8 @@ fn ips_byte(dir: &Path, address: u64) -> Result<usize> {
 }
 
 type Change = Box<dyn Fn(&Path) -> Result<()>>;
+/// Where in the image a case changes a byte.
+type Place = fn(&Path) -> Result<u64>;
 
 struct Run {
     work: PathBuf,
@@ -293,6 +348,41 @@ fn cases(run: &mut Run) -> Result<()> {
                 write(&dir.join("PACKAGE.txt"), b"0000000000000000\n")
             })),
             Some("PACKAGE.txt does not name the package's files"),
+            package,
+        )?;
+    }
+    // What only one program's package must hold, changed in a payload that
+    // is otherwise whole: only that program's own check can refuse it.
+    let special: [(&str, &str, Place, &str); 3] = [
+        (
+            "bank",
+            "no-game stub",
+            |dir| symbol(dir, "bank_offline_no_game_stub"),
+            "No-game stub must pass r4",
+        ),
+        (
+            "transporter",
+            "layout check",
+            |dir| symbol(dir, "transporter_layout_check_stub"),
+            "Layout check lies beside the start-up hook",
+        ),
+        (
+            "transporter",
+            "mover file name",
+            |dir| text(dir, b"/mover.bin"),
+            "Payload names /mover.bin",
+        ),
+    ];
+    for (kind, name, at, expect) in special {
+        let package = package(kind)?;
+        run.case(
+            package,
+            name,
+            Some(Box::new(move |dir: &Path| {
+                change_payload(dir, at(dir)?)?;
+                update_hashes(dir, package)
+            })),
+            Some(expect),
             package,
         )?;
     }

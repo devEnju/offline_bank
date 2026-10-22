@@ -47,7 +47,7 @@ The build runs it itself, for every kind. The verifier, [patch-verify](../crates
 cargo +stable xtask test-verify
 ```
 
-This tests the verifier on the built packages: every one passes, and a copy of Bank's or Transporter's package with one thing changed is refused for that thing, with the message expected (a byte of the ELF header, the start-up hook, the payload or the exheader, an entry of the manifest, the package name). Where a change touches bytes, the copy's manifest gets the new hashes and its `PACKAGE.txt` the new name, so the refusal comes from the independent comparison. It works on copies in a temporary folder, the original's too (it is found there by its hash under another folder name), and changes nothing under `build/`. `cargo xtask release` runs it after its builds.
+This tests the verifier on the built packages: every one passes, and a copy of Bank's or Transporter's package with one thing changed is refused for that thing, with the message expected (a byte of the ELF header, the start-up hook, the payload or the exheader, an entry of the manifest, the package name), and a payload changed in its ELF and its `code.ips` alike, so that only a check of one program's own refuses it (Bank's no-game stub, Transporter's layout check and the name of its transport-box file). Where a change touches bytes, the copy's manifest gets the new hashes and its `PACKAGE.txt` the new name, so the refusal comes from the independent comparison. It works on copies in a temporary folder, the original's too (it is found there by its hash under another folder name), and changes nothing under `build/`. `cargo xtask release` runs it after its builds.
 
 ## Tests
 
