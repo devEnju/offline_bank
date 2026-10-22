@@ -180,9 +180,7 @@ patch_common::stub!(
         "push {{r0-r3, r12, lr}}",
         "mov r0, r4",
         "bl {list_next}",
-        "cmp r0, #0",
         "pop {{r0-r3, r12, lr}}",
-        "streq r6, [r4, #0x10]",
         "bx lr",
     ],
     list_next = sym list_next,
@@ -197,10 +195,11 @@ patch_common::stub!(
 /// read. The list is always built to the end.
 /// # Safety
 /// Called only from that site, with the live game-list task.
-unsafe extern "aapcs" fn list_next(raw: *mut u8) -> u32 {
+unsafe extern "aapcs" fn list_next(raw: *mut u8) {
+    // Not the list: the object is left as it is, without the replaced
+    // state store.
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_LIST]) }) else {
-        // The stub runs the replaced state store, as the original.
-        return 0;
+        return;
     };
     // Without its manager the list has no cartridge or save to read: it goes
     // on to the Virtual Console titles.
@@ -225,12 +224,11 @@ unsafe extern "aapcs" fn list_next(raw: *mut u8) -> u32 {
                 let start: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(START_CART_READ);
                 start(manager, read_word(task, LIST_HEAP));
                 state.write(STATE_READING_CARTRIDGE);
-                return 1;
+                return;
             }
         }
         state.write(STATE_VIRTUAL_CONSOLE);
     }
-    1
 }
 
 /// Whether the chosen game is a cartridge whose card is gone, asked as the
@@ -273,13 +271,11 @@ pub unsafe extern "aapcs" fn transporter_card_removed(manager: *mut u8) -> u32 {
 /// task.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_entry_card_removed(task: *const u8) -> u32 {
+    // Not the list, or a list without its manager: the card counts as
+    // gone, and the original then shows its message instead of reading.
     let Ok(task) = (unsafe { Task::from_raw(task.cast_mut(), &[TASK_LIST]) }) else {
-        // The original listener loads the manager, then asks about its card.
-        let manager = unsafe { task.add(TASK_MANAGER).cast::<*mut u8>().read() };
-        return u32::from(unsafe { card_removed(manager) });
+        return 1;
     };
-    // Without its manager the card counts as gone: the original then shows
-    // its message instead of reading.
     let Ok(manager) = task.pointer(TASK_MANAGER) else {
         return 1;
     };

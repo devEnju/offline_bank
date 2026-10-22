@@ -426,12 +426,21 @@ pub unsafe extern "aapcs" fn transporter_transfer(raw: *mut u8) -> u32 {
     unsafe { update(raw, navigation::TRANSFER, TRANSFER_UPDATE) }
 }
 /// One frame of the update of task `id`: none while it waits, else the
-/// original's.
+/// original's. An object that is not the task `id` is not touched: the
+/// update answers finished, as the search's and Bank's task entries do.
 unsafe fn update(raw: *mut u8, id: u32, update: usize) -> u32 {
-    if unsafe { waits(raw, id) } {
+    let expected = match id {
+        navigation::READ => TASK_READ,
+        navigation::QUESTION => TASK_QUESTION,
+        _ => TASK_TRANSFER,
+    };
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
+        return 1;
+    };
+    if unsafe { waits(task, id) } {
         return 0;
     }
-    unsafe { original(update, raw) }
+    unsafe { original(update, task.raw()) }
 }
 /// The original update at `address`.
 unsafe fn original(address: usize, raw: *mut u8) -> u32 {
@@ -444,18 +453,8 @@ unsafe fn original(address: usize, raw: *mut u8) -> u32 {
 /// frame the question's first state runs, which takes down the panel of
 /// the reading, lets HOME and sleep through.
 /// # Safety
-/// `raw` is the live task `id`, on the main thread.
-unsafe fn waits(raw: *mut u8, id: u32) -> bool {
-    let expected = match id {
-        navigation::READ => TASK_READ,
-        navigation::QUESTION => TASK_QUESTION,
-        navigation::TRANSFER => TASK_TRANSFER,
-        _ => return false,
-    };
-    let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
-        // The original update runs unchanged for an unexpected task.
-        return false;
-    };
+/// `task` is the live task `id`, on the main thread.
+unsafe fn waits(task: Task, id: u32) -> bool {
     let task = task.raw();
     if id == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
         return false;
