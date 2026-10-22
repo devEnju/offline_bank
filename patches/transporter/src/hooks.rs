@@ -9,8 +9,8 @@ use crate::{
     panel::{self, Panel},
     program::Transporter15,
     storage_worker::{
-        checked, delivered, Checked, Failed, Job, Reply, TransporterWorker, DELIVER_DONE,
-        DELIVER_FAILED, DELIVER_PENDING,
+        checked, delivered, Checked, Failed, Job, Reply, TransporterRequests, TransporterWorker,
+        DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING,
     },
     task::*,
     ui::{self, from_second_page, loading, stop_loading, MESSAGE_OPEN_BANK},
@@ -21,7 +21,7 @@ use patch_common::{
     exclusive::Exclusive,
     native::{follow, read_word, write_word, Ended},
     spinner::{self, Spinner},
-    worker::{Pending, Polled},
+    worker::{Polled, Requests},
 };
 
 /// What the version line says behind "Ver. 1.5".
@@ -58,17 +58,15 @@ static PANEL: Panel = Panel::new();
 /// The worker and the job it has out, and when the loading screen that is
 /// up went up. Only the main thread takes it.
 struct Runtime {
-    worker: Option<TransporterWorker>,
-    /// The job out, for the kind of job that submitted it.
-    job: Pending<Job>,
+    /// The worker and the job out, for the kind of job that submitted it.
+    requests: TransporterRequests,
     spinner: Spinner,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
 // main thread.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
-        worker: None,
-        job: Pending::new(),
+        requests: Requests::new(),
         spinner: Spinner::new(),
     })
 };
@@ -84,27 +82,23 @@ impl Runtime {
         kind: Job,
         stage: impl FnOnce(&mut TransporterWorker) -> Option<()>,
     ) -> Option<Result<Reply, Failed>> {
-        if !self.job.is_out() {
-            let worker = match unsafe { TransporterWorker::get(&mut self.worker) } {
+        if !self.requests.is_out() {
+            let worker = match unsafe { self.requests.worker() } {
                 Ok(worker) => worker,
                 Err(failed) => return Some(Err(failed)),
             };
             if stage(worker).is_none() {
                 return Some(Err(Failed));
             }
-            return match unsafe { worker.submit(kind) } {
-                Ok(id) => {
-                    self.job.submitted(id, kind);
-                    None
-                }
+            return match unsafe { self.requests.submit(kind, kind) } {
+                Ok(()) => None,
                 Err(failed) => Some(Err(failed)),
             };
         }
         // The check and the delivery belong to tasks of their own and never
         // overlap; a reply is only ever the job's that asked for it
         // (`Pending`).
-        let worker = self.worker.as_mut()?;
-        match self.job.poll(kind, |job| worker.collect(job)) {
+        match self.requests.poll(kind) {
             Polled::Waiting => None,
             Polled::Reply(reply) => Some(Ok(reply)),
             Polled::Failed(failed) => Some(Err(failed)),
@@ -163,7 +157,7 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     // is chosen; one that waits lets them through, unless a job is still out.
     if navigation::loads(next) {
         refuse_home(true);
-    } else if !state.job.is_out() {
+    } else if !state.requests.is_out() {
         refuse_home(false);
     }
     // The task's set-up puts up its loading panel on a later frame; its
@@ -385,7 +379,7 @@ unsafe fn check(task: Task) -> Check {
         drop(state);
         return unsafe { show(task, MESSAGE_OPEN_BANK) };
     }
-    if !state.job.is_out() && state.spinner.idle(now()) {
+    if !state.requests.is_out() && state.spinner.idle(now()) {
         return Check::Pending;
     }
     let answer = unsafe { state.job(Job::Check, |_| Some(())) };
@@ -547,7 +541,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return DELIVER_PENDING;
     };
-    if !state.job.is_out() {
+    if !state.requests.is_out() {
         let Ok(manager) = task.pointer(TASK_MANAGER) else {
             return DELIVER_FAILED;
         };

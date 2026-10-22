@@ -28,7 +28,7 @@ use patch_common::{
     native::{follow, read_word, write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
-    worker::{Pending, Polled, Service, Shared, Worker},
+    worker::{Polled, Requests, Service, Shared, Worker},
 };
 
 /// The numbers when a hook itself could not go on: a native object was not
@@ -108,9 +108,8 @@ impl Service for Files {
 }
 
 struct Runtime {
-    worker: Option<Worker<Files>>,
-    /// The job out, for the task that submitted it.
-    job: Pending<usize>,
+    /// The worker and the job out, for the task that submitted it.
+    requests: Requests<Files, usize>,
     stage: Stage,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
@@ -126,8 +125,7 @@ struct Runtime {
 // main thread, which owns the original's objects the state points to.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
-        worker: None,
-        job: Pending::new(),
+        requests: Requests::new(),
         stage: Stage::Looking,
         numbers: None,
         panel: false,
@@ -148,7 +146,7 @@ fn held(first: u32, spinner: &Spinner) -> bool {
 
 impl Runtime {
     fn worker(&mut self) -> Result<&mut Worker<Files>, [u32; 2]> {
-        unsafe { Worker::get(&mut self.worker) }.map_err(WorkerError::numbers)
+        unsafe { self.requests.worker() }.map_err(WorkerError::numbers)
     }
     fn decide(&mut self, numbers: [u32; 2]) {
         self.numbers = Some(numbers);
@@ -161,18 +159,13 @@ impl Runtime {
         task: Task,
         begin: impl FnOnce(&mut Self) -> Result<Job, [u32; 2]>,
     ) -> Result<Option<Reply>, [u32; 2]> {
-        if !self.job.is_out() {
+        if !self.requests.is_out() {
             let job = begin(self)?;
-            let submitted = unsafe { self.worker()?.submit(job) };
-            let id = submitted.map_err(WorkerError::numbers)?;
-            self.job.submitted(id, task.raw() as usize);
+            let submitted = unsafe { self.requests.submit(task.raw() as usize, job) };
+            submitted.map_err(WorkerError::numbers)?;
             return Ok(None);
         }
-        let worker = self.worker.as_mut().ok_or(NATIVE)?;
-        match self
-            .job
-            .poll(task.raw() as usize, |job| worker.collect(job))
-        {
+        match self.requests.poll(task.raw() as usize) {
             Polled::Waiting => Ok(None),
             Polled::Reply(reply) => Ok(Some(reply)),
             Polled::Failed(error) => Err(WorkerError::numbers(error)),
@@ -183,7 +176,7 @@ impl Runtime {
     /// Task 3 before anything is contacted: the loading panel, and once it
     /// has stood for 0.5 s the worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
-        if !self.job.is_out() {
+        if !self.requests.is_out() {
             if !self.panel {
                 let panel = task.ui().map_err(|_| NATIVE)?;
                 unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;

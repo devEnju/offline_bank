@@ -27,7 +27,7 @@ use patch_common::{
     native::{write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
-    worker::{Pending, Polled, Service, Shared, Worker},
+    worker::{Polled, Requests, Service, Shared},
 };
 
 /// The numbers when the hook itself could not go on: a native object was
@@ -104,9 +104,8 @@ impl Service for Converter {
 }
 
 struct Runtime {
-    worker: Option<Worker<Converter>>,
-    /// The conversion out, for the task that submitted it.
-    job: Pending<usize>,
+    /// The worker and the conversion out, for the task that submitted it.
+    requests: Requests<Converter, usize>,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
     /// When the loading panel went up.
@@ -117,8 +116,7 @@ struct Runtime {
 // main thread, which owns the original's objects the state points to.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
-        worker: None,
-        job: Pending::new(),
+        requests: Requests::new(),
         numbers: None,
         spinner: Spinner::new(),
         notice: Notice::new(PACKAGE),
@@ -131,16 +129,13 @@ fn now() -> u32 {
 }
 
 impl Runtime {
-    fn worker(&mut self) -> Result<&mut Worker<Converter>, [u32; 2]> {
-        unsafe { Worker::get(&mut self.worker) }.map_err(WorkerError::numbers)
-    }
     /// One frame of the utility task. `Ok(None)` while the conversion runs,
     /// which begins once the loading panel has stood for 0.5 s.
     unsafe fn open(
         &mut self,
         task: Task,
     ) -> Result<Option<<Converter as Service>::Reply>, [u32; 2]> {
-        if !self.job.is_out() {
+        if !self.requests.is_out() {
             let now = now();
             if self.spinner.elapsed(now).is_none() {
                 let panel = task.ui().map_err(|_| NATIVE)?;
@@ -156,18 +151,16 @@ impl Runtime {
             task.begin_busy();
             unsafe { write_word(task.raw(), 0x10, 1) };
             let session = unsafe { Bank15::fs_session() };
-            let submitted = unsafe { self.worker()?.submit(Convert { session }) };
-            let id = submitted.map_err(WorkerError::numbers)?;
+            let submitted = unsafe {
+                self.requests
+                    .submit(task.raw() as usize, Convert { session })
+            };
+            submitted.map_err(WorkerError::numbers)?;
             // Files are being read and written until the reply.
             refuse_home(true);
-            self.job.submitted(id, task.raw() as usize);
             return Ok(None);
         }
-        let worker = self.worker.as_mut().ok_or(NATIVE)?;
-        match self
-            .job
-            .poll(task.raw() as usize, |job| worker.collect(job))
-        {
+        match self.requests.poll(task.raw() as usize) {
             Polled::Waiting => Ok(None),
             Polled::Reply(reply) => Ok(Some(reply)),
             Polled::Failed(error) => Err(WorkerError::numbers(error)),
@@ -200,7 +193,7 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
     // Refuse HOME and sleep from the scan to the end of the conversion.
     if navigation::loads(destination) {
         refuse_home(true);
-    } else if !state.job.is_out() {
+    } else if !state.requests.is_out() {
         refuse_home(false);
     }
     destination

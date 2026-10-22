@@ -45,7 +45,7 @@ impl From<Control> for Failed {
 }
 
 #[cfg(target_arch = "arm")]
-pub(crate) use arm::TransporterWorker;
+pub(crate) use arm::{TransporterRequests, TransporterWorker};
 
 #[cfg(target_arch = "arm")]
 mod arm {
@@ -71,6 +71,8 @@ mod arm {
     static SHARED: Shared<StorageWorker> = Shared::new([0; STAGING_LEN]);
     /// The worker of the Transporter patch.
     pub(crate) type TransporterWorker = Worker<StorageWorker>;
+    /// The worker and the job out, for the kind of job that submitted it.
+    pub(crate) type TransporterRequests = patch_common::worker::Requests<StorageWorker, Job>;
 
     impl Service for StorageWorker {
         type Program = Transporter15;

@@ -331,6 +331,68 @@ mod arm {
         thread: PhantomData<*mut ()>,
         service: PhantomData<S>,
     }
+    /// A patch's worker, started on first use, and the job it has out
+    /// (`Pending`). Every patch submits and asks through this; what
+    /// identifies a job's owner, what is staged for it, when busy
+    /// protection begins and how a failure shows stay the patch's own.
+    pub struct Requests<S: Service, O> {
+        worker: Option<Worker<S>>,
+        pending: Pending<O>,
+    }
+    impl<S: Service, O: Copy + PartialEq> Requests<S, O> {
+        pub const fn new() -> Self {
+            Self {
+                worker: None,
+                pending: Pending::new(),
+            }
+        }
+        /// Whether a job is out.
+        pub fn is_out(&self) -> bool {
+            self.pending.is_out()
+        }
+        /// The worker, started if it is not yet (`Worker::get`).
+        /// # Safety
+        /// As `Worker::get`.
+        pub unsafe fn worker(&mut self) -> Result<&mut Worker<S>, S::Error> {
+            unsafe { Worker::get(&mut self.worker) }
+        }
+        /// Hands `job` to the worker for `owner`, the worker started if it
+        /// is not yet. While a job is out another is refused (`Busy`).
+        /// # Safety
+        /// As `Worker::submit`.
+        pub unsafe fn submit(&mut self, owner: O, job: S::Job) -> Result<(), S::Error> {
+            if self.pending.is_out() {
+                return Err(Control::new(ControlKind::Busy).into());
+            }
+            let id = unsafe { self.worker()?.submit(job) }?;
+            self.pending.submitted(id, owner);
+            Ok(())
+        }
+        /// One frame of the job out, for `owner` (`Pending::poll`).
+        pub fn poll(&mut self, owner: O) -> Polled<S::Reply, S::Error> {
+            let Self { worker, pending } = self;
+            match worker.as_mut() {
+                Some(worker) => pending.poll(owner, |job| worker.collect(job)),
+                None => pending.poll(owner, |_| Err(Control::new(ControlKind::Stopped).into())),
+            }
+        }
+        /// Waits, a frame at a time, for whatever job is out to end, its
+        /// reply dropped: true once none is out (`Pending::settle`).
+        pub fn settle(&mut self) -> bool {
+            let Self { worker, pending } = self;
+            match worker.as_mut() {
+                Some(worker) => pending.settle(|job| worker.collect(job)),
+                None => !pending.is_out(),
+            }
+        }
+    }
+
+    impl<S: Service, O: Copy + PartialEq> Default for Requests<S, O> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl<S: Service> Worker<S> {
         /// # Safety
         /// Requires the exact reviewed executable after native OS/FS setup.
@@ -557,7 +619,7 @@ mod arm {
     }
 }
 #[cfg(target_arch = "arm")]
-pub use arm::{Service, Shared, Worker};
+pub use arm::{Requests, Service, Shared, Worker};
 
 #[cfg(test)]
 mod tests {

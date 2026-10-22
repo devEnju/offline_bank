@@ -324,6 +324,8 @@ mod arm {
     static SHARED: Shared<StorageWorker> = Shared::new([0; BLOB_SIZE]);
     /// The worker of the offline patch.
     pub(crate) type BankWorker = Worker<StorageWorker>;
+    /// The worker and the job out, for the task that submitted it.
+    pub(crate) type BankRequests = patch_common::worker::Requests<StorageWorker, usize>;
 
     pub(crate) struct StorageWorker {
         files: BankFiles<ExtFiles>,
@@ -758,7 +760,7 @@ mod arm {
     }
 }
 #[cfg(target_arch = "arm")]
-pub(crate) use arm::BankWorker;
+pub(crate) use arm::{BankRequests, BankWorker};
 
 #[cfg(test)]
 mod tests {

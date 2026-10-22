@@ -9,7 +9,7 @@ use crate::{
     },
     panel::{self, Panel},
     save_steps,
-    storage_worker::{BankWorker, GameEvidence, Job, Reply},
+    storage_worker::{BankRequests, BankWorker, GameEvidence, Job, Reply},
     transaction::Trainer,
 };
 use bank_common::{
@@ -35,7 +35,7 @@ use patch_common::{
     native::{follow, pointer, read_word, write_word, Ended, NotNative},
     program::Program,
     spinner::{self, Spinner},
-    worker::{Pending, Polled, Worker},
+    worker::{Polled, Requests},
 };
 
 /// `001d5ec0(helper)`: the Pokémon in the Bank's hundred boxes, with the
@@ -103,12 +103,11 @@ enum Step {
     Save(save_steps::Step),
 }
 struct Runtime {
-    worker: Option<BankWorker>,
     game: Option<NativeGameSession>,
     owner: usize,
     step: Step,
-    /// The job out, for the task that submitted it.
-    job: Pending<usize>,
+    /// The worker and the job out, for the task that submitted it.
+    requests: BankRequests,
     baseline: Option<Baseline>,
     fault: Fault,
     native_result: u32,
@@ -178,11 +177,10 @@ struct ClaimProbe {
 // main thread, which owns the original's objects the state points to.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
-        worker: None,
         game: None,
         owner: 0,
         step: Step::Idle,
-        job: Pending::new(),
+        requests: Requests::new(),
         baseline: None,
         fault: Fault::None,
         native_result: 0,
@@ -300,11 +298,9 @@ impl Runtime {
     /// the loading screen stays and HOME is refused.
     fn report_failure(&mut self, task: Task) -> u32 {
         if !self.stopped {
-            if let Some(worker) = self.worker.as_mut() {
-                // A job that is still out holds what the task lent it.
-                if !self.job.settle(|job| worker.collect(job)) {
-                    return 0;
-                }
+            // A job that is still out holds what the task lent it.
+            if !self.requests.settle() {
+                return 0;
             }
             self.stopped = true;
         }
@@ -318,7 +314,7 @@ impl Runtime {
         error.fault()
     }
     fn worker(&mut self) -> Result<&mut BankWorker, Fault> {
-        match unsafe { Worker::get(&mut self.worker) } {
+        match unsafe { self.requests.worker() } {
             Ok(worker) => Ok(worker),
             Err(error) => {
                 self.native_result = error.native_result();
@@ -327,26 +323,20 @@ impl Runtime {
         }
     }
     fn submit(&mut self, task: Task, step: Step, job: Job) -> Result<(), Fault> {
-        if self.job.is_out() {
+        if self.requests.is_out() {
             return Err(Fault::Reentrant);
         }
         // Busy protection retains every archive and frozen native block until poll.
-        let result = unsafe { self.worker()?.submit(job) };
-        let id = result.map_err(|e| self.worker_error(e))?;
+        let result = unsafe { self.requests.submit(task.raw() as usize, job) };
+        result.map_err(|e| self.worker_error(e))?;
         // Files are being read or written until `complete`.
         refuse_home(true);
         self.owner = task.raw() as usize;
         self.step = step;
-        self.job.submitted(id, self.owner);
         Ok(())
     }
     fn poll(&mut self, task: Task) -> Result<Option<Reply>, Fault> {
-        self.worker()?;
-        let worker = self.worker.as_mut().ok_or(Fault::NativeObject)?;
-        match self
-            .job
-            .poll(task.raw() as usize, |job| worker.collect(job))
-        {
+        match self.requests.poll(task.raw() as usize) {
             Polled::Waiting => Ok(None),
             Polled::Reply(reply) => Ok(Some(reply)),
             Polled::Failed(error) => Err(self.worker_error(error)),
@@ -623,7 +613,7 @@ impl Runtime {
         let down = task
             .ui()
             .is_ok_and(|ui| !unsafe { bank_common::ui::loading_shown(ui) }.unwrap_or(false));
-        if down && !self.job.is_out() {
+        if down && !self.requests.is_out() {
             refuse_home(false);
         }
     }
@@ -637,7 +627,6 @@ impl Runtime {
     fn end_task(&mut self, task: Task) -> bool {
         self.owner = 0;
         self.step = Step::Idle;
-        self.job = Pending::new();
         self.game = None;
         task.end_busy();
         true
@@ -1125,7 +1114,7 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         || (crate::navigation::takes_panel(destination) && unsafe { panel_left(manager) })
     {
         refuse_home(true);
-    } else if !state.job.is_out() {
+    } else if !state.requests.is_out() {
         refuse_home(false);
     }
     // The task's set-up puts up its loading panel on a later frame; its
