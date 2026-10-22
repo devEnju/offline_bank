@@ -792,6 +792,29 @@ mod pending_tests {
     }
 
     #[test]
+    fn an_error_while_the_job_is_still_out_releases_nothing() {
+        // The worker cannot tell whether the job still runs: it answers an
+        // error and keeps the job, as `Worker::collect` does while the
+        // worker is active.
+        let uncertain = |job: &mut Option<JobId>| -> Result<Option<u8>, Control> {
+            assert!(job.is_some());
+            Err(Control::new(ControlKind::StaleJob))
+        };
+        let mut pending = Pending::new();
+        pending.submitted(JobId(1), 7u32);
+        assert_eq!(pending.poll(7, uncertain), Polled::Waiting);
+        assert_eq!(pending.poll(8, uncertain), Polled::Waiting);
+        assert!(!pending.settle(uncertain));
+        assert!(pending.is_out());
+        // Only its end releases it.
+        assert_eq!(pending.poll(7, worker(1, 1, Ok(Some(9)))), Polled::Reply(9));
+        assert!(!pending.is_out());
+        pending.submitted(JobId(2), 7u32);
+        assert!(!pending.settle(uncertain));
+        assert!(pending.settle(worker(1, 1, Ok(Some(9)))));
+    }
+
+    #[test]
     fn a_poll_without_a_job_fails_and_settling_waits_for_the_end() {
         let mut pending: Pending<u32> = Pending::new();
         let none = pending.poll(7, worker(0, 0, Ok(Some(9))));
