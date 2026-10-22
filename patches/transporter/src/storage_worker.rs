@@ -27,7 +27,9 @@ pub enum Reply {
     Refused(Refusal),
     /// The delivery is written, flushed and read back.
     Delivered,
-    /// Nothing was delivered.
+    /// The delivery is not confirmed: it was not written, or the record
+    /// announcing it did not read back, in which case Bank may hold it all
+    /// the same (`Journal::announce`). The Pokémon stay in the game.
     NotDelivered,
 }
 
