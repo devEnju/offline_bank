@@ -282,6 +282,67 @@ mod tests {
         assert_eq!(deflate(b"a"), [0x4b, 0x04, 0x00]);
     }
 
+    /// Bytes from a fixed generator, which nothing repeats by chance.
+    fn noise(length: usize, seed: u32) -> Vec<u8> {
+        let mut x = seed;
+        (0..length)
+            .map(|_| {
+                x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (x >> 16) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn streams_that_zlib_decodes_stay_as_they_are() {
+        // Matches are encoded through the length and distance tables, which
+        // the decoder above shares. These streams were checked when they
+        // were written: zlib (raw deflate) decodes each to exactly its input.
+        // zlib's own encoder chooses other matches, so its output is no
+        // reference; this encoder's checked output is.
+        let mut far = noise(3000, 7);
+        far.extend(noise(3000, 7));
+        let mut window = noise(32_000, 9);
+        window.extend(noise(300, 9));
+        let checked: [(Vec<u8>, usize, &str); 6] = [
+            (
+                b"aaaaaaaaaa".to_vec(),
+                4,
+                "0b89b80c5b864a55c55685a1ad8028ee6abd29b85e23afcda8d92a726a879497",
+            ),
+            (
+                b"abcabcabcabc".to_vec(),
+                6,
+                "9125f8a51a98fc87ddfb50fe602f11666b241ea606295921dff025b7da9d71c7",
+            ),
+            (
+                b"0123456789".repeat(30),
+                16,
+                "4e13bf0444986d9ff75358e0082c7c0b412aefb70e69c161c0e947d1563db149",
+            ),
+            (
+                vec![0; 300],
+                6,
+                "e9aac258520c1c548055942c30af393a87a1fde5a61d9ef8307803c05843a5a1",
+            ),
+            (
+                far,
+                3201,
+                "41d3bffcccbcd9d7e829e3be141903e9f2660f5ec5477f1c2ab83f7959e179b1",
+            ),
+            (
+                window,
+                33_741,
+                "10355bc6054a8052c1189ae8e1f099d65da5024b558388f21c9da93b3cc4f123",
+            ),
+        ];
+        for (data, length, hash) in checked {
+            let packed = deflate(&data);
+            assert_eq!(packed.len(), length, "{} bytes", data.len());
+            assert_eq!(patch_verify::sha256(&packed), hash, "{} bytes", data.len());
+        }
+    }
+
     #[test]
     fn what_is_packed_unpacks() {
         let mut ips = b"PATCH".to_vec();

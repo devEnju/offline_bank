@@ -283,8 +283,67 @@ impl<'a> Archive<'a> {
         files.extend(self.files);
         let path = folder.join(format!("{}.zip", self.name));
         write(&path, &zip::zip(&files, stamp))?;
+        unzips_as_written(&path, &files)?;
         Ok(path)
     }
+}
+
+/// Every file of `files` in the zip at `path`, as an unzip tool of the
+/// system reads it: Windows' own `tar` extracts the zip into a temporary
+/// folder, and every file there must be one of `files` with its bytes, and
+/// every one of `files` must be there. A zip that another tool reads
+/// otherwise is never released.
+fn unzips_as_written(path: &Path, files: &[(String, Vec<u8>)]) -> Result<()> {
+    // Windows' tar reads zips; another tar found first on the path may not.
+    let tar = std::env::var_os("SystemRoot")
+        .map(|root| PathBuf::from(root).join("System32").join("tar.exe"))
+        .filter(|tar| tar.is_file())
+        .unwrap_or_else(|| PathBuf::from("tar"));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let out =
+        std::env::temp_dir().join(format!("offline_bank-unzip-{}-{nanos}", std::process::id()));
+    std::fs::create_dir(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+    let result = (|| {
+        process::run(
+            &format!("Extracting {}", path.display()),
+            process::command(&tar.to_string_lossy())
+                .arg("-xf")
+                .arg(path)
+                .arg("-C")
+                .arg(&out),
+        )?;
+        let mut found = Vec::new();
+        let mut folders = vec![out.clone()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?.path();
+                if entry.is_dir() {
+                    folders.push(entry);
+                } else {
+                    found.push(entry);
+                }
+            }
+        }
+        if found.len() != files.len() {
+            return Err(format!(
+                "{} holds {} files, not {}",
+                path.display(),
+                found.len(),
+                files.len()
+            ));
+        }
+        for (name, bytes) in files {
+            let extracted = out.join(Path::new(name).components().collect::<PathBuf>());
+            if read(&extracted)? != *bytes {
+                return Err(format!("{name} in {} is not as written", path.display()));
+            }
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&out);
+    result
 }
 
 pub fn release(publish: bool) -> Result<()> {
@@ -734,5 +793,41 @@ mod tests {
     #[test]
     fn the_workspace_has_a_release_version() {
         assert!(version_of(&workspace_version().unwrap()).is_some());
+    }
+
+    #[test]
+    fn the_systems_unzip_reads_a_zip_as_written_and_refuses_a_changed_one() {
+        let stamp = zip::Stamp {
+            year: 2026,
+            month: 10,
+            day: 22,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        };
+        let mut ips = b"PATCH".to_vec();
+        ips.extend(vec![0; 70_000]);
+        ips.extend((0..40_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8));
+        ips.extend(b"EOF");
+        let files = vec![
+            ("README.txt".to_owned(), b"Read me\r\n".to_vec()),
+            ("luma/titles/00040000000C9B00/code.ips".to_owned(), ips),
+            (
+                "luma/titles/00040000000C9B00/exheader.bin".to_owned(),
+                vec![7; 0x800],
+            ),
+        ];
+        let path =
+            std::env::temp_dir().join(format!("offline_bank-zip-test-{}.zip", std::process::id()));
+        let mut bytes = zip::zip(&files, stamp);
+        write(&path, &bytes).unwrap();
+        let written = unzips_as_written(&path, &files);
+        // The README's stored bytes follow its local header and name.
+        bytes[30 + "README.txt".len()] ^= 1;
+        write(&path, &bytes).unwrap();
+        let changed = unzips_as_written(&path, &files);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(written, Ok(()));
+        assert!(changed.is_err());
     }
 }

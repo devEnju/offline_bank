@@ -183,7 +183,7 @@ In this order, stopping at the first problem, it:
 1. checks that you are on `main`, that no tracked file has uncommitted changes, and that the version is newer than every tag (files git does not track may lie in the folder);
 2. runs the tests, the test build's tests, Clippy and the formatting check;
 3. builds both patches, and the migration and the download while they ship (below), from the committed sources, verifies them, and tests the verifier;
-4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes the migration and download zips;
+4. writes `build/release/v1.0.0/offline_bank-v1.0.0.zip`: every release has a folder of its own, named for its version, which also takes the migration and download zips. Each zip is extracted again with Windows' own `tar`, and every file must come out as it was written;
 5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`: a table of which way each Bank goes, the guides of the zips with their numbers, how to install, and the files and hashes;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
 
