@@ -22,7 +22,6 @@
 //! ends in a Back button that `lytpatch` makes of an unused entry.
 
 pub mod bootstrap;
-pub mod fs;
 pub mod gen5;
 pub mod language;
 pub mod legacy_shiny;
@@ -32,6 +31,7 @@ pub mod panel;
 pub mod program;
 #[cfg(test)]
 mod router;
+pub mod sdcard;
 pub mod sdsave;
 pub mod storage_worker;
 pub mod task;

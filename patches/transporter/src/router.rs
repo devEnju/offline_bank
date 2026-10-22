@@ -1,19 +1,19 @@
 //! The original's router `get_next_state(manager, current)` (`00242BA0`),
 //! transcribed case by case (`00242BCC`..`00242E04`) for the PC tests of the
 //! patch's routing (`navigation::destination`). Each case looks at the ended
-//! step's outcome byte (`+0x30`). With the manager's flag `+0x1a`, a
-//! cancelled step, it answers the disconnect step itself; the patch reads
+//! task's outcome byte (`+0x30`). With the manager's flag `+0x1a`, a
+//! cancelled task, it answers the disconnect task itself; the patch reads
 //! that flag itself.
 
-/// The step the original answers when the application is to end.
+/// The task the original answers when the application is to end.
 pub const EXIT: u32 = 0x13;
 
-// Steps of the factory (`0019CEE4`), as numbers so that this reference does
-// not share the patch's names: 2 title screen, 3 connect, 6 transfer,
-// 7 game search, 8 game list, 9 reading the chosen game, 0xb the Bank step,
+// Tasks of the factory (`0019CEE4`), as numbers so that this reference does
+// not share the patch's names: 2 start screen, 3 connect, 6 transfer,
+// 7 game search, 8 game list, 9 reading the chosen game, 0xb the Bank task,
 // 0xc the question, 0xf cancel, 0x10 disconnect, 0x11 reload, 0x12 failure.
 
-/// The next step for step `current` that ended with `outcome`.
+/// The next task for task `current` that ended with `outcome`.
 pub fn next(current: u32, outcome: u8) -> u32 {
     match (current, outcome) {
         (0, 4) => 2,

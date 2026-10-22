@@ -18,8 +18,8 @@
 //! removed card concerns the cartridge alone (`Saves::card_missing`).
 
 use crate::{
-    fs::{self, Sd, COPY_CHUNK},
     language,
+    sdcard::{self, Sd, COPY_CHUNK},
     sdsave::Saves,
     task::{Task, TASK_LIST},
 };
@@ -67,7 +67,7 @@ const FAILED: i32 = -1;
 
 struct Shared<T>(UnsafeCell<T>);
 // SAFETY: the cartridge task and the hooks on the main thread never run at
-// the same time: the list task and the steps after it start the cartridge
+// the same time: the list task and the tasks after it start the cartridge
 // task and wait for it, and ask about the card only before or after.
 unsafe impl<T> Sync for Shared<T> {}
 static SAVES: Shared<Saves> = Shared(UnsafeCell::new(Saves::EMPTY));
@@ -106,7 +106,7 @@ unsafe extern "aapcs" fn cart_id(out: *mut u32, task: *const u8) -> i32 {
         // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
         saves.scan(cartridge, language::filter_letter(), |path, offsets| {
-            fs::identity(&mut Sd, path, offsets)
+            sdcard::identity(&mut Sd, path, offsets)
         });
     }
     match saves.current() {
@@ -140,7 +140,7 @@ pub unsafe extern "aapcs" fn transporter_cart_read(
         return unsafe { original(kind, offset, buffer, length) };
     };
     let bytes = unsafe { slice::from_raw_parts_mut(buffer, length as usize) };
-    if fs::read(&mut Sd, save, offset, bytes) {
+    if sdcard::read(&mut Sd, save, offset, bytes) {
         0
     } else {
         FAILED
@@ -167,7 +167,7 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
     let bytes = unsafe { slice::from_raw_parts(buffer, length as usize) };
     // SAFETY: see `Shared`; only this thread uses the copy buffer.
     let chunk = unsafe { &mut *CHUNK.0.get() };
-    if fs::write(&mut Sd, saves, save, offset, bytes, chunk) {
+    if sdcard::write(&mut Sd, saves, save, offset, bytes, chunk) {
         0
     } else {
         FAILED
@@ -189,7 +189,7 @@ patch_common::stub!(
     list_next = sym list_next,
 );
 /// Replaces "go on to the Virtual Console titles" (`00244F10`) in the
-/// game-list task. After the cartridge step has handled one item (the
+/// game-list task. After one item has been handled (the
 /// cartridge or an SD save), the next one is read the same way, so each gets
 /// its own entry, in the fixed order of the games. The site is also reached
 /// in state 1, before the first item was read, when its card is gone.
@@ -250,7 +250,7 @@ pub unsafe fn chosen_card_missing(manager: *mut u8) -> bool {
 
 /// Replaces the original's question whether the Game Card was taken out
 /// (`bl 001DE43C`) before the first item of the list is read (`00244F00`),
-/// before the chosen game is read (`00245658`), before the Bank step saves
+/// before the chosen game is read (`00245658`), before the Bank task saves
 /// its note (`00248E68`), and in the transfer before each save of the game
 /// (`0024A298`, `0024A474`). Nonzero only while the cartridge slot is
 /// presented and its card is gone. The original has skipped Virtual Console

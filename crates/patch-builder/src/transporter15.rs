@@ -14,7 +14,7 @@ use crate::{fail, le32, Result};
 use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES, VC_TITLE_LANGUAGES};
 use transporter_payload::sdsave::GAMES;
 use transporter_payload::task::{
-    BANK_VTABLE, TASK_BANK_STEP, TASK_COUNT, TASK_LANGUAGE, TASK_LIST, TASK_QUESTION, TASK_READ,
+    BANK_VTABLE, TASK_BANK, TASK_COUNT, TASK_LANGUAGE, TASK_LIST, TASK_QUESTION, TASK_READ,
     TASK_SEARCH, TASK_TRANSFER,
 };
 
@@ -110,11 +110,11 @@ pub(crate) const NATIVE_OBJECTS: [(u32, u32); 22] = [
     (0x0019_d63c, TASK_SEARCH),
     (0x0019_d640, TASK_LIST),
     (0x0019_d644, TASK_READ),
-    (0x0019_d64c, TASK_BANK_STEP),
+    (0x0019_d64c, TASK_BANK),
     (0x0019_d650, TASK_QUESTION),
     (TASK_LANGUAGE + 0xc, 0x0024_538c),
     (TASK_LIST + 0xc, 0x0024_45a4),
-    (TASK_BANK_STEP + 0xc, 0x0024_8c68),
+    (TASK_BANK + 0xc, 0x0024_8c68),
     (0x0010_da38, BANK_VTABLE),
     (0x0010_d8fc, 0xe584_0000),
     (0x0010_624c, 0xe584_00cc),

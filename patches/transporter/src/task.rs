@@ -20,7 +20,7 @@ pub const TASK_TRANSFER: u32 = 0x002e_6a90;
 pub const TASK_SEARCH: u32 = 0x002e_6774;
 pub const TASK_LIST: u32 = 0x002e_6618;
 pub const TASK_READ: u32 = 0x002e_66b8;
-pub const TASK_BANK_STEP: u32 = 0x002e_6970;
+pub const TASK_BANK: u32 = 0x002e_6970;
 pub const TASK_QUESTION: u32 = 0x002e_67c4;
 /// Constructor 0010D8EC installs this at 0010D8FC; startup stores the
 /// constructed object at manager + 0xCC (0010624C).

@@ -42,7 +42,7 @@ pub trait Program: 'static {
     const BANK_VTABLE: u32;
 
     /// `(context, group, pane, message)`: a message with its values into a
-    /// pane, as the title screen writes its version line. It loads the
+    /// pane, as the start screen writes its version line. It loads the
     /// message into the first of the context's two work strings
     /// (`[context + 4]`), fills in its values into the second, and hands
     /// the second to the pane.

@@ -12,14 +12,14 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Reads the source game and converts the Pokémon itself. | Unchanged, apart from a small Easter egg in the Gen 1 Virtual Console games. |
 | Gen 5 Pokémon come from a cartridge. | From a cartridge or from saves on the SD card ([below](#blackwhite-saves-on-the-sd-card)). |
 | The server checks the Pokémon's legality. | No check. Whatever Transporter itself accepts is transferred (eggs, for example, are still refused). |
-| After a game was chosen, asks the server whether Bank's transport box is empty. | Reads Bank's record of its files (`/journal.bin`, `/journal.alt.bin` in Bank's extdata) as soon as START is pressed on the title screen, before any game is looked for. |
+| After a game was chosen, asks the server whether Bank's transport box is empty. | Reads Bank's record of its files (`/journal.bin`, `/journal.alt.bin` in Bank's extdata) as soon as START is pressed on the start screen, before any game is looked for. |
 | The server stores the Pokémon in Bank. | Writes one delivery into the file of the transport box that Bank is not using (`/mover.bin` or `/mover.alt.bin`), then notes in Bank's record that it waits ([below](#transfers-and-refusals)). |
 | Removes the Pokémon from the source game. | Unchanged. |
 | A transfer interrupted by a power failure is sorted out with the server at the next session, with the same copy of the game: neither lost nor doubled. | Nothing is left pending. The Pokémon are never lost; after a power cut between the two writes they can be in Bank and still in the game ([below](#limits)). |
 | Screens and messages. | The originals; no new text. |
 | The language screen switches the language of the screens as long as the app is open. | It chooses which language's games are listed ([below](#choosing-the-language-of-the-games)). The screens stay in the console's language. |
 | Shows a notice that nicknames and OT names with prohibited words will be erased; the server erased them. | Not shown. No name is ever changed offline. The other notices are unchanged. |
-| HOME and sleep are refused from connecting until disconnecting. | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the title screen, the game list, the notices, the question, and every message that waits for a button, the closing message of a transfer included. |
+| HOME and sleep are refused from connecting until disconnecting. | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the start screen, the game list, the notices, the question, and every message that waits for a button, the closing message of a transfer included. |
 
 Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produce Gen 7 Pokémon, as with the original service.
 
@@ -40,7 +40,7 @@ The failure message's first sentence, "The server did not receive the data.", is
 
 **One save before the question.** Right after the chosen game is read, and before any notice or question, the original saves that game once. It stores a small note of its own there, which the server used to sort out an interrupted transfer; offline the note is empty and nothing reads it. No Pokémon data changes in that save, and it happens also if you then answer "No".
 
-**When Transporter refuses.** It asks about Bank every time START is pressed on the title screen, behind the loading screen that comes with the press, before it looks for games. If Bank cannot take a delivery, it ends the loading screen, shows one of two messages of the original and returns to the title screen. No game has been read at that point.
+**When Transporter refuses.** It asks about Bank every time START is pressed on the start screen, behind the loading screen that comes with the press, before it looks for games. If Bank cannot take a delivery, it ends the loading screen, shows one of two messages of the original and returns to the start screen. No game has been read at that point.
 
 | Message | When | What to do |
 | --- | --- | --- |
@@ -55,11 +55,11 @@ Transporter never creates or deletes files. Of Bank's files it touches four: it 
 
 ## Choosing the language of the games
 
-The game list shows the games of **one language** only: the cartridge, the saves on the SD card and the Virtual Console titles alike. The original language screen, reached from the title screen, chooses that language. It no longer changes the language of the screens, which stay in the console's language.
+The game list shows the games of **one language** only: the cartridge, the saves on the SD card and the Virtual Console titles alike. The original language screen, reached from the start screen, chooses that language. It no longer changes the language of the screens, which stay in the console's language.
 
 - Until you choose, the games in the console's language are listed. A console set to a language no source game exists in (Chinese, Dutch, Portuguese, Russian) starts with English.
 - The choice is not saved, as the original saved nothing either: it lasts until Transporter is closed.
-- After a choice, the title screen shows it: its logo and its start prompt appear in the chosen language. Japanese, English and Korean have the same prompt and differ in the logo only. Everything else stays in the console's language.
+- After a choice, the start screen shows it: its logo and its start prompt appear in the chosen language. Japanese, English and Korean have the same prompt and differ in the logo only. Everything else stays in the console's language.
 - The list offers the six languages that are not chosen already, and a **Back** button below them that leaves the screen without changing anything, as B does. The two Chinese entries are gone, because no Gen 1, 2 or 5 game exists in Chinese.
 - Japanese is confirmed like every other language; the kana/kanji step is gone, since the screens do not change.
 - The Back button is built like the Back buttons of Pokémon Bank's menus, to which this screen belongs: the screen's own list button with the text of the game-selection screen's Back, in the language of the screens, and the return icon in its own colour. It is put together when the screen is opened from parts the original already has; no file of the application is replaced.
@@ -94,7 +94,7 @@ What happens to the file:
 - The Pokémon are removed from the file only after the delivery to Bank has been written and verified, as with a cartridge.
 - The file is never created, resized or renamed.
 
-Do not insert or remove a cartridge while a session is running; what is offered is decided when you leave the title screen, with the language chosen at that moment. If you do it anyway:
+Do not insert or remove a cartridge while a session is running; what is offered is decided when you leave the start screen, with the language chosen at that moment. If you do it anyway:
 
 | After START you | What happens |
 | --- | --- |

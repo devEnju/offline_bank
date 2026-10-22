@@ -17,7 +17,7 @@ pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 /// The original's message `0x0B`: "The server did not receive the data." and,
 /// on its second page, "Please confirm that your Game Card is properly
 /// inserted, and then try again." The transfer shows it when nothing was
-/// delivered (sub-state `0x11`), the Bank step when the card is gone before
+/// delivered (sub-state `0x11`), the Bank task when the card is gone before
 /// it saves its note.
 pub const MESSAGE_FAILURE: u32 = 0x0b;
 
@@ -70,7 +70,7 @@ mod native {
     /// `0019C814(ui)`: hides the panel, its text frame and the dialog frame
     /// (panes `0x1D`, `0x1E`, `0x25`) and two panes of the second group, the
     /// state the shared UI's constructor leaves it in (`0024B778`). The
-    /// question step ends the panel with it when no message follows
+    /// question task ends the panel with it when no message follows
     /// (`002473D8`).
     const PANEL_HIDE: usize = 0x0019_c814;
     const UI_CONTEXT: usize = 0x5c;
@@ -203,7 +203,7 @@ mod native {
         }
     }
 
-    /// Ends the general loading panel on `ui`, as the question step ends it
+    /// Ends the general loading panel on `ui`, as the question task ends it
     /// (`00247394`..`002473D8`): its sound, its spinner, then the shared UI's
     /// resting state, so that neither its text frame nor its text is left.
     /// # Safety

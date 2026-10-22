@@ -9,10 +9,10 @@ use patch_common::program::Program;
 ///   (`001E6404(event, 0)` makes one, `001E5220` signals it, `001E3CF4`
 ///   waits for it);
 /// - the activity mask (`0022AEEC(bit)` sets a bit, `0011A5FC(bit)` clears
-///   it), refused from the original's connect step to its disconnect step,
+///   it), refused from the original's connect task to its disconnect task,
 ///   and the byte its HOME check (`0010AD84`) sets for the main loop
 ///   (`001044D0`);
-/// - the title screen's call for its version line, message 0x29
+/// - the start screen's call for its version line, message 0x29
 ///   (`0024BAE8`), and the two calls it hands the line to the pane with;
 /// - its router `get_next_state` `00242BA0` and its factory's bound
 ///   (`task::TASK_COUNT`), and the vtable `002E6DD0` the Bank data object's

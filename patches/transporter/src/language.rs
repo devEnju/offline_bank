@@ -11,7 +11,7 @@
 //! the application is closed. Until one is made, the filter is the language
 //! of the screens.
 //!
-//! The title screen shows a choice: its logo and its start prompt are
+//! The start screen shows a choice: its logo and its start prompt are
 //! pictures the original keeps once per language, and after a choice they
 //! are loaded in the chosen language.
 //!
@@ -138,7 +138,7 @@ pub fn current(ui_language: u8) -> u8 {
     effective(FILTER.load(Ordering::Relaxed), ui_language)
 }
 
-/// The language of the title screen's pictures: the chosen one, and the
+/// The language of the start screen's pictures: the chosen one, and the
 /// screens' own as long as none was chosen (so a console in a language
 /// without games keeps its own title).
 pub fn title(chosen: u8, ui_language: u8) -> u8 {
@@ -322,13 +322,13 @@ mod native {
             })
     }
 
-    // The title screen's constructor (0024B9E4), around its call that loads
+    // The start screen's constructor (0024B9E4), around its call that loads
     // its archives and builds its layouts (0024BA70): 0024BA44 (was:
     // mov r7, #3), while the call's arguments are set up, and 0024BA74
     // (was: mov r3, #0x27), right after the call. Every register is
     // returned as it came.
     patch_common::stub!(
-        transporter_title_begin_stub,
+        transporter_start_screen_begin_stub,
         [
             "push {{r0-r3, r12, lr}}",
             "mov r0, #1",
@@ -340,7 +340,7 @@ mod native {
         title_language = sym title_language,
     );
     patch_common::stub!(
-        transporter_title_end_stub,
+        transporter_start_screen_end_stub,
         [
             "push {{r0-r3, r12, lr}}",
             "mov r0, #0",
@@ -351,7 +351,7 @@ mod native {
         ],
         title_language = sym title_language,
     );
-    /// Brackets the title screen's loading of its archives (`0024BA44`,
+    /// Brackets the start screen's loading of its archives (`0024BA44`,
     /// `0024BA74`): one of them holds the logo and the start prompt once per
     /// language. With `chosen` it is read in the chosen language; afterwards
     /// archives are read in the screens' language again, as always.

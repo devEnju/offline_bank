@@ -1,4 +1,4 @@
-//! The version line on the title screen, which every patch extends by its
+//! The version line on the start screen, which every patch extends by its
 //! name ("Ver. 1.5-offline"), with the original's own calls; the original's
 //! string objects, in which a message is changed in place (`text`, `end`),
 //! here and in Bank's dialogs (`bank_common::ui`); and the end of the
@@ -142,9 +142,9 @@ pub unsafe fn add_suffix<P: Program>(context: *mut u8, group: u32, pane: u32, su
     }
 }
 
-/// Writes the title screen's version line with `suffix` behind it, "Ver.
+/// Writes the start screen's version line with `suffix` behind it, "Ver.
 /// 1.5" + suffix, so that the screen shows which patch runs. Stands in for
-/// the title screen's one call of `P::PANE_MESSAGE` for its version line:
+/// the start screen's one call of `P::PANE_MESSAGE` for its version line:
 /// the original runs first, then the suffix is added.
 /// # Safety
 /// The arguments are those of the replaced call, on the main thread.

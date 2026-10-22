@@ -41,7 +41,7 @@ const TRANSFER_UPDATE: usize = 0x0024_a0c4;
 /// The game search's first state, which starts the cartridge scan; its
 /// state that waits for the acknowledgement of a message and ends the
 /// search (selected at `00247000`); and the outcome "none" it ends with
-/// (`0024702C`), which the router answers with the disconnect step.
+/// (`0024702C`), which the router answers with the disconnect task.
 const SEARCH_START: u32 = 0;
 const SEARCH_MESSAGE: u32 = 5;
 const SEARCH_NONE: u8 = 2;
@@ -79,7 +79,7 @@ impl Runtime {
     /// while it runs. A job whose worker cannot say whether it is still
     /// running stays out: what it holds stays lent, and the next frame asks
     /// again.
-    unsafe fn step(
+    unsafe fn job(
         &mut self,
         kind: Job,
         stage: impl FnOnce(&mut TransporterWorker) -> Option<()>,
@@ -100,7 +100,7 @@ impl Runtime {
                 Err(failed) => Some(Err(failed)),
             };
         };
-        // The check and the delivery are steps of their own and never
+        // The check and the delivery belong to tasks of their own and never
         // overlap; a reply is only ever the job's that asked for it. A job of
         // another kind is waited for and its reply dropped: what it holds
         // stays lent until it ends, and only then is this one a failure.
@@ -143,8 +143,8 @@ unsafe fn stage_box(task: Task, staging: &mut [u8]) -> Option<()> {
 /// Replaces the one call of the original's router (`00242EF8`). The
 /// original is asked first; its answer is changed where the offline flow
 /// differs, and HOME and sleep are refused or let through by the kind of
-/// the step that comes next (`navigation`). A manager or task that is not a
-/// pointer, or a state a hook holds, ends the session: the disconnect step,
+/// the task that comes next (`navigation`). A manager or task that is not a
+/// pointer, or a state a hook holds, ends the session: the disconnect task,
 /// and the original is not asked.
 /// # Safety
 /// Called only from the patched call site, on the main thread, with the
@@ -163,14 +163,14 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
         return navigation::DISCONNECT;
     };
     let next = navigation::destination(current, outcome, native, cancelled);
-    // A step that reads or writes refuses HOME and sleep from the moment it
+    // A task that reads or writes refuses HOME and sleep from the moment it
     // is chosen; one that waits lets them through, unless a job is still out.
     if navigation::loads(next) {
         refuse_home(true);
     } else if state.job.is_none() {
         refuse_home(false);
     }
-    // The step's set-up puts up its loading panel on a later frame; its
+    // The task's set-up puts up its loading panel on a later frame; its
     // time is taken on the first frame of the patch behind it.
     if navigation::spins(next) {
         state.spinner.coming();
@@ -188,10 +188,10 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
 // The original's "show a message" function, its first instruction
 // (0019B50C, was: push {r4-r8, lr}). r0 = ui, r1 = message, r2 = whether the
 // message waits for an answer (`patch_common`'s `message_stub!`). Every
-// message a step that reads or writes ends with comes through here.
+// message a task that reads or writes ends with comes through here.
 patch_common::message_stub!(transporter_message_stub, "r2", "0x0019b510", message_waits);
 /// The original's "show a message" function was entered with a message that
-/// waits for an answer. Such a message is where a step that reads or writes
+/// waits for an answer. Such a message is where a task that reads or writes
 /// has nothing left to do but end, so the refusal the router entry began for
 /// it ends here. The original's own bit for a Virtual Console save that is
 /// being written is not this one and stays as it is.
@@ -330,7 +330,7 @@ unsafe extern "aapcs" fn list_ready(raw: *mut u8) {
 /// take a delivery: the question the original put to the server after a
 /// game was chosen. If not, the original's message for it is shown here and
 /// the search goes to its own state that waits for it and ends as for "no
-/// game found": back to the title screen. Every other frame is the
+/// game found": back to the start screen. Every other frame is the
 /// original's update.
 /// # Safety
 /// The original's task driver supplies the live game-search task, on the
@@ -392,7 +392,7 @@ unsafe fn check(task: Task) -> Check {
     if state.job.is_none() && state.spinner.idle(now()) {
         return Check::Pending;
     }
-    let answer = unsafe { state.step(Job::Check, |_| Some(())) };
+    let answer = unsafe { state.job(Job::Check, |_| Some(())) };
     drop(state);
     // A worker that failed refuses as a file that does not read does.
     let message = match answer {
@@ -410,8 +410,8 @@ unsafe fn check(task: Task) -> Check {
 /// the loading panel (`waits`) the update returns 0, as on a frame it has
 /// nothing to do; otherwise the original's update runs.
 /// # Safety
-/// The original's task driver supplies the live task of the step, on the
-/// main thread.
+/// The original's task driver supplies the live task, on the main
+/// thread.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_read(raw: *mut u8) -> u32 {
     unsafe { update(raw, navigation::READ, READ_UPDATE) }
@@ -428,9 +428,10 @@ pub unsafe extern "aapcs" fn transporter_question(raw: *mut u8) -> u32 {
 pub unsafe extern "aapcs" fn transporter_transfer(raw: *mut u8) -> u32 {
     unsafe { update(raw, navigation::TRANSFER, TRANSFER_UPDATE) }
 }
-/// One frame of `step`'s update: none while it waits, else the original's.
-unsafe fn update(raw: *mut u8, step: u32, update: usize) -> u32 {
-    if unsafe { waits(raw, step) } {
+/// One frame of the update of task `id`: none while it waits, else the
+/// original's.
+unsafe fn update(raw: *mut u8, id: u32, update: usize) -> u32 {
+    if unsafe { waits(raw, id) } {
         return 0;
     }
     unsafe { original(update, raw) }
@@ -441,14 +442,14 @@ unsafe fn original(address: usize, raw: *mut u8) -> u32 {
     unsafe { update(raw) }
 }
 
-/// Whether this frame of `step`'s update waits for its loading panel
+/// Whether this frame of the update of task `id` waits for its loading panel
 /// (`panel::waits`). A transfer the original is ending is not held up. The
 /// frame the question's first state runs, which takes down the panel of
 /// the reading, lets HOME and sleep through.
 /// # Safety
-/// `raw` is the live task of `step`, on the main thread.
-unsafe fn waits(raw: *mut u8, step: u32) -> bool {
-    let expected = match step {
+/// `raw` is the live task `id`, on the main thread.
+unsafe fn waits(raw: *mut u8, id: u32) -> bool {
+    let expected = match id {
         navigation::READ => TASK_READ,
         navigation::QUESTION => TASK_QUESTION,
         navigation::TRANSFER => TASK_TRANSFER,
@@ -459,7 +460,7 @@ unsafe fn waits(raw: *mut u8, step: u32) -> bool {
         return false;
     };
     let task = task.raw();
-    if step == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
+    if id == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
         return false;
     }
     let Some(mut state) = STATE.take() else {
@@ -471,12 +472,12 @@ unsafe fn waits(raw: *mut u8, step: u32) -> bool {
     state.spinner.seen(now);
     let task_state = unsafe { read_word(task, TASK_STATE) };
     let waits = panel::waits(
-        step,
+        id,
         task_state,
         state.spinner.idle(now),
         state.spinner.held(now),
     );
-    if !waits && panel::ends_panel(step, task_state) {
+    if !waits && panel::ends_panel(id, task_state) {
         refuse_home(false);
     }
     waits
@@ -564,7 +565,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     // The transport box goes to the worker in its staging buffer, copied
     // here: the worker touches no object of the original.
     let answer = unsafe {
-        state.step(Job::Deliver, |worker| {
+        state.job(Job::Deliver, |worker| {
             stage_box(task, worker.staging_mut().ok()?)
         })
     };
@@ -575,7 +576,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     }
 }
 
-/// Replaces the title screen's call that writes its version line
+/// Replaces the start screen's call that writes its version line
 /// (`0024BAE8`): the line says which patch runs (`patch_common::ui`).
 /// # Safety
 /// Called only from that site, with the arguments of the replaced call.

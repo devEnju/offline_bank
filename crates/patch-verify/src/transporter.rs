@@ -107,12 +107,12 @@ const EDITS: [Edit; 55] = [
     (
         0x0024BA44,
         0xE3A07003,
-        Bl(Sym("transporter_title_begin_stub")),
+        Bl(Sym("transporter_start_screen_begin_stub")),
     ),
     (
         0x0024BA74,
         0xE3A03027,
-        Bl(Sym("transporter_title_end_stub")),
+        Bl(Sym("transporter_start_screen_end_stub")),
     ),
     (0x0024BAE8, 0xEBFE1E37, Bl(Sym("transporter_version_shown"))),
     (
