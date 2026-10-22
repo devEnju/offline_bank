@@ -17,6 +17,9 @@ use patch_common::program::Program;
 /// - its router `get_next_state` `00242BA0` and its factory's bound
 ///   (`task::TASK_COUNT`), and the vtable `002E6DD0` the Bank data object's
 ///   constructor `0010D8EC` installs (`task::BANK_VTABLE`);
+/// - the end of its loading panel (pane 0x1D), the same code as Bank's:
+///   `0019B6B0` stops a sound, `0019C884` hides a pane, `0019B604` unbinds
+///   an animation;
 /// - its clock, as its minimum time `0019B758` reads it: `00233854`
 ///   copies the time at `002F4E38`, `0025A77C` gives it in ms;
 /// - its file system calls, the same code as Bank's (found by comparing
@@ -38,6 +41,10 @@ impl Program for Transporter15 {
     const PANE_MESSAGE: usize = 0x001d_33cc;
     const FIND_PANE: usize = 0x0019_f834;
     const PANE_TEXT: usize = 0x0023_75d0;
+    const STOP_SOUND: usize = 0x0019_b6b0;
+    const PANE_SHOWN: usize = 0x0019_c884;
+    const UNBIND_ANIMATION: usize = 0x0019_b604;
+    const LOADING_PANE: u32 = 0x1d;
     const CLOCK_NOW: usize = 0x0023_3854;
     const CLOCK_MILLISECONDS: usize = 0x0025_a77c;
     const OPEN_ARCHIVE: usize = 0x001d_b7dc;

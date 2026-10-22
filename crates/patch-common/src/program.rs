@@ -52,6 +52,16 @@ pub trait Program: 'static {
     /// `(pane, string, -1)`: sets a text pane's text.
     const PANE_TEXT: usize;
 
+    /// The end of the shared UI's loading panel (`ui::end_loading`), the
+    /// same code in both programs: `STOP_SOUND(sound, 0, -1)` stops a
+    /// sound, `PANE_SHOWN(context, group, pane, shown)` shows or hides a
+    /// pane, `UNBIND_ANIMATION(context, group, animation, 0)` unbinds an
+    /// animation. `LOADING_PANE` is the panel's pane in group 0.
+    const STOP_SOUND: usize;
+    const PANE_SHOWN: usize;
+    const UNBIND_ANIMATION: usize;
+    const LOADING_PANE: u32;
+
     /// The original's clock, as its minimum times read it (`spinner::now`):
     /// `CLOCK_NOW(&moment)` copies the time the main loop keeps into an
     /// 8-byte moment, `CLOCK_MILLISECONDS(&moment)` gives it in ms.

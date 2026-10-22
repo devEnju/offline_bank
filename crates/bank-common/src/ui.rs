@@ -28,12 +28,6 @@ const DIALOG_POLL: usize = 0x001d_6600;
 /// `0025da24(ui, message)` sets its text.
 const LOADING: usize = 0x001d_5b44;
 const LOADING_TEXT: usize = 0x0025_da24;
-/// The end of loading: `001d6200(sound, 0, -1)` stops a sound,
-/// `001e7084(context, group, pane, 0)` hides a pane, `001e69ac(context, 0,
-/// 0, 0)` unbinds animation 0.
-const STOP_SOUND: usize = 0x001d_6200;
-const HIDE_PANE: usize = 0x001e_7084;
-const UNBIND_ANIMATION: usize = 0x001e_69ac;
 /// `001e9bc0(sound, fade, tag, mode)`: plays a sound once.
 const PLAY_SOUND: usize = 0x001e_9bc0;
 /// `001d6194(ui)` shows the dialog scene; `002b6114(0x10004, 0x3c, 0)` is
@@ -232,17 +226,8 @@ pub unsafe fn loading_message(ui: *mut u8, message: u32) {
 /// # Safety
 /// `ui` has stop's native lifetime contract, on the main task thread.
 pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
-    pointer(ui as u32)?;
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
-    unsafe {
-        let stop_sound: unsafe extern "aapcs" fn(u32, u32, u32) = transmute(STOP_SOUND);
-        let pane: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(HIDE_PANE);
-        let unbind: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(UNBIND_ANIMATION);
-        stop_sound(0x0005_0011, 0, u32::MAX);
-        pane(context, 0, 0x97, 0);
-        unbind(context, 0, 0, 0);
-    }
-    Ok(())
+    unsafe { patch_common::ui::end_loading::<crate::program::Bank15>(ui) }
+        .map_err(|_| Error::InvalidPointer)
 }
 
 /// `001d7ed8(layout, pane)`: a pane of a layout, or null, as `001e7084`

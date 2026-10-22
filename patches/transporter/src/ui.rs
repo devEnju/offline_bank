@@ -52,8 +52,9 @@ pub use native::*;
 #[cfg(target_arch = "arm")]
 mod native {
     use super::Unavailable;
+    use crate::program::Transporter15;
     use core::mem::transmute;
-    use patch_common::native::follow;
+    use patch_common::{native::follow, program::Program};
 
     /// The general loading panel of the shared UI (`ui`, its context at
     /// `ui + 0x5C`), as the reader's set-up starts it (`00246A2C`):
@@ -65,9 +66,7 @@ mod native {
     /// -1)` stops the sound, `0019C884(context, 0, pane, shown)` hides the
     /// panel, `0019B604(context, 0, animation, 0)` unbinds the spinner.
     const PANEL_START: usize = 0x0019_b340;
-    const STOP_SOUND: usize = 0x0019_b6b0;
-    const PANE_SHOWN: usize = 0x0019_c884;
-    const UNBIND_ANIMATION: usize = 0x0019_b604;
+    const PANE_SHOWN: usize = Transporter15::PANE_SHOWN;
     /// `0019C814(ui)`: hides the panel, its text frame and the dialog frame
     /// (panes `0x1D`, `0x1E`, `0x25`) and two panes of the second group, the
     /// state the shared UI's constructor leaves it in (`0024B778`). The
@@ -78,9 +77,6 @@ mod native {
     const UI_HEAP: usize = 0x78;
     const CONTEXT_STRINGS: usize = 0x4;
     const CONTEXT_LAYOUTS: usize = 0x1c;
-    const LOADING_SOUND: u32 = 0x0005_0011;
-    const PANEL_PANE: u32 = 0x1d;
-    const SPINNER_ANIMATION: u32 = 0;
     const TEXT_FRAME_PANE: u32 = 0x1e;
     const OTHER_FRAME_PANE: u32 = 0x25;
     const TEXT_PANE: u32 = 0x23;
@@ -213,19 +209,9 @@ mod native {
     /// # Safety
     /// `ui` is the live shared UI the panel was started on, on the main thread.
     pub unsafe fn stop_loading(ui: *mut u8) {
-        let Some(context) = (unsafe { follow(ui, UI_CONTEXT) }) else {
-            return;
-        };
-        unsafe {
-            let stop: unsafe extern "aapcs" fn(u32, u32, i32) = transmute(STOP_SOUND);
-            let pane: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(PANE_SHOWN);
-            let unbind: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
-                transmute(UNBIND_ANIMATION);
-            let hide: unsafe extern "aapcs" fn(*mut u8) = transmute(PANEL_HIDE);
-            stop(LOADING_SOUND, 0, -1);
-            pane(context, 0, PANEL_PANE, 0);
-            unbind(context, 0, SPINNER_ANIMATION, 0);
-            hide(ui);
+        if unsafe { patch_common::ui::end_loading::<Transporter15>(ui) }.is_ok() {
+            let hide: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(PANEL_HIDE) };
+            unsafe { hide(ui) };
         }
     }
 }

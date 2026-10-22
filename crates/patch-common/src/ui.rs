@@ -1,9 +1,14 @@
 //! The version line on the title screen, which every patch extends by its
-//! name ("Ver. 1.5-offline"), with the original's own calls; and the
-//! original's string objects, in which a message is changed in place
-//! (`text`, `end`), here and in Bank's dialogs (`bank_common::ui`).
+//! name ("Ver. 1.5-offline"), with the original's own calls; the original's
+//! string objects, in which a message is changed in place (`text`, `end`),
+//! here and in Bank's dialogs (`bank_common::ui`); and the end of the
+//! shared UI's loading panel (`end_loading`).
 
-use crate::{message, native::follow, program::Program};
+use crate::{
+    message,
+    native::{follow, NotNative},
+    program::Program,
+};
 use core::{mem::transmute, slice};
 
 /// What a string object of the original lacks for its text to be changed
@@ -155,4 +160,30 @@ pub unsafe fn version<P: Program>(
         original(context, group, pane, message);
         add_suffix::<P>(context, group, pane, suffix);
     }
+}
+
+/// The loop sound of the shared UI's loading panel, and its spinner.
+const LOADING_SOUND: u32 = 0x0005_0011;
+const SPINNER_ANIMATION: u32 = 0;
+/// Where the shared UI keeps its context.
+const UI_CONTEXT: usize = 0x5c;
+
+/// Ends the shared UI's loading panel as the original's tasks end it: stops
+/// its loop sound, hides its pane (`Program::LOADING_PANE`) and unbinds its
+/// spinner. Fails, with nothing done, if `ui` holds no context.
+/// # Safety
+/// `ui` is the live shared UI of `P`, on the main thread.
+pub unsafe fn end_loading<P: Program>(ui: *mut u8) -> Result<(), NotNative> {
+    crate::native::pointer(ui as u32).ok_or(NotNative)?;
+    let context = unsafe { follow(ui, UI_CONTEXT) }.ok_or(NotNative)?;
+    unsafe {
+        let stop: unsafe extern "aapcs" fn(u32, u32, i32) = transmute(P::STOP_SOUND);
+        let pane: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(P::PANE_SHOWN);
+        let unbind: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) =
+            transmute(P::UNBIND_ANIMATION);
+        stop(LOADING_SOUND, 0, -1);
+        pane(context, 0, P::LOADING_PANE, 0);
+        unbind(context, 0, SPINNER_ANIMATION, 0);
+    }
+    Ok(())
 }

@@ -16,6 +16,8 @@ use patch_common::program::Program;
 /// - its task router `002a5580` and its factory's bound
 ///   (`task::TASK_COUNT`), and the vtable `003626FC` the Bank data object's
 ///   constructor `0010EA48` installs (`native_bank::VTABLE_ADDRESS`);
+/// - the end of its loading panel (pane 0x97): `001d6200` stops a sound,
+///   `001e7084` hides a pane, `001e69ac` unbinds an animation;
 /// - its clock, as its minimum time `001d5bb0` reads it: `00229dc4` copies
 ///   the time at `00372fe0`, `002c8ea4` gives it in ms;
 /// - its file system calls (docs/internals.md, "File access") and
@@ -36,6 +38,10 @@ impl Program for Bank15 {
     const PANE_MESSAGE: usize = 0x001e_21c8;
     const FIND_PANE: usize = 0x001e_264c;
     const PANE_TEXT: usize = 0x0029_a628;
+    const STOP_SOUND: usize = 0x001d_6200;
+    const PANE_SHOWN: usize = 0x001e_7084;
+    const UNBIND_ANIMATION: usize = 0x001e_69ac;
+    const LOADING_PANE: u32 = 0x97;
     const CLOCK_NOW: usize = 0x0022_9dc4;
     const CLOCK_MILLISECONDS: usize = 0x002c_8ea4;
     const OPEN_ARCHIVE: usize = 0x0020_a468;
