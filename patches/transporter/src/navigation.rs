@@ -9,6 +9,8 @@
 //! 0xe and 0xf it belongs to the server and is never a destination. Neither
 //! is 0x12, the failure task.
 
+/// The language screen, from the start screen.
+pub const LANGUAGE: u32 = 1;
 pub const START_SCREEN: u32 = 2;
 pub const CONNECT: u32 = 3;
 pub const TRANSFER: u32 = 6;
@@ -31,6 +33,25 @@ pub const CANCEL: u32 = 0xf;
 /// failure message or the one that no Game Card is detected, so this one
 /// would be a second.
 pub const FAILURE: u32 = 0x12;
+/// What the original answers when the application is to end.
+pub const EXIT: u32 = 0x13;
+
+/// The original router's answers the offline flow takes as they are. Every
+/// other answer, a server task, the cancel task or the failure task among
+/// them, ends the session through disconnect, as every other answer ends
+/// Bank's through cleanup. The reading and the Bank task are no answer of
+/// the router offline: `destination` gives them.
+const TAKEN: [u32; 9] = [
+    LANGUAGE,
+    START_SCREEN,
+    TRANSFER,
+    SEARCH,
+    LIST,
+    QUESTION,
+    DISCONNECT,
+    RELOAD,
+    EXIT,
+];
 
 /// `outcome` is the finished task's byte `+0x30`; `native` is what the
 /// original router answered for it; `cancelled` is the manager's flag
@@ -43,7 +64,8 @@ pub const FAILURE: u32 = 0x12;
 /// came in between; a session that ends without a transfer goes straight to
 /// the disconnect task, where the original cancelled it on the server
 /// first; and so does a task that failed, which has shown its message,
-/// where the original's failure task showed another.
+/// where the original's failure task showed another. Any answer the flow
+/// does not take (`TAKEN`) goes to the disconnect task as well.
 pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u32 {
     if cancelled {
         return DISCONNECT;
@@ -51,8 +73,8 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
     match (current, outcome) {
         (LIST, 4) => READ,
         (READ, _) => BANK_TASK,
-        _ if native == CANCEL || native == FAILURE => DISCONNECT,
-        _ => native,
+        _ if TAKEN.contains(&native) => native,
+        _ => DISCONNECT,
     }
 }
 
@@ -90,7 +112,7 @@ pub const fn spins(next: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::router::{self, EXIT};
+    use crate::router;
 
     /// The routing the two edits inside the router gave (`00242D10`,
     /// `00242D28`), and the cancel and failure tasks left out.
@@ -104,16 +126,31 @@ mod tests {
         }
     }
 
+    /// The tasks of the server, which the offline flow never enters.
+    const SERVER: [u32; 8] = [CONNECT, 4, 5, 0xa, 0xd, 0xe, CANCEL, FAILURE];
+
     #[test]
     fn the_routing_is_the_one_the_two_edits_inside_the_router_gave() {
+        assert_eq!(router::EXIT, EXIT);
         for current in 0..=0x14 {
             for outcome in 0..=u8::MAX {
                 let native = router::next(current, outcome);
-                assert_eq!(
-                    destination(current, outcome, native, false),
-                    edited_inside(current, outcome),
-                    "{current:#x} {outcome:#x}"
-                );
+                let routed = destination(current, outcome, native, false);
+                // From every task the offline flow enters, the routing is
+                // the edited router's; from the server's own, which it never
+                // enters, the session ends.
+                if SERVER.contains(&current) {
+                    assert!(
+                        matches!(routed, DISCONNECT | BANK_TASK),
+                        "{current:#x} {outcome:#x}"
+                    );
+                } else {
+                    assert_eq!(
+                        routed,
+                        edited_inside(current, outcome),
+                        "{current:#x} {outcome:#x}"
+                    );
+                }
                 // A cancelled task is the original's to answer.
                 assert_eq!(destination(current, outcome, DISCONNECT, true), DISCONNECT);
             }
@@ -144,12 +181,9 @@ mod tests {
         for current in 0..=0x14 {
             for outcome in 0..=u8::MAX {
                 let next = destination(current, outcome, router::next(current, outcome), false);
-                // The server's own tasks and the failure task are only ever
-                // left, never entered.
-                let never = [CONNECT, 4, 5, 0xa, 0xd, 0xe, CANCEL, FAILURE];
-                if !never.contains(&current) {
-                    assert!(!never.contains(&next), "{current:#x} {outcome:#x}");
-                }
+                // The server's own tasks and the failure task are never
+                // entered.
+                assert!(!SERVER.contains(&next), "{current:#x} {outcome:#x}");
             }
         }
     }
