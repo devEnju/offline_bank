@@ -206,7 +206,7 @@ mod native {
     use super::*;
     use crate::lytpatch;
     use core::{mem::transmute, slice};
-    use patch_common::native::read_word;
+    use patch_common::native::{follow, read_word};
 
     /// Points at the byte holding the language of the screens (`001E356C`).
     const UI_LANGUAGE: *const *const u8 = 0x0032_938c as *const *const u8;
@@ -403,12 +403,22 @@ mod native {
     /// file (`ui::message_text`).
     unsafe fn set_back_text(screen: *mut u8, parameter: *const u8) {
         unsafe {
-            let heap = parameter.add(PARAMETER_HEAP).cast::<*mut u8>().read();
-            let work = screen.add(SCREEN_LAYOUT).cast::<*mut u8>().read();
-            let strings = work.add(WORK_STRINGS).cast::<*mut u8>().read();
-            let layouts = work.add(WORK_LAYOUTS).cast::<*mut u8>().read();
-            let layout = layouts.add(LOWER_LAYOUT).cast::<*mut u8>().read();
-            // Without the text the button keeps the original's.
+            // Without what the text needs, or without the text, the button
+            // keeps the original's.
+            let (Some(heap), Some(work)) = (
+                follow(parameter, PARAMETER_HEAP),
+                follow(screen, SCREEN_LAYOUT),
+            ) else {
+                return;
+            };
+            let (Some(strings), Some(layouts)) =
+                (follow(work, WORK_STRINGS), follow(work, WORK_LAYOUTS))
+            else {
+                return;
+            };
+            let Some(layout) = follow(layouts, LOWER_LAYOUT) else {
+                return;
+            };
             let _ = crate::ui::message_text(
                 heap,
                 strings,
@@ -453,22 +463,27 @@ mod native {
         unsafe {
             let place: unsafe extern "aapcs" fn(*mut u8, u32, u32, *const [f32; 3]) =
                 transmute(PLACE_PANE);
-            let work = screen.add(SCREEN_LAYOUT).cast::<*mut u8>().read();
+            // The order is the screen's; its panes are placed where the
+            // screen has its layout.
+            let work = follow(screen, SCREEN_LAYOUT);
             for (position, &index) in order.iter().enumerate() {
                 screen
                     .add(SCREEN_ORDER + position * 4)
                     .cast::<u32>()
                     .write(u32::from(index));
-                let at = [0.0, y_float(y(position, SHOWN)), 0.0];
-                place(work, 1, LIST_PANES[index as usize], &at);
+                if let Some(work) = work {
+                    let at = [0.0, y_float(y(position, SHOWN)), 0.0];
+                    place(work, 1, LIST_PANES[index as usize], &at);
+                }
             }
             screen
                 .add(SCREEN_PICKED)
                 .cast::<u32>()
                 .write(u32::from(order[0]));
             let sound: unsafe extern "aapcs" fn(*mut u8, u32, u32) = transmute(BUTTON_SOUND);
-            let buttons = screen.add(SCREEN_BUTTONS).cast::<*mut u8>().read();
-            sound(buttons, u32::from(BACK), CANCEL_SOUND);
+            if let Some(buttons) = follow(screen, SCREEN_BUTTONS) {
+                sound(buttons, u32::from(BACK), CANCEL_SOUND);
+            }
             set_back_text(screen, parameter);
         }
     }
@@ -487,10 +502,11 @@ mod native {
                 return;
             }
             let disable: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(DISABLE_BUTTON);
-            let buttons = screen.add(SCREEN_BUTTONS).cast::<*mut u8>().read();
-            for position in SHOWN..ENTRIES {
-                let index = read_word(screen, SCREEN_ORDER + position * 4);
-                disable(buttons, index);
+            if let Some(buttons) = follow(screen, SCREEN_BUTTONS) {
+                for position in SHOWN..ENTRIES {
+                    let index = read_word(screen, SCREEN_ORDER + position * 4);
+                    disable(buttons, index);
+                }
             }
             screen
                 .add(SCREEN_RANGE_END)

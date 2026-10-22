@@ -21,7 +21,7 @@ use crate::{
     language,
     sdcard::{self, Sd, COPY_CHUNK},
     sdsave::Saves,
-    task::{Task, TASK_LIST},
+    task::{Task, TASK_LIST, TASK_MANAGER},
 };
 use core::{cell::UnsafeCell, mem::transmute, slice};
 use patch_common::native::read_word;
@@ -47,7 +47,6 @@ const MODE_SCAN: u8 = 2;
 const MANAGER_VERSION: usize = 0x148;
 const MANAGER_TITLE: usize = 0x14c;
 /// Fields of the game-list task.
-const LIST_MANAGER: usize = 0x08;
 const LIST_STATE: usize = 0x10;
 const LIST_KINDS: usize = 0x3c;
 const LIST_COUNT: usize = 0x64;
@@ -203,12 +202,15 @@ unsafe extern "aapcs" fn list_next(raw: *mut u8) -> u32 {
         // The stub runs the replaced state store, as the original.
         return 0;
     };
+    // Without its manager the list has no cartridge or save to read: it goes
+    // on to the Virtual Console titles.
+    let manager = task.pointer(TASK_MANAGER).ok();
     let task = task.raw();
     unsafe {
         let state = task.add(LIST_STATE).cast::<u32>();
-        if matches!(state.read(), STATE_FIRST_ITEM | STATE_READING_CARTRIDGE) {
+        if let (Some(manager), STATE_FIRST_ITEM | STATE_READING_CARTRIDGE) = (manager, state.read())
+        {
             let count = usize::from(task.add(LIST_COUNT).cast::<u16>().read());
-            let manager = task.add(LIST_MANAGER).cast::<*mut u8>().read();
             let saves = saves();
             while let Some(item) = saves.next_for_list(count) {
                 if count >= LIST_LIMIT {
@@ -273,12 +275,16 @@ pub unsafe extern "aapcs" fn transporter_card_removed(manager: *mut u8) -> u32 {
 pub unsafe extern "aapcs" fn transporter_entry_card_removed(task: *const u8) -> u32 {
     let Ok(task) = (unsafe { Task::from_raw(task.cast_mut(), &[TASK_LIST]) }) else {
         // The original listener loads the manager, then asks about its card.
-        let manager = unsafe { task.add(LIST_MANAGER).cast::<*mut u8>().read() };
+        let manager = unsafe { task.add(TASK_MANAGER).cast::<*mut u8>().read() };
         return u32::from(unsafe { card_removed(manager) });
+    };
+    // Without its manager the card counts as gone: the original then shows
+    // its message instead of reading.
+    let Ok(manager) = task.pointer(TASK_MANAGER) else {
+        return 1;
     };
     let task = task.raw();
     unsafe {
-        let manager = task.add(LIST_MANAGER).cast::<*mut u8>().read();
         let position = usize::from(task.add(LIST_CURSOR).cast::<u16>().read());
         u32::from(saves().card_missing_at(position, || card_removed(manager)))
     }
