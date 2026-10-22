@@ -5,8 +5,10 @@ mod build;
 mod extract;
 mod packages;
 mod process;
+mod release;
 mod test_verify;
 mod verify;
+mod zip;
 
 use std::{
     path::{Path, PathBuf},
@@ -24,6 +26,8 @@ const USAGE: &str = "usage: cargo +stable xtask <command>
   package-id <kind>    the name of the package of <kind>
   extract <cia> [--ctrtool <path>]
                        unpack a CIA into build/extracted/
+  release              make a release from main: tests, packages, zips, notes, a local tag
+  release --publish    push the tag of the release made and create it on GitHub (with gh)
 kinds: bank, transporter, test, migration, download";
 
 /// The project folder.
@@ -78,6 +82,13 @@ impl Args {
         Ok(self.value(name)?.map(|value| project_path(&value)))
     }
 
+    /// Whether `--name` is given, taken out of the arguments.
+    fn flag(&mut self, name: &str) -> bool {
+        let given = self.0.iter().any(|a| a == name);
+        self.0.retain(|a| a != name);
+        given
+    }
+
     /// The remaining arguments, which must be `N` values.
     fn rest<const N: usize>(self) -> Result<[String; N]> {
         if let Some(unknown) = self.0.iter().find(|a| a.starts_with("--")) {
@@ -123,6 +134,11 @@ fn run() -> Result<()> {
             let [kind] = args.rest()?;
             let report = verify::verify(packages::package(&kind)?, places)?;
             print!("{}", report.to_pretty());
+        }
+        "release" => {
+            let publish = args.flag("--publish");
+            let [] = args.rest()?;
+            release::release(publish)?;
         }
         "test-verify" => {
             let [] = args.rest()?;

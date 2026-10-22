@@ -306,7 +306,15 @@ fn cases(run: &mut Run) -> Result<()> {
             .map_err(|e| format!("cannot rename {} back: {e}", renamed.display()))?;
         result?;
     }
-    // The package of one kind is not that of another.
+    // The package of one kind is not that of another, when the other is
+    // built.
+    if !package("test")?.elf(&root()).is_file() {
+        println!(
+            "{:<12} {:<28} not built",
+            "bank", "checked as the test build"
+        );
+        return Ok(());
+    }
     run.case(
         package("bank")?,
         "checked as the test build",

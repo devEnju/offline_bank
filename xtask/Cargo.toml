@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# What the release guides quote: the numbers the migration and the download
+# show.
+bank-download-payload = { path = "../patches/bank-download" }
+bank-migrate-payload = { path = "../patches/bank-migrate" }
 offline-core = { path = "../crates/offline-core" }
 patch-builder = { path = "../crates/patch-builder" }
 patch-verify = { path = "../crates/patch-verify" }

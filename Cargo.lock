@@ -74,6 +74,8 @@ dependencies = [
 name = "xtask"
 version = "0.6.0"
 dependencies = [
+ "bank-download-payload",
+ "bank-migrate-payload",
  "offline-core",
  "patch-builder",
  "patch-verify",
