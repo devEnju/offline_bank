@@ -114,8 +114,11 @@ pub fn read<C: Card>(card: &mut C, save: Save, offset: u32, bytes: &mut [u8]) ->
 }
 
 /// Writes `bytes` at `offset` of the save, flushed, as the cartridge write
-/// does. The first write of a session to a save backs it up first; without
-/// the backup nothing is changed, and the next write tries it again.
+/// does, reads them back and closes the save: it is written only if the
+/// card holds them and the close reports no error, as the backup and Bank's
+/// own files are. The first write of a session to a save backs it up
+/// first; without the backup nothing is changed, and the next write tries
+/// it again. `chunk` is the copy buffer.
 pub fn write<C: Card>(
     card: &mut C,
     saves: &mut Saves,
@@ -131,8 +134,20 @@ pub fn write<C: Card>(
         saves.backup_failed();
         return false;
     }
-    open_save(card, save, false, OPEN_READ_WRITE)
-        .is_some_and(|file| file.write(u64::from(offset), bytes, true))
+    let Some(file) = open_save(card, save, false, OPEN_READ_WRITE) else {
+        return false;
+    };
+    if !file.write(u64::from(offset), bytes, true) {
+        return false;
+    }
+    for (index, written) in bytes.chunks(COPY_CHUNK).enumerate() {
+        let read = &mut chunk[..written.len()];
+        let at = u64::from(offset) + (index * COPY_CHUNK) as u64;
+        if !file.read(at, read) || read != written {
+            return false;
+        }
+    }
+    file.close()
 }
 
 #[cfg(target_arch = "arm")]
@@ -501,6 +516,37 @@ mod tests {
         ));
         assert_eq!(file(&sim, BAK), original);
         assert_eq!(file(&sim, SAV)[0x100..0x104], [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_save_write_counts_only_when_the_card_holds_it_and_closes_the_save() {
+        for faults in [
+            // A card that changes a byte without telling.
+            Faults {
+                garbled_write: Some(SAV),
+                ..Faults::default()
+            },
+            // A close of the save that reports an error.
+            Faults {
+                close: Some(SAV),
+                ..Faults::default()
+            },
+        ] {
+            let (mut sim, mut saves, save, original) = card();
+            let mut chunk = [0; COPY_CHUNK];
+            // The session's backup is made first, as it always is.
+            assert!(write(&mut sim, &mut saves, save, 0x10, &[7; 4], &mut chunk));
+            sim.0.borrow_mut().faults = faults;
+            // A write longer than the copy buffer is read back in parts.
+            let bytes = vec![0x5a; COPY_CHUNK + 100];
+            assert!(!write(
+                &mut sim, &mut saves, save, 0x200, &bytes, &mut chunk
+            ));
+            assert_eq!(file(&sim, BAK), original);
+            sim.0.borrow_mut().faults = Faults::default();
+            assert!(write(&mut sim, &mut saves, save, 0x200, &bytes, &mut chunk));
+            assert_eq!(file(&sim, SAV)[0x200..0x200 + bytes.len()], bytes[..]);
+        }
     }
 
     #[test]
