@@ -526,8 +526,10 @@ patch_common::stub!(
 );
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
 /// flushed, and read back; `DELIVER_PENDING` while that is in progress; and
-/// `DELIVER_FAILED` when nothing was delivered, in which case the original
-/// must not remove anything from the source game.
+/// `DELIVER_FAILED` when the delivery is not confirmed, in which case the
+/// original removes nothing from the source game. Bank may hold the
+/// delivery all the same, if only the record announcing it did not read
+/// back (`Journal::announce`): a duplicate, never a loss.
 ///
 /// Bank is written only while the game the Pokémon leave can be saved: for
 /// a cartridge whose card is gone the answer is `DELIVER_FAILED` before
