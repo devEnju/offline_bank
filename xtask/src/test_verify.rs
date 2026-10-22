@@ -126,6 +126,9 @@ type Change = Box<dyn Fn(&Path) -> Result<()>>;
 struct Run {
     work: PathBuf,
     failures: Vec<String>,
+    /// The original the next case is checked against, if not the one under
+    /// `build/extracted/`.
+    original: Option<PathBuf>,
 }
 
 impl Run {
@@ -163,7 +166,7 @@ impl Run {
         let places = Places {
             package: Some(dir.clone()),
             elf: Some(dir.join("payload.elf")),
-            original: None,
+            original: self.original.take(),
         };
         let refusal = verify(checked_as, places).err();
         let result = match (expect, refusal) {
@@ -294,20 +297,28 @@ fn cases(run: &mut Run) -> Result<()> {
         )?;
     }
     // The original is found by its hash, whatever its extraction's folder
-    // is called, as for a CIA that holds the same program packed otherwise.
+    // is called, as for a CIA that holds the same program packed otherwise:
+    // a copy under another name, in a folder of extractions of its own, is
+    // found and checked against. The real extractions stay as they are.
     for kind in ["bank", "transporter"] {
         let package = package(kind)?;
-        let folder = original(package)?;
-        let renamed = folder.with_file_name(format!(
-            "{}-renamed",
-            folder.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        std::fs::rename(&folder, &renamed)
-            .map_err(|e| format!("cannot rename {}: {e}", folder.display()))?;
-        let result = run.case(package, "original in another folder", None, None, package);
-        std::fs::rename(&renamed, &folder)
-            .map_err(|e| format!("cannot rename {} back: {e}", renamed.display()))?;
-        result?;
+        let source = original(package)?;
+        let extracted = run.work.join(format!("{kind}-extracted"));
+        let copy = extracted.join("another-name");
+        std::fs::create_dir_all(copy.join("exefs"))
+            .map_err(|e| format!("cannot create {}: {e}", copy.display()))?;
+        for file in ["exefs/code.bin", "exheader.bin"] {
+            write(&copy.join(file), &read(&source.join(file))?)?;
+        }
+        let program = patch_verify::expectation(package.kind)?.program;
+        let found = patch_verify::find_original(&extracted, program)?;
+        if found != copy {
+            return Err(format!(
+                "the copy of the {kind} original was not found by its hash"
+            ));
+        }
+        run.original = Some(found);
+        run.case(package, "original in another folder", None, None, package)?;
     }
     // The package of one kind is not that of another, when the other is
     // built.
@@ -339,6 +350,7 @@ pub fn test_verify() -> Result<()> {
     let mut run = Run {
         work: work.clone(),
         failures: Vec::new(),
+        original: None,
     };
     let result = cases(&mut run);
     let _ = std::fs::remove_dir_all(&work);
