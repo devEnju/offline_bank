@@ -209,6 +209,10 @@ mod tests {
         short_read: Option<&'static [u8]>,
         short_write: Option<&'static [u8]>,
         close: Option<&'static [u8]>,
+        /// The write of this number to the file, counted from 0, writes the
+        /// first half of its bytes and fails, as a write cut short on the
+        /// card does.
+        torn_write: Option<(&'static [u8], usize)>,
     }
     #[derive(Default)]
     struct Disk {
@@ -216,6 +220,8 @@ mod tests {
         faults: Faults,
         /// Writes with a flush: path and offset.
         flushes: Vec<(Vec<u8>, u64)>,
+        /// Writes to the file of `torn_write` so far.
+        writes: usize,
     }
     fn matches(path: &[u8], end: Option<&[u8]>) -> bool {
         end.is_some_and(|end| path.ends_with(end))
@@ -253,12 +259,26 @@ mod tests {
             if matches(&self.1, disk.faults.short_write) {
                 return false;
             }
+            let mut bytes = bytes;
+            let mut torn = false;
+            if let Some((end, at)) = disk.faults.torn_write {
+                if self.1.ends_with(end) {
+                    torn = disk.writes == at;
+                    disk.writes += 1;
+                }
+            }
+            if torn {
+                bytes = &bytes[..bytes.len() / 2];
+            }
             let data = disk.files.get_mut(&self.1).unwrap();
             let end = offset as usize + bytes.len();
             if data.len() < end {
                 data.resize(end, 0);
             }
             data[offset as usize..end].copy_from_slice(bytes);
+            if torn {
+                return false;
+            }
             if flush {
                 disk.flushes.push((self.1.clone(), offset));
             }
@@ -373,6 +393,51 @@ mod tests {
                 &mut chunk
             ));
             assert_eq!(file(&sim, BAK), original);
+            assert_eq!(file(&sim, SAV)[0x100..0x104], [1, 2, 3, 4]);
+        }
+    }
+
+    #[test]
+    fn a_backup_cut_short_after_some_chunks_leaves_the_save_and_is_made_whole_next_time() {
+        let chunks = (SAVE_SIZE / COPY_CHUNK as u64) as usize;
+        for at in [0, 2, chunks - 1] {
+            let (mut sim, mut saves, save, original) = card();
+            // The backup of an earlier session, of other bytes.
+            let mut path = [0; PATH_CAPACITY];
+            let length = save.path(true, &mut path);
+            sim.0
+                .borrow_mut()
+                .files
+                .insert(path[..length].to_vec(), vec![0xee; SAVE_SIZE as usize]);
+            let mut chunk = [0; COPY_CHUNK];
+            sim.0.borrow_mut().faults = Faults {
+                torn_write: Some((BAK, at)),
+                ..Faults::default()
+            };
+            assert!(!write(
+                &mut sim,
+                &mut saves,
+                save,
+                0x100,
+                &[1, 2, 3, 4],
+                &mut chunk
+            ));
+            // The save is untouched, and the backup is neither the old one
+            // nor the new one.
+            assert_eq!(file(&sim, SAV), original, "chunk {at}");
+            let torn = file(&sim, BAK);
+            assert!(torn != original && torn != vec![0xee; SAVE_SIZE as usize]);
+            // The next write backs up again, whole, and then writes.
+            sim.0.borrow_mut().faults = Faults::default();
+            assert!(write(
+                &mut sim,
+                &mut saves,
+                save,
+                0x100,
+                &[1, 2, 3, 4],
+                &mut chunk
+            ));
+            assert_eq!(file(&sim, BAK), original, "chunk {at}");
             assert_eq!(file(&sim, SAV)[0x100..0x104], [1, 2, 3, 4]);
         }
     }
