@@ -12,7 +12,10 @@ use crate::{
     write, Result,
 };
 use patch_verify::Json;
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 pub struct Options {
     /// A release: a package for Bank says on its error and result screens
@@ -120,10 +123,7 @@ impl Builder<'_> {
                 .args(["--quiet", "--lib", "--bin", &link])
                 .args(["--", "-D", "warnings"]),
         )?;
-        let linker = root
-            .join(package.linker)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let linker = linker_script(package, &output)?;
         let map = output
             .join(format!("{}.map", package.krate))
             .to_string_lossy()
@@ -198,6 +198,32 @@ impl Builder<'_> {
         );
         Ok(())
     }
+}
+
+/// Writes the linker script of `package` (`patch_builder::linker_script`)
+/// into `folder` and returns its path. Its name holds the hash of its text,
+/// so that a changed layout changes rustc's arguments and Cargo links again.
+fn linker_script(package: &Package, folder: &Path) -> Result<String> {
+    let profile = patch_builder::profile(package.kind).map_err(|e| e.to_string())?;
+    let script = patch_builder::linker_script(profile);
+    let name = format!(
+        "link-{}.ld",
+        &patch_builder::hex(&patch_builder::sha256(script.as_bytes()))[..16]
+    );
+    // Earlier layouts go.
+    for entry in
+        std::fs::read_dir(folder).map_err(|e| format!("cannot list {}: {e}", folder.display()))?
+    {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let file = path.file_name().unwrap_or_default().to_string_lossy();
+        if file.starts_with("link-") && file.ends_with(".ld") && file != name {
+            std::fs::remove_file(&path)
+                .map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+        }
+    }
+    let path = folder.join(name);
+    write(&path, script.as_bytes())?;
+    Ok(path.to_string_lossy().replace('\\', "/"))
 }
 
 /// Cargo's target folder, wherever it is configured.

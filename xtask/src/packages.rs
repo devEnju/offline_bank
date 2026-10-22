@@ -35,8 +35,6 @@ pub struct Package {
     pub program: Program,
     /// The payload crate; its link binary is `<crate>-link`.
     pub krate: &'static str,
-    /// Its linker script.
-    pub linker: &'static str,
     /// Cargo features beside `linked-image`.
     pub features: &'static [&'static str],
     /// The builder's profile files (under `crates/patch-builder/src/`) with
@@ -54,7 +52,6 @@ pub const PACKAGES: [Package; 5] = [
         kind: "bank",
         program: Program::Bank,
         krate: "bank-payload",
-        linker: "patches/bank/link/bank15.ld",
         features: &[],
         profiles: &["bank15.rs", "bank15/offline.rs"],
         folder: "build/binary/bank",
@@ -63,7 +60,6 @@ pub const PACKAGES: [Package; 5] = [
         kind: "transporter",
         program: Program::Transporter,
         krate: "transporter-payload",
-        linker: "patches/transporter/link/transporter15.ld",
         features: &[],
         profiles: &["transporter15.rs", "transporter15/offline.rs"],
         folder: "build/binary/transporter",
@@ -72,7 +68,6 @@ pub const PACKAGES: [Package; 5] = [
         kind: "test",
         program: Program::Bank,
         krate: "bank-payload",
-        linker: "patches/bank/link/bank15.ld",
         features: &["test-build"],
         profiles: &["bank15.rs", "bank15/offline.rs", "bank15/test.rs"],
         folder: "build/test",
@@ -81,7 +76,6 @@ pub const PACKAGES: [Package; 5] = [
         kind: "migration",
         program: Program::Bank,
         krate: "bank-migrate-payload",
-        linker: "patches/bank-migrate/link/bank15-migrate.ld",
         features: &[],
         profiles: &["bank15.rs", "bank15/migrate.rs"],
         folder: "build/migration",
@@ -90,7 +84,6 @@ pub const PACKAGES: [Package; 5] = [
         kind: "download",
         program: Program::Bank,
         krate: "bank-download-payload",
-        linker: "patches/bank-download/link/bank15-download.ld",
         features: &[],
         profiles: &["bank15.rs", "bank15/download.rs"],
         folder: "build/download",
