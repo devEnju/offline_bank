@@ -8,9 +8,12 @@ use crate::{
     cart, navigation,
     panel::{self, Panel},
     program::Transporter15,
-    storage_worker::{Failed, Job, Reply, TransporterWorker},
+    storage_worker::{
+        checked, delivered, Checked, Failed, Job, Reply, TransporterWorker, DELIVER_DONE,
+        DELIVER_FAILED, DELIVER_PENDING,
+    },
     task::*,
-    ui::{self, from_second_page, loading, refusal_message, stop_loading, MESSAGE_OPEN_BANK},
+    ui::{self, from_second_page, loading, stop_loading, MESSAGE_OPEN_BANK},
 };
 use core::{mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
@@ -45,10 +48,6 @@ const TRANSFER_UPDATE: usize = 0x0024_a0c4;
 const SEARCH_START: u32 = 0;
 const SEARCH_MESSAGE: u32 = 5;
 const SEARCH_NONE: u8 = 2;
-/// Answers of the delivery entry, as its stub tests them.
-const DELIVER_FAILED: u32 = 0;
-const DELIVER_DONE: u32 = 1;
-const DELIVER_PENDING: u32 = 2;
 
 /// The panel the search started (`panel`). It is kept apart from `STATE`,
 /// unlike Bank's scan panel, which only its own hook uses: the entries that
@@ -391,12 +390,10 @@ unsafe fn check(task: Task) -> Check {
     }
     let answer = unsafe { state.job(Job::Check, |_| Some(())) };
     drop(state);
-    // A worker that failed refuses as a file that does not read does.
-    let message = match answer {
-        None => return Check::Pending,
-        Some(Ok(Reply::Ready)) => return Check::Go,
-        Some(Ok(Reply::Refused(refusal))) => refusal_message(refusal),
-        Some(_) => MESSAGE_OPEN_BANK,
+    let message = match checked(answer) {
+        Checked::Pending => return Check::Pending,
+        Checked::Go => return Check::Go,
+        Checked::Refused(message) => message,
     };
     unsafe { show(task, message) }
 }
@@ -565,11 +562,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
             stage_box(task, worker.staging_mut().ok()?)
         })
     };
-    match answer {
-        None => DELIVER_PENDING,
-        Some(Ok(Reply::Delivered)) => DELIVER_DONE,
-        Some(_) => DELIVER_FAILED,
-    }
+    delivered(answer)
 }
 
 /// Replaces the start screen's call that writes its version line
