@@ -18,7 +18,7 @@ use patch_common::{
     exclusive::Exclusive,
     native::{follow, read_word, write_word, Ended},
     spinner::{self, Spinner},
-    worker::JobId,
+    worker::{Pending, Polled},
 };
 
 /// What the version line says behind "Ver. 1.5".
@@ -60,7 +60,8 @@ static PANEL: Panel = Panel::new();
 /// up went up. Only the main thread takes it.
 struct Runtime {
     worker: Option<TransporterWorker>,
-    job: Option<(JobId, Job)>,
+    /// The job out, for the kind of job that submitted it.
+    job: Pending<Job>,
     spinner: Spinner,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
@@ -68,7 +69,7 @@ struct Runtime {
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
         worker: None,
-        job: None,
+        job: Pending::new(),
         spinner: Spinner::new(),
     })
 };
@@ -84,7 +85,7 @@ impl Runtime {
         kind: Job,
         stage: impl FnOnce(&mut TransporterWorker) -> Option<()>,
     ) -> Option<Result<Reply, Failed>> {
-        let Some((id, out)) = self.job else {
+        if !self.job.is_out() {
             let worker = match unsafe { TransporterWorker::get(&mut self.worker) } {
                 Ok(worker) => worker,
                 Err(failed) => return Some(Err(failed)),
@@ -94,26 +95,22 @@ impl Runtime {
             }
             return match unsafe { worker.submit(kind) } {
                 Ok(id) => {
-                    self.job = Some((id, kind));
+                    self.job.submitted(id, kind);
                     None
                 }
                 Err(failed) => Some(Err(failed)),
             };
-        };
+        }
         // The check and the delivery belong to tasks of their own and never
-        // overlap; a reply is only ever the job's that asked for it. A job of
-        // another kind is waited for and its reply dropped: what it holds
-        // stays lent until it ends, and only then is this one a failure.
+        // overlap; a reply is only ever the job's that asked for it
+        // (`Pending`).
         let worker = self.worker.as_mut()?;
-        let mut job = Some(id);
-        let polled = worker.collect(&mut job);
-        if job.is_none() {
-            self.job = None;
+        match self.job.poll(kind, |job| worker.collect(job)) {
+            Polled::Waiting => None,
+            Polled::Reply(reply) => Some(Ok(reply)),
+            Polled::Failed(failed) => Some(Err(failed)),
+            Polled::Foreign => Some(Err(Failed)),
         }
-        if out != kind {
-            return job.is_none().then_some(Err(Failed));
-        }
-        polled.transpose()
     }
 }
 
@@ -167,7 +164,7 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
     // is chosen; one that waits lets them through, unless a job is still out.
     if navigation::loads(next) {
         refuse_home(true);
-    } else if state.job.is_none() {
+    } else if !state.job.is_out() {
         refuse_home(false);
     }
     // The task's set-up puts up its loading panel on a later frame; its
@@ -389,7 +386,7 @@ unsafe fn check(task: Task) -> Check {
         drop(state);
         return unsafe { show(task, MESSAGE_OPEN_BANK) };
     }
-    if state.job.is_none() && state.spinner.idle(now()) {
+    if !state.job.is_out() && state.spinner.idle(now()) {
         return Check::Pending;
     }
     let answer = unsafe { state.job(Job::Check, |_| Some(())) };
@@ -554,7 +551,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return DELIVER_PENDING;
     };
-    if state.job.is_none() {
+    if !state.job.is_out() {
         let Ok(manager) = task.pointer(TASK_MANAGER) else {
             return DELIVER_FAILED;
         };

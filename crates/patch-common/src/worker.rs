@@ -28,6 +28,92 @@ const WORKER_SDK_PRIORITY: u32 = WORKER_KERNEL_PRIORITY - 0x20;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JobId(u32);
 
+/// The job a patch has out, and whom it is for: the task that submitted
+/// it, or its kind. Its reply goes to its owner only. Asked by another, the
+/// job is waited for and its reply dropped, and only then is the asking
+/// owner told (`Polled::Foreign`): what the job holds stays lent until it
+/// has ended. A poll that cannot say whether the job still runs never ends
+/// it (`Worker::collect`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pending<O> {
+    out: Option<(JobId, O)>,
+}
+
+/// One frame of a pending job, for the owner that asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Polled<R, E> {
+    /// The job is still out; ask again on the next frame.
+    Waiting,
+    /// Its reply.
+    Reply(R),
+    /// The worker failed it, or no job was out.
+    Failed(E),
+    /// The job out was another owner's; it has ended, and its reply was
+    /// dropped.
+    Foreign,
+}
+
+impl<O: Copy + PartialEq> Pending<O> {
+    pub const fn new() -> Self {
+        Self { out: None }
+    }
+    /// Whether a job is out.
+    pub fn is_out(&self) -> bool {
+        self.out.is_some()
+    }
+    /// Notes the job `id` the worker took for `owner`.
+    pub fn submitted(&mut self, id: JobId, owner: O) {
+        self.out = Some((id, owner));
+    }
+    /// One frame of the job out, for `owner`, through `collect` (the
+    /// worker's `collect`, which clears the job once it has ended).
+    pub fn poll<R, E: From<Control>>(
+        &mut self,
+        owner: O,
+        collect: impl FnOnce(&mut Option<JobId>) -> Result<Option<R>, E>,
+    ) -> Polled<R, E> {
+        let Some((id, out)) = self.out else {
+            return Polled::Failed(Control::new(ControlKind::NoJob).into());
+        };
+        let mut job = Some(id);
+        let result = collect(&mut job);
+        if job.is_some() {
+            return Polled::Waiting;
+        }
+        self.out = None;
+        if out != owner {
+            return Polled::Foreign;
+        }
+        match result {
+            Ok(Some(reply)) => Polled::Reply(reply),
+            Ok(None) => Polled::Waiting,
+            Err(error) => Polled::Failed(error),
+        }
+    }
+    /// Waits, a frame at a time, for whatever job is out to end, its reply
+    /// dropped: true once none is out.
+    pub fn settle<R, E>(
+        &mut self,
+        collect: impl FnOnce(&mut Option<JobId>) -> Result<Option<R>, E>,
+    ) -> bool {
+        let Some((id, _)) = self.out else {
+            return true;
+        };
+        let mut job = Some(id);
+        let _ = collect(&mut job);
+        if job.is_none() {
+            self.out = None;
+        }
+        self.out.is_none()
+    }
+}
+
+impl<O: Copy + PartialEq> Default for Pending<O> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// What went wrong with the worker itself, not with a job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlKind {
@@ -580,5 +666,79 @@ mod tests {
         mailbox.sequence.store(u32::MAX, Ordering::Relaxed);
         assert!(mailbox.submit(1).is_err());
         assert!(mailbox.idle());
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    /// A worker's `collect` for a job that ends on the frame `ends` with
+    /// `result`: until then it keeps the job, as an uncertain poll does too.
+    fn worker(
+        frame: u32,
+        ends: u32,
+        result: Result<Option<u8>, Control>,
+    ) -> impl FnOnce(&mut Option<JobId>) -> Result<Option<u8>, Control> {
+        move |job| {
+            if frame < ends {
+                return Ok(None);
+            }
+            *job = None;
+            result
+        }
+    }
+
+    #[test]
+    fn the_owner_gets_its_reply_once_the_job_has_ended() {
+        let mut pending = Pending::new();
+        pending.submitted(JobId(1), 7u32);
+        assert!(pending.is_out());
+        assert_eq!(pending.poll(7, worker(0, 2, Ok(Some(9)))), Polled::Waiting);
+        assert_eq!(pending.poll(7, worker(1, 2, Ok(Some(9)))), Polled::Waiting);
+        assert!(pending.is_out());
+        assert_eq!(pending.poll(7, worker(2, 2, Ok(Some(9)))), Polled::Reply(9));
+        assert!(!pending.is_out());
+    }
+
+    #[test]
+    fn a_failed_job_is_its_owners_failure() {
+        let mut pending = Pending::new();
+        pending.submitted(JobId(1), 7u32);
+        let stopped = Control::new(ControlKind::Stopped);
+        assert_eq!(
+            pending.poll(7, worker(0, 0, Err(stopped))),
+            Polled::Failed(stopped)
+        );
+        assert!(!pending.is_out());
+    }
+
+    #[test]
+    fn another_owner_waits_for_the_job_and_never_sees_its_reply() {
+        let mut pending = Pending::new();
+        pending.submitted(JobId(1), 7u32);
+        // While the job runs, nothing is released.
+        assert_eq!(pending.poll(8, worker(0, 1, Ok(Some(9)))), Polled::Waiting);
+        assert!(pending.is_out());
+        // Ended, its reply is dropped; only now is the other owner told.
+        assert_eq!(pending.poll(8, worker(1, 1, Ok(Some(9)))), Polled::Foreign);
+        assert!(!pending.is_out());
+        // So is a failure of the job.
+        pending.submitted(JobId(2), 7u32);
+        let stopped = Control::new(ControlKind::Stopped);
+        assert_eq!(pending.poll(8, worker(0, 0, Err(stopped))), Polled::Foreign);
+    }
+
+    #[test]
+    fn a_poll_without_a_job_fails_and_settling_waits_for_the_end() {
+        let mut pending: Pending<u32> = Pending::new();
+        let none = pending.poll(7, worker(0, 0, Ok(Some(9))));
+        assert_eq!(none, Polled::Failed(Control::new(ControlKind::NoJob)));
+        assert!(pending.settle(worker(0, 0, Ok(Some(9)))));
+        pending.submitted(JobId(3), 7);
+        assert!(!pending.settle(worker(0, 1, Ok(Some(9)))));
+        assert!(pending.is_out());
+        assert!(pending.settle(worker(1, 1, Ok(Some(9)))));
+        assert!(!pending.is_out());
     }
 }

@@ -27,7 +27,7 @@ use patch_common::{
     native::{write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
-    worker::{JobId, Service, Shared, Worker},
+    worker::{Pending, Polled, Service, Shared, Worker},
 };
 
 /// The numbers when the hook itself could not go on: a native object was
@@ -105,8 +105,8 @@ impl Service for Converter {
 
 struct Runtime {
     worker: Option<Worker<Converter>>,
-    owner: usize,
-    job: Option<JobId>,
+    /// The conversion out, for the task that submitted it.
+    job: Pending<usize>,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
     /// When the loading panel went up.
@@ -118,8 +118,7 @@ struct Runtime {
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
         worker: None,
-        owner: 0,
-        job: None,
+        job: Pending::new(),
         numbers: None,
         spinner: Spinner::new(),
         notice: Notice::new(PACKAGE),
@@ -141,7 +140,7 @@ impl Runtime {
         &mut self,
         task: Task,
     ) -> Result<Option<<Converter as Service>::Reply>, [u32; 2]> {
-        if self.job.is_none() {
+        if !self.job.is_out() {
             let now = now();
             if self.spinner.elapsed(now).is_none() {
                 let panel = task.ui().map_err(|_| NATIVE)?;
@@ -161,17 +160,20 @@ impl Runtime {
             let id = submitted.map_err(WorkerError::numbers)?;
             // Files are being read and written until the reply.
             refuse_home(true);
-            self.owner = task.raw() as usize;
-            self.job = Some(id);
+            self.job.submitted(id, task.raw() as usize);
             return Ok(None);
         }
-        if self.owner != task.raw() as usize {
-            return Err(NATIVE);
+        let worker = self.worker.as_mut().ok_or(NATIVE)?;
+        match self
+            .job
+            .poll(task.raw() as usize, |job| worker.collect(job))
+        {
+            Polled::Waiting => Ok(None),
+            Polled::Reply(reply) => Ok(Some(reply)),
+            Polled::Failed(error) => Err(WorkerError::numbers(error)),
+            // Another task's job has ended; this task's work is not there.
+            Polled::Foreign => Err(NATIVE),
         }
-        let mut job = self.job;
-        let polled = self.worker()?.collect(&mut job);
-        self.job = job;
-        polled.map_err(WorkerError::numbers)
     }
 }
 
@@ -198,7 +200,7 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
     // Refuse HOME and sleep from the scan to the end of the conversion.
     if navigation::loads(destination) {
         refuse_home(true);
-    } else if state.job.is_none() {
+    } else if !state.job.is_out() {
         refuse_home(false);
     }
     destination

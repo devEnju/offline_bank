@@ -28,7 +28,7 @@ use patch_common::{
     native::{follow, read_word, write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
-    worker::{JobId, Service, Shared, Worker},
+    worker::{Pending, Polled, Service, Shared, Worker},
 };
 
 /// The numbers when a hook itself could not go on: a native object was not
@@ -109,8 +109,8 @@ impl Service for Files {
 
 struct Runtime {
     worker: Option<Worker<Files>>,
-    owner: usize,
-    job: Option<JobId>,
+    /// The job out, for the task that submitted it.
+    job: Pending<usize>,
     stage: Stage,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
@@ -127,8 +127,7 @@ struct Runtime {
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
         worker: None,
-        owner: 0,
-        job: None,
+        job: Pending::new(),
         stage: Stage::Looking,
         numbers: None,
         panel: false,
@@ -162,25 +161,29 @@ impl Runtime {
         task: Task,
         begin: impl FnOnce(&mut Self) -> Result<Job, [u32; 2]>,
     ) -> Result<Option<Reply>, [u32; 2]> {
-        if self.job.is_none() {
+        if !self.job.is_out() {
             let job = begin(self)?;
             let submitted = unsafe { self.worker()?.submit(job) };
-            self.job = Some(submitted.map_err(WorkerError::numbers)?);
-            self.owner = task.raw() as usize;
+            let id = submitted.map_err(WorkerError::numbers)?;
+            self.job.submitted(id, task.raw() as usize);
             return Ok(None);
         }
-        if self.owner != task.raw() as usize {
-            return Err(NATIVE);
+        let worker = self.worker.as_mut().ok_or(NATIVE)?;
+        match self
+            .job
+            .poll(task.raw() as usize, |job| worker.collect(job))
+        {
+            Polled::Waiting => Ok(None),
+            Polled::Reply(reply) => Ok(Some(reply)),
+            Polled::Failed(error) => Err(WorkerError::numbers(error)),
+            // Another task's job has ended; this task's work is not there.
+            Polled::Foreign => Err(NATIVE),
         }
-        let mut job = self.job;
-        let polled = self.worker()?.collect(&mut job);
-        self.job = job;
-        polled.map_err(WorkerError::numbers)
     }
     /// Task 3 before anything is contacted: the loading panel, and once it
     /// has stood for 0.5 s the worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
-        if self.job.is_none() {
+        if !self.job.is_out() {
             if !self.panel {
                 let panel = task.ui().map_err(|_| NATIVE)?;
                 unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
@@ -270,7 +273,6 @@ unsafe fn scan(raw: *mut u8, original: usize) -> u32 {
             Ok(None) => return 0,
             Ok(Some(Reply::Absent)) => {
                 state.stage = Stage::Preparing;
-                state.owner = 0;
                 state.panel = false;
                 task.end_busy();
                 unsafe { write_word(raw, 0x10, 0) };
@@ -424,7 +426,6 @@ pub unsafe extern "aapcs" fn bank_download_save(raw: *mut u8) -> u32 {
             Err(numbers) => state.decide(numbers),
         }
     }
-    state.owner = 0;
     cancel(raw)
 }
 
