@@ -145,13 +145,14 @@ kinds: bank, transporter, test, migration, download";
                 profile.name,
                 built.directory.display()
             );
+            println!("Package: {}", built.name);
             println!("code.ips SHA-256: {}", hex(&built.ips_sha256));
             println!("exheader.bin SHA-256: {}", hex(&built.exheader_sha256));
             println!(
                 "Expanded code SHA-256: {}",
                 hex(&built.expanded_code_sha256)
             );
-            println!("Paired files, report.md and manifest.json written. Nothing installed.");
+            println!("Paired files, PACKAGE.txt, report.md and manifest.json written. Nothing installed.");
         }
         "--help" | "-h" if args.len() == 1 => println!("{usage}"),
         _ => return Err(usage.into()),

@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct Artifacts {
     pub directory: PathBuf,
+    /// The package's name (`package_name`), which PACKAGE.txt holds.
+    pub name: String,
     pub ips_sha256: [u8; 32],
     pub exheader_sha256: [u8; 32],
     pub expanded_code_sha256: [u8; 32],
@@ -152,21 +154,34 @@ pub fn build(
         parsed.entries.len(),
         profile.regions(),
     );
+    let name = package_name(prepared.ips(), prepared.exheader());
     write_artifacts(
         output,
         &[
             ("code.ips", prepared.ips()),
             ("exheader.bin", prepared.exheader()),
+            ("PACKAGE.txt", format!("{name}\n").as_bytes()),
             ("report.md", report.as_bytes()),
             ("manifest.json", manifest.as_bytes()),
         ],
     )?;
     Ok(Artifacts {
         directory: output.to_path_buf(),
+        name,
         ips_sha256: ips_hash,
         exheader_sha256: exheader_hash,
         expanded_code_sha256: expanded_hash,
     })
+}
+
+/// The name of a package: the first 16 hex digits of the SHA-256 over its
+/// `code.ips` followed by its `exheader.bin`, the two files that go onto the
+/// SD card. The same files have the same name, and any change to them gives
+/// a new one.
+pub fn package_name(ips: &[u8], exheader: &[u8]) -> String {
+    let mut files = ips.to_vec();
+    files.extend_from_slice(exheader);
+    hex(&sha256(&files))[..16].to_owned()
 }
 
 /// Writes `files` into `output`, a new folder or an empty one: existing
@@ -296,6 +311,13 @@ mod tests {
         for (name, bytes) in files {
             assert_eq!(fs::read(directory.join(name)).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn a_package_is_named_by_its_two_files() {
+        let name = package_name(b"ips", b"exheader");
+        assert_eq!(name, hex(&sha256(b"ipsexheader"))[..16]);
+        assert_ne!(name, package_name(b"ips", b"exheadeR"));
     }
 
     #[test]

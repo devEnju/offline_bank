@@ -155,7 +155,6 @@ impl Builder<'_> {
         self.input(package.program)?;
         let elf = self.payload(package)?;
         let original = &self.inputs[package.program.name()];
-        let id = package.id(&root)?;
         let output = package.folder(&root);
         if output.is_dir() {
             for entry in std::fs::read_dir(&output)
@@ -174,7 +173,7 @@ impl Builder<'_> {
                 .map_err(|e| format!("cannot create {}: {e}", output.display()))?;
         }
         let profile = patch_builder::profile(package.kind).map_err(|e| e.to_string())?;
-        patch_builder::build(
+        let built = patch_builder::build(
             profile,
             &read(&original.code)?,
             &read(&original.exheader)?,
@@ -182,7 +181,6 @@ impl Builder<'_> {
             &output,
         )
         .map_err(|e| format!("Package build: {e}"))?;
-        write(&output.join("PACKAGE.txt"), format!("{id}\n").as_bytes())?;
         verify::verify(package, Places::default())
             .map_err(|e| format!("Verification of the {} package failed: {e}", package.kind))?;
         if package.kind == "test" {
@@ -192,8 +190,9 @@ impl Builder<'_> {
             )?;
         }
         println!(
-            "Package {} {id}: {} (verified)",
+            "Package {} {}: {} (verified)",
             package.kind,
+            built.name,
             output.display()
         );
         Ok(())

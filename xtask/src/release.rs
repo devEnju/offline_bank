@@ -195,11 +195,6 @@ fn verified(kind: &str) -> Result<Verified> {
     let package = packages::package(kind)?;
     let directory = package.folder(&root());
     let name = patch_verify::package_name(&directory).unwrap_or_default();
-    if name != package.id(&root())? {
-        return Err(format!(
-            "Package {kind} is not the one of the current payload and profile."
-        ));
-    }
     let json = |file: &str| -> Result<Json> {
         let text = String::from_utf8(read(&directory.join(file))?).map_err(|e| e.to_string())?;
         Json::parse(&text)
@@ -212,7 +207,7 @@ fn verified(kind: &str) -> Result<Verified> {
             .unwrap_or_default()
             .to_owned()
     };
-    if field("status") != "passed" {
+    if field("status") != "passed" || field("package") != name {
         return Err(format!("Package {kind}/{name} did not pass verification."));
     }
     let hashes = [

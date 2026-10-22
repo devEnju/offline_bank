@@ -15,8 +15,7 @@ pub struct Places {
     pub original: Option<PathBuf>,
 }
 
-/// Checks the package of `package`'s kind at `places`. Its name must be the
-/// one of the current payload and profile of that kind.
+/// Checks the package of `package`'s kind at `places`.
 pub fn verify(package: &Package, places: Places) -> Result<Json> {
     let root = root();
     let folder = places.package.unwrap_or_else(|| package.folder(&root));
@@ -33,7 +32,7 @@ pub fn verify(package: &Package, places: Places) -> Result<Json> {
             elf: &elf,
             original: &original,
         };
-        patch_verify::verify(&expect, &paths, &package.id(&root)?)
+        patch_verify::verify(&expect, &paths)
     })();
     let report = match &result {
         Ok(report) => report.clone(),

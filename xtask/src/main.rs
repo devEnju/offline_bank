@@ -23,7 +23,6 @@ const USAGE: &str = "usage: cargo +stable xtask <command>
   verify <kind> [--package <folder>] [--elf <path>] [--original <folder>]
                        check a package independently and write verification.json into it
   test-verify          check that the verifier refuses changed copies of the built packages
-  package-id <kind>    the name of the package of <kind>
   extract <cia> [--ctrtool <path>]
                        unpack a CIA into build/extracted/
   release              make a release from main: tests, packages, zips, notes, a local tag
@@ -143,10 +142,6 @@ fn run() -> Result<()> {
         "test-verify" => {
             let [] = args.rest()?;
             test_verify::test_verify()?;
-        }
-        "package-id" => {
-            let [kind] = args.rest()?;
-            println!("{}", packages::package(&kind)?.id(&root())?);
         }
         "extract" => {
             let ctrtool = args

@@ -1,9 +1,8 @@
 //! The package kinds, once: the program each patches, the crate and cargo
-//! features of its payload, the builder's profile files its name is hashed
-//! from, and its folder. What a package must contain is not here: the
+//! features of its payload, and its folder. What a package must contain is not here: the
 //! verifier keeps its own lists, independent of the builder.
 
-use crate::{read, Result};
+use crate::Result;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,9 +36,6 @@ pub struct Package {
     pub krate: &'static str,
     /// Cargo features beside `linked-image`.
     pub features: &'static [&'static str],
-    /// The builder's profile files (under `crates/patch-builder/src/`) with
-    /// the edits of the original, which the package name covers.
-    pub profiles: &'static [&'static str],
     /// Where the package lies; the next build of its kind replaces it.
     pub folder: &'static str,
 }
@@ -53,7 +49,6 @@ pub const PACKAGES: [Package; 5] = [
         program: Program::Bank,
         krate: "bank-payload",
         features: &[],
-        profiles: &["bank15.rs", "bank15/offline.rs"],
         folder: "build/binary/bank",
     },
     Package {
@@ -61,7 +56,6 @@ pub const PACKAGES: [Package; 5] = [
         program: Program::Transporter,
         krate: "transporter-payload",
         features: &[],
-        profiles: &["transporter15.rs", "transporter15/offline.rs"],
         folder: "build/binary/transporter",
     },
     Package {
@@ -69,7 +63,6 @@ pub const PACKAGES: [Package; 5] = [
         program: Program::Bank,
         krate: "bank-payload",
         features: &["test-build"],
-        profiles: &["bank15.rs", "bank15/offline.rs", "bank15/test.rs"],
         folder: "build/test",
     },
     Package {
@@ -77,7 +70,6 @@ pub const PACKAGES: [Package; 5] = [
         program: Program::Bank,
         krate: "bank-migrate-payload",
         features: &[],
-        profiles: &["bank15.rs", "bank15/migrate.rs"],
         folder: "build/migration",
     },
     Package {
@@ -85,7 +77,6 @@ pub const PACKAGES: [Package; 5] = [
         program: Program::Bank,
         krate: "bank-download-payload",
         features: &[],
-        profiles: &["bank15.rs", "bank15/download.rs"],
         folder: "build/download",
     },
 ];
@@ -109,25 +100,20 @@ impl Package {
     pub fn folder(&self, root: &Path) -> PathBuf {
         root.join(Path::new(self.folder).components().collect::<PathBuf>())
     }
-
-    /// The package's name: the first 16 hex digits of the SHA-256 over
-    /// everything the patch is made from, which is the linked payload and
-    /// the builder's profile with the edits of the original (some edits are
-    /// plain words in the profile and leave the payload as it is). The same
-    /// sources give the same name; line endings of the profile do not count.
-    pub fn id(&self, root: &Path) -> Result<String> {
-        let mut source = read(&self.elf(root))?;
-        for file in self.profiles {
-            let profile = read(&root.join("crates/patch-builder/src").join(file))?;
-            source.extend(profile.into_iter().filter(|&b| b != b'\r'));
-        }
-        Ok(patch_builder::hex(&patch_builder::sha256(&source))[..16].to_owned())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_builder_and_the_verifier_name_a_package_alike() {
+        let (ips, exheader) = (b"PATCH\0\0\x01EOF".as_slice(), [7u8; 0x800]);
+        assert_eq!(
+            patch_builder::package_name(ips, &exheader),
+            patch_verify::name_of(ips, &exheader)
+        );
+    }
 
     #[test]
     fn every_kind_is_one_of_the_builder() {
@@ -138,18 +124,5 @@ mod tests {
         }
         assert_eq!(PACKAGES.len(), patch_builder::PROFILES.len());
         assert!(package("other").is_err());
-    }
-
-    #[test]
-    fn every_profile_file_exists() {
-        let root = crate::root();
-        for package in &PACKAGES {
-            for file in package.profiles {
-                assert!(
-                    root.join("crates/patch-builder/src").join(file).is_file(),
-                    "{file}"
-                );
-            }
-        }
     }
 }

@@ -165,10 +165,17 @@ pub fn package_name(package: &Path) -> Option<String> {
     Some(text.trim().trim_start_matches('\u{feff}').to_owned())
 }
 
-/// Checks the package and returns its report. `name` is the name the
-/// package must have: the one of the current payload and profile.
-pub fn verify(expect: &Expectation, paths: &Paths, name: &str) -> Result<Json> {
-    run(expect, paths, name).map_err(|message| format!("Verification failed: {message}"))
+/// The name of a package: the first 16 hex digits of the SHA-256 over its
+/// `code.ips` followed by its `exheader.bin`.
+pub fn name_of(ips: &[u8], exheader: &[u8]) -> String {
+    let mut files = ips.to_vec();
+    files.extend_from_slice(exheader);
+    sha256(&files)[..16].to_owned()
+}
+
+/// Checks the package and returns its report.
+pub fn verify(expect: &Expectation, paths: &Paths) -> Result<Json> {
+    run(expect, paths).map_err(|message| format!("Verification failed: {message}"))
 }
 
 /// The report of a check that failed.
@@ -261,7 +268,7 @@ fn function(elf: &Elf, name: &str, what: &str) -> Result<u32> {
     Ok(symbol.value)
 }
 
-fn run(expect: &Expectation, paths: &Paths, expected_name: &str) -> Result<Json> {
+fn run(expect: &Expectation, paths: &Paths) -> Result<Json> {
     let program = expect.program;
     let package_name = package_name(paths.package).ok_or("cannot read PACKAGE.txt")?;
     let manifest = std::fs::read_to_string(paths.package.join("manifest.json"))
@@ -273,7 +280,7 @@ fn run(expect: &Expectation, paths: &Paths, expected_name: &str) -> Result<Json>
     let ips = read(&paths.package.join("code.ips"))?;
     let header = read(&paths.package.join("exheader.bin"))?;
 
-    // The inputs, the manifest and the package name.
+    // The inputs, the manifest and the package's name.
     let code_hash = sha256(&original);
     let header_hash = sha256(&original_header);
     let elf_hash = sha256(&elf_bytes);
@@ -295,8 +302,8 @@ fn run(expect: &Expectation, paths: &Paths, expected_name: &str) -> Result<Json>
         "Manifest ELF hash",
     )?;
     check(
-        package_name == expected_name,
-        "Package is not the one of the current payload and profile",
+        package_name == name_of(&ips, &header),
+        "PACKAGE.txt does not name the package's files",
     )?;
     check(
         text(&manifest, &["patch"]) == Some(expect.kind),

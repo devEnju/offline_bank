@@ -69,8 +69,9 @@ fn original(package: &Package) -> Result<PathBuf> {
     patch_verify::find_original(&root().join("build/extracted"), program)
 }
 
-/// Gives the copy's manifest the hashes of its changed files: the ELF, both
-/// package files, and the image the IPS makes of the original.
+/// Gives the copy's manifest the hashes of its changed files (the ELF,
+/// both package files, and the image the IPS makes of the original) and its
+/// PACKAGE.txt the name of its files.
 fn update_hashes(dir: &Path, package: &Package) -> Result<()> {
     let mut manifest = read_manifest(dir)?;
     let ips = read(&dir.join("code.ips"))?;
@@ -97,7 +98,9 @@ fn update_hashes(dir: &Path, package: &Package) -> Result<()> {
         &["expanded_code_sha256"],
         Json::string(sha256(&image)),
     )?;
-    write_manifest(dir, &manifest)
+    write_manifest(dir, &manifest)?;
+    let name = patch_builder::package_name(&ips, &read(&dir.join("exheader.bin"))?);
+    write(&dir.join("PACKAGE.txt"), format!("{name}\n").as_bytes())
 }
 
 /// Flips one bit of `file` in the copy at `at`.
@@ -286,7 +289,7 @@ fn cases(run: &mut Run) -> Result<()> {
             Some(Box::new(|dir: &Path| {
                 write(&dir.join("PACKAGE.txt"), b"0000000000000000\n")
             })),
-            Some("Package is not the one of the current payload and profile"),
+            Some("PACKAGE.txt does not name the package's files"),
             package,
         )?;
     }
@@ -319,7 +322,7 @@ fn cases(run: &mut Run) -> Result<()> {
         package("bank")?,
         "checked as the test build",
         None,
-        Some("Package is not the one of the current payload and profile"),
+        Some("Manifest names another patch"),
         package("test")?,
     )
 }
