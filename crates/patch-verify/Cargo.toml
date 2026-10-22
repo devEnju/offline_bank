@@ -1,0 +1,11 @@
+[package]
+name = "patch-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# Never patch-builder or a payload crate: the check stays independent of
+# what it checks.
+[dependencies]
+offline-core = { path = "../offline-core" }

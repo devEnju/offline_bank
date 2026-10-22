@@ -55,10 +55,26 @@ name = "patch-common"
 version = "0.6.0"
 
 [[package]]
+name = "patch-verify"
+version = "0.6.0"
+dependencies = [
+ "offline-core",
+]
+
+[[package]]
 name = "transporter-payload"
 version = "0.6.0"
 dependencies = [
  "bank-common",
  "offline-core",
  "patch-common",
+]
+
+[[package]]
+name = "xtask"
+version = "0.6.0"
+dependencies = [
+ "offline-core",
+ "patch-builder",
+ "patch-verify",
 ]

@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+offline-core = { path = "../crates/offline-core" }
+patch-builder = { path = "../crates/patch-builder" }
+patch-verify = { path = "../crates/patch-verify" }

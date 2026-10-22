@@ -235,6 +235,8 @@ crates/bank-common/     what every patch for Bank shares: files, Bank's side of 
 crates/patch-common/    what the patches of Bank and Transporter both use: the worker thread
 crates/offline-core/    storage format and hand-over rules, shared by all patches
 crates/patch-builder/   host tool that checks the inputs and emits the patches
+crates/patch-verify/    host check of a built package, independent of the builder
+xtask/                  the project's commands in Rust: cargo +stable xtask <command>
 targets/                ARM target description
 scripts/                build, verify, and release scripts
 docs/                   user guides, this page, internals, and the console tests
