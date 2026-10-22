@@ -7,8 +7,9 @@
 //! start for lack of its Game Card shows that message's other part, the
 //! advice to check the card. Nothing else is written here.
 
-use crate::{numbers, task::checked_pointer};
+use crate::numbers;
 use core::mem::transmute;
+use patch_common::native::pointer as native_pointer;
 use patch_common::{
     message,
     native::read_word as word,
@@ -59,7 +60,7 @@ pub enum Error {
     InvalidMessage,
 }
 fn pointer(value: u32) -> Result<*mut u8, Error> {
-    checked_pointer(value).map_err(|_| Error::InvalidPointer)
+    native_pointer(value).ok_or(Error::InvalidPointer)
 }
 /// The UI's context (`ui + 0x5c`), once the UI, the context and the UI's
 /// words at `+0x78` and `+0x94` (its string object) are pointers: what a

@@ -17,7 +17,7 @@ use bank_common::{
     fs,
     native_bank::NativeBank,
     program::Bank15,
-    task::{checked_pointer, refuse_home, Notice, Task, TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN},
+    task::{refuse_home, BankTask, Notice, Task, TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN},
     ui,
     worker::WorkerError,
 };
@@ -25,7 +25,7 @@ use core::mem::transmute;
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
-    native::{read_word, write_word, Ended},
+    native::{follow, read_word, write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
     worker::{JobId, Service, Shared, Worker},
@@ -366,8 +366,8 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
     // one. This patch creates nothing; it ends the task as failed, which
     // the original answers with cleanup and disconnect.
     if update && unsafe { read_word(raw, 0x10) } == 0 {
-        let reply = checked_pointer(unsafe { read_word(raw, REPLY) });
-        if reply.is_ok_and(|reply| unsafe { reply.add(REPLY_BANK).read() } == NO_BANK) {
+        let reply = unsafe { follow(raw, REPLY) };
+        if reply.is_some_and(|reply| unsafe { reply.add(REPLY_BANK).read() } == NO_BANK) {
             state.decide([REFUSED, NO_BANK_ON_SERVER]);
             return task.finish(false);
         }

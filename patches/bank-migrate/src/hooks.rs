@@ -17,7 +17,7 @@ use bank_common::{
     fs::{self, ExtdataStorage},
     numbers::VERSION,
     program::Bank15,
-    task::{refuse_home, Notice, Task, TASK_SCAN},
+    task::{refuse_home, BankTask, Notice, Task, TASK_SCAN},
     ui,
     worker::WorkerError,
 };

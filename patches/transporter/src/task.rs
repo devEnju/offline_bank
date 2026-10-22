@@ -10,9 +10,7 @@
 //! `0024D624`) index from: record `i` at `+0xAAF1C + i * 0xE8`, tag `i` at
 //! `+0xAD604 + i`. Both are the Bank body offsets plus 8.
 
-use core::ptr::NonNull;
 use offline_core::sections::{RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_SLOTS, TRANSPORT_TAGS};
-use patch_common::native::{follow, object, NotNative};
 
 /// Factory 0019CEE4 accepts IDs below 0x13 (0019CEE8).
 pub const TASK_COUNT: u32 = 0x13;
@@ -28,34 +26,10 @@ pub const TASK_QUESTION: u32 = 0x002e_67c4;
 /// constructed object at manager + 0xCC (0010624C).
 pub const BANK_VTABLE: u32 = 0x002e_6dd0;
 
-#[derive(Clone, Copy)]
-pub struct Task(NonNull<u8>);
-impl Task {
-    /// The task a hook is given, if its vtable is one of `expected`
-    /// (`patch_common::native::object`).
-    /// # Safety
-    /// `raw` is the live task object the patched site passes, on the main
-    /// thread.
-    pub unsafe fn from_raw(raw: *mut u8, expected: &[u32]) -> Result<Self, NotNative> {
-        unsafe { object(raw, expected) }.map(Self)
-    }
-    pub fn raw(self) -> *mut u8 {
-        self.0.as_ptr()
-    }
-    pub fn pointer(self, offset: usize) -> Result<*mut u8, NotNative> {
-        unsafe { follow(self.raw(), offset) }.ok_or(NotNative)
-    }
-    /// The manager's Bank data object, if its vtable is the one its
-    /// constructor installs, before anything of it is read.
-    pub fn bank_pointer(self) -> Result<*mut u8, NotNative> {
-        let manager = self.pointer(TASK_MANAGER)?;
-        let bank = unsafe { follow(manager, MANAGER_BANK_OBJECT) }.ok_or(NotNative)?;
-        unsafe { object(bank, &[BANK_VTABLE]) }.map(NonNull::as_ptr)
-    }
-}
+/// A task of Transporter 1.5 (`patch_common::native::Task`).
+pub type Task = patch_common::native::Task<crate::program::Transporter15>;
 
-pub const TASK_MANAGER: usize = 0x8;
-pub const MANAGER_BANK_OBJECT: usize = 0xCC;
+pub use patch_common::native::{TASK_MANAGER, TASK_OUTCOME};
 pub const BANK_OBJECT_ACCESSOR: usize = 0xBB524;
 pub const ACCESSOR_BODY: usize = 0x4;
 /// The accessor's body pointer is 8 bytes before the body Bank stores.

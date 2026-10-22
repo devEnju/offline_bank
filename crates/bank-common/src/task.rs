@@ -7,7 +7,6 @@
 
 #[cfg(target_arch = "arm")]
 use core::mem::transmute;
-use core::ptr::NonNull;
 
 /// Factory `002a5a7c` accepts IDs below 0x1e (`002a5a80`).
 pub const TASK_COUNT: u32 = 0x1e;
@@ -44,33 +43,24 @@ impl From<NotNative> for crate::fault::Fault {
     }
 }
 
-/// `value` as a pointer of the original (`patch_common::native::pointer`).
-pub fn checked_pointer(value: u32) -> Result<*mut u8, NotNative> {
-    patch_common::native::pointer(value).ok_or(NotNative)
-}
+/// A task of Bank 1.5 (`patch_common::native::Task`), with what only Bank's
+/// tasks have in `BankTask`.
+pub type Task = patch_common::native::Task<crate::program::Bank15>;
 
-#[derive(Clone, Copy)]
-pub struct Task(NonNull<u8>);
-impl Task {
-    /// The task a hook is given, if its vtable is one of `expected`
-    /// (`patch_common::native::object`).
-    /// # Safety
-    /// `raw` is the live task object the original's task driver passes to
-    /// the hooked virtual function, on the main thread.
-    pub unsafe fn from_raw(raw: *mut u8, expected: &[u32]) -> Result<Self, NotNative> {
-        unsafe { patch_common::native::object(raw, expected) }.map(Self)
-    }
-    pub fn raw(self) -> *mut u8 {
-        self.0.as_ptr()
-    }
-    pub fn pointer(self, offset: usize) -> Result<*mut u8, NotNative> {
-        checked_pointer(unsafe { read_word(self.raw(), offset) })
-    }
-    pub fn bank_pointer(self) -> Result<*mut u8, NotNative> {
-        let coordinator = self.pointer(8)?;
-        checked_pointer(unsafe { read_word(coordinator, 0xcc) })
-    }
-    pub fn ui(self) -> Result<*mut u8, NotNative> {
+/// What Bank's tasks have beyond every task: the shared UI, kept at an
+/// offset of each task's own, the busy protection, and the outcomes a
+/// task update ends with.
+pub trait BankTask {
+    fn ui(self) -> Result<*mut u8, NotNative>;
+    #[cfg(target_arch = "arm")]
+    fn begin_busy(self);
+    #[cfg(target_arch = "arm")]
+    fn end_busy(self);
+    /// Ends the task as done (4) or failed (3); the update answers 1.
+    fn finish(self, success: bool) -> u32;
+}
+impl BankTask for Task {
+    fn ui(self) -> Result<*mut u8, NotNative> {
         let offset = match unsafe { read_word(self.raw(), 0) } {
             TASK_LOAD | TASK_REWARD_GUARD => 0x38,
             TASK_SCAN | TASK_REWARDS => 0x40,
@@ -79,14 +69,14 @@ impl Task {
         self.pointer(offset)
     }
     #[cfg(target_arch = "arm")]
-    pub fn begin_busy(self) {
+    fn begin_busy(self) {
         let begin: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe { transmute(BEGIN_BUSY) };
         unsafe {
             begin(self.raw(), 1, 0);
         }
     }
     #[cfg(target_arch = "arm")]
-    pub fn end_busy(self) {
+    fn end_busy(self) {
         if unsafe { self.raw().add(0x25).read() } != 0 {
             let end: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(END_BUSY) };
             unsafe {
@@ -94,10 +84,8 @@ impl Task {
             }
         }
     }
-    pub fn finish(self, success: bool) -> u32 {
-        unsafe {
-            self.raw().add(0x30).write(if success { 4 } else { 3 });
-        }
+    fn finish(self, success: bool) -> u32 {
+        self.set_outcome(if success { 4 } else { 3 });
         1
     }
 }

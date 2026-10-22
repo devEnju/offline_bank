@@ -144,8 +144,9 @@ pub fn expectation(kind: &'static str) -> Expectation {
     ];
     relies.extend(MENU_LOCATIONS);
     // Checked native objects: the factory's bound and the cases of the tasks
-    // the hooks check, their vtable literals, and the reward claim's
-    // constructor.
+    // the hooks check, their vtable literals, the reward claim's
+    // constructor, and the Bank data object's constructor literal and store
+    // and its allocation and store at manager + CC.
     relies.extend([
         (0x002a5a80, 0xe351001e),
         (0x002a5aa4, 0x002a5bdc),
@@ -164,6 +165,10 @@ pub fn expectation(kind: &'static str) -> Expectation {
         (0x002abbf0, 0x003619fc),
         (0x002abb40, 0xe5806000),
         (0x002a5c1c, 0xe5803000),
+        (0x0010eb94, 0x003626fc),
+        (0x0010ea58, 0xe5840000),
+        (0x00106eac, 0xe58400cc),
+        (0x00106fc0, 0x000bb530),
     ]);
     if offline {
         relies.extend([
@@ -191,7 +196,8 @@ pub fn expectation(kind: &'static str) -> Expectation {
         .map(|&(address, _)| (address, 4))
         .collect();
     // The factory, the reward claim's constructor and the vtables' first
-    // three words stay native too; their update slots are edits.
+    // three words stay native too; their update slots are edits. So do the
+    // Bank data object's constructor, its vtable and its stores.
     protected.extend([
         (0x002a5a7c, 0xb14),
         (0x002abb10, 0xe4),
@@ -201,6 +207,10 @@ pub fn expectation(kind: &'static str) -> Expectation {
         (0x00362028, 0xc),
         (0x003619fc, 0xc),
         (0x00361bd8, 0xc),
+        (0x0010ea48, 0x150),
+        (0x003626fc, 0x18),
+        (0x00106eac, 4),
+        (0x00106fc0, 4),
     ]);
     if offline {
         protected.extend([

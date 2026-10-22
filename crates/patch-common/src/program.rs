@@ -36,6 +36,10 @@ pub trait Program: 'static {
     /// the tasks `0..TASK_COUNT`.
     const ROUTER: usize;
     const TASK_COUNT: u32;
+    /// The vtable the constructor of the Bank data object installs, the
+    /// object a task reaches through its manager (`native::Task`). Both
+    /// programs build it with the same constructor.
+    const BANK_VTABLE: u32;
 
     /// `(context, group, pane, message)`: a message with its values into a
     /// pane, as the title screen writes its version line. It loads the

@@ -85,8 +85,9 @@ pub fn refreshed_by_a_save(slot: Slot) -> bool {
 #[cfg(target_arch = "arm")]
 mod native {
     use super::*;
-    use bank_common::{native_bank::NativeBank, task::checked_pointer};
+    use bank_common::native_bank::NativeBank;
     use core::mem::transmute;
+    use patch_common::native::pointer as native_pointer;
     use patch_common::native::read_word as word;
 
     /// The application object's pointer, whose manager is at `+0x1c`.
@@ -109,7 +110,7 @@ mod native {
     const INVALIDATE: usize = 0x002b_9b90;
 
     fn pointer(value: u32) -> Result<*mut u8, DexError> {
-        checked_pointer(value).map_err(|_| DexError::NativeObject)
+        native_pointer(value).ok_or(DexError::NativeObject)
     }
     unsafe fn helpers(bank: *mut u8) -> Result<(*mut u8, *mut u8), DexError> {
         pointer(bank as u32)?;

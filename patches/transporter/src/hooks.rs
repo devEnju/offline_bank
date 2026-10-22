@@ -45,7 +45,6 @@ const TRANSFER_UPDATE: usize = 0x0024_a0c4;
 const SEARCH_START: u32 = 0;
 const SEARCH_MESSAGE: u32 = 5;
 const SEARCH_NONE: u8 = 2;
-const TASK_OUTCOME: usize = 0x30;
 /// Answers of the delivery entry, as its stub tests them.
 const DELIVER_FAILED: u32 = 0;
 const DELIVER_DONE: u32 = 1;
@@ -352,7 +351,7 @@ pub unsafe extern "aapcs" fn transporter_search(raw: *mut u8) -> u32 {
                 return 0;
             }
             Check::End => {
-                unsafe { raw.add(TASK_OUTCOME).write(SEARCH_NONE) };
+                task.set_outcome(SEARCH_NONE);
                 return 1;
             }
         }
