@@ -211,6 +211,46 @@ pub unsafe fn version<P: Program>(
     }
 }
 
+/// The size of a message file's object (`0022EF50` in Transporter,
+/// `001e7dd8` in Bank).
+const MESSAGES_SIZE: u32 = 0x28;
+
+/// Runs `use_messages` with message file `file` of the screens' language,
+/// opened on `heap` as the original gives a screen its messages
+/// (`Program::OPEN_MESSAGES`), and deletes the file object again through its
+/// second virtual function, as a screen's end does (`0022F004` in
+/// Transporter). `None`, with nothing run, if the object is not made or its
+/// deleting function does not lie in the program's code.
+/// # Safety
+/// `heap` is a live heap of the original, on the main thread; `use_messages`
+/// keeps nothing of the object.
+pub unsafe fn with_messages<P: Program, T>(
+    heap: *mut u8,
+    file: u32,
+    use_messages: impl FnOnce(*mut u8) -> T,
+) -> Option<T> {
+    unsafe {
+        let allocate: unsafe extern "aapcs" fn(u32, *mut u8) -> *mut u8 = transmute(P::ALLOCATE);
+        let archive: unsafe extern "aapcs" fn(u32) -> u32 = transmute(P::TEXT_ARCHIVE);
+        let open: unsafe extern "aapcs" fn(*mut u8, u32, u32, *mut u8, u32, u32) -> *mut u8 =
+            transmute(P::OPEN_MESSAGES);
+        pointer(heap as u32)?;
+        let memory = allocate(MESSAGES_SIZE, heap);
+        if memory.is_null() {
+            return None;
+        }
+        let messages = open(memory, archive(10), file, heap, 1, 5);
+        // The file object and its deleting destructor are checked before
+        // anything uses it.
+        let vtable = pointer(messages as u32).and_then(|messages| follow(messages, 0))?;
+        let delete = crate::native::code::<P>(crate::native::read_word(vtable, 4))?;
+        let delete: unsafe extern "aapcs" fn(*mut u8) = transmute(delete);
+        let result = use_messages(messages);
+        delete(messages);
+        Some(result)
+    }
+}
+
 /// The loop sound of the shared UI's loading panel, and its spinner.
 const LOADING_SOUND: u32 = 0x0005_0011;
 const SPINNER_ANIMATION: u32 = 0;

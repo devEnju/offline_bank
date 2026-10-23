@@ -101,7 +101,20 @@ impl Error {
     pub fn lack_of_space(self) -> bool {
         matches!(self, Self::Native { code, .. } if patch_common::fs_result::lack_of_space(code))
     }
+}
 
+/// Whether a failed operation on a card failed for lack of space: the
+/// console's file errors, and the simulated card's in the tests.
+pub trait NoRoom {
+    fn no_room(&self) -> bool;
+}
+impl NoRoom for Error {
+    fn no_room(&self) -> bool {
+        self.lack_of_space()
+    }
+}
+
+impl Error {
     /// Conservative diagnostic classification, never a create/reset policy.
     /// Other errors retain their full native result, including permission,
     /// media, quota, format and I/O failures.

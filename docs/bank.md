@@ -187,11 +187,33 @@ Name and number are those of the game the session was made with; the number has 
 | the installed copy | a cartridge of the same game is inserted, so Bank reads the cartridge and not the installed copy | the **installed copy's** game, not the cartridge's | Take the cartridge out. |
 | the installed copy | the game is no longer installed | the installed copy's game | Install it again with its save. |
 
-The message only comes for a Save and Quit that was cut off. A cartridge taken out before Save and Quit is chosen gets the original's message to check that the Game Card is inserted, and Bank returns to its start screen with nothing saved; put it back and press START. An error in a running session, for example a cartridge pulled out while Save and Quit writes, ends that run of Bank with two numbers ([Troubleshooting](#troubleshooting)); nothing is waiting then. Start Bank again with the game in, and if the save was cut off, this section applies.
+The message only comes for a Save and Quit that was cut off. A cartridge pulled out during a session gets one of the original's messages instead, and Bank returns to its start screen ([below](#a-pulled-game-card-or-a-full-sd-card)); put it back and press START, and if a save was left in progress, this section applies.
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
 
 **After updating the patch.** A Save and Quit that was interrupted is finished by any later release that stores the Bank the same way. A Bank that a release stored in an earlier way needs the migration, which finishes no save in progress itself: it says so (`00000BAD 00000007`), and the last release of that way finishes it, v0.2.1 for a Bank from v0.2.1 or before and v0.4.0 for one from v0.4.0 or before. A save in progress that v0.3.0 began is recorded in a form v0.4.0 does not read; the migration writes it in v0.4.0's form first, so that v0.4.0 finishes it too. If the game is not inserted then, v0.4.0's message names no trainer, because v0.3.0 did not record one.
+
+## A pulled Game Card or a full SD card
+
+Bank shows one of the original's messages for these, and after A it is back on its start screen. Bank does not have to be closed: put the cartridge back, or close Bank and free space, and press START. Nothing is lost by the message itself.
+
+| When | Message | What happened |
+| --- | --- | --- |
+| Creating the Bank at the first start, and the SD card is full | "Pokémon Bank could not be started due to a lack of space on your SD card." | No Bank was created. The next START creates it, with the welcome again. |
+| START with an interrupted Save and Quit, and the cartridge is pulled | "Please confirm that your Game Card is properly inserted, and then try again." | Nothing changed. The next START with the game finishes or undoes the save ([above](#if-save-and-quit-is-interrupted)). |
+| Loading the chosen game, and the cartridge is pulled | the same | Nothing changed. |
+| Save and Quit, before the game is written: the cartridge is pulled, or the SD card refuses a write | the same | Nothing was saved; the session's changes are gone. |
+| Save and Quit, and a file of the Bank that was missing has to be made again, but the SD card is full | "The SD card is full." | Nothing was saved. |
+| Save and Quit, while or after the game is written | by what the game's save holds now, next table | |
+
+When the game's write has begun, Bank looks at the game's save at once and decides as it would at the next start:
+
+| The game's save | Message | Bank |
+| --- | --- | --- |
+| Unchanged | "Please confirm that your Game Card is properly inserted, and then try again." | Back to its old boxes. Nothing was moved. |
+| The one Bank wrote | "Success! Changes saved." | Keeps its new boxes. Everything was moved. |
+| Something else, and the session moved Pokémon one way or none | "No Pokémon Game Card detected." and "Please check that your Game Card is properly inserted into your system's Game Card slot." | Decides by what the session moved ([above](#if-save-and-quit-is-interrupted)); some Pokémon may exist twice. |
+| Something else, and the session moved Pokémon both ways; or the cartridge is pulled | "Please confirm that your Game Card is properly inserted, and then try again." | Nothing is decided yet: put the same game in and press START, and Bank finishes or undoes the save. |
 
 ## Troubleshooting
 
@@ -221,7 +243,7 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `9` | Loading |
 | `A`–`E` | Game save |
 | `F` | Preparing the save |
-| `10`, `11` | Finishing or undoing an interrupted save |
+| `10` | Finishing or undoing an interrupted save |
 | `12`, `13` | Rewards |
 
 | Second number | Meaning |
@@ -251,4 +273,4 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 - **Power cuts.** A cut during Save and Quit can only damage the file being written, which Bank does not need and replaces. It cannot protect against damage to the SD card's own file table; that holds for every save on the console.
 - **Interrupted Save and Quit.** One case can lose Pokémon: see [If Save and Quit is interrupted](#if-save-and-quit-is-interrupted).
 - **Clock.** A console date set ahead is paid as if the time had passed.
-- **Errors are final for a run of Bank.** After the message only the line about the HOME Menu follows, with the two numbers. Close Bank from the HOME Menu and start it again. A save that waits for its game is not an error: it leads back to the start screen ([above](#a-save-that-waits-for-its-game)).
+- **Errors are final for a run of Bank.** After the message only the line about the HOME Menu follows, with the two numbers. Close Bank from the HOME Menu and start it again. A save that waits for its game is not an error, and neither is a pulled Game Card or a full SD card: they lead back to the start screen ([above](#a-pulled-game-card-or-a-full-sd-card)).

@@ -3,9 +3,12 @@
 //! Every text is the original's own, in the language of the screens. The
 //! error dialog is the first sentence of the original's message for a failed
 //! save, and as its next page the start screen's line about the HOME Menu
-//! with two code numbers on the dialog's third line. A save that did not
-//! start for lack of its Game Card shows that message's other part, the
-//! advice to check the card. Nothing else is written here.
+//! with two code numbers on the dialog's third line. A session that ends at
+//! a message and goes back to the start screen shows the original's own:
+//! that message's other part, the advice to check the card and try again;
+//! the scan's message for a card without room; the first line of the
+//! server messages' "The SD card is full."; or game selection's "No Pokémon
+//! Game Card detected." Nothing else is written here.
 
 use core::mem::transmute;
 use patch_common::native::pointer as native_pointer;
@@ -341,6 +344,77 @@ pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
         return Err(Error::MissingBuffer);
     };
     let len = message::keep_rest(room, len).ok_or(Error::InvalidMessage)?;
+    unsafe { begin(context, text, room, len) };
+    Ok(())
+}
+
+/// Shows an original message whole and waits for A, as the original shows
+/// its notices.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
+    unsafe { display(ui, message, true) }
+}
+
+/// Native message 0x1F, game selection's for a missing card: "No Pokémon
+/// Game Card detected." and on its second page "Please check that your Game
+/// Card is properly inserted into your system's Game Card slot." Shown for a
+/// save that was settled by what it moved, where Pokémon may be doubled.
+pub const NO_CARD_NOTICE: u32 = 0x1f;
+/// Native message 0x26, the game scan's when Bank's extdata cannot be
+/// created: "Pokémon Bank could not be started due to a lack of space on
+/// your SD card."
+pub const NO_ROOM_TO_START: u32 = 0x26;
+
+/// The advice of the original's failure message: "Please confirm that your
+/// Game Card is properly inserted, and then try again." (`notice_rest`).
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn try_again(ui: *mut u8) -> Result<(), Error> {
+    unsafe { notice_rest(ui, FAILURE_NOTICE) }
+}
+
+/// The text file of the original's common server messages, and its message
+/// 0: "The SD card is full." and, on a line of its own, "You can't download
+/// data." Its first line is a sentence of its own in all ten languages.
+const SERVER_MESSAGES: u32 = 26;
+const SD_FULL: u32 = 0;
+/// Where a screen's context keeps its own message file, from which
+/// `001d6650` takes a message of kind 0 (`001d6728`).
+const CONTEXT_MESSAGES: usize = 0x28;
+
+/// Shows the first line of the original's message 0 of text file 26, "The
+/// SD card is full.", and waits for A; the second line is about the
+/// server's download. `001d6650` shows it as it shows every message: for
+/// this one call the context's own message file is file 26, opened as the
+/// original opens a screen's (`patch_common::ui::with_messages`), and then
+/// it is the context's own again. The first line (`message::first_line`)
+/// is then handed to the dialog as `notice_rest` hands its text.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn sd_full(ui: *mut u8) -> Result<(), Error> {
+    let context = unsafe { ready(ui) }?;
+    let heap = unsafe { shared::heap(ui) }.ok_or(Error::InvalidPointer)?;
+    let own = unsafe { context.add(CONTEXT_MESSAGES).cast::<*mut u8>() };
+    let shown = unsafe {
+        shared::with_messages::<crate::program::Bank15, _>(heap, SERVER_MESSAGES, |messages| {
+            let before = own.read();
+            own.write(messages);
+            let shown = display(ui, SD_FULL, true);
+            own.write(before);
+            shown
+        })
+    };
+    shown.ok_or(Error::InvalidPointer)??;
+    let Some(Text {
+        object: text,
+        room,
+        len,
+    }) = (unsafe { text(ui)? })
+    else {
+        return Err(Error::MissingBuffer);
+    };
+    let len = message::first_line(&room[..len]);
     unsafe { begin(context, text, room, len) };
     Ok(())
 }

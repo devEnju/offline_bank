@@ -26,7 +26,6 @@ pub enum Fault {
     GameSecureValue = 14,
     JournalPrepare = 15,
     JournalRecovery = 16,
-    TransferRolledBack = 17,
     RewardState = 18,
     RewardClaim = 19,
     /// Test builds: a Save and Quit stopped on purpose by the chosen

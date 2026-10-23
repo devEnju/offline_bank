@@ -54,11 +54,7 @@ mod native {
     use super::Unavailable;
     use crate::program::Transporter15;
     use core::mem::transmute;
-    use patch_common::{
-        native::{code, follow, pointer, read_word},
-        program::Program,
-        ui as shared,
-    };
+    use patch_common::{program::Program, ui as shared};
 
     /// The general loading panel of the shared UI (`ui`, its context at
     /// `ui + 0x5C`), as the reader's set-up starts it (`00246A2C`):
@@ -87,24 +83,15 @@ mod native {
     const PANEL_TEXT_FILE: u32 = 39;
     const PANEL_TEXT_MESSAGE: u32 = 0x20;
 
-    /// A text file of the original, opened as the original gives a screen its
-    /// messages (`0022EF30`): `(size, heap)` allocates, `(10)` names the text
-    /// archive of the screens' language, and `(memory, archive, file, heap, 1,
-    /// 5)` makes the file object in that memory and returns it (`001DFB98`),
-    /// as the original stores it without a check (`0022EF88`).
     /// `(strings, layout, pane, messages, message)` copies a message into a
-    /// text pane (`001A20C8` calls it with a screen's own messages). The
-    /// object's second virtual function deletes it and frees its memory.
-    const ALLOCATE: usize = 0x001e_6360;
-    const MESSAGES_SIZE: u32 = 0x28;
-    const TEXT_ARCHIVE: usize = 0x001e_2540;
-    const OPEN_MESSAGES: usize = 0x001d_fb00;
+    /// text pane (`001A20C8` calls it with a screen's own messages).
     const SET_PANE_TEXT: usize = 0x0019_f7b0;
 
     /// Gives text pane `pane` of `layout` message `message` of text file `file`
     /// in the language of the screens: opens the file on `heap`, sets the
     /// pane's text from it, which copies the string, and deletes the file
-    /// object again. `strings` are the work strings of the layout's screen.
+    /// object again (`patch_common::ui::with_messages`). `strings` are the
+    /// work strings of the layout's screen.
     /// # Safety
     /// The arguments are live objects of the original, on the main thread.
     pub unsafe fn message_text(
@@ -115,29 +102,14 @@ mod native {
         file: u32,
         message: u32,
     ) -> Result<(), Unavailable> {
+        let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, u32, *mut u8, u32) =
+            unsafe { transmute(SET_PANE_TEXT) };
         unsafe {
-            let allocate: unsafe extern "aapcs" fn(u32, *mut u8) -> *mut u8 = transmute(ALLOCATE);
-            let archive: unsafe extern "aapcs" fn(u32) -> u32 = transmute(TEXT_ARCHIVE);
-            let open: unsafe extern "aapcs" fn(*mut u8, u32, u32, *mut u8, u32, u32) -> *mut u8 =
-                transmute(OPEN_MESSAGES);
-            let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, u32, *mut u8, u32) =
-                transmute(SET_PANE_TEXT);
-            let memory = allocate(MESSAGES_SIZE, heap);
-            if memory.is_null() {
-                return Err(Unavailable);
-            }
-            let messages = open(memory, archive(10), file, heap, 1, 5);
-            // The file object and its deleting destructor are checked before
-            // the pane is touched.
-            let vtable = pointer(messages as u32)
-                .and_then(|messages| follow(messages, 0))
-                .ok_or(Unavailable)?;
-            let delete = code::<Transporter15>(read_word(vtable, 4)).ok_or(Unavailable)?;
-            let delete: unsafe extern "aapcs" fn(*mut u8) = transmute(delete);
-            set(strings, layout, pane, messages, message);
-            delete(messages);
+            shared::with_messages::<Transporter15, _>(heap, file, |messages| {
+                set(strings, layout, pane, messages, message)
+            })
         }
-        Ok(())
+        .ok_or(Unavailable)
     }
 
     /// The original's "show this message and wait": `(ui, message, 1)`, as
