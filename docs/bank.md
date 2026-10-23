@@ -202,9 +202,11 @@ Bank shows one of the original's messages for these, and after A it is back on i
 | Creating the Bank at the first start, and the SD card is full | "Pokémon Bank could not be started due to a lack of space on your SD card." | No Bank was created. The next START creates it, with the welcome again. |
 | START with an interrupted Save and Quit, and the cartridge is pulled | "Please confirm that your Game Card is properly inserted, and then try again." | Nothing changed. The next START with the game finishes or undoes the save ([above](#if-save-and-quit-is-interrupted)). |
 | Loading the chosen game, and the cartridge is pulled | the same | Nothing changed. |
-| Save and Quit, before the game is written: the cartridge is pulled, or the SD card refuses a write | the same | Nothing was saved; the session's changes are gone. |
+| Save and Quit, before the game is written, and the cartridge is pulled | the same | Nothing was saved; the session's changes are gone. |
 | Save and Quit, and a file of the Bank that was missing has to be made again, but the SD card is full | "The SD card is full." | Nothing was saved. |
 | Save and Quit, while or after the game is written | by what the game's save holds now, next table | |
+
+If the SD card refuses to read or write Bank's files for another reason than lack of space, Bank shows its error screen with the two numbers instead ([Troubleshooting](#troubleshooting)): retrying would not help, and the numbers say what to report.
 
 When the game's write has begun, Bank looks at the game's save at once and decides as it would at the next start:
 

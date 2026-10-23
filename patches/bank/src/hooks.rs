@@ -839,11 +839,10 @@ impl Runtime {
                     )
                 })
             }
-            // The Game Card is gone, or a write the card refused: nothing
-            // of the session was saved, and what the journal holds is the
-            // next START's to settle (docs/internals.md, "When a job cannot
-            // finish").
-            (Step::Recover | Step::Load | Step::Initialize, Reply::Ended(Ending::Retry)) => {
+            // The Game Card is gone: nothing of the session was saved, and
+            // what the journal holds is the next START's to settle
+            // (docs/internals.md, "When a job cannot finish").
+            (Step::Recover | Step::Load, Reply::Ended(Ending::Retry)) => {
                 self.turn_back(task, |ui| unsafe { bank_common::ui::try_again(ui) })
             }
             // No room for the new Bank's files: the scan's own message for

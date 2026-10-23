@@ -208,22 +208,22 @@ A job that stops for a reason the original has a message for answers what it lea
 
 | `Ending` | What it leaves | The message |
 | --- | --- | --- |
-| `Retry` | Nothing changed, or what is left is settled best by the next START with the game | `0xB` from its second page (`ui::try_again`): "Please confirm that your Game Card is properly inserted, and then try again." |
+| `Retry` | The Game Card is gone, and nothing changed, or what is left is settled best by the next START with the game | `0xB` from its second page (`ui::try_again`): "Please confirm that your Game Card is properly inserted, and then try again." |
 | `NoSpace` | A file could not be made for lack of space, and nothing changed | Creating a Bank: the scan's own `0x26` (`ui::notice`), "Pokémon Bank could not be started due to a lack of space on your SD card." Save and Quit: the first line of message 0 of text file 26 (`ui::sd_full`), "The SD card is full." |
 | `Doubled` | A save in progress was settled by what it moved, from a game save that is neither of its images: Pokémon may be doubled | Game selection's `0x1F` (`ui::notice`), "No Pokémon Game Card detected." and "Please check that your Game Card is properly inserted into your system's Game Card slot." |
 
 What counts:
 
 - **A missing Game Card**, by the original's own test. Bank has no signal for a removed card: unlike Transporter (`001DE43C`, an event on notification `0x20A`), it never subscribes to that notification. Its game selection instead asks for the selected game's secure value (`00292D64` → `001643DC` → `00164370` → `0016578C`, FS command `0x0876`, slot `0x1000`) and shows message `0x1F` when the query fails. The worker makes the same query on the same archive (`detected`, through `platform`): a query that fails is a missing card, an answer that is not what the query gives is not. A call on the secure value that fails counts as a missing card too.
-- **A file the card refused**: a read or write of Bank's files that the console failed (`bank_files::Error::card`). It is lack of space by the original's own test from its game scan (`patch_common::fs_result::lack_of_space`, `002abfa0`..`002abfd0`): a negative result of the file system module `0x11` with a description from `0xC8` to `0xDB`, for which the scan shows `0x26`.
+- **A card without room**: a read or write of Bank's files that the console failed (`bank_files::Error::card`) for lack of space, by the original's own test from its game scan (`patch_common::fs_result::lack_of_space`, `002abfa0`..`002abfd0`): a negative result of the file system module `0x11` with a description from `0xC8` to `0xDB`, for which the scan shows `0x26`. Any other refusal of the SD card is an error with its numbers, also with an installed game, which has no card to check: the advice about the Game Card does not help there, and a card that keeps refusing would otherwise never show what to report.
 
 | Job | Ending |
 | --- | --- |
-| `Job::Initialize` | `NoSpace`, or `Retry` for another refusal (`storage_worker::created`). A creation that stopped is finished in place by the next one, welcome included. |
-| `Job::Recover`, at START | `Retry` when the game cannot be read or a write fails (`Settled::Open`); the save stays in progress. |
+| `Job::Initialize` | `NoSpace` (`storage_worker::created`); another refusal is fault `4`. A creation that stopped is finished in place by the next one, welcome included. |
+| `Job::Recover`, at START | `Retry` when the game's Game Card is gone (`Settled::Open`); the save stays in progress. A write that fails is fault `10`. |
 | `Job::LoadGame` | `Retry` (`storage_worker::load_game`). |
 | `Job::Detect` | `Retry` for a cartridge. An installed copy has no card to take out, and its missing answer is fault `A`. |
-| `Job::Prepare` | `Retry`, or `NoSpace`. A file is created only before the journal is written. The game is not written before `Reply::ReadyToWrite`, so once the journal may hold the save every stop undoes it at once (`undo`: the Bank is opened again, since a session that met an error is not used again, and the save before is kept). An undo that cannot be written leaves it to the next START, which finds the game untouched. |
+| `Job::Prepare` | `Retry` for a Game Card that is gone, `NoSpace` for a card without room; a refused write of Bank's files is fault `F`. A file is created only before the journal is written. The game is not written before `Reply::ReadyToWrite`, so once the journal may hold the save every stop undoes it at once (`undo`: the Bank is opened again, since a session that met an error is not used again, and the save before is kept). An undo that cannot be written leaves it to the next START, which finds the game untouched. |
 | `Job::Finalize` | Once the original's writer has ended, whether it wrote the game or failed (`NativeGameError::NativeStatus`), the save is settled at once from what the game holds: `settle` with `Rule::AfterWrite`, the next table. |
 
 | After the writer, the game holds | The session moved | Decision | Reply |
@@ -232,7 +232,9 @@ What counts:
 | The after-image with the secure pair the save prepared | anything | commit; the Bank read back must be the body staged | `Saved`, the success message |
 | Neither | Pokémon one way, or none | by the moves (`moved::choose_unseen`) | `Doubled` |
 | Neither | Pokémon both ways | none: it waits | `Retry` |
-| Nothing readable (the card is gone), or the settling cannot be written | anything | none: in progress | `Retry` |
+| Nothing readable: the card is gone | anything | none: in progress | `Retry` |
+
+A write that fails while the save is settled is fault `10`, with the save left in progress for the next START.
 
 The texts are the original's, loaded as it loads them. `ui::try_again` lets `001d6650(ui, 0, 0xB, 1)` load the message, keeps what follows its first part (`message::rest`: behind the first page break and the line feed the next page begins with, or in Simplified Chinese, which has one page, behind the first line), moves that to the front of the string and hands it to the dialog again; the first part, about a server, is dropped. `ui::sd_full` has `001d6650` show message 0 with kind 0, whose message file is the context's own (`[context + 0x28]`, `001d6728`): for this one call it is text file 26, opened as a screen's context opens its own (`001e7dd8`..`001e7e0c`: `00235bc8` allocates, `00230a90` names the text archive, `00229c00` makes the object; `patch_common::ui::with_messages`) and deleted afterwards through its second virtual function. The string is then ended at its first line feed (`message::first_line`); the second line, "You can't download data.", is about the server. In all ten languages the first line is a sentence of its own.
 

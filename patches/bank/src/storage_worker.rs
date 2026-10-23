@@ -8,8 +8,10 @@
 //! calls (`arm::Console`).
 //!
 //! A job that cannot finish says what it leaves (`Ending`) where the screen
-//! can say it with a message of the original; every other failure is an
-//! error, which shows the two numbers.
+//! can say it with a message of the original: a Game Card that is gone, by
+//! the original's own test, or a card without room for a file. Every other
+//! failure is an error, which shows the two numbers, a read or write of
+//! Bank's files that the SD card refused among them.
 
 use crate::{
     native_game::{GameIoDescriptor, PlatformSecureValue, PreparedImage, SecureValues},
@@ -83,7 +85,8 @@ pub enum Job {
 /// the worker stays usable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ending {
-    /// Nothing changed, or what is left is settled best by the next START
+    /// The game's Game Card is gone, by the original's own test, and
+    /// nothing changed, or what is left is settled best by the next START
     /// with the game: the original's advice to check that the Game Card is
     /// inserted and try again.
     Retry,
@@ -166,31 +169,23 @@ type FilesError<F> = bank_files::Error<<<F as Files>::Storage as Storage>::Error
 fn files_failed<E>(fault: Fault) -> impl Fn(bank_files::Error<E>) -> Stop<E> {
     move |error| Stop::Files(fault, error)
 }
-/// The ending of a read or write of Bank's files that the card refused, for
-/// lack of space or not; `None` for every other failure of the files, which
-/// shows its numbers.
-fn refused<E: NoRoom>(error: &bank_files::Error<E>) -> Option<Ending> {
-    error.card().map(|error| {
-        if error.no_room() {
-            Ending::NoSpace
-        } else {
-            Ending::Retry
-        }
-    })
+/// Whether the SD card refused a read or write of Bank's files for lack of
+/// space. Any other refusal of the card is an error with its numbers: the
+/// card is not where a Game Card's advice helps.
+fn no_room<E: NoRoom>(error: &bank_files::Error<E>) -> bool {
+    error.card().is_some_and(NoRoom::no_room)
 }
 
 /// The end of creating a Bank: what `BankFiles::initialize` answered, with a
-/// file the card refused as an ending. A creation that stopped is finished
-/// in place by the next one, so nothing is lost by it.
+/// card without room for the files as an ending. A creation that stopped is
+/// finished in place by the next one, so nothing is lost by it.
 pub fn created<E: NoRoom>(
     result: Result<(), bank_files::Error<E>>,
 ) -> Result<Option<Ending>, bank_files::Error<E>> {
     match result {
         Ok(()) => Ok(None),
-        Err(error) => match refused(&error) {
-            Some(ending) => Ok(Some(ending)),
-            None => Err(error),
-        },
+        Err(error) if no_room(&error) => Ok(Some(Ending::NoSpace)),
+        Err(error) => Err(error),
     }
 }
 
@@ -215,8 +210,8 @@ pub enum Prepared {
 ///
 /// Whatever stops it once the journal may hold the save undoes that save
 /// again (`undo`): the game is not written before `Ready`, so the save before
-/// is the one the game holds. A missing Game Card and a file the card
-/// refused are endings; every other failure is an error.
+/// is the one the game holds. A missing Game Card and a card without room
+/// for a file are endings; every other failure is an error.
 pub fn prepare<F: Files, G: Game>(
     files: &mut BankFiles<F>,
     game: &mut G,
@@ -268,9 +263,10 @@ where
         // An undo that cannot be written either leaves the save to the next
         // start with the game, which keeps the save before.
         drop(undo(files));
-        return match refused(&error) {
-            Some(ending) => Ok(Prepared::Ended(ending)),
-            None => Err(Stop::Files(Fault::JournalPrepare, error)),
+        return if no_room(&error) {
+            Ok(Prepared::Ended(Ending::NoSpace))
+        } else {
+            Err(Stop::Files(Fault::JournalPrepare, error))
         };
     }
     // No game write is allowed until this post-barrier check ends.
@@ -329,8 +325,8 @@ pub enum Settled {
     /// Not settled, and nothing written: it moved Pokémon both ways, and the
     /// game cannot tell. It waits for its game.
     Waits,
-    /// Not settled: the game cannot be read, its card is gone, or a write
-    /// failed. The journal may still hold it, for the next start.
+    /// Not settled: the game cannot be read, as its Game Card is gone. The
+    /// journal still holds it, for the next start.
     Open,
 }
 
@@ -376,15 +372,15 @@ where
         Match::Other(_) => Ok(()),
     };
     match secured {
-        // A call on the game's secure value failed, as for a card that is
-        // gone: nothing is decided now.
-        Err(error) if error.native_result() != 0 => return Ok(Settled::Open),
+        // The card was taken out meanwhile: nothing is decided now.
+        Err(_) if !detected(game) => return Ok(Settled::Open),
         secured => secured?,
     }
     match matched {
-        Match::Before | Match::After => {
-            or_open::<F>(files.reconcile(evidence.fingerprint).map(Settled::Exact))
-        }
+        Match::Before | Match::After => files
+            .reconcile(evidence.fingerprint)
+            .map(Settled::Exact)
+            .map_err(files_failed(Fault::JournalRecovery)),
         // A save that is neither image, on the kind of copy the save in
         // progress was made with: the game was played on, a new game was
         // started on it, or it is another cartridge. It no longer shows
@@ -415,10 +411,9 @@ fn by_moves<F: Files>(
 where
     <F::Storage as Storage>::Error: NoRoom,
 {
-    let moved = match files.pending_moves(staging, before, after) {
-        Ok(moved) => moved,
-        Err(error) => return or_open::<F>(Err(error)),
-    };
+    let moved = files
+        .pending_moves(staging, before, after)
+        .map_err(files_failed(Fault::JournalRecovery))?;
     let decision = if seen {
         Some(moved::choose(moved))
     } else {
@@ -427,18 +422,10 @@ where
     let Some(decision) = decision else {
         return Ok(Settled::Waits);
     };
-    or_open::<F>(files.reconcile_as(decision).map(Settled::ByMoves))
-}
-/// A read or write the card refused leaves the save in progress open, for
-/// the next start; every other failure of the files is an error.
-fn or_open<F: Files>(result: Result<Settled, FilesError<F>>) -> Stopped<Settled, F>
-where
-    <F::Storage as Storage>::Error: NoRoom,
-{
-    match result {
-        Err(error) if refused(&error).is_some() => Ok(Settled::Open),
-        result => result.map_err(files_failed(Fault::JournalRecovery)),
-    }
+    files
+        .reconcile_as(decision)
+        .map(Settled::ByMoves)
+        .map_err(files_failed(Fault::JournalRecovery))
 }
 
 /// How Save and Quit ended once the original's writer had ended.
@@ -547,9 +534,8 @@ fn finish_secure<G: Game>(game: &mut G, verified: SecureValues) -> Result<(), Wo
 }
 /// The game a session is loaded with, as it is: its save, with the
 /// console's secure value advanced if a save in progress that was settled
-/// without the game left it one step behind. A Game Card that is gone, or a
-/// call on the secure value that fails, is `Ending::Retry`: nothing of the
-/// Bank is written here.
+/// without the game left it one step behind. A Game Card that is gone is
+/// `Ending::Retry`: nothing of the Bank is written here.
 pub fn load_game<G: Game>(game: &mut G) -> Result<Result<GameEvidence, Ending>, WorkerError> {
     let evidence = match game.inspect() {
         Ok(evidence) => evidence,
@@ -557,7 +543,7 @@ pub fn load_game<G: Game>(game: &mut G) -> Result<Result<GameEvidence, Ending>, 
         Err(error) => return Err(error),
     };
     match finish_secure(game, evidence.secure) {
-        Err(error) if error.native_result() != 0 => Ok(Err(Ending::Retry)),
+        Err(_) if !detected(game) => Ok(Err(Ending::Retry)),
         finished => finished.map(|()| Ok(evidence)),
     }
 }
@@ -1284,9 +1270,10 @@ mod tests {
             let baseline = game.evidence();
             let mut staging = body.clone();
             let result = prepare(&mut files, &mut game, &mut staging, baseline, trainer());
+            // The card refuses the write: an error, with its numbers.
             match result {
                 Ok(Prepared::Ready { .. }) => break,
-                Ok(Prepared::Ended(Ending::Retry)) => {}
+                Err(Stop::Files(Fault::JournalPrepare, _)) => {}
                 other => panic!("cut after {budget}: {other:?}"),
             }
             // The next start with the game, which was not written, keeps
@@ -1439,29 +1426,38 @@ mod tests {
     }
 
     #[test]
-    fn a_write_that_fails_while_the_save_is_settled_leaves_it_for_the_next_start() {
+    fn a_write_that_fails_while_the_save_is_settled_is_an_error_and_leaves_it_for_the_next_start() {
         let (old, sessions) = sessions();
         let new = &sessions[0].1;
         let mut game = Simulated::loaded(true);
         let (disk, files, in_progress, staged) = prepared_save(&old, new, &mut game);
         drop(files);
         game.write(WRITTEN);
-        // A cut at every step of settling it: done, or left as it was.
+        // A cut at every step of settling it: done, or an error with the
+        // save as it was, for the next start.
         for budget in 0.. {
             let card = disk.cut_after(budget);
             let mut files = opened(&card);
             let mut game = Simulated::loaded(true);
             game.write(WRITTEN);
-            let ending = finish(&mut files, &mut game, &in_progress, staged);
+            let finalized = finalize(
+                &mut files,
+                &mut game,
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                &in_progress,
+                Some(WRITTEN),
+                Some(staged),
+                &mut held(),
+            );
             drop(files);
             let card = card.reboot();
             let mut files = opened(&card);
-            match ending {
-                Finalized::Saved => {
+            match finalized {
+                Ok(Finalized::Saved) => {
                     assert_eq!(pending(&mut files), None);
                     break;
                 }
-                Finalized::Ended(Ending::Retry) => {
+                Err(Stop::Files(Fault::JournalRecovery | Fault::StorageLoad, _)) => {
                     // The next start finds the new image and commits.
                     if let Some(in_progress) = pending(&mut files) {
                         let settled = settle(
@@ -1540,10 +1536,10 @@ mod tests {
         assert_eq!(created(files.initialize(&mut staging)), Ok(None));
         drop(files);
         assert!(settled_bank(&disk) == new);
-        // Another refusal of the card: try again.
+        // Any other refusal of the card is an error, with its numbers.
         assert_eq!(
             created::<Refused>(Err(bank_files::Error::Io(Refused::FAILED))),
-            Ok(Some(Ending::Retry))
+            Err(bank_files::Error::Io(Refused::FAILED))
         );
     }
 
