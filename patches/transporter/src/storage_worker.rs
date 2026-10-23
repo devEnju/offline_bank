@@ -9,7 +9,10 @@
 
 use crate::task::RECORDS_LEN;
 use bank_common::{fault::Fault, worker::WorkerError};
-use offline_core::{sections::TRANSPORT_SLOTS, transport::Refusal};
+use offline_core::{
+    sections::TRANSPORT_SLOTS,
+    transport::{DeliverError, Refusal},
+};
 
 /// The staging buffer: the transport box's records, then its tags.
 pub const STAGING_LEN: usize = RECORDS_LEN + TRANSPORT_SLOTS;
@@ -33,9 +36,9 @@ pub enum Reply {
     /// the record announcing it is in force when Bank's journal is read
     /// again (`transport::deliver`).
     Delivered,
-    /// Bank holds none, for certain: it was not written, the record
-    /// announcing it is not in force, or Bank's files refused it on the
-    /// check before the write. The Pokémon stay in the game.
+    /// Bank holds none, for certain: Bank's files refused it on the check
+    /// before the write, as they would at START. The Pokémon stay in the
+    /// game.
     NotDelivered,
     /// Whether Bank holds the delivery cannot be told
     /// (`DeliverError::Unconfirmed`): the Pokémon stay in the game, and Bank
@@ -43,11 +46,55 @@ pub enum Reply {
     Unconfirmed,
 }
 
-/// A transport box that is no whole box holding Pokémon (`DeliverError`):
-/// the second number of `Fault::Delivery`. The question task ends the
-/// session for a box without Pokémon, so neither is ever handed over.
+/// The second number of `Fault::Delivery` for a delivery that did not
+/// happen: a transport box that is no whole box, or one without Pokémon,
+/// which the question task never hands over; and a journal or transport
+/// file whose copy did not take the delivery for another reason than the
+/// card's (`DeliverError::Write`). A write the card refused is the card's
+/// own result.
 pub const NOT_ONE_BOX: u32 = 1;
 pub const NO_POKEMON: u32 = 2;
+pub const NOT_WRITTEN: u32 = 3;
+
+/// The check's reply from what `transport::check` answered. `unreachable`
+/// is the result of a file of Bank's that did not open for a reason Bank
+/// cannot resolve (`bank_common::fs::Error::bank_resolves`): the error
+/// screen, as Bank shows it for its files (`Fault::StorageOpen`). A journal
+/// no power cut leaves is Bank's error too (`Fault::StorageInvalid`).
+/// Everything else Bank resolves, and the refusal sends the user there.
+pub fn check_reply(
+    checked: Result<(), Refusal>,
+    unreachable: Option<u32>,
+) -> Result<Reply, WorkerError> {
+    match (checked, unreachable) {
+        (Ok(()), _) => Ok(Reply::Ready),
+        (Err(Refusal::Damaged), _) => Err(Fault::StorageInvalid.with(0)),
+        (Err(_), Some(result)) => Err(Fault::StorageOpen.with(result)),
+        (Err(refusal), None) => Ok(Reply::Refused(refusal)),
+    }
+}
+
+/// The delivery's reply from what `transport::deliver` answered, with the
+/// card's results as their numbers, and `unreachable` as for `check_reply`.
+/// A write the SD card refused, or a file that did not take it, is the
+/// error screen: Bank holds nothing, and the card is not where the advice to
+/// try again helps.
+pub fn delivery_reply(
+    delivered: Result<(), DeliverError<u32>>,
+    unreachable: Option<u32>,
+) -> Result<Reply, WorkerError> {
+    match (delivered, unreachable) {
+        (Ok(()), _) => Ok(Reply::Delivered),
+        (Err(DeliverError::Unconfirmed), _) => Ok(Reply::Unconfirmed),
+        (Err(DeliverError::Refused(Refusal::Damaged)), _) => Err(Fault::StorageInvalid.with(0)),
+        (Err(DeliverError::Refused(_)), Some(result)) => Err(Fault::StorageOpen.with(result)),
+        (Err(DeliverError::Refused(_)), None) => Ok(Reply::NotDelivered),
+        (Err(DeliverError::Io(result)), _) => Err(Fault::Delivery.with(result)),
+        (Err(DeliverError::Write), _) => Err(Fault::Delivery.with(NOT_WRITTEN)),
+        (Err(DeliverError::Layout), _) => Err(Fault::Delivery.with(NOT_ONE_BOX)),
+        (Err(DeliverError::Empty), _) => Err(Fault::Delivery.with(NO_POKEMON)),
+    }
+}
 
 #[cfg(target_arch = "arm")]
 pub(crate) use arm::{TransporterRequests, TransporterWorker};
@@ -56,8 +103,8 @@ pub(crate) use arm::{TransporterRequests, TransporterWorker};
 mod arm {
     use super::*;
     use crate::program::Transporter15;
-    use bank_common::fs::Visit;
-    use offline_core::transport::{self, DeliverError};
+    use bank_common::fs::{self, Visit};
+    use offline_core::transport;
     use patch_common::{
         program::Program,
         worker::{Service, Shared, Worker},
@@ -94,28 +141,26 @@ mod arm {
             Self
         }
         fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
-            Ok(match job {
-                Job::Check => match transport::check(&mut bank_files()) {
-                    Ok(()) => Reply::Ready,
-                    Err(refusal) => Reply::Refused(refusal),
-                },
+            let mut files = bank_files();
+            match job {
+                Job::Check => {
+                    let checked = transport::check(&mut files);
+                    check_reply(checked, files.unreachable().map(fs::Error::diagnostic))
+                }
                 Job::Deliver => {
                     let (records, tags) = staging.split_at(RECORDS_LEN);
-                    match transport::deliver(&mut bank_files(), records, tags) {
-                        Ok(_) => Reply::Delivered,
-                        Err(DeliverError::Unconfirmed) => Reply::Unconfirmed,
-                        Err(
-                            DeliverError::Io(_) | DeliverError::Write | DeliverError::Refused(_),
-                        ) => Reply::NotDelivered,
-                        Err(DeliverError::Layout) => {
-                            return Err(Fault::Delivery.with(NOT_ONE_BOX));
-                        }
-                        Err(DeliverError::Empty) => {
-                            return Err(Fault::Delivery.with(NO_POKEMON));
-                        }
-                    }
+                    let delivered = match transport::deliver(&mut files, records, tags) {
+                        Ok(_) => Ok(()),
+                        Err(DeliverError::Io(error)) => Err(DeliverError::Io(error.diagnostic())),
+                        Err(DeliverError::Layout) => Err(DeliverError::Layout),
+                        Err(DeliverError::Empty) => Err(DeliverError::Empty),
+                        Err(DeliverError::Refused(refusal)) => Err(DeliverError::Refused(refusal)),
+                        Err(DeliverError::Write) => Err(DeliverError::Write),
+                        Err(DeliverError::Unconfirmed) => Err(DeliverError::Unconfirmed),
+                    };
+                    delivery_reply(delivered, files.unreachable().map(fs::Error::diagnostic))
                 }
-            })
+            }
         }
     }
 }
@@ -260,6 +305,50 @@ mod tests {
         assert_eq!(
             Fault::Delivery.with(NOT_ONE_BOX).numbers(),
             [0x14, NOT_ONE_BOX]
+        );
+    }
+
+    #[test]
+    fn what_bank_resolves_goes_to_bank_and_everything_else_shows_the_numbers() {
+        // The refusals Bank resolves send the user there.
+        for refusal in [Refusal::Occupied, Refusal::NotReady] {
+            assert_eq!(check_reply(Err(refusal), None), Ok(Reply::Refused(refusal)));
+            assert_eq!(
+                delivery_reply(Err(DeliverError::Refused(refusal)), None),
+                Ok(Reply::NotDelivered)
+            );
+            // A file that did not open for another reason: Bank's number.
+            let error = Fault::StorageOpen.with(0xd900_458b);
+            assert_eq!(check_reply(Err(refusal), Some(0xd900_458b)), Err(error));
+            assert_eq!(
+                delivery_reply(Err(DeliverError::Refused(refusal)), Some(0xd900_458b)),
+                Err(error)
+            );
+        }
+        // A journal no power cut leaves, as Bank shows it.
+        let damaged = Err(Fault::StorageInvalid.with(0));
+        assert_eq!(check_reply(Err(Refusal::Damaged), None), damaged);
+        assert_eq!(
+            delivery_reply(Err(DeliverError::Refused(Refusal::Damaged)), None),
+            damaged
+        );
+        assert_eq!(check_reply(Ok(()), Some(1)), Ok(Reply::Ready));
+        // A delivery the card did not take: the delivery's number.
+        for (error, second) in [
+            (DeliverError::Io(0xd900_458b), 0xd900_458b),
+            (DeliverError::Write, NOT_WRITTEN),
+            (DeliverError::Layout, NOT_ONE_BOX),
+            (DeliverError::Empty, NO_POKEMON),
+        ] {
+            assert_eq!(
+                delivery_reply(Err(error), None),
+                Err(Fault::Delivery.with(second))
+            );
+        }
+        assert_eq!(delivery_reply(Ok(()), None), Ok(Reply::Delivered));
+        assert_eq!(
+            delivery_reply(Err(DeliverError::Unconfirmed), None),
+            Ok(Reply::Unconfirmed)
         );
     }
 

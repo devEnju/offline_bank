@@ -32,12 +32,12 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 | When | Bank | Source game | Message |
 | --- | --- | --- | --- |
 | The cartridge's Game Card is gone at "Yes", checked before anything is written | unchanged | unchanged | "Please confirm that your Game Card is properly inserted, and then try again." |
-| The delivery cannot be written | unchanged | unchanged | the same |
+| The delivery cannot be written: the SD card refuses it | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
 | Whether Bank received the delivery cannot be read, even when Bank's record is read again | may have the Pokémon | unchanged | "No compatible Pokémon Game Card detected…" |
 | The cartridge is taken out after the delivery, before the game is saved | has the Pokémon | still has them | the same |
-| The game cannot be saved after the delivery, with the cartridge in, or a save on the SD card | has the Pokémon | may still have them, and its save may be damaged | "The saved data in your Pokémon game is corrupted." |
+| The game cannot be saved after the delivery, with the cartridge in, a save on the SD card, or a Virtual Console title | has the Pokémon | may still have them, and its save may be damaged | "The saved data in your Pokémon game is corrupted." |
 | Everything is written | has the Pokémon | without them | the original's success message |
-| The patch itself cannot go on, for instance its background thread cannot start | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
+| The patch itself cannot go on, for instance its background thread cannot start, or Bank's data cannot be opened at all | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
 
 "Try again" comes only where nothing changed. The failure message's first sentence, "The server did not receive the data.", is shown only on the error screen: there is no server.
 
@@ -48,7 +48,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 | Message | When | What to do |
 | --- | --- | --- |
 | "At least one Pokémon remains in the Transport Box from your previous session. Please empty the Transport Box by using Pokémon Bank…" | The transport box in Bank still holds Pokémon, or an earlier delivery has not been picked up. | Open Bank, empty the transport box, Save and Quit. |
-| "Your communication with Pokémon Bank did not complete correctly during your last session. Please open Pokémon Bank and perform the cleanup process…" | Bank's files are not ready for a delivery: Bank has an unfinished save, the offline Bank has never been started on this console, its Bank is from a version this Transporter does not continue, or Transporter cannot open or read Bank's data. | Open Bank. It finishes what is unfinished or says what is wrong. Then Save and Quit once. |
+| "Your communication with Pokémon Bank did not complete correctly during your last session. Please open Pokémon Bank and perform the cleanup process…" | Bank's files are not ready for a delivery: Bank has an unfinished save, the offline Bank has never been started on this console, its Bank is from a version this Transporter does not continue, or a file of Bank's is missing or unreadable after a power cut. | Open Bank. It finishes what is unfinished or says what is wrong. Then Save and Quit once. |
 
 The second message is the original's for a session the server asked to clean up; there is no cleanup to perform by hand. Every other message of the original comes where it always did, for the game that was chosen.
 
@@ -129,12 +129,12 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | --- | --- |
 | Transporter does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Transporter is not version 1.5. |
 | START always answers "Pokémon remains in the Transport Box". | Open Bank, empty the transport box, and Save and Quit. |
-| START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, Transporter cannot open Bank's data on this setup: check that Luma3DS is v10.0 or later and that Bank and Transporter are from the same release, and otherwise please report it. |
+| START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, check that Bank and Transporter are from the same release, and otherwise please report it. Where Transporter cannot open Bank's data at all, it shows the error screen instead. |
 | "Please confirm that your Game Card is properly inserted" after confirming a transfer. | The cartridge's card was not inserted, or the delivery could not be written. The source game and Bank are unchanged; transfer again. |
 | "No compatible Pokémon Game Card detected" after confirming a transfer. | The cartridge was taken out after the delivery, or whether Bank received the delivery could not be read. The Pokémon may be in Bank's transport box and still in the game: look in Bank before you transfer them again. |
 | "The saved data in your Pokémon game is corrupted." after confirming a transfer. | Saving the game failed in the middle. The Pokémon may be in Bank and still in the game, and the game's save may be damaged: check it before you play. For a save on the SD card, `<name>.sav.bak` holds it as it was before the session. |
 | "The SD card is full." after choosing a Black/White save on the SD card. | The card has no room for the save's backup (512 KiB). Nothing was written. Free space and start again. |
-| "Press HOME to return to the HOME Menu" with two numbers under it. | The patch itself cannot go on, for instance its background thread cannot start, or something of Transporter it needs is not what it expects. It is Bank's error screen, with Bank's numbers ([bank.md](bank.md#troubleshooting)). Nothing was written to Bank or the game. Close Transporter from the HOME Menu and start it again; if it stays, please report the numbers. |
+| "Press HOME to return to the HOME Menu" with two numbers under it. | The patch itself cannot go on, for instance its background thread cannot start, or something of Transporter it needs is not what it expects, or Bank's data cannot be opened at all or its record is damaged (`3`, `5`), which Bank could not repair either. It is Bank's error screen, with Bank's numbers ([bank.md](bank.md#troubleshooting)). Nothing was written to Bank or the game. Close Transporter from the HOME Menu and start it again; if it stays, please report the numbers. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |
 | A save on the SD card is not listed. | Its language is not the chosen one; a cartridge of the same game in that language is inserted; the name or folder differs from the pattern above; the save is of another game or language than its name says; or the file is not 524,288 bytes. |
 | The language screen does not change the language of the screens. | Intended: it chooses the games. The screens follow the console's language. |

@@ -48,23 +48,39 @@ pub enum Shown {
     Corrupted,
 }
 
+/// The game Pokémon are moved from, as a message about its save needs it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chosen {
+    /// A cartridge whose card is in, or a save on the SD card.
+    CardIn,
+    /// A cartridge whose card is gone, or a game not known.
+    CardOut,
+    /// A Virtual Console title, whose save the patch's hooks never see.
+    VirtualConsole,
+}
+
 /// What is shown for `message`, when the last write to the game that failed
-/// left `fault` (`cart::take_write_fault`) and the chosen cartridge's card
-/// is in (`card_in`). The failure message stands for a note save that did
-/// not count: the advice to try again, unless the card had no room for the
-/// save's backup, or a save on the SD card may be half-written. The no-card
-/// message stands for a save after the delivery that failed, or a card that
-/// is gone: a save on the SD card, or a cartridge whose card is still in,
-/// may be half-written. Every other message is the original's.
-pub fn shown(message: u32, fault: WriteFault, card_in: bool) -> Shown {
+/// left `fault` (`cart::take_write_fault`), the game is `chosen`, and
+/// `unconfirmed` says that the message is for a delivery Bank may hold.
+///
+/// The failure message stands for a note save that did not count: the
+/// advice to try again, unless the card had no room for the save's backup,
+/// or a save on the SD card may be half-written. The no-card message stands
+/// for a save after the delivery that failed, a card that is gone, or a
+/// delivery Bank may hold: a save on the SD card, a cartridge whose card is
+/// still in, or a Virtual Console title, which has no card to take out, may
+/// be half-written. Every other message is the original's.
+pub fn shown(message: u32, fault: WriteFault, chosen: Chosen, unconfirmed: bool) -> Shown {
     match (message, fault) {
         (MESSAGE_FAILURE, WriteFault::Full) => Shown::SdFull,
         (MESSAGE_FAILURE, WriteFault::Torn) => Shown::Corrupted,
         (MESSAGE_FAILURE, _) => Shown::SecondPage,
+        (MESSAGE_NO_CARD, _) if unconfirmed => Shown::Whole,
         (MESSAGE_NO_CARD, WriteFault::Full | WriteFault::Untouched | WriteFault::Torn) => {
             Shown::Corrupted
         }
-        (MESSAGE_NO_CARD, WriteFault::Cartridge) if card_in => Shown::Corrupted,
+        (MESSAGE_NO_CARD, WriteFault::Cartridge) if chosen == Chosen::CardIn => Shown::Corrupted,
+        (MESSAGE_NO_CARD, WriteFault::None) if chosen == Chosen::VirtualConsole => Shown::Corrupted,
         _ => Shown::Whole,
     }
 }
@@ -78,8 +94,10 @@ pub fn refusal_message(refusal: Refusal) -> u32 {
         Refusal::Occupied => MESSAGE_BOX_NOT_EMPTY,
         // No Bank yet, a Bank save that was not finished, or a file that
         // does not read: Bank before its first start, one not yet
-        // converted, or one whose next save replaces the file.
-        Refusal::NotReady => MESSAGE_OPEN_BANK,
+        // converted, or one whose next save replaces the file. A damaged
+        // journal is the error screen (`storage_worker::check_reply`) and
+        // never comes here; were it to, Bank says what is wrong.
+        Refusal::NotReady | Refusal::Damaged => MESSAGE_OPEN_BANK,
     }
 }
 
@@ -385,27 +403,38 @@ mod tests {
     #[test]
     fn only_the_failure_and_the_no_card_message_change_with_what_a_write_left() {
         for fault in FAULTS {
-            for card_in in [false, true] {
-                // The refusals and the closing message of a transfer are
-                // shown whole.
-                for message in [0, MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY, 0x0a] {
-                    assert_eq!(shown(message, fault, card_in), Shown::Whole);
+            for chosen in [Chosen::CardIn, Chosen::CardOut, Chosen::VirtualConsole] {
+                for unconfirmed in [false, true] {
+                    let shown = |message| shown(message, fault, chosen, unconfirmed);
+                    // The refusals and the closing message of a transfer are
+                    // shown whole.
+                    for message in [0, MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY, 0x0a] {
+                        assert_eq!(shown(message), Shown::Whole);
+                    }
+                    // The note save that did not count.
+                    let expected = match fault {
+                        WriteFault::Full => Shown::SdFull,
+                        WriteFault::Torn => Shown::Corrupted,
+                        _ => Shown::SecondPage,
+                    };
+                    assert_eq!(shown(MESSAGE_FAILURE), expected);
+                    // A save after the delivery that failed, a card that is
+                    // gone, or a delivery Bank may hold: 0x22 only where no
+                    // save may be half-written.
+                    let expected = match (fault, chosen) {
+                        _ if unconfirmed => Shown::Whole,
+                        (WriteFault::None, Chosen::VirtualConsole) => Shown::Corrupted,
+                        (WriteFault::None, _) => Shown::Whole,
+                        (WriteFault::Cartridge, Chosen::CardIn) => Shown::Corrupted,
+                        (WriteFault::Cartridge, _) => Shown::Whole,
+                        _ => Shown::Corrupted,
+                    };
+                    assert_eq!(
+                        shown(MESSAGE_NO_CARD),
+                        expected,
+                        "{fault:?} {chosen:?} {unconfirmed}"
+                    );
                 }
-                // The note save that did not count.
-                let expected = match fault {
-                    WriteFault::Full => Shown::SdFull,
-                    WriteFault::Torn => Shown::Corrupted,
-                    _ => Shown::SecondPage,
-                };
-                assert_eq!(shown(MESSAGE_FAILURE, fault, card_in), expected);
-                // A save after the delivery that failed, or a card that is
-                // gone: 0x22 only where no save may be half-written.
-                let expected = match fault {
-                    WriteFault::None => Shown::Whole,
-                    WriteFault::Cartridge if !card_in => Shown::Whole,
-                    _ => Shown::Corrupted,
-                };
-                assert_eq!(shown(MESSAGE_NO_CARD, fault, card_in), expected);
             }
         }
     }

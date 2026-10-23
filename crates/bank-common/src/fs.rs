@@ -96,6 +96,15 @@ impl Error {
         }
     }
 
+    /// Whether Bank resolves a container of its own that a visitor cannot
+    /// open: its archive is not there yet, which Bank's start creates, or a
+    /// file has another size, which Bank reports as a Bank of an earlier
+    /// release. Every other refusal is one Bank cannot resolve either.
+    pub fn bank_resolves(self) -> bool {
+        matches!(self, Self::WrongSize { .. })
+            || self.reported_absence() == Some(ReportedAbsence::Archive)
+    }
+
     /// Whether the console refused the operation for lack of space on the
     /// card (`patch_common::fs_result::lack_of_space`).
     pub fn lack_of_space(self) -> bool {
@@ -735,10 +744,13 @@ impl<P: Program> crate::bank_files::Rest for ExtdataStorage<P> {
 /// Bank's files as the Transporter patch reaches them (`transport::Files`),
 /// through the file calls of program `P`: the Bank container for its two
 /// journal records, and the transport box, each visited (`Split::visit`)
-/// and one at a time. Its simulated twin is `testing::Visit`.
+/// and one at a time. A container it cannot open is not there to the
+/// delivery rules; the first that Bank cannot resolve either is kept
+/// (`unreachable`). Its simulated twin is `testing::Visit`.
 #[cfg(target_arch = "arm")]
 pub struct Visit<P> {
     session: u32,
+    unreachable: Option<Error>,
     program: PhantomData<P>,
 }
 #[cfg(target_arch = "arm")]
@@ -749,13 +761,25 @@ impl<P: Program> Visit<P> {
     pub const unsafe fn new(session: u32) -> Self {
         Self {
             session,
+            unreachable: None,
             program: PhantomData,
         }
     }
-    fn visit(&self, file: crate::bank_files::FileName) -> Option<ExtdataStorage<P>> {
-        unsafe { ExtdataStorage::visit(self.session, file.units()) }
-            .ok()
-            .flatten()
+    fn visit(&mut self, file: crate::bank_files::FileName) -> Option<ExtdataStorage<P>> {
+        match unsafe { ExtdataStorage::visit(self.session, file.units()) } {
+            Ok(found) => found,
+            Err(error) => {
+                if !error.bank_resolves() {
+                    self.unreachable.get_or_insert(error);
+                }
+                None
+            }
+        }
+    }
+    /// The first container that did not open for a reason Bank cannot
+    /// resolve (`Error::bank_resolves`).
+    pub fn unreachable(&self) -> Option<Error> {
+        self.unreachable
     }
 }
 #[cfg(target_arch = "arm")]
@@ -1055,6 +1079,27 @@ mod native {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn bank_resolves_a_missing_archive_and_files_of_another_size_only() {
+        let native = |operation, code| Error::Native { operation, code };
+        // NotFound for the archive: Bank's start creates it.
+        assert!(native(Operation::OpenArchive, 0xc880_4478).bank_resolves());
+        assert!(Error::WrongSize {
+            expected: 1,
+            actual: 2
+        }
+        .bank_resolves());
+        for error in [
+            native(Operation::OpenArchive, 0xd900_458b),
+            native(Operation::OpenFile, 0xc880_4478),
+            Error::Unreadable,
+            Error::InvalidHandle(Operation::OpenArchive),
+            Error::Closed,
+        ] {
+            assert!(!error.bank_resolves(), "{error:?}");
+        }
+    }
 
     #[test]
     fn only_the_consoles_own_refusal_for_lack_of_space_is_a_full_card() {

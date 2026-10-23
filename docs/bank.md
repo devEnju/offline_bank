@@ -224,7 +224,7 @@ When the game's write has begun, Bank looks at the game's save at once and decid
 | Bank does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Bank is not version 1.5. |
 | "Press HOME to return to the HOME Menu" with two numbers under it. | An error; the numbers say where (below). |
 
-An error ends this run of Bank. Stored data is kept. Poké Transporter shows the same screen, with the same numbers, for an error of its patch ([transporter.md](transporter.md#troubleshooting)). Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
+An error ends this run of Bank. Stored data is kept. Poké Transporter shows the same screen, with the same numbers, for an error of its patch and for Bank's data it cannot open or finds damaged (`3`, `5`), which Bank could not resolve either ([transporter.md](transporter.md#troubleshooting)). Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
 
 After A the original's line "Press HOME to return to the HOME Menu" appears with two lines under it, and it stays: nothing else reacts, because nothing can go on.
 
@@ -247,7 +247,7 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `F` | Preparing the save |
 | `10` | Finishing or undoing an interrupted save |
 | `12`, `13` | Rewards |
-| `14` | Transporter's delivery: it was handed no whole transport box with Pokémon (second number 1, or 2 without Pokémon) |
+| `14` | Transporter's delivery did not happen: the SD card refused its write (the console's code), Bank's journal or transport file did not take it (3), or it was handed no whole transport box with Pokémon (1, or 2 without Pokémon) |
 
 | Second number | Meaning |
 | --- | --- |

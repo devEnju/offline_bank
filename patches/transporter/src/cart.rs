@@ -264,14 +264,16 @@ unsafe extern "aapcs" fn list_next(raw: *mut u8) {
 /// `manager` is the live manager, on the main thread, while no cartridge
 /// task runs.
 pub unsafe fn chosen_card_missing(manager: *mut u8) -> bool {
-    unsafe {
-        let version = read_word(manager, MANAGER_VERSION);
-        let title = read_word(manager, MANAGER_TITLE);
-        if version != 0 && title != 0 {
-            return false;
-        }
-        saves().card_missing(|| card_removed(manager))
-    }
+    unsafe { !chosen_virtual_console(manager) && saves().card_missing(|| card_removed(manager)) }
+}
+
+/// Whether the chosen game is a Virtual Console title, as the original
+/// tells one: the version and the second word it stores when such an entry
+/// is confirmed are both set (`0024A27C`..`0024A290`).
+/// # Safety
+/// `manager` is the live manager, on the main thread.
+pub unsafe fn chosen_virtual_console(manager: *mut u8) -> bool {
+    unsafe { read_word(manager, MANAGER_VERSION) != 0 && read_word(manager, MANAGER_TITLE) != 0 }
 }
 
 /// Replaces the original's question whether the Game Card was taken out

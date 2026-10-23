@@ -15,13 +15,13 @@ use crate::{
         DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING, DELIVER_UNCONFIRMED,
     },
     task::*,
-    ui::{self, loading, stop_loading, Shown, MESSAGE_FAILURE, MESSAGE_NO_CARD},
+    ui::{self, loading, stop_loading, Chosen, Shown, MESSAGE_FAILURE, MESSAGE_NO_CARD},
 };
 use bank_common::{fault::Fault, worker::WorkerError};
 use core::{
     mem::transmute,
     slice,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
@@ -579,9 +579,12 @@ unsafe fn show(task: Task, message: u32) -> Check {
     Check::Shown
 }
 
-/// The manager of the transfer, noted by the delivery entry, for the
-/// question whether the chosen cartridge's card is still in.
+/// The manager of the transfer, noted by the delivery entry, for what the
+/// chosen game is (`ui::Chosen`).
 static MANAGER: AtomicUsize = AtomicUsize::new(0);
+/// The delivery answered that Bank may hold it, and the original's message
+/// that no Game Card is detected comes for that (`DELIVER_UNCONFIRMED`).
+static UNCONFIRMED: AtomicBool = AtomicBool::new(false);
 
 /// Replaces the load of a message in the original's "show a message"
 /// (`0019B578`): the original loads it, and what is shown follows from what
@@ -606,10 +609,17 @@ pub unsafe extern "aapcs" fn transporter_message_text(
             WriteFault::None
         };
         let manager = MANAGER.load(Ordering::Relaxed) as *mut u8;
-        let card_in = fault == WriteFault::Cartridge
-            && patch_common::native::pointer(manager as u32).is_some()
-            && !unsafe { cart::chosen_card_missing(manager) };
-        ui::shown(message, fault, card_in)
+        let chosen = if patch_common::native::pointer(manager as u32).is_none() {
+            Chosen::CardOut
+        } else if unsafe { cart::chosen_virtual_console(manager) } {
+            Chosen::VirtualConsole
+        } else if unsafe { cart::chosen_card_missing(manager) } {
+            Chosen::CardOut
+        } else {
+            Chosen::CardIn
+        };
+        let unconfirmed = message == MESSAGE_NO_CARD && UNCONFIRMED.swap(false, Ordering::Relaxed);
+        ui::shown(message, fault, chosen, unconfirmed)
     };
     match shown {
         Shown::SdFull => {
@@ -695,6 +705,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
             return DELIVER_PENDING;
         };
         MANAGER.store(manager as usize, Ordering::Relaxed);
+        UNCONFIRMED.store(false, Ordering::Relaxed);
         if unsafe { cart::chosen_card_missing(manager) } {
             return DELIVER_FAILED;
         }
@@ -710,7 +721,10 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
         Delivered::Pending => DELIVER_PENDING,
         Delivered::Done => DELIVER_DONE,
         Delivered::Retry => DELIVER_FAILED,
-        Delivered::Unconfirmed => DELIVER_UNCONFIRMED,
+        Delivered::Unconfirmed => {
+            UNCONFIRMED.store(true, Ordering::Relaxed);
+            DELIVER_UNCONFIRMED
+        }
         Delivered::Failed(error) => {
             state.fail(error);
             DELIVER_PENDING

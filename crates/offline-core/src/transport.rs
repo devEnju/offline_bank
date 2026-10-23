@@ -68,24 +68,32 @@ pub trait Files {
     fn mover(&mut self) -> Option<Self::Storage>;
 }
 
-/// Why Transporter cannot deliver now. Opening Bank shows or solves each.
+/// Why Transporter cannot deliver now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// Pokémon are in the way: in the transport box, or in a delivery that
-    /// waits.
+    /// waits. Opening Bank solves it.
     Occupied,
-    /// No Bank exists, a save of it is in progress, or a file that would be
-    /// written cannot be read: Transporter replaces no file of Bank's, and
-    /// Bank's next save does.
+    /// No Bank exists, a save of it is in progress, a file that would be
+    /// written cannot be read, or the journal is of another version:
+    /// Transporter replaces no file of Bank's, and Bank's next start or save
+    /// does, or says what to do.
     NotReady,
+    /// Both journal records are damaged, or they differ with one sequence:
+    /// no power cut leaves that, and Bank cannot open the Bank either.
+    Damaged,
 }
 
 /// The record a delivery would follow, and the transport file, open.
 fn ready<F: Files>(files: &mut F) -> Result<(Head, Pair<F::Storage>), Refusal> {
     let head = {
         let mut journal = Journal::new(files.journal().ok_or(Refusal::NotReady)?);
-        let Ok(Some(head)) = journal.load() else {
-            return Err(Refusal::NotReady);
+        let head = match journal.load() {
+            Ok(Some(head)) => head,
+            Err(StoreError::NoValidMetadata | StoreError::ConflictingMetadata) => {
+                return Err(Refusal::Damaged)
+            }
+            _ => return Err(Refusal::NotReady),
         };
         if !journal.readable() {
             return Err(Refusal::NotReady);
@@ -554,6 +562,29 @@ mod tests {
         let announced = record_in_force(&mut card);
         assert!(announced.delivery.is_some());
         assert!(on_load(&announced).delivery);
+    }
+
+    #[test]
+    fn a_journal_no_power_cut_leaves_is_damaged_and_not_for_bank_to_repair() {
+        // Both records torn.
+        let mut both = card(Some(clean(Slot::A, 0, None)));
+        {
+            let mut journal = both.journal.as_ref().unwrap().borrow_mut();
+            journal[9] ^= 1;
+            journal[METADATA_SIZE + 9] ^= 1;
+        }
+        assert_eq!(check(&mut both), Err(Refusal::Damaged));
+        let (records, tags) = a_box(1);
+        let before = both.bytes();
+        assert_eq!(
+            deliver(&mut both, &records, &tags),
+            Err(DeliverError::Refused(Refusal::Damaged))
+        );
+        assert!(both.bytes() == before);
+        // One torn record is what a cut leaves: the other one is in force.
+        let mut one = card(Some(clean(Slot::A, 0, None)));
+        one.journal.as_ref().unwrap().borrow_mut()[9] ^= 1;
+        assert_eq!(check(&mut one), Ok(()));
     }
 
     #[test]
