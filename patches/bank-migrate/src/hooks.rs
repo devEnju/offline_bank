@@ -15,7 +15,6 @@ use bank_common::{
     bank_files::{ExtFiles, UnitFile},
     fault::Fault,
     fs::{self, ExtdataStorage},
-    numbers::VERSION,
     program::Bank15,
     task::{refuse_home, BankTask, Notice, Task, TASK_SCAN},
     ui,
@@ -25,6 +24,7 @@ use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
     native::{write_word, Ended},
+    numbers::VERSION,
     program::Program,
     spinner::{self, Spinner},
     worker::{Polled, Requests, Service, Shared},

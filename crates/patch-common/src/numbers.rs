@@ -7,7 +7,7 @@
 //! a first part of one or two lines gets them. The label is the second
 //! line, where the first part leaves it free.
 
-use patch_common::message::{cut, CONTROL, LINE_FEED, NEW_PAGE};
+use crate::message::{cut, CONTROL, LINE_FEED, NEW_PAGE};
 
 /// Two numbers of eight digits with a space between them.
 pub const LEN: usize = 17;
@@ -191,7 +191,7 @@ pub fn append_page(text: &mut [u16], len: usize, page: &[u16]) -> Option<usize> 
 mod tests {
     extern crate std;
     use super::*;
-    use patch_common::message::page_end;
+    use crate::message::page_end;
     use std::{string::String, vec, vec::Vec};
 
     const PAGE: [u16; 3] = [CONTROL, 1, NEW_PAGE];

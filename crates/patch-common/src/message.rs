@@ -28,6 +28,15 @@ pub fn cut(text: &[u16]) -> usize {
     page.or(feed).unwrap_or(text.len())
 }
 
+/// Where the first line of the message `text` ends: at its first line feed,
+/// or at its first page break if that comes before one. Nothing is written.
+/// For a message of one page whose first line is a sentence of its own, as
+/// 26:0x00 "The SD card is full." is in every language of the original.
+pub fn first_line(text: &[u16]) -> usize {
+    let (page, feed) = boundaries(text, 1);
+    feed.or(page).unwrap_or(text.len())
+}
+
 /// Where the message `text` goes on after its first part (`cut`): behind
 /// the page break and the line feed the next page begins with or, in a
 /// message of one page, behind its first line. `None` if nothing follows.
@@ -175,6 +184,24 @@ mod tests {
         assert_eq!(cut(&message(&[2])), 4);
         assert_eq!(cut(&message(&[1])), 4);
         assert_eq!(cut(&[]), 0);
+    }
+
+    #[test]
+    fn the_first_line_ends_at_the_first_line_feed_or_page_break() {
+        // One page of two lines, as 26:0x00: its first line.
+        assert_eq!(first_line(&message(&[2])), 4);
+        // A first page of one line ends at the page break.
+        assert_eq!(first_line(&message(&[1, 2])), 4);
+        // Two lines on the first page: the first of them.
+        assert_eq!(first_line(&message(&[2, 1])), 4);
+        // One line alone is the whole message.
+        assert_eq!(first_line(&message(&[1])), 4);
+        assert_eq!(first_line(&[]), 0);
+        // A line feed inside a control record is no line's end.
+        let mut text: Vec<u16> = "a".encode_utf16().collect();
+        text.extend([CONTROL, 2, 0x0100, LINE_FEED]);
+        text.extend([b'b' as u16, LINE_FEED, b'c' as u16]);
+        assert_eq!(first_line(&text), 6);
     }
 
     #[test]

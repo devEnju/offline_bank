@@ -103,7 +103,7 @@ pub fn refuse_home(refuse: bool) {
 #[cfg(target_arch = "arm")]
 pub struct Notice {
     shown: bool,
-    label: crate::numbers::Label,
+    label: patch_common::numbers::Label,
 }
 #[cfg(target_arch = "arm")]
 impl Notice {
@@ -112,13 +112,13 @@ impl Notice {
     pub const fn new(suffix: &[u8]) -> Self {
         Self {
             shown: false,
-            label: crate::numbers::Label::of(suffix),
+            label: patch_common::numbers::Label::of(suffix),
         }
     }
     /// Shows `label` above the numbers instead of the package's own, for a
     /// result that says more than the package: the migration names the way
     /// the Bank was stored that it converted.
-    pub fn relabel(&mut self, label: crate::numbers::Label) {
+    pub fn relabel(&mut self, label: patch_common::numbers::Label) {
         self.label = label;
     }
     /// One frame of the task's update after an error. The result is the

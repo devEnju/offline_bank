@@ -96,6 +96,12 @@ impl Error {
         }
     }
 
+    /// Whether the console refused the operation for lack of space on the
+    /// card (`patch_common::fs_result::lack_of_space`).
+    pub fn lack_of_space(self) -> bool {
+        matches!(self, Self::Native { code, .. } if patch_common::fs_result::lack_of_space(code))
+    }
+
     /// Conservative diagnostic classification, never a create/reset policy.
     /// Other errors retain their full native result, including permission,
     /// media, quota, format and I/O failures.
@@ -1036,6 +1042,23 @@ mod native {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn only_the_consoles_own_refusal_for_lack_of_space_is_a_full_card() {
+        let native = |code| Error::Native {
+            operation: Operation::CreateFile,
+            code,
+        };
+        assert!(native(0xc860_44d2).lack_of_space());
+        assert!(!native(0xc880_4478).lack_of_space());
+        // A short write is no answer of the console about its space.
+        let short = Error::Count {
+            operation: Operation::Write,
+            expected: 512,
+            actual: 0,
+        };
+        assert!(!short.lack_of_space());
+    }
 
     #[test]
     fn every_local_error_has_a_distinct_nonzero_code() {

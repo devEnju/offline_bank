@@ -17,7 +17,6 @@ pub mod bank_files;
 pub mod fault;
 pub mod fs;
 pub mod native_bank;
-pub mod numbers;
 pub mod program;
 #[cfg(feature = "test-build")]
 pub mod rehearsal;
