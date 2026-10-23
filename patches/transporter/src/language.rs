@@ -225,19 +225,18 @@ mod native {
     /// part that is about to be shown.
     const ORIGINAL_BUTTONS: usize = 0x001a_1fe0;
 
-    /// Fields of the language screen (`0022BD28`) and of its layout work.
+    /// Fields of the language screen (`0022BD28`); its layout context is
+    /// `patch_common::ui::context`.
     const SCREEN_BUTTONS: usize = 0x10;
-    const SCREEN_LAYOUT: usize = 0x5c;
     const SCREEN_PART: usize = 0x7c;
     const SCREEN_PICKED: usize = 0x80;
     const SCREEN_ORDER: usize = 0x88;
     const SCREEN_RANGE_END: usize = 0xb0;
     const SCREEN_CURSOR: usize = 0xb4;
     const PART_LIST: u8 = 0;
-    const WORK_STRINGS: usize = 0x04;
-    const WORK_LAYOUTS: usize = 0x1c;
-    /// The lower screen's layout is the second of the work's 8-byte rows.
-    const LOWER_LAYOUT: usize = 8;
+    /// The lower screen's layout is the context's second group
+    /// (`patch_common::ui::layout`).
+    const LOWER_GROUP: u32 = 1;
     /// `[parameter + 4]` of the screen's constructor is its heap.
     const PARAMETER_HEAP: usize = 0x04;
 
@@ -405,18 +404,16 @@ mod native {
         unsafe {
             // Without what the text needs, or without the text, the button
             // keeps the original's.
-            let (Some(heap), Some(work)) = (
+            let (Some(heap), Some(context)) = (
                 follow(parameter, PARAMETER_HEAP),
-                follow(screen, SCREEN_LAYOUT),
+                patch_common::ui::context(screen),
             ) else {
                 return;
             };
-            let (Some(strings), Some(layouts)) =
-                (follow(work, WORK_STRINGS), follow(work, WORK_LAYOUTS))
-            else {
-                return;
-            };
-            let Some(layout) = follow(layouts, LOWER_LAYOUT) else {
+            let (Some(strings), Some(layout)) = (
+                patch_common::ui::work_strings(context),
+                patch_common::ui::layout(context, LOWER_GROUP),
+            ) else {
                 return;
             };
             let _ = crate::ui::message_text(
@@ -465,15 +462,15 @@ mod native {
                 transmute(PLACE_PANE);
             // The order is the screen's; its panes are placed where the
             // screen has its layout.
-            let work = follow(screen, SCREEN_LAYOUT);
+            let context = patch_common::ui::context(screen);
             for (position, &index) in order.iter().enumerate() {
                 screen
                     .add(SCREEN_ORDER + position * 4)
                     .cast::<u32>()
                     .write(u32::from(index));
-                if let Some(work) = work {
+                if let Some(context) = context {
                     let at = [0.0, y_float(y(position, SHOWN)), 0.0];
-                    place(work, 1, LIST_PANES[index as usize], &at);
+                    place(context, 1, LIST_PANES[index as usize], &at);
                 }
             }
             screen

@@ -1,12 +1,13 @@
 //! The version line on the start screen, which every patch extends by its
 //! name ("Ver. 1.5-offline"), with the original's own calls; the original's
 //! string objects, in which a message is changed in place (`text`, `end`),
-//! here and in Bank's dialogs (`bank_common::ui`); and the end of the
-//! shared UI's loading panel (`end_loading`).
+//! here and in Bank's dialogs (`bank_common::ui`); the parts of a screen
+//! that both programs lay out alike (`context`, `heap`, `work_strings`,
+//! `layout`); and the end of the shared UI's loading panel (`end_loading`).
 
 use crate::{
     message,
-    native::{follow, NotNative},
+    native::{follow, pointer, NotNative},
     program::Program,
 };
 use core::{mem::transmute, slice};
@@ -17,6 +18,55 @@ use core::{mem::transmute, slice};
 pub enum StringError {
     NotPointer,
     NoBuffer,
+}
+
+/// A screen of the original, the same in both programs: the shared UI, and
+/// screens such as Transporter's language screen, keep their layout context
+/// at `+0x5C`; the shared UI keeps the owner of its heap at `+0x78`, with the
+/// heap at `+4` of it. A context holds its two work strings at `+4` and, at
+/// `+0x1C`, a row of 8 bytes for each group of panes, the group's layout
+/// first.
+const SCREEN_CONTEXT: usize = 0x5c;
+const UI_HEAP_OWNER: usize = 0x78;
+const OWNER_HEAP: usize = 4;
+const CONTEXT_STRINGS: usize = 4;
+const CONTEXT_LAYOUTS: usize = 0x1c;
+const LAYOUT_ROW: usize = 8;
+
+/// The layout context of `screen`, if `screen` and it are pointers.
+/// # Safety
+/// A pointer `screen` is a live screen of the original, on the main thread.
+pub unsafe fn context(screen: *mut u8) -> Option<*mut u8> {
+    pointer(screen as u32)?;
+    unsafe { follow(screen, SCREEN_CONTEXT) }
+}
+/// The owner of the shared UI's heap, if `ui` and it are pointers.
+/// # Safety
+/// As `context`, for the shared UI.
+pub unsafe fn heap_owner(ui: *mut u8) -> Option<*mut u8> {
+    pointer(ui as u32)?;
+    unsafe { follow(ui, UI_HEAP_OWNER) }
+}
+/// The shared UI's heap (`[[ui + 0x78] + 4]`).
+/// # Safety
+/// As `heap_owner`.
+pub unsafe fn heap(ui: *mut u8) -> Option<*mut u8> {
+    unsafe { follow(heap_owner(ui)?, OWNER_HEAP) }
+}
+/// The two work strings of `context`.
+/// # Safety
+/// `context` is a live layout context of the original, on the main thread.
+pub unsafe fn work_strings(context: *mut u8) -> Option<*mut u8> {
+    unsafe { follow(context, CONTEXT_STRINGS) }
+}
+/// The layout of `group` of `context` (`[[context + 0x1C] + 8 * group]`).
+/// # Safety
+/// As `work_strings`, with the layout of `group` built.
+pub unsafe fn layout(context: *mut u8, group: u32) -> Option<*mut u8> {
+    unsafe {
+        let layouts = follow(context, CONTEXT_LAYOUTS)?;
+        follow(layouts, group as usize * LAYOUT_ROW)
+    }
 }
 
 /// The text of a string object of the original, with its room: the text at
@@ -72,7 +122,7 @@ pub unsafe fn end(object: *mut u8, room: &mut [u16], len: usize) {
 /// the original fills and hands to a pane: the string object and its room.
 unsafe fn work_string<'a>(context: *mut u8) -> Option<(*mut u8, &'a mut [u16])> {
     unsafe {
-        let strings = follow(context, 4)?;
+        let strings = work_strings(context)?;
         let object = follow(strings, 4)?;
         Some((object, room(object).ok()?))
     }
@@ -94,8 +144,7 @@ pub unsafe fn keep_rest(object: *mut u8) {
 }
 
 /// Ends the work string at `len` and gives it to pane `pane` of the layout
-/// of `group` (`[[context + 0x1C] + 8 * group]`), with the original's two
-/// calls.
+/// of `group` (`layout`), with the original's two calls.
 unsafe fn hand_over<P: Program>(
     context: *mut u8,
     group: u32,
@@ -104,12 +153,12 @@ unsafe fn hand_over<P: Program>(
 ) {
     unsafe {
         end(object, room, len);
-        let Some(layouts) = follow(context, 0x1c) else {
+        let Some(layout) = layout(context, group) else {
             return;
         };
-        let find: unsafe extern "aapcs" fn(u32, u32) -> *mut u8 = transmute(P::FIND_PANE);
+        let find: unsafe extern "aapcs" fn(*mut u8, u32) -> *mut u8 = transmute(P::FIND_PANE);
         let set: unsafe extern "aapcs" fn(*mut u8, *mut u8, i32) = transmute(P::PANE_TEXT);
-        let found = find(layouts.add(group as usize * 8).cast::<u32>().read(), pane);
+        let found = find(layout, pane);
         if !found.is_null() {
             set(found, object, -1);
         }
@@ -165,8 +214,6 @@ pub unsafe fn version<P: Program>(
 /// The loop sound of the shared UI's loading panel, and its spinner.
 const LOADING_SOUND: u32 = 0x0005_0011;
 const SPINNER_ANIMATION: u32 = 0;
-/// Where the shared UI keeps its context.
-const UI_CONTEXT: usize = 0x5c;
 
 /// Ends the shared UI's loading panel as the original's tasks end it: stops
 /// its loop sound, hides its pane (`Program::LOADING_PANE`) and unbinds its
@@ -174,8 +221,7 @@ const UI_CONTEXT: usize = 0x5c;
 /// # Safety
 /// `ui` is the live shared UI of `P`, on the main thread.
 pub unsafe fn end_loading<P: Program>(ui: *mut u8) -> Result<(), NotNative> {
-    crate::native::pointer(ui as u32).ok_or(NotNative)?;
-    let context = unsafe { follow(ui, UI_CONTEXT) }.ok_or(NotNative)?;
+    let context = unsafe { context(ui) }.ok_or(NotNative)?;
     unsafe {
         let stop: unsafe extern "aapcs" fn(u32, u32, i32) = transmute(P::STOP_SOUND);
         let pane: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(P::PANE_SHOWN);

@@ -57,6 +57,7 @@ mod native {
     use patch_common::{
         native::{code, follow, pointer, read_word},
         program::Program,
+        ui as shared,
     };
 
     /// The general loading panel of the shared UI (`ui`, its context at
@@ -76,10 +77,6 @@ mod native {
     /// question task ends the panel with it when no message follows
     /// (`002473D8`).
     const PANEL_HIDE: usize = 0x0019_c814;
-    const UI_CONTEXT: usize = 0x5c;
-    const UI_HEAP: usize = 0x78;
-    const CONTEXT_STRINGS: usize = 0x4;
-    const CONTEXT_LAYOUTS: usize = 0x1c;
     const TEXT_FRAME_PANE: u32 = 0x1e;
     const OTHER_FRAME_PANE: u32 = 0x25;
     const TEXT_PANE: u32 = 0x23;
@@ -178,13 +175,10 @@ mod native {
     pub unsafe fn loading(ui: *mut u8) -> Result<(), Unavailable> {
         // What the panel and its text need, before anything is started.
         let (context, strings, layout, heap) = unsafe {
-            let context = follow(ui, UI_CONTEXT).ok_or(Unavailable)?;
-            let strings = follow(context, CONTEXT_STRINGS).ok_or(Unavailable)?;
-            let layouts = follow(context, CONTEXT_LAYOUTS).ok_or(Unavailable)?;
-            let layout = follow(layouts, 0).ok_or(Unavailable)?;
-            let heap = follow(ui, UI_HEAP)
-                .and_then(|owner| follow(owner, 4))
-                .ok_or(Unavailable)?;
+            let context = shared::context(ui).ok_or(Unavailable)?;
+            let strings = shared::work_strings(context).ok_or(Unavailable)?;
+            let layout = shared::layout(context, 0).ok_or(Unavailable)?;
+            let heap = shared::heap(ui).ok_or(Unavailable)?;
             (context, strings, layout, heap)
         };
         let start: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(PANEL_START) };

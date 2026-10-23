@@ -56,13 +56,16 @@ pub enum Error {
 fn pointer(value: u32) -> Result<*mut u8, Error> {
     native_pointer(value).ok_or(Error::InvalidPointer)
 }
-/// The UI's context (`ui + 0x5c`), once the UI, the context and the UI's
-/// words at `+0x78` and `+0x94` (its string object) are pointers: what a
-/// message, the loading panel and the sounds need.
+/// The UI's context (`patch_common::ui::context`).
+unsafe fn context(ui: *mut u8) -> Result<*mut u8, Error> {
+    unsafe { shared::context(ui) }.ok_or(Error::InvalidPointer)
+}
+/// The UI's context, once the UI, the context, the owner of the UI's heap
+/// (`patch_common::ui::heap_owner`) and its string object at `+0x94` are
+/// pointers: what a message, the loading panel and the sounds need.
 unsafe fn ready(ui: *mut u8) -> Result<*mut u8, Error> {
-    pointer(ui as u32)?;
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
-    pointer(unsafe { word(ui, 0x78) })?;
+    let context = unsafe { context(ui) }?;
+    unsafe { shared::heap_owner(ui) }.ok_or(Error::InvalidPointer)?;
     pointer(unsafe { word(ui, 0x94) })?;
     Ok(context)
 }
@@ -132,7 +135,7 @@ pub unsafe fn stop(
     second: u32,
 ) -> Result<(), Error> {
     let label = label.units();
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let context = unsafe { context(ui) }?;
     let mut home = [0u16; HOME_ROOM];
     let mut home_len = 0;
     unsafe { display(ui, HOME_NOTICE, false)? };
@@ -178,8 +181,7 @@ pub unsafe fn stop(
 /// `ui` and its context must satisfy stop's lifetime contract, with the same
 /// dialog still active. Only the main task thread may poll it.
 pub unsafe fn acknowledged(ui: *mut u8) -> Result<bool, Error> {
-    pointer(ui as u32)?;
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let context = unsafe { context(ui) }?;
     let poll: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(DIALOG_POLL) };
     Ok(unsafe { poll(context) } == 4)
 }
@@ -238,13 +240,12 @@ const FIND_PANE: usize = 0x001d_7ed8;
 /// shows and every end of loading hides, through `001e7084(context, 0,
 /// 0x97, shown)`, which keeps it in bit 0 of the pane's byte `+0xb7`. The
 /// pane is found as `001e7084` finds it: in the layout of group 0 of the
-/// UI's context (`[[context + 0x1c]]`).
+/// UI's context (`patch_common::ui::layout`).
 /// # Safety
 /// `ui` is the live shared UI, on the main task thread.
 pub unsafe fn loading_shown(ui: *mut u8) -> Result<bool, Error> {
     let context = unsafe { ready(ui) }?;
-    let groups = pointer(unsafe { word(context, 0x1c) })?;
-    let layout = pointer(unsafe { word(groups, 0) })?;
+    let layout = unsafe { shared::layout(context, 0) }.ok_or(Error::InvalidPointer)?;
     let find: unsafe extern "aapcs" fn(*mut u8, u32) -> *mut u8 = unsafe { transmute(FIND_PANE) };
     let pane = unsafe { find(layout, 0x97) };
     if pane.is_null() {
@@ -310,7 +311,7 @@ unsafe fn display(ui: *mut u8, message: u32, wait: bool) -> Result<(), Error> {
 /// `ui` has stop's native lifetime contract, with no other dialog active.
 pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<(), Error> {
     unsafe { display(ui, message, true)? };
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let context = unsafe { context(ui) }?;
     let Some(Text {
         object: text,
         room,
@@ -330,7 +331,7 @@ pub unsafe fn notice_pages(ui: *mut u8, message: u32, pages: usize) -> Result<()
 /// `ui` has stop's native lifetime contract, with no other dialog active.
 pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
     unsafe { display(ui, message, true)? };
-    let context = pointer(unsafe { word(ui, 0x5c) })?;
+    let context = unsafe { context(ui) }?;
     let Some(Text {
         object: text,
         room,
@@ -396,7 +397,7 @@ pub unsafe fn other_copy(
 #[cfg(feature = "test-build")]
 pub unsafe fn button(ui: *mut u8, group: u32, pane: u32, message: u32, suffix: &[u8]) {
     unsafe {
-        let Ok(context) = pointer(word(ui, 0x5c)) else {
+        let Some(context) = shared::context(ui) else {
             return;
         };
         let label: unsafe extern "aapcs" fn(*mut u8, u32, u32, u32) = transmute(BUTTON_MESSAGE);
