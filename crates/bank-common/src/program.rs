@@ -3,6 +3,7 @@
 use patch_common::program::Program;
 
 /// Bank 1.5's SDK and engine:
+/// - its code, which ends where the start-up hook begins (`00313910`);
 /// - thread creation `002320d4`, which enters the thread through `001211e4`
 ///   and initializes native TLS there, its delegate, and the event
 ///   (`00235c6c(event, 0)` makes one, `00234a00` signals it, `00231e70`
@@ -24,6 +25,7 @@ use patch_common::program::Program;
 ///   its `fs:USER` session.
 pub struct Bank15;
 impl Program for Bank15 {
+    const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
     const CREATE_THREAD: usize = 0x0023_20d4;
     const DELEGATE: [u32; 4] = [4, 0x0012_117c, 0x0012_1198, 0x0012_118c];
     const EVENT_INIT: usize = 0x0023_5c6c;

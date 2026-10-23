@@ -6,6 +6,11 @@
 //! `transporter_payload::program::Transporter15`).
 
 pub trait Program: 'static {
+    /// The original's code, from the start of its image to the end of its
+    /// text. A function pointer read from an object of the original lies
+    /// here (`native::code`).
+    const TEXT: core::ops::Range<u32>;
+
     /// The SDK's thread creation, `(thread, delegate, entry, &context,
     /// stack_top, priority, processor, 0)`. It enters the thread through
     /// the SDK trampoline, which initializes TLS and ends the thread with

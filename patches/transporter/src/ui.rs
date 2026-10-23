@@ -54,7 +54,10 @@ mod native {
     use super::Unavailable;
     use crate::program::Transporter15;
     use core::mem::transmute;
-    use patch_common::{native::follow, program::Program};
+    use patch_common::{
+        native::{code, follow, pointer, read_word},
+        program::Program,
+    };
 
     /// The general loading panel of the shared UI (`ui`, its context at
     /// `ui + 0x5C`), as the reader's set-up starts it (`00246A2C`):
@@ -127,9 +130,14 @@ mod native {
                 return Err(Unavailable);
             }
             let messages = open(memory, archive(10), file, heap, 1, 5);
+            // The file object and its deleting destructor are checked before
+            // the pane is touched.
+            let vtable = pointer(messages as u32)
+                .and_then(|messages| follow(messages, 0))
+                .ok_or(Unavailable)?;
+            let delete = code::<Transporter15>(read_word(vtable, 4)).ok_or(Unavailable)?;
+            let delete: unsafe extern "aapcs" fn(*mut u8) = transmute(delete);
             set(strings, layout, pane, messages, message);
-            let delete: unsafe extern "aapcs" fn(*mut u8) =
-                transmute(messages.cast::<*const usize>().read().add(1).read());
             delete(messages);
         }
         Ok(())

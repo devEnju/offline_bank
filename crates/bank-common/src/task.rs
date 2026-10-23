@@ -25,9 +25,6 @@ pub const SELECTED_GAME: usize = 0x0023_3a6c;
 /// timestamp. It keeps upper flag bits of the two words, so they start
 /// zeroed.
 pub const LOCAL_DATE: usize = 0x0023_a754;
-/// The original's code. A function pointer read from an object of the
-/// original must lie here.
-pub const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
 /// Busy protection of a task: `0025c420(task, 1, 0)` begins it,
 /// `0025c3e8(task)` ends it.
 #[cfg(target_arch = "arm")]

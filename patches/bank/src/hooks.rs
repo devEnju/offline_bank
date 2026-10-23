@@ -19,7 +19,7 @@ use bank_common::{
     program::Bank15,
     task::{
         refuse_home, BankTask, Notice, Task, LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS,
-        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN, TEXT,
+        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
     },
     worker::WorkerError,
 };
@@ -32,7 +32,7 @@ use offline_core::{
 };
 use patch_common::{
     exclusive::Exclusive,
-    native::{follow, pointer, read_word, write_word, Ended, NotNative},
+    native::{code, follow, pointer, read_word, write_word, Ended, NotNative},
     program::Program,
     spinner::{self, Spinner},
     worker::{Polled, Requests},
@@ -220,13 +220,9 @@ fn game_count(task: Task) -> Result<Option<u32>, Fault> {
         Ok((game, kind)) => unsafe {
             let boxes = game.add(if kind.gen7() { 0x769dc } else { 0x1e51c });
             let vtable = follow(boxes, 0).ok_or(NotNative)?;
-            let address = read_word(vtable, 0xc);
-            if address & 3 != 0 || !TEXT.contains(&address) {
-                return Err(Fault::NativeObject);
-            }
+            let address = code::<Bank15>(read_word(vtable, 0xc)).ok_or(Fault::NativeObject)?;
             let heap: unsafe extern "aapcs" fn(u32) -> u32 = transmute(HEAP);
-            let count: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 =
-                transmute(address as usize);
+            let count: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 = transmute(address);
             Ok(Some(count(boxes, heap(0x17), 1)))
         },
         Err(NativeGameError::NotLoaded) => Ok(None),
@@ -281,12 +277,8 @@ fn gen7_gift_count(game: *mut u8) -> u32 {
 fn gen6_gift(game: *mut u8) -> Result<*mut u8, Fault> {
     let owner = unsafe { game.add(0x1c384) };
     let vtable = unsafe { follow(owner, 0) }.ok_or(NotNative)?;
-    let address = unsafe { read_word(vtable, 8) };
-    if address & 3 != 0 || !TEXT.contains(&address) {
-        return Err(Fault::NativeObject);
-    }
-    let buffer: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 =
-        unsafe { transmute(address as usize) };
+    let address = code::<Bank15>(unsafe { read_word(vtable, 8) }).ok_or(Fault::NativeObject)?;
+    let buffer: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 = unsafe { transmute(address) };
     let gift = unsafe { buffer(owner) };
     pointer(gift as u32).ok_or(NotNative)?;
     Ok(gift)

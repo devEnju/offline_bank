@@ -30,6 +30,17 @@ pub fn pointer(value: u32) -> Option<*mut u8> {
     (value != 0 && value & 3 == 0).then_some(value as *mut u8)
 }
 
+/// `address`, read from an object of the original, as a function of program
+/// `P`: word aligned and inside its code (`Program::TEXT`). Every patch
+/// checks a function pointer it reads from an object of the original this
+/// way before it calls it.
+pub fn code<P: Program>(address: u32) -> Option<usize> {
+    within(&P::TEXT, address)
+}
+fn within(text: &core::ops::Range<u32>, address: u32) -> Option<usize> {
+    (address & 3 == 0 && text.contains(&address)).then_some(address as usize)
+}
+
 /// The word at `base + offset`.
 /// # Safety
 /// `base + offset` must be four readable bytes of a live native object.
@@ -148,6 +159,24 @@ mod tests {
         }
         for value in [0, 1, 2, 0x0010_0002, u32::MAX] {
             assert_eq!(pointer(value), None, "{value:#x}");
+        }
+    }
+
+    #[test]
+    fn only_aligned_words_inside_the_text_are_code() {
+        let text = 0x0010_0000..0x0028_d1ac;
+        for address in [0x0010_0000, 0x0019_b50c, 0x0028_d1a8] {
+            assert_eq!(within(&text, address), Some(address as usize));
+        }
+        for address in [
+            0,
+            0x000f_fffc,
+            0x0019_b50e,
+            0x0028_d1ac,
+            0x0036_4000,
+            u32::MAX,
+        ] {
+            assert_eq!(within(&text, address), None, "{address:#x}");
         }
     }
 

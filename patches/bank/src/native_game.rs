@@ -309,13 +309,13 @@ mod arm {
         FrozenBlock, GameIoDescriptor, GameKind, NativeGameError, NativePoll, PreparedImage,
         SecureValues, MAX_PREPARED_BLOCKS,
     };
-    use bank_common::{
-        program::Bank15,
-        task::{SELECTED_GAME, TEXT},
-    };
+    use bank_common::{program::Bank15, task::SELECTED_GAME};
     use core::{marker::PhantomData, mem::transmute, ptr::NonNull};
     use offline_core::game_image::Overlay;
-    use patch_common::{native::read_word, program::Program};
+    use patch_common::{
+        native::{code, read_word},
+        program::Program,
+    };
 
     pub const OBJECT_SIZE: usize = 0xb49d0;
     const GAME_VTABLE: u32 = 0x0036_2f88;
@@ -418,12 +418,8 @@ mod arm {
             | (u64::from(unsafe { word(pointer, offset + 4) }) << 32)
     }
     fn getter(address: u32) -> Result<unsafe extern "aapcs" fn(*const u8) -> u32, NativeGameError> {
-        if address & 3 != 0 || !TEXT.contains(&address) {
-            return Err(NativeGameError::InvalidGetter(address));
-        }
-        Ok(unsafe {
-            transmute::<usize, unsafe extern "aapcs" fn(*const u8) -> u32>(address as usize)
-        })
+        let address = code::<Bank15>(address).ok_or(NativeGameError::InvalidGetter(address))?;
+        Ok(unsafe { transmute::<usize, unsafe extern "aapcs" fn(*const u8) -> u32>(address) })
     }
 
     impl<'a> NativePreparedGame<'a> {

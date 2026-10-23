@@ -27,6 +27,7 @@ use patch_common::program::Program;
 ///   neither creates nor deletes a file; and its `fs:USER` session.
 pub struct Transporter15;
 impl Program for Transporter15 {
+    const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0028_d1ac;
     const CREATE_THREAD: usize = 0x001e_3f58;
     const DELEGATE: [u32; 4] = [4, 0x0011_f098, 0x0011_f0b4, 0x0011_f0a8];
     const EVENT_INIT: usize = 0x001e_6404;
