@@ -14,7 +14,7 @@ use crate::{
         DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING, DELIVER_UNCONFIRMED,
     },
     task::*,
-    ui::{self, from_second_page, loading, stop_loading, MESSAGE_FAILURE, MESSAGE_OPEN_BANK},
+    ui::{self, from_second_page, loading, stop_loading, MESSAGE_FAILURE},
 };
 use bank_common::{fault::Fault, worker::WorkerError};
 use core::{mem::transmute, slice};
@@ -137,20 +137,21 @@ impl Runtime {
     /// first, with the loading screen up and HOME refused. Then the loading
     /// panel ends and the error screen comes up on `ui`, which lets HOME
     /// through, so that Transporter is closed from the HOME Menu; every
-    /// later frame keeps it.
+    /// later frame keeps it. False only for a screen that could not be
+    /// shown: the task then ends as it would without one.
     /// # Safety
     /// `ui` is the live shared UI of the task, on the main thread.
-    unsafe fn report_failure(&mut self, ui: *mut u8) {
+    unsafe fn report_failure(&mut self, ui: *mut u8) -> bool {
         let Some(failure) = self.failure.as_mut() else {
-            return;
+            return false;
         };
         if failure.shown {
             unsafe { ui::keep_dialog(ui) };
-            return;
+            return true;
         }
         // A job that is still out holds what the task lent it.
         if !self.requests.settle() {
-            return;
+            return true;
         }
         failure.shown = true;
         let [first, second] = failure.numbers;
@@ -161,7 +162,21 @@ impl Runtime {
             stop_loading(ui);
         }
         refuse_home(false);
-        let _ = unsafe { ui::stop(ui, &LABEL, first, second) };
+        unsafe { ui::stop(ui, &LABEL, first, second) }.is_ok()
+    }
+    /// One frame of the task whose shared UI is `ui`, if the session has
+    /// stopped: true while the error screen holds it.
+    /// # Safety
+    /// As `report_failure`.
+    unsafe fn stopped(
+        &mut self,
+        ui: Result<*mut u8, patch_common::native::NotNative>,
+    ) -> Option<bool> {
+        self.failure?;
+        Some(match ui {
+            Ok(ui) => unsafe { self.report_failure(ui) },
+            Err(_) => false,
+        })
     }
 }
 
@@ -434,26 +449,23 @@ unsafe fn check(task: Task) -> Check {
     let Some(mut state) = STATE.take() else {
         return Check::Pending;
     };
-    if state.failure.is_some() {
-        return match task.pointer(TASK_UI) {
-            Ok(ui) => {
-                unsafe { state.report_failure(ui) };
-                Check::Pending
-            }
-            Err(_) => Check::End,
-        };
+    if let Some(held) = unsafe { state.stopped(task.pointer(TASK_UI)) } {
+        return if held { Check::Pending } else { Check::End };
     }
     if !PANEL.up() {
-        // No file work without its panel: without one the search refuses
-        // with the original's message for Bank's files that are not ready.
-        let ui = task.pointer(TASK_UI).ok();
-        if let Some(ui) = ui.filter(|&ui| unsafe { loading(ui) }.is_ok()) {
+        // No file work without its panel. Without what it needs of the
+        // shared UI the search stops on the error screen, as Bank's hooks
+        // do for an object that is not what they expect.
+        let Ok(ui) = task.pointer(TASK_UI) else {
+            return Check::End;
+        };
+        if unsafe { loading(ui) }.is_ok() {
             PANEL.start(ui as usize);
             state.spinner.up(now());
             return Check::Pending;
         }
-        drop(state);
-        return unsafe { show(task, MESSAGE_OPEN_BANK) };
+        state.fail(NOT_NATIVE);
+        return Check::Pending;
     }
     if !state.requests.is_out() && state.spinner.idle(now()) {
         return Check::Pending;
@@ -639,16 +651,19 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return DELIVER_PENDING;
     };
-    if state.failure.is_some() {
-        let Ok(ui) = task.pointer(TRANSFER_UI) else {
-            return DELIVER_FAILED;
+    if let Some(held) = unsafe { state.stopped(task.pointer(TRANSFER_UI)) } {
+        return if held {
+            DELIVER_PENDING
+        } else {
+            DELIVER_FAILED
         };
-        unsafe { state.report_failure(ui) };
-        return DELIVER_PENDING;
     }
     if !state.requests.is_out() {
+        // A manager that is not a pointer is an object the hook does not
+        // know: the error screen, as in Bank.
         let Ok(manager) = task.pointer(TASK_MANAGER) else {
-            return DELIVER_FAILED;
+            state.fail(NOT_NATIVE);
+            return DELIVER_PENDING;
         };
         if unsafe { cart::chosen_card_missing(manager) } {
             return DELIVER_FAILED;
