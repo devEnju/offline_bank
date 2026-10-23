@@ -1125,6 +1125,21 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     destination
 }
 
+// The original's "show a message" function, 001d6650(ui, kind, message,
+// wait), its first instruction (was: push {r4-r8, lr}); r3 = whether the
+// message waits for an answer (`patch_common`'s `message_stub!`).
+patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
+/// A message that waits for an answer lets HOME and sleep through, unless a
+/// job is still out. A hook that holds the state shows one, or calls the
+/// original's update that does (the welcome, the rewards), only while no job
+/// is out. The original's own bit for a game save that is being written is
+/// not this one and stays as it is.
+extern "aapcs" fn message_waits() {
+    if STATE.take().is_none_or(|state| !state.requests.is_out()) {
+        refuse_home(false);
+    }
+}
+
 /// Whether the task that has just ended leaves the loading panel on screen:
 /// Bank loading hands its panel to the reward step (`navigation::takes_panel`).
 unsafe fn panel_left(manager: *mut u8) -> bool {

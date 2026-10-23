@@ -199,6 +199,18 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
     destination
 }
 
+// The original's "show a message" function, as in the offline patch
+// (`message_stub!`): r3 = whether the message waits for an answer.
+patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
+/// A message that waits for an answer lets HOME and sleep through, unless a
+/// job is still out; a hook that holds the state shows one only while no job
+/// is out.
+extern "aapcs" fn message_waits() {
+    if STATE.take().is_none_or(|state| !state.requests.is_out()) {
+        refuse_home(false);
+    }
+}
+
 /// Replaces the update and busy-poll virtuals of task 3; its constructor,
 /// init and end stay native.
 /// # Safety

@@ -183,15 +183,24 @@ patch_common::message_stub!(transporter_message_stub, "r2", "0x0019b510", messag
 /// The original's "show a message" function was entered with a message that
 /// waits for an answer. Such a message is where a task that reads or writes
 /// has nothing left to do but end, so the refusal the router entry began for
-/// it ends here. The original's own bit for a Virtual Console save that is
-/// being written is not this one and stays as it is.
+/// it ends here, unless a job is still out (`let_through`). The original's
+/// own bit for a Virtual Console save that is being written is not this one
+/// and stays as it is.
 extern "aapcs" fn message_waits() {
     // A refusal or "Could not find a game" comes without the search's
     // panel, as the reader's messages come without its own.
     if let Some(ui) = PANEL.release() {
         unsafe { stop_loading(ui as *mut u8) };
     }
-    refuse_home(false);
+    let_through();
+}
+/// A screen that waits for the user: HOME and sleep go through again, unless
+/// a job is still out. Every hook lets go of the state before it calls the
+/// original or shows a message, so one that holds it is no such screen's.
+fn let_through() {
+    if STATE.take().is_none_or(|state| !state.requests.is_out()) {
+        refuse_home(false);
+    }
 }
 
 // Game list set-up, state 0: the call that starts its indicator (00244EAC,
@@ -311,7 +320,7 @@ unsafe extern "aapcs" fn list_ready(raw: *mut u8) {
     if let Some(ui) = PANEL.release() {
         unsafe { stop_loading(ui as *mut u8) };
     }
-    refuse_home(false);
+    let_through();
 }
 
 /// Replaces the game search's update in its vtable (`002E6780`, was
@@ -464,7 +473,7 @@ unsafe fn waits(task: Task, id: u32) -> bool {
         state.spinner.idle(now),
         state.spinner.held(now),
     );
-    if !waits && panel::ends_panel(id, task_state) {
+    if !waits && panel::ends_panel(id, task_state) && !state.requests.is_out() {
         refuse_home(false);
     }
     waits

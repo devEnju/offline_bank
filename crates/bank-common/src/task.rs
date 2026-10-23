@@ -97,17 +97,6 @@ pub fn refuse_home(refuse: bool) {
     patch_common::home::refuse::<crate::program::Bank15>(refuse);
 }
 
-// The original's "show a message" function, 001d6650(ui, kind, message,
-// wait), as every patch but the download enters it (`patch_common`'s
-// `message_stub!`). The original's own bit for a game save that is being
-// written is not the one let through here and stays as it is.
-#[cfg(target_arch = "arm")]
-patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
-#[cfg(target_arch = "arm")]
-extern "aapcs" fn message_waits() {
-    refuse_home(false);
-}
-
 /// The screen a patch ends on when nothing can go on (`ui::stop`): one
 /// dialog with the two numbers, and after A the original's line "Press HOME
 /// to return to the HOME Menu" with the version and package and the numbers
