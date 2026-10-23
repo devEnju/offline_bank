@@ -9,15 +9,20 @@ use crate::{
     cart, navigation,
     panel::{self, Panel},
     program::Transporter15,
+    sdcard::WriteFault,
     storage_worker::{
         checked, delivered, Checked, Delivered, Job, Reply, TransporterRequests, TransporterWorker,
         DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING, DELIVER_UNCONFIRMED,
     },
     task::*,
-    ui::{self, from_second_page, loading, stop_loading, MESSAGE_FAILURE},
+    ui::{self, loading, stop_loading, Shown, MESSAGE_FAILURE, MESSAGE_NO_CARD},
 };
 use bank_common::{fault::Fault, worker::WorkerError};
-use core::{mem::transmute, slice};
+use core::{
+    mem::transmute,
+    slice,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
     exclusive::Exclusive,
@@ -574,12 +579,16 @@ unsafe fn show(task: Task, message: u32) -> Check {
     Check::Shown
 }
 
+/// The manager of the transfer, noted by the delivery entry, for the
+/// question whether the chosen cartridge's card is still in.
+static MANAGER: AtomicUsize = AtomicUsize::new(0);
+
 /// Replaces the load of a message in the original's "show a message"
-/// (`0019B578`): the original loads it, and the failure message then keeps
-/// only what follows its first page (`ui::from_second_page`), unless it is
-/// the error screen's (`ui::whole`). Where it stands for a write to a save
-/// on the SD card that the card refused for lack of space, the note save's,
-/// it is "The SD card is full." instead (`ui::sd_full`).
+/// (`0019B578`): the original loads it, and what is shown follows from what
+/// the last write to the game that failed left (`ui::shown`): the failure
+/// message from its second page, "The SD card is full." or "The saved data
+/// in your Pokémon game is corrupted." in its place. The error screen's
+/// failure message is kept whole (`ui::whole`).
 /// # Safety
 /// Called only from that site, with the arguments of the replaced call.
 #[no_mangle]
@@ -588,13 +597,33 @@ pub unsafe extern "aapcs" fn transporter_message_text(
     message: u32,
     string: *mut u8,
 ) -> u32 {
-    if message == MESSAGE_FAILURE && !ui::whole() && unsafe { cart::sd_full() } {
-        if let Some(loaded) = unsafe { ui::sd_full(messages, string) } {
-            return loaded;
+    let shown = if ui::whole() {
+        Shown::Whole
+    } else {
+        let fault = if matches!(message, MESSAGE_FAILURE | MESSAGE_NO_CARD) {
+            cart::take_write_fault()
+        } else {
+            WriteFault::None
+        };
+        let manager = MANAGER.load(Ordering::Relaxed) as *mut u8;
+        let card_in = fault == WriteFault::Cartridge
+            && patch_common::native::pointer(manager as u32).is_some()
+            && !unsafe { cart::chosen_card_missing(manager) };
+        ui::shown(message, fault, card_in)
+    };
+    match shown {
+        Shown::SdFull => {
+            if let Some(loaded) = unsafe { ui::sd_full(messages, string) } {
+                return loaded;
+            }
         }
+        Shown::Corrupted => {
+            return unsafe { ui::load_message(messages, ui::MESSAGE_CORRUPTED, string) };
+        }
+        Shown::Whole | Shown::SecondPage => {}
     }
     let loaded = unsafe { ui::load_message(messages, message, string) };
-    if from_second_page(message) && !ui::whole() {
+    if shown != Shown::Whole {
         unsafe { patch_common::ui::keep_rest(string) };
     }
     loaded
@@ -665,6 +694,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
             state.fail(NOT_NATIVE);
             return DELIVER_PENDING;
         };
+        MANAGER.store(manager as usize, Ordering::Relaxed);
         if unsafe { cart::chosen_card_missing(manager) } {
             return DELIVER_FAILED;
         }

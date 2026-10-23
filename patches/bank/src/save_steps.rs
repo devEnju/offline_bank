@@ -80,7 +80,7 @@ mod tests {
     use offline_core::{Part, Phase, Save, Slot};
     use std::vec::Vec;
 
-    const ENDINGS: [Ending; 3] = [Ending::Retry, Ending::NoSpace, Ending::Doubled];
+    const ENDINGS: [Ending; 3] = [Ending::Retry, Ending::NoSpace, Ending::Torn];
 
     fn steps() -> Vec<Step> {
         let mut steps = std::vec![

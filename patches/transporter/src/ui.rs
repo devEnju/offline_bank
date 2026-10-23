@@ -4,6 +4,7 @@
 //! text is the original's, and on the error screen the version above the
 //! two numbers.
 
+use crate::sdcard::WriteFault;
 use offline_core::transport::Refusal;
 
 /// The original's message 3: "Your communication with Pokémon Bank did not
@@ -23,11 +24,49 @@ pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 /// it saves its note.
 pub const MESSAGE_FAILURE: u32 = 0x0b;
 
-/// Whether the message `message` is shown without its first page. There is
-/// no server any more, so the failure message keeps only its advice to check
-/// the Game Card, the same in every language.
-pub fn from_second_page(message: u32) -> bool {
-    message == MESSAGE_FAILURE
+/// The original's message `0x22`: "No compatible Pokémon Game Card
+/// detected." and "Please check that your Game Card is properly inserted
+/// into your system's Game Card slot." The transfer shows it when the game
+/// cannot be saved after the delivery or its card is gone.
+pub const MESSAGE_NO_CARD: u32 = 0x22;
+/// The original's message 2: "The saved data in your Pokémon game is
+/// corrupted." One page in all ten languages; the reader shows it for a
+/// damaged save.
+pub const MESSAGE_CORRUPTED: u32 = 0x02;
+
+/// What "show a message" shows for `message` (`hooks::transporter_message_text`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// The message as the original loads it.
+    Whole,
+    /// Only what follows its first page: the failure message's advice to
+    /// check the Game Card, as there is no server any more.
+    SecondPage,
+    /// "The SD card is full." in its place.
+    SdFull,
+    /// "The saved data in your Pokémon game is corrupted." in its place.
+    Corrupted,
+}
+
+/// What is shown for `message`, when the last write to the game that failed
+/// left `fault` (`cart::take_write_fault`) and the chosen cartridge's card
+/// is in (`card_in`). The failure message stands for a note save that did
+/// not count: the advice to try again, unless the card had no room for the
+/// save's backup, or a save on the SD card may be half-written. The no-card
+/// message stands for a save after the delivery that failed, or a card that
+/// is gone: a save on the SD card, or a cartridge whose card is still in,
+/// may be half-written. Every other message is the original's.
+pub fn shown(message: u32, fault: WriteFault, card_in: bool) -> Shown {
+    match (message, fault) {
+        (MESSAGE_FAILURE, WriteFault::Full) => Shown::SdFull,
+        (MESSAGE_FAILURE, WriteFault::Torn) => Shown::Corrupted,
+        (MESSAGE_FAILURE, _) => Shown::SecondPage,
+        (MESSAGE_NO_CARD, WriteFault::Full | WriteFault::Untouched | WriteFault::Torn) => {
+            Shown::Corrupted
+        }
+        (MESSAGE_NO_CARD, WriteFault::Cartridge) if card_in => Shown::Corrupted,
+        _ => Shown::Whole,
+    }
 }
 
 /// The message that stops a session before it begins, for what Bank's
@@ -335,13 +374,39 @@ mod native {
 mod tests {
     use super::*;
 
+    const FAULTS: [WriteFault; 5] = [
+        WriteFault::None,
+        WriteFault::Full,
+        WriteFault::Untouched,
+        WriteFault::Torn,
+        WriteFault::Cartridge,
+    ];
+
     #[test]
-    fn only_the_failure_message_loses_its_first_page() {
-        assert!(from_second_page(MESSAGE_FAILURE));
-        // The refusals, the no-card message 0x22, and the closing message
-        // of a transfer are shown whole.
-        for message in [0, MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY, 0x0a, 0x22] {
-            assert!(!from_second_page(message), "{message:#x}");
+    fn only_the_failure_and_the_no_card_message_change_with_what_a_write_left() {
+        for fault in FAULTS {
+            for card_in in [false, true] {
+                // The refusals and the closing message of a transfer are
+                // shown whole.
+                for message in [0, MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY, 0x0a] {
+                    assert_eq!(shown(message, fault, card_in), Shown::Whole);
+                }
+                // The note save that did not count.
+                let expected = match fault {
+                    WriteFault::Full => Shown::SdFull,
+                    WriteFault::Torn => Shown::Corrupted,
+                    _ => Shown::SecondPage,
+                };
+                assert_eq!(shown(MESSAGE_FAILURE, fault, card_in), expected);
+                // A save after the delivery that failed, or a card that is
+                // gone: 0x22 only where no save may be half-written.
+                let expected = match fault {
+                    WriteFault::None => Shown::Whole,
+                    WriteFault::Cartridge if !card_in => Shown::Whole,
+                    _ => Shown::Corrupted,
+                };
+                assert_eq!(shown(MESSAGE_NO_CARD, fault, card_in), expected);
+            }
         }
     }
 

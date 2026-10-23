@@ -224,8 +224,8 @@ pub struct Saves {
     /// for it is cleared by every read that starts, a save's included, so
     /// it is kept here as well.
     cartridge_removed: bool,
-    /// The last write the card refused found it without room (`take_full`).
-    full: bool,
+    /// A write of this session has reached a save's file (`touch`).
+    touched: bool,
 }
 impl Saves {
     pub const EMPTY: Self = Self {
@@ -242,7 +242,7 @@ impl Saves {
         entry_count: 0,
         backed_up: 0,
         cartridge_removed: false,
-        full: false,
+        touched: false,
     };
 
     /// A new session. `cartridge` is the game code the cartridge slot
@@ -381,16 +381,14 @@ impl Saves {
     pub fn backup_failed(&mut self) {
         self.backed_up &= !(1u8 << (self.current as u32 % 8));
     }
-    /// Notes a write to a save that the card refused, and whether it
-    /// refused it for lack of space, for the message the original shows
-    /// next (`take_full`).
-    pub fn write_refused(&mut self, full: bool) {
-        self.full = full;
+    /// Notes that a write is about to reach a save's file.
+    pub fn touch(&mut self) {
+        self.touched = true;
     }
-    /// Whether the last write the card refused found it without room. Asking
-    /// clears it.
-    pub fn take_full(&mut self) -> bool {
-        core::mem::take(&mut self.full)
+    /// Whether a write of this session has reached a save's file: from then
+    /// on a failed write may leave the save half-written.
+    pub fn touched(&self) -> bool {
+        self.touched
     }
 }
 

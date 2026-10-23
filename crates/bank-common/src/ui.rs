@@ -7,8 +7,8 @@
 //! a message and goes back to the start screen shows the original's own:
 //! that message's other part, the advice to check the card and try again;
 //! the scan's message for a card without room; the first line of the
-//! server messages' "The SD card is full."; or game selection's "No Pokémon
-//! Game Card detected." Nothing else is written here.
+//! server messages' "The SD card is full."; or Transporter's "The saved data
+//! in your Pokémon game is corrupted." Nothing else is written here.
 
 use core::mem::transmute;
 use patch_common::native::pointer as native_pointer;
@@ -356,11 +356,6 @@ pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
     unsafe { display(ui, message, true) }
 }
 
-/// Native message 0x1F, game selection's for a missing card: "No Pokémon
-/// Game Card detected." and on its second page "Please check that your Game
-/// Card is properly inserted into your system's Game Card slot." Shown for a
-/// save that was settled by what it moved, where Pokémon may be doubled.
-pub const NO_CARD_NOTICE: u32 = 0x1f;
 /// Native message 0x26, the game scan's when Bank's extdata cannot be
 /// created: "Pokémon Bank could not be started due to a lack of space on
 /// your SD card."
@@ -379,33 +374,47 @@ pub unsafe fn try_again(ui: *mut u8) -> Result<(), Error> {
 /// data." Its first line is a sentence of its own in all ten languages.
 const SERVER_MESSAGES: u32 = 26;
 const SD_FULL: u32 = 0;
+/// Poké Transporter's text file, which Bank's text archive holds as well,
+/// and its message 2: "The saved data in your Pokémon game is corrupted."
+/// One page in all ten languages; Transporter's reader shows it for a
+/// damaged save.
+const TRANSPORTER_MESSAGES: u32 = 23;
+const SAVE_CORRUPTED: u32 = 2;
 /// Where a screen's context keeps its own message file, from which
 /// `001d6650` takes a message of kind 0 (`001d6728`).
 const CONTEXT_MESSAGES: usize = 0x28;
 
-/// Shows the first line of the original's message 0 of text file 26, "The
-/// SD card is full.", and waits for A; the second line is about the
-/// server's download. `001d6650` shows it as it shows every message: for
-/// this one call the context's own message file is file 26, opened as the
+/// Shows message `message` of text file `file`, which is none of the UI's
+/// own, and waits for A; with `first_line`, only its first line
+/// (`message::first_line`). `001d6650` shows it as it shows every message:
+/// for this one call the context's own message file is `file`, opened as the
 /// original opens a screen's (`patch_common::ui::with_messages`), and then
-/// it is the context's own again. The first line (`message::first_line`)
-/// is then handed to the dialog as `notice_rest` hands its text.
+/// it is the context's own again. A cut text is handed to the dialog as
+/// `notice_rest` hands its text.
 /// # Safety
 /// `ui` has stop's native lifetime contract, with no other dialog active.
-pub unsafe fn sd_full(ui: *mut u8) -> Result<(), Error> {
+unsafe fn foreign_notice(
+    ui: *mut u8,
+    file: u32,
+    message: u32,
+    first_line: bool,
+) -> Result<(), Error> {
     let context = unsafe { ready(ui) }?;
     let heap = unsafe { shared::heap(ui) }.ok_or(Error::InvalidPointer)?;
     let own = unsafe { context.add(CONTEXT_MESSAGES).cast::<*mut u8>() };
     let shown = unsafe {
-        shared::with_messages::<crate::program::Bank15, _>(heap, SERVER_MESSAGES, |messages| {
+        shared::with_messages::<crate::program::Bank15, _>(heap, file, |messages| {
             let before = own.read();
             own.write(messages);
-            let shown = display(ui, SD_FULL, true);
+            let shown = display(ui, message, true);
             own.write(before);
             shown
         })
     };
     shown.ok_or(Error::InvalidPointer)??;
+    if !first_line {
+        return Ok(());
+    }
     let Some(Text {
         object: text,
         room,
@@ -417,6 +426,23 @@ pub unsafe fn sd_full(ui: *mut u8) -> Result<(), Error> {
     let len = message::first_line(&room[..len]);
     unsafe { begin(context, text, room, len) };
     Ok(())
+}
+
+/// "The SD card is full.": the first line of message 0 of text file 26; the
+/// second line is about the server's download.
+/// # Safety
+/// As `foreign_notice`.
+pub unsafe fn sd_full(ui: *mut u8) -> Result<(), Error> {
+    unsafe { foreign_notice(ui, SERVER_MESSAGES, SD_FULL, true) }
+}
+
+/// "The saved data in your Pokémon game is corrupted.": message 2 of
+/// Transporter's text file 23, whole. For a game's save that Bank's own
+/// write left neither before nor after.
+/// # Safety
+/// As `foreign_notice`.
+pub unsafe fn save_corrupted(ui: *mut u8) -> Result<(), Error> {
+    unsafe { foreign_notice(ui, TRANSPORTER_MESSAGES, SAVE_CORRUPTED, false) }
 }
 
 /// Shows the original's message for another copy of a game, filled the way

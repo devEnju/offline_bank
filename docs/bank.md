@@ -214,7 +214,7 @@ When the game's write has begun, Bank looks at the game's save at once and decid
 | --- | --- | --- |
 | Unchanged | "Please confirm that your Game Card is properly inserted, and then try again." | Back to its old boxes. Nothing was moved. |
 | The one Bank wrote | "Success! Changes saved." | Keeps its new boxes. Everything was moved. |
-| Something else, and the session moved Pokémon one way or none | "No Pokémon Game Card detected." and "Please check that your Game Card is properly inserted into your system's Game Card slot." | Decides by what the session moved ([above](#if-save-and-quit-is-interrupted)); some Pokémon may exist twice. |
+| Something else, and the session moved Pokémon one way or none | "The saved data in your Pokémon game is corrupted." | The write was cut off. Bank decides by what the session moved ([above](#if-save-and-quit-is-interrupted)); some Pokémon may exist twice. Check the game before you play it. |
 | Something else, and the session moved Pokémon both ways; or the cartridge is pulled | "Please confirm that your Game Card is properly inserted, and then try again." | Nothing is decided yet: put the same game in and press START, and Bank finishes or undoes the save. |
 
 ## Troubleshooting

@@ -17,13 +17,19 @@
 //! it reads or saves a DS game. Those questions come here too, so that a
 //! removed card concerns the cartridge alone (`Saves::card_missing`).
 
+use crate::sdcard::WriteFault;
 use crate::{
     language,
     sdcard::{self, Sd, COPY_CHUNK},
     sdsave::Saves,
     task::{Task, TASK_LIST, TASK_MANAGER},
 };
-use core::{cell::UnsafeCell, mem::transmute, slice};
+use core::{
+    cell::UnsafeCell,
+    mem::transmute,
+    slice,
+    sync::atomic::{AtomicU8, Ordering},
+};
 use patch_common::native::read_word;
 
 const ORIGINAL_CART_ID: usize = 0x0021_aa0c;
@@ -104,6 +110,7 @@ unsafe extern "aapcs" fn cart_id(out: *mut u32, task: *const u8) -> i32 {
         // language screen are offered; a Gen 5 cartridge in that language
         // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
+        note(WriteFault::None);
         saves.scan(cartridge, language::filter_letter(), |path, offsets| {
             sdcard::identity(&mut Sd, path, offsets)
         });
@@ -161,28 +168,35 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
     let Some(save) = saves.current() else {
         let original: unsafe extern "aapcs" fn(u32, u32, *const u8, u32) -> i32 =
             unsafe { transmute(ORIGINAL_CART_WRITE) };
-        return unsafe { original(kind, offset, buffer, length) };
+        let code = unsafe { original(kind, offset, buffer, length) };
+        if code < 0 {
+            note(WriteFault::Cartridge);
+        }
+        return code;
     };
     let bytes = unsafe { slice::from_raw_parts(buffer, length as usize) };
     // SAFETY: see `Shared`; only this thread uses the copy buffer.
     let chunk = unsafe { &mut *CHUNK.0.get() };
     match sdcard::write(&mut Sd, saves, save, offset, bytes, chunk) {
         Ok(()) => 0,
-        Err(refused) => {
-            saves.write_refused(refused.full);
+        Err(failed) => {
+            note(WriteFault::of_save(saves, failed));
             FAILED
         }
     }
 }
 
-/// Whether the last write to a save on the SD card was refused for lack of
-/// space, for the message the original shows for the failed write
+/// The last write to the game that failed in this session (`WriteFault`),
+/// for the message the original shows for it. Written by the cartridge
+/// task's thread, read by the main thread once that task has ended.
+static WRITE_FAULT: AtomicU8 = AtomicU8::new(0);
+fn note(fault: WriteFault) {
+    WRITE_FAULT.store(fault as u8, Ordering::Release);
+}
+/// What the last write to the game that failed left
 /// (`hooks::transporter_message_text`). Asking clears it.
-/// # Safety
-/// Only on the main thread, while no cartridge task runs: after the task
-/// whose write failed has ended (`Shared`).
-pub unsafe fn sd_full() -> bool {
-    saves().take_full()
+pub fn take_write_fault() -> WriteFault {
+    WriteFault::of(WRITE_FAULT.swap(0, Ordering::Acquire))
 }
 
 // 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.

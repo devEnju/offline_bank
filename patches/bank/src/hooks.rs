@@ -1070,9 +1070,7 @@ impl Runtime {
                         // card; its first part names a server.
                         Ending::Retry => bank_common::ui::try_again(ui),
                         Ending::NoSpace => bank_common::ui::sd_full(ui),
-                        Ending::Doubled => {
-                            bank_common::ui::notice(ui, bank_common::ui::NO_CARD_NOTICE)
-                        }
+                        Ending::Torn => bank_common::ui::save_corrupted(ui),
                     }
                 }
                 .map_err(|_| Fault::NativeObject)?;

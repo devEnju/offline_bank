@@ -93,9 +93,10 @@ pub enum Ending {
     /// A file could not be made for lack of space on the SD card, and
     /// nothing changed.
     NoSpace,
-    /// The save in progress was settled by what it moved, from a game save
-    /// that is neither of its images: Pokémon may be doubled.
-    Doubled,
+    /// Bank's own write left the game's save neither of its images: it was
+    /// cut off mid-write. The save in progress was settled by what it
+    /// moved, and Pokémon may be doubled.
+    Torn,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,7 +482,7 @@ where
         Settled::Exact(RecoveryDecision::KeepBefore) | Settled::Waits | Settled::Open => {
             Ending::Retry
         }
-        Settled::ByMoves(_) => Ending::Doubled,
+        Settled::ByMoves(_) => Ending::Torn,
     };
     Ok(Finalized::Ended(ending))
 }
@@ -1393,7 +1394,7 @@ mod tests {
                 assert_eq!(ending, Finalized::Ended(Ending::Retry));
                 assert_eq!(pending(&mut files), Some(in_progress));
             } else {
-                assert_eq!(ending, Finalized::Ended(Ending::Doubled), "{moved}");
+                assert_eq!(ending, Finalized::Ended(Ending::Torn), "{moved}");
                 drop(files);
                 let kept = if moved == "deposited" { &new } else { &old };
                 assert!(settled_bank(&disk) == *kept, "{moved}");
@@ -1419,7 +1420,7 @@ mod tests {
         let (disk, mut files, in_progress, staged) = prepared_save(&old, new, &mut game);
         game.save = Some((AFTER, LOADED));
         let ending = finish(&mut files, &mut game, &in_progress, staged);
-        assert_eq!(ending, Finalized::Ended(Ending::Doubled));
+        assert_eq!(ending, Finalized::Ended(Ending::Torn));
         drop(files);
         // It deposited: the new boxes, which cannot lose the Pokémon.
         assert!(settled_bank(&disk) == *new);

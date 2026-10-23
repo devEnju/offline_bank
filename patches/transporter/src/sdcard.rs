@@ -30,6 +30,61 @@ impl Refused {
     pub const FULL: Self = Self { full: true };
 }
 
+/// Why a write to a save did not count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unwritten {
+    /// Nothing of it reached the save: the place, the backup or the open
+    /// refused it.
+    Before(Refused),
+    /// The save may hold part of it: the write, its read-back or the close
+    /// failed.
+    After,
+}
+
+/// What a write to the game that failed leaves, for the message the
+/// original shows for it (`ui::shown`). Kept as one byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WriteFault {
+    None = 0,
+    /// A save on the SD card, untouched: its backup had no room.
+    Full = 1,
+    /// A save on the SD card, untouched for another reason.
+    Untouched = 2,
+    /// A save on the SD card that a write of this session has reached: it
+    /// may be half-written.
+    Torn = 3,
+    /// The cartridge: the original's write failed.
+    Cartridge = 4,
+}
+impl WriteFault {
+    pub const fn of(byte: u8) -> Self {
+        match byte {
+            1 => Self::Full,
+            2 => Self::Untouched,
+            3 => Self::Torn,
+            4 => Self::Cartridge,
+            _ => Self::None,
+        }
+    }
+    /// What the failed write `failed` to a save on the SD card leaves. A
+    /// save is untouched only while no write of this session has reached it
+    /// (`Saves::touched`): one write of the original's save may follow
+    /// others that did.
+    pub fn of_save(saves: &Saves, failed: Unwritten) -> Self {
+        match failed {
+            Unwritten::Before(refused) if !saves.touched() => {
+                if refused.full {
+                    Self::Full
+                } else {
+                    Self::Untouched
+                }
+            }
+            _ => Self::Torn,
+        }
+    }
+}
+
 /// An open file on the SD card.
 pub trait SdFile {
     fn size(&self) -> Option<u64>;
@@ -137,7 +192,8 @@ pub fn read<C: Card>(card: &mut C, save: Save, offset: u32, bytes: &mut [u8]) ->
 /// own files are. The first write of a session to a save backs it up
 /// first; without the backup nothing is changed, and the next write tries
 /// it again. `chunk` is the copy buffer. A backup the card has no room for
-/// is `Refused::FULL`; the save itself is never made larger.
+/// is `Refused::FULL`; the save itself is never made larger. The error says
+/// whether anything of the write may have reached the save.
 pub fn write<C: Card>(
     card: &mut C,
     saves: &mut Saves,
@@ -145,29 +201,31 @@ pub fn write<C: Card>(
     offset: u32,
     bytes: &[u8],
     chunk: &mut [u8; COPY_CHUNK],
-) -> Result<(), Refused> {
+) -> Result<(), Unwritten> {
     if !in_save(offset, bytes.len()) {
-        return Err(Refused::OTHER);
+        return Err(Unwritten::Before(Refused::OTHER));
     }
     if saves.take_backup_duty() {
         if let Err(refused) = back_up(card, save, chunk) {
             saves.backup_failed();
-            return Err(refused);
+            return Err(Unwritten::Before(refused));
         }
     }
-    let file = open_save(card, save, false, OPEN_READ_WRITE)?;
-    file.write(u64::from(offset), bytes, true)?;
+    let file = open_save(card, save, false, OPEN_READ_WRITE).map_err(Unwritten::Before)?;
+    saves.touch();
+    file.write(u64::from(offset), bytes, true)
+        .map_err(|_| Unwritten::After)?;
     for (index, written) in bytes.chunks(COPY_CHUNK).enumerate() {
         let read = &mut chunk[..written.len()];
         let at = u64::from(offset) + (index * COPY_CHUNK) as u64;
         if !file.read(at, read) || read != written {
-            return Err(Refused::OTHER);
+            return Err(Unwritten::After);
         }
     }
     if file.close() {
         Ok(())
     } else {
-        Err(Refused::OTHER)
+        Err(Unwritten::After)
     }
 }
 
@@ -469,7 +527,11 @@ mod tests {
         let mut chunk = [0; COPY_CHUNK];
         sim.0.borrow_mut().faults.full = true;
         let written = write(&mut sim, &mut saves, save, 0x100, &[1, 2, 3, 4], &mut chunk);
-        assert_eq!(written, Err(Refused::FULL));
+        assert_eq!(written, Err(Unwritten::Before(Refused::FULL)));
+        assert_eq!(
+            WriteFault::of_save(&saves, written.unwrap_err()),
+            WriteFault::Full
+        );
         assert_eq!(file(&sim, SAV), original);
         assert!(!sim.0.borrow().files.keys().any(|path| path.ends_with(BAK)));
         // Every other refusal is no lack of space.
@@ -478,12 +540,71 @@ mod tests {
             ..Faults::default()
         };
         let written = write(&mut sim, &mut saves, save, 0x100, &[1, 2, 3, 4], &mut chunk);
-        assert_eq!(written, Err(Refused::OTHER));
+        assert_eq!(written, Err(Unwritten::Before(Refused::OTHER)));
+        assert_eq!(
+            WriteFault::of_save(&saves, written.unwrap_err()),
+            WriteFault::Untouched
+        );
         // With room again the next write makes the backup.
         sim.0.borrow_mut().faults = Faults::default();
         let written = write(&mut sim, &mut saves, save, 0x100, &[1, 2, 3, 4], &mut chunk);
         assert_eq!(written, Ok(()));
         assert_eq!(file(&sim, BAK), original);
+    }
+
+    #[test]
+    fn a_failed_write_says_whether_the_save_may_be_half_written() {
+        // Before anything reached it: untouched.
+        let (mut sim, mut saves, save, _) = card();
+        let mut chunk = [0; COPY_CHUNK];
+        let outside = write(
+            &mut sim,
+            &mut saves,
+            save,
+            SAVE_SIZE as u32,
+            &[1],
+            &mut chunk,
+        );
+        assert_eq!(outside, Err(Unwritten::Before(Refused::OTHER)));
+        assert_eq!(
+            WriteFault::of_save(&saves, outside.unwrap_err()),
+            WriteFault::Untouched
+        );
+        // A write that does not land: the save may hold part of it.
+        sim.0.borrow_mut().faults = Faults {
+            torn_write: Some((SAV, 0)),
+            ..Faults::default()
+        };
+        let torn = write(&mut sim, &mut saves, save, 0x100, &[1, 2, 3, 4], &mut chunk);
+        assert_eq!(torn, Err(Unwritten::After));
+        assert_eq!(
+            WriteFault::of_save(&saves, torn.unwrap_err()),
+            WriteFault::Torn
+        );
+        // Once a write of the session has reached the save, a later one that
+        // fails before its own bytes do may follow parts that landed.
+        let later = write(
+            &mut sim,
+            &mut saves,
+            save,
+            SAVE_SIZE as u32,
+            &[1],
+            &mut chunk,
+        );
+        assert_eq!(
+            WriteFault::of_save(&saves, later.unwrap_err()),
+            WriteFault::Torn
+        );
+        // The byte it is kept as.
+        for fault in [
+            WriteFault::None,
+            WriteFault::Full,
+            WriteFault::Untouched,
+            WriteFault::Torn,
+            WriteFault::Cartridge,
+        ] {
+            assert_eq!(WriteFault::of(fault as u8), fault);
+        }
     }
 
     #[test]
