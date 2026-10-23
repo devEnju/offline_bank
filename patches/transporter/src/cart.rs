@@ -166,11 +166,23 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
     let bytes = unsafe { slice::from_raw_parts(buffer, length as usize) };
     // SAFETY: see `Shared`; only this thread uses the copy buffer.
     let chunk = unsafe { &mut *CHUNK.0.get() };
-    if sdcard::write(&mut Sd, saves, save, offset, bytes, chunk) {
-        0
-    } else {
-        FAILED
+    match sdcard::write(&mut Sd, saves, save, offset, bytes, chunk) {
+        Ok(()) => 0,
+        Err(refused) => {
+            saves.write_refused(refused.full);
+            FAILED
+        }
     }
+}
+
+/// Whether the last write to a save on the SD card was refused for lack of
+/// space, for the message the original shows for the failed write
+/// (`hooks::transporter_message_text`). Asking clears it.
+/// # Safety
+/// Only on the main thread, while no cartridge task runs: after the task
+/// whose write failed has ended (`Shared`).
+pub unsafe fn sd_full() -> bool {
+    saves().take_full()
 }
 
 // 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.

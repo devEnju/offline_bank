@@ -143,6 +143,19 @@ pub unsafe fn keep_rest(object: *mut u8) {
     }
 }
 
+/// Keeps only the first line of the message the original has just loaded
+/// into the string object `object` (`message::first_line`). A string whose
+/// length is not that of its text stays as it is.
+/// # Safety
+/// `object` is a live string object of the original, on the main thread.
+pub unsafe fn keep_first_line(object: *mut u8) {
+    let Ok(Some(Text { room, len, .. })) = (unsafe { text(object) }) else {
+        return;
+    };
+    let len = message::first_line(&room[..len]);
+    unsafe { end(object, room, len) };
+}
+
 /// Ends the work string at `len` and gives it to pane `pane` of the layout
 /// of `group` (`layout`), with the original's two calls.
 unsafe fn hand_over<P: Program>(

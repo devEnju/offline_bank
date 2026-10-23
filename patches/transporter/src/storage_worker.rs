@@ -2,10 +2,14 @@
 //! and the delivery, on Bank's files as the delivery rules reach them. The
 //! main thread hands the delivery the transport box in the staging buffer;
 //! the worker touches no object of the original.
+//!
+//! What each answer leads to is decided here, in plain code (`checked`,
+//! `delivered`): an original message, or the error screen with Bank's two
+//! numbers (`bank_common::fault`) for what is not expected.
 
 use crate::task::RECORDS_LEN;
+use bank_common::{fault::Fault, worker::WorkerError};
 use offline_core::{sections::TRANSPORT_SLOTS, transport::Refusal};
-use patch_common::worker::Control;
 
 /// The staging buffer: the transport box's records, then its tags.
 pub const STAGING_LEN: usize = RECORDS_LEN + TRANSPORT_SLOTS;
@@ -25,24 +29,25 @@ pub enum Reply {
     Ready,
     /// Bank cannot take one now.
     Refused(Refusal),
-    /// The delivery is written, flushed and read back.
+    /// Bank holds the delivery: it is written, flushed and read back, or
+    /// the record announcing it is in force when Bank's journal is read
+    /// again (`transport::deliver`).
     Delivered,
-    /// The delivery is not confirmed: it was not written, or the record
-    /// announcing it did not read back, in which case Bank may hold it all
-    /// the same (`Journal::announce`). The Pokémon stay in the game.
+    /// Bank holds none, for certain: it was not written, the record
+    /// announcing it is not in force, or Bank's files refused it on the
+    /// check before the write. The Pokémon stay in the game.
     NotDelivered,
+    /// Whether Bank holds the delivery cannot be told
+    /// (`DeliverError::Unconfirmed`): the Pokémon stay in the game, and Bank
+    /// may hold them as well.
+    Unconfirmed,
 }
 
-/// A job that has no answer: the worker failed. Transporter shows no
-/// numbers, so what failed does not matter: the check refuses and the
-/// delivery has not happened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Failed;
-impl From<Control> for Failed {
-    fn from(_: Control) -> Self {
-        Self
-    }
-}
+/// A transport box that is no whole box holding Pokémon (`DeliverError`):
+/// the second number of `Fault::Delivery`. The question task ends the
+/// session for a box without Pokémon, so neither is ever handed over.
+pub const NOT_ONE_BOX: u32 = 1;
+pub const NO_POKEMON: u32 = 2;
 
 #[cfg(target_arch = "arm")]
 pub(crate) use arm::{TransporterRequests, TransporterWorker};
@@ -52,7 +57,7 @@ mod arm {
     use super::*;
     use crate::program::Transporter15;
     use bank_common::fs::Visit;
-    use offline_core::transport;
+    use offline_core::transport::{self, DeliverError};
     use patch_common::{
         program::Program,
         worker::{Service, Shared, Worker},
@@ -78,7 +83,7 @@ mod arm {
         type Program = Transporter15;
         type Job = Job;
         type Reply = Reply;
-        type Error = Failed;
+        type Error = WorkerError;
         type Staging = [u8; STAGING_LEN];
         // The worker alone; this patch starts no other thread.
         const THREADS: i64 = 1;
@@ -88,7 +93,7 @@ mod arm {
         fn start() -> Self {
             Self
         }
-        fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, Failed> {
+        fn run(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             Ok(match job {
                 Job::Check => match transport::check(&mut bank_files()) {
                     Ok(()) => Reply::Ready,
@@ -98,7 +103,16 @@ mod arm {
                     let (records, tags) = staging.split_at(RECORDS_LEN);
                     match transport::deliver(&mut bank_files(), records, tags) {
                         Ok(_) => Reply::Delivered,
-                        Err(_) => Reply::NotDelivered,
+                        Err(DeliverError::Unconfirmed) => Reply::Unconfirmed,
+                        Err(
+                            DeliverError::Io(_) | DeliverError::Write | DeliverError::Refused(_),
+                        ) => Reply::NotDelivered,
+                        Err(DeliverError::Layout) => {
+                            return Err(Fault::Delivery.with(NOT_ONE_BOX));
+                        }
+                        Err(DeliverError::Empty) => {
+                            return Err(Fault::Delivery.with(NO_POKEMON));
+                        }
                     }
                 }
             })
@@ -107,7 +121,11 @@ mod arm {
 }
 
 /// One frame of a job, as the hooks ask for it: `None` while it runs.
-pub type Answer = Option<Result<Reply, Failed>>;
+pub type Answer = Option<Result<Reply, WorkerError>>;
+
+/// A reply that is not one the job gives: the job held by the other kind,
+/// or none.
+const NOT_ITS_REPLY: WorkerError = Fault::NativeObject.with(0);
 
 /// What the check at START leads to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,41 +136,67 @@ pub enum Checked {
     Go,
     /// The original's message to show instead (`ui`).
     Refused(u32),
+    /// The worker cannot be used: the error screen.
+    Failed(WorkerError),
 }
 
-/// The check's answer. A worker that failed refuses as Bank's files that
-/// do not read do.
+/// The check's answer.
 pub fn checked(answer: Answer) -> Checked {
     match answer {
         None => Checked::Pending,
         Some(Ok(Reply::Ready)) => Checked::Go,
         Some(Ok(Reply::Refused(refusal))) => Checked::Refused(crate::ui::refusal_message(refusal)),
-        Some(_) => Checked::Refused(crate::ui::MESSAGE_OPEN_BANK),
+        Some(Ok(_)) => Checked::Failed(NOT_ITS_REPLY),
+        Some(Err(error)) => Checked::Failed(error),
+    }
+}
+
+/// What the delivery leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivered {
+    /// Not answered yet.
+    Pending,
+    /// Bank holds it: the original removes the Pokémon from the game.
+    Done,
+    /// Bank holds nothing, for certain: the original's advice to check the
+    /// Game Card and try again.
+    Retry,
+    /// Bank may hold it: the original's message that no Game Card is
+    /// detected, without "try again", as for a game that cannot be saved
+    /// after the delivery.
+    Unconfirmed,
+    /// The worker cannot be used, or the box was no box: the error screen.
+    Failed(WorkerError),
+}
+
+/// The delivery's answer: done only for a delivery Bank holds.
+pub fn delivered(answer: Answer) -> Delivered {
+    match answer {
+        None => Delivered::Pending,
+        Some(Ok(Reply::Delivered)) => Delivered::Done,
+        Some(Ok(Reply::NotDelivered)) => Delivered::Retry,
+        Some(Ok(Reply::Unconfirmed)) => Delivered::Unconfirmed,
+        Some(Ok(_)) => Delivered::Failed(NOT_ITS_REPLY),
+        Some(Err(error)) => Delivered::Failed(error),
     }
 }
 
 /// The delivery entry's answers, as its stub tests them. Only `DONE` lets
-/// the original go on and take the Pokémon out of the game.
+/// the original go on and take the Pokémon out of the game; `PENDING` comes
+/// back next frame, which is also how the transfer waits on the error
+/// screen.
 pub const DELIVER_FAILED: u32 = 0;
 pub const DELIVER_DONE: u32 = 1;
 pub const DELIVER_PENDING: u32 = 2;
-
-/// The delivery's answer: done only for a delivery that is written,
-/// flushed and read back.
-pub fn delivered(answer: Answer) -> u32 {
-    match answer {
-        None => DELIVER_PENDING,
-        Some(Ok(Reply::Delivered)) => DELIVER_DONE,
-        Some(_) => DELIVER_FAILED,
-    }
-}
+pub const DELIVER_UNCONFIRMED: u32 = 3;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use patch_common::worker::{Control, ControlKind};
 
     /// Every answer a frame of a job can give.
-    fn answers() -> [Answer; 7] {
+    fn answers() -> [Answer; 9] {
         [
             None,
             Some(Ok(Reply::Ready)),
@@ -160,17 +204,25 @@ mod tests {
             Some(Ok(Reply::Refused(Refusal::NotReady))),
             Some(Ok(Reply::Delivered)),
             Some(Ok(Reply::NotDelivered)),
-            Some(Err(Failed)),
+            Some(Ok(Reply::Unconfirmed)),
+            Some(Err(WorkerError::from(Control::new(ControlKind::Resource)))),
+            Some(Err(Fault::Delivery.with(NOT_ONE_BOX))),
         ]
     }
 
     #[test]
-    fn only_a_delivery_that_is_written_lets_the_pokemon_leave_the_game() {
+    fn only_a_delivery_bank_holds_lets_the_pokemon_leave_the_game() {
         for answer in answers() {
             let expected = match answer {
-                None => DELIVER_PENDING,
-                Some(Ok(Reply::Delivered)) => DELIVER_DONE,
-                _ => DELIVER_FAILED,
+                None => Delivered::Pending,
+                Some(Ok(Reply::Delivered)) => Delivered::Done,
+                // Nothing is in Bank: try again.
+                Some(Ok(Reply::NotDelivered)) => Delivered::Retry,
+                // It may be: no "try again", which could double them.
+                Some(Ok(Reply::Unconfirmed)) => Delivered::Unconfirmed,
+                Some(Err(error)) => Delivered::Failed(error),
+                // A reply of the check is none of the delivery's.
+                Some(Ok(_)) => Delivered::Failed(NOT_ITS_REPLY),
             };
             assert_eq!(delivered(answer), expected, "{answer:?}");
         }
@@ -186,33 +238,33 @@ mod tests {
                 Some(Ok(Reply::Refused(Refusal::Occupied))) => {
                     assert_eq!(result, Checked::Refused(crate::ui::MESSAGE_BOX_NOT_EMPTY))
                 }
-                // Every other refusal, and a worker that failed, asks to
-                // open Bank.
-                _ => assert_eq!(
-                    result,
-                    Checked::Refused(crate::ui::MESSAGE_OPEN_BANK),
-                    "{answer:?}"
-                ),
+                Some(Ok(Reply::Refused(Refusal::NotReady))) => {
+                    assert_eq!(result, Checked::Refused(crate::ui::MESSAGE_OPEN_BANK))
+                }
+                // A worker that fails is the error screen, with its numbers.
+                Some(Err(error)) => assert_eq!(result, Checked::Failed(error)),
+                Some(Ok(_)) => assert_eq!(result, Checked::Failed(NOT_ITS_REPLY)),
             }
         }
     }
 
     #[test]
-    fn the_staging_buffer_holds_one_transport_box() {
-        assert_eq!(STAGING_LEN, 6_990);
+    fn a_worker_that_cannot_be_used_shows_the_numbers_bank_shows_for_it() {
+        let error = WorkerError::from(Control::new(ControlKind::Resource));
+        assert_eq!(error.fault(), Fault::NativeObject);
+        let Checked::Failed(shown) = checked(Some(Err(error))) else {
+            panic!("not the error screen");
+        };
+        assert_eq!(shown.numbers(), error.numbers());
+        // A box that is no box is the delivery's own number.
+        assert_eq!(
+            Fault::Delivery.with(NOT_ONE_BOX).numbers(),
+            [0x14, NOT_ONE_BOX]
+        );
     }
 
     #[test]
-    fn every_worker_failure_is_one_answer() {
-        use patch_common::worker::ControlKind;
-        for kind in [
-            ControlKind::Busy,
-            ControlKind::StaleJob,
-            ControlKind::Resource,
-            ControlKind::Stopped,
-            ControlKind::NoJob,
-        ] {
-            assert_eq!(Failed::from(Control::new(kind)), Failed);
-        }
+    fn the_staging_buffer_holds_one_transport_box() {
+        assert_eq!(STAGING_LEN, 6_990);
     }
 }

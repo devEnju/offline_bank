@@ -1,6 +1,7 @@
-//! The first of the two numbers on Bank's error screen: what could not go
-//! on. Every patch for Bank shows the same number for the same thing; the
-//! second number says why (docs/bank.md, "Troubleshooting").
+//! The first of the two numbers on the error screen of Bank and of
+//! Transporter: what could not go on. Every patch of either program shows
+//! the same number for the same thing; the second number says why
+//! (docs/bank.md, "Troubleshooting").
 
 use crate::{bank_files, fs, session, worker::WorkerError};
 use offline_core::StoreError;
@@ -28,6 +29,9 @@ pub enum Fault {
     JournalRecovery = 16,
     RewardState = 18,
     RewardClaim = 19,
+    /// Transporter: the transport box handed to the delivery is no whole
+    /// box that holds Pokémon (`transporter_payload::storage_worker`).
+    Delivery = 20,
     /// Test builds: a Save and Quit stopped on purpose by the chosen
     /// rehearsal (`rehearsal`). Its second number is the stop point: 1
     /// after the journal is prepared and before the game is written, 2

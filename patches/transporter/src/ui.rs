@@ -1,6 +1,8 @@
 //! The original's screens as the hooks use them: the messages they show,
-//! the general loading panel of the shared UI, and a pane's text from a
-//! message file of the original. Every text is the original's.
+//! the general loading panel of the shared UI, a pane's text from a message
+//! file of the original, and the error screen, the same as Bank's. Every
+//! text is the original's, and on the error screen the version above the
+//! two numbers.
 
 use offline_core::transport::Refusal;
 
@@ -51,10 +53,19 @@ pub use native::*;
 
 #[cfg(target_arch = "arm")]
 mod native {
-    use super::Unavailable;
+    use super::{Unavailable, MESSAGE_FAILURE};
     use crate::program::Transporter15;
-    use core::mem::transmute;
-    use patch_common::{program::Program, ui as shared};
+    use core::{
+        mem::transmute,
+        sync::atomic::{AtomicBool, Ordering},
+    };
+    use patch_common::{
+        message,
+        native::follow,
+        numbers::{self, Label},
+        program::Program,
+        ui::{self as shared, Text},
+    };
 
     /// The general loading panel of the shared UI (`ui`, its context at
     /// `ui + 0x5C`), as the reader's set-up starts it (`00246A2C`):
@@ -137,6 +148,136 @@ mod native {
         let load: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) -> u32 =
             unsafe { transmute(LOAD_MESSAGE) };
         unsafe { load(messages, message, string) }
+    }
+
+    /// Shows message `message` of the shared UI on `ui` without waiting:
+    /// `(ui, message, 0)`. Such a dialog does not end at its last page, and
+    /// its page breaks wait for A by themselves, as Bank's flag 0
+    /// (`00233FA8`, the same code as Bank's `0029749C`).
+    unsafe fn show_still(ui: *mut u8, message: u32) {
+        let show: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe { transmute(SHOW_MESSAGE) };
+        unsafe { show(ui, message, 0) };
+    }
+
+    /// The shared UI's own string object (`ui + 0x8C`), in which "show a
+    /// message" hands its text to the dialog (`0019B57C`); `(context,
+    /// string)` hands a changed string to the dialog again, the call "show
+    /// a message" ends its text set-up with (`0019C7D4`, at `0019B5B0`);
+    /// `(context)` is one frame of a dialog (`0019B4BC`, the same code as
+    /// Bank's `001d6600`).
+    const UI_STRING: usize = 0x8c;
+    const DIALOG_TEXT: usize = 0x0019_c7d4;
+    const DIALOG_POLL: usize = 0x0019_b4bc;
+    /// The original's message `0x27`, the start screen's line: "Press HOME to
+    /// return to the HOME Menu". One line in every language of the original.
+    const HOME_NOTICE: u32 = 0x27;
+    /// The longest line about the HOME Menu with its label and its numbers
+    /// that is carried from one message to the other: the line has 11 to 42
+    /// units in the ten languages, as Bank's.
+    const HOME_ROOM: usize = 128;
+    /// The next load of the failure message is kept whole (`whole`), for
+    /// the error screen's first part.
+    static WHOLE: AtomicBool = AtomicBool::new(false);
+
+    /// Whether the failure message being loaded is the error screen's, which
+    /// keeps its first part (`stop`).
+    pub fn whole() -> bool {
+        WHOLE.load(Ordering::Relaxed)
+    }
+
+    /// The screen the patch ends on when nothing can go on, as Bank's
+    /// (`bank_common::ui::stop`): one dialog that does not end, the first
+    /// part of the failure message `0x0B` ("The server did not receive the
+    /// data."), and after A the line about the HOME Menu with `label` on its
+    /// second line and the two numbers on its third. Both are the
+    /// original's, loaded into the UI's string object by "show a message":
+    /// first the line, which is copied out, then the failure message, which
+    /// is cut and given the line as its next page, and handed to the dialog
+    /// again. Without room for the label the numbers go alone, without room
+    /// for the page the first part stays alone.
+    /// # Safety
+    /// `ui` is the live shared UI, on the main thread, with no other dialog
+    /// shown.
+    pub unsafe fn stop(
+        ui: *mut u8,
+        label: &Label,
+        first: u32,
+        second: u32,
+    ) -> Result<(), Unavailable> {
+        let (context, object) = unsafe {
+            (
+                shared::context(ui).ok_or(Unavailable)?,
+                follow(ui, UI_STRING).ok_or(Unavailable)?,
+            )
+        };
+        let mut home = [0u16; HOME_ROOM];
+        let mut home_len = 0;
+        unsafe { show_still(ui, HOME_NOTICE) };
+        if let Ok(Some(Text { room, len, .. })) = unsafe { shared::text(object) } {
+            if len < HOME_ROOM {
+                home[..len].copy_from_slice(&room[..len]);
+                home_len =
+                    numbers::put(&mut home, len, label.units(), first, second).unwrap_or(len);
+            }
+        }
+        WHOLE.store(true, Ordering::Relaxed);
+        unsafe { show_still(ui, MESSAGE_FAILURE) };
+        WHOLE.store(false, Ordering::Relaxed);
+        let Ok(Some(Text {
+            object: text,
+            room,
+            len,
+        })) = (unsafe { shared::text(object) })
+        else {
+            return Ok(());
+        };
+        let mut len = message::cut(&room[..len]);
+        if home_len != 0 {
+            len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
+        }
+        unsafe {
+            shared::end(text, room, len);
+            let hand: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(DIALOG_TEXT);
+            hand(context, text);
+        }
+        Ok(())
+    }
+
+    /// One frame of the error screen's dialog: only kept alive, as Bank's
+    /// task keeps its own; its pages turn inside the dialog.
+    /// # Safety
+    /// As `stop`, once the screen is up.
+    pub unsafe fn keep_dialog(ui: *mut u8) {
+        if let Some(context) = unsafe { shared::context(ui) } {
+            let poll: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(DIALOG_POLL) };
+            unsafe { poll(context) };
+        }
+    }
+
+    /// The text file of the original's common server messages, and its
+    /// message 0: "The SD card is full." and, on a line of its own, "You
+    /// can't download data." Its first line is a sentence of its own in all
+    /// ten languages.
+    const SERVER_MESSAGES: u32 = 26;
+    const SD_FULL: u32 = 0;
+
+    /// Loads the first line of message 0 of text file 26, "The SD card is
+    /// full.", into `string`, where "show a message" would have loaded its
+    /// message from `messages`: the file is opened on the heap `messages`
+    /// was made on (`+4`, `001DFB24`) as the original opens a screen's own
+    /// (`patch_common::ui::with_messages`). `None`, with nothing loaded, if
+    /// it cannot be opened.
+    /// # Safety
+    /// The arguments are those of the original's load (`0019B578`).
+    pub unsafe fn sd_full(messages: *mut u8, string: *mut u8) -> Option<u32> {
+        let heap = unsafe { follow(messages, 4) }?;
+        let loaded = unsafe {
+            shared::with_messages::<Transporter15, _>(heap, SERVER_MESSAGES, |file| {
+                load_message(file, SD_FULL, string)
+            })
+        }?;
+        unsafe { shared::keep_first_line(string) };
+        Some(loaded)
     }
 
     /// Starts the general loading panel on `ui` with the text of the game
