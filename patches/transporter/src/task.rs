@@ -22,6 +22,9 @@ pub const TASK_LIST: u32 = 0x002e_6618;
 pub const TASK_READ: u32 = 0x002e_66b8;
 pub const TASK_BANK: u32 = 0x002e_6970;
 pub const TASK_QUESTION: u32 = 0x002e_67c4;
+/// Task 0xE, the original's offer to restore a session the server could not
+/// finish (update `00243AF4`), built by factory case `0019D45C`.
+pub const TASK_RESTORE: u32 = 0x002e_656c;
 /// Constructor 0010D8EC installs this at 0010D8FC; startup stores the
 /// constructed object at manager + 0xCC (0010624C).
 pub const BANK_VTABLE: u32 = 0x002e_6dd0;
@@ -45,6 +48,9 @@ pub const TASK_UI: usize = 0x34;
 /// The shared UI of the transfer task, whose closing and failure messages
 /// it shows (`0024A2A8`, `0024A5AC`).
 pub const TRANSFER_UI: usize = 0x38;
+/// The shared UI of the restore task, set by its set-up (`00244464`), on
+/// which it asks its question.
+pub const RESTORE_UI: usize = 0x3c;
 
 /// Refuses HOME and sleep, or lets them through again
 /// (`patch_common::home`).

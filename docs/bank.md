@@ -248,6 +248,7 @@ Bank checks the chosen game's save when it loads it, as the game itself does: ev
 | What you see | Likely cause |
 | --- | --- |
 | Bank does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Bank is not version 1.5. |
+| "Your communication with Poké Transporter did not complete correctly…" at START. | An interrupted Save and Quit that only you can settle, in Poké Transporter ([above](#a-save-left-to-transporter)). |
 | "Press HOME to return to the HOME Menu" with two numbers under it. | An error; the numbers say where (below). |
 
 An error ends this run of Bank. Stored data is kept. Poké Transporter shows the same screen, with the same numbers, for an error of its patch and for Bank's data it cannot open or finds damaged (`3`, `5`), which Bank could not resolve either ([transporter.md](transporter.md#troubleshooting)). Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.

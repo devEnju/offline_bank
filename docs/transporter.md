@@ -58,6 +58,19 @@ Transporter never creates or deletes any of Bank's files (on the SD card it crea
 
 **Bank and Transporter belong together.** A Bank that was last used with an earlier release may keep its transport box in another form. This Transporter then refuses, and the Transporter of that release refuses with a converted Bank. Update both, after converting the Bank with the migration that ships with the release that changed the files.
 
+### A save left to Transporter
+
+When Bank says "Your communication with Poké Transporter did not complete correctly during your last session. Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.", a Save and Quit was interrupted in a way only you can settle ([bank.md](bank.md#a-save-left-to-transporter)). Press START in Transporter. After the checking screen it asks, with the original's Yes and No:
+
+> You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?
+
+| Answer | Bank afterwards |
+| --- | --- |
+| Yes | Its boxes from before the interrupted session |
+| No | Its boxes from after it |
+
+Look in your game before you answer; [bank.md](bank.md#a-save-left-to-transporter) says what to look for, and when to back up first. After the answer "Communication in your last session did not complete correctly. Performing cleanup process now..." stands with its spinner, then Transporter's closing screen, then its start screen; Bank opens normally again. Nothing is changed until you answer: press HOME and close Transporter to decide later.
+
 ## Choosing the language of the games
 
 The game list shows the games of **one language** only: the cartridge, the saves on the SD card and the Virtual Console titles alike. The original language screen, reached from the start screen, chooses that language. It no longer changes the language of the screens, which stay in the console's language.
@@ -131,6 +144,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | --- | --- |
 | Transporter does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Transporter is not version 1.5. |
 | START always answers "Pokémon remains in the Transport Box". | Open Bank, empty the transport box, and Save and Quit. |
+| START asks "You can try restoring your data, but you may lose the Pokémon currently being transported…". | Bank left an interrupted Save and Quit to you ([above](#a-save-left-to-transporter)). Look in your game before you answer. |
 | START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, check that Bank and Transporter are from the same release, and otherwise please report it. Where Transporter cannot open Bank's data at all, it shows the error screen instead. |
 | "Please confirm that your Game Card is properly inserted" after confirming a transfer. | The cartridge's card was not inserted. The source game and Bank are unchanged; transfer again. |
 | "No compatible Pokémon Game Card detected" after confirming a transfer. | The cartridge was taken out after the delivery. The Pokémon are in Bank's transport box and still in the game: look in Bank before you transfer them again. |

@@ -1,5 +1,6 @@
-//! The worker of the Transporter patch (`patch_common::worker`): the check
-//! and the delivery, on Bank's files as the delivery rules reach them. The
+//! The worker of the Transporter patch (`patch_common::worker`): the check,
+//! the delivery and the answer to the restore question, on Bank's files as
+//! the delivery rules reach them. The
 //! main thread hands the delivery the transport box in the staging buffer;
 //! the worker touches no object of the original.
 //!
@@ -11,7 +12,8 @@ use crate::task::RECORDS_LEN;
 use bank_common::{fault::Fault, worker::WorkerError};
 use offline_core::{
     sections::TRANSPORT_SLOTS,
-    transport::{DeliverError, Refusal},
+    transport::{DeliverError, Refusal, SettleError},
+    RecoveryDecision,
 };
 use patch_common::fs_result::lack_of_space;
 
@@ -24,6 +26,9 @@ pub enum Job {
     Check,
     /// Deliver the transport box in the staging buffer.
     Deliver,
+    /// Settle the save in progress Bank left to the restore question, to
+    /// the snapshot the answer chose (`transport::settle`).
+    Settle(RecoveryDecision),
 }
 /// What a job found. Which message the screen shows for it is the hooks'
 /// (`ui::refusal_message`, `ui::shown`).
@@ -40,6 +45,8 @@ pub enum Reply {
     /// Bank holds none, for certain, as the SD card had no room for its
     /// write (`lack_of_space`), and the Pokémon stay in the game.
     NoRoom,
+    /// The save in progress is settled as the answer chose.
+    Settled,
 }
 
 /// The second number of `Fault::Delivery` for a delivery that did not
@@ -98,6 +105,25 @@ pub fn delivery_reply(
         (Err(DeliverError::Write), _) => Err(Fault::Delivery.with(NOT_WRITTEN)),
         (Err(DeliverError::Layout), _) => Err(Fault::Delivery.with(NOT_ONE_BOX)),
         (Err(DeliverError::Empty), _) => Err(Fault::Delivery.with(NO_POKEMON)),
+    }
+}
+
+/// The answer's reply from what `transport::settle` answered, with the
+/// card's result as the second number, and `unreachable` as for
+/// `check_reply`. Every failure is the error screen of Bank's own failure
+/// to settle a save (`Fault::JournalRecovery`), or of Bank's files that do
+/// not open or a journal no power cut leaves, as Bank shows them; the save
+/// stays as it was, for the next START.
+pub fn settle_reply(
+    settled: Result<(), SettleError<u32>>,
+    unreachable: Option<u32>,
+) -> Result<Reply, WorkerError> {
+    match (settled, unreachable) {
+        (Ok(()), _) => Ok(Reply::Settled),
+        (Err(SettleError::Refused(Refusal::Damaged)), _) => Err(Fault::StorageInvalid.with(0)),
+        (Err(SettleError::Refused(_)), Some(result)) => Err(Fault::StorageOpen.with(result)),
+        (Err(SettleError::Io(result)), _) => Err(Fault::JournalRecovery.with(result)),
+        (Err(_), _) => Err(Fault::JournalRecovery.with(0)),
     }
 }
 
@@ -165,6 +191,16 @@ mod arm {
                     };
                     delivery_reply(delivered, files.unreachable().map(fs::Error::diagnostic))
                 }
+                Job::Settle(decision) => {
+                    let settled =
+                        transport::settle(&mut files, decision).map_err(|error| match error {
+                            SettleError::Io(error) => SettleError::Io(error.diagnostic()),
+                            SettleError::Refused(refusal) => SettleError::Refused(refusal),
+                            SettleError::Changed => SettleError::Changed,
+                            SettleError::Write => SettleError::Write,
+                        });
+                    settle_reply(settled, files.unreachable().map(fs::Error::diagnostic))
+                }
             }
         }
     }
@@ -184,6 +220,9 @@ pub enum Checked {
     Pending,
     /// Bank can take a delivery: the search goes on.
     Go,
+    /// Bank left its save in progress to the restore question: the search
+    /// ends, and the restore task asks it.
+    Ask,
     /// The original's message to show instead (`ui`).
     Refused(u32),
     /// The worker cannot be used: the error screen.
@@ -195,6 +234,7 @@ pub fn checked(answer: Answer) -> Checked {
     match answer {
         None => Checked::Pending,
         Some(Ok(Reply::Ready)) => Checked::Go,
+        Some(Ok(Reply::Refused(Refusal::Asked))) => Checked::Ask,
         Some(Ok(Reply::Refused(refusal))) => Checked::Refused(crate::ui::refusal_message(refusal)),
         Some(Ok(_)) => Checked::Failed(NOT_ITS_REPLY),
         Some(Err(error)) => Checked::Failed(error),
@@ -225,6 +265,28 @@ pub fn delivered(answer: Answer) -> Delivered {
         Some(Ok(Reply::NoRoom)) => Delivered::NoRoom,
         Some(Ok(_)) => Delivered::Failed(NOT_ITS_REPLY),
         Some(Err(error)) => Delivered::Failed(error),
+    }
+}
+
+/// What the answer to the restore question leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    /// Not answered yet.
+    Pending,
+    /// Settled: the loading screen ends once it has stood, and the
+    /// disconnect task follows.
+    Done,
+    /// The error screen.
+    Failed(WorkerError),
+}
+
+/// The answer's reply.
+pub fn settled(answer: Answer) -> Settled {
+    match answer {
+        None => Settled::Pending,
+        Some(Ok(Reply::Settled)) => Settled::Done,
+        Some(Ok(_)) => Settled::Failed(NOT_ITS_REPLY),
+        Some(Err(error)) => Settled::Failed(error),
     }
 }
 
@@ -354,6 +416,63 @@ mod tests {
             Ok(Reply::NoRoom)
         );
         assert_eq!(delivery_reply(Ok(()), None), Ok(Reply::Delivered));
+    }
+
+    #[test]
+    fn a_save_left_to_the_question_ends_the_search_and_its_answer_settles_it() {
+        assert_eq!(
+            check_reply(Err(Refusal::Asked), None),
+            Ok(Reply::Refused(Refusal::Asked))
+        );
+        assert_eq!(
+            checked(Some(Ok(Reply::Refused(Refusal::Asked)))),
+            Checked::Ask
+        );
+        // Bank's files that do not open are Bank's error, as for the check.
+        assert_eq!(
+            check_reply(Err(Refusal::Asked), Some(7)),
+            Err(Fault::StorageOpen.with(7))
+        );
+        assert_eq!(settle_reply(Ok(()), None), Ok(Reply::Settled));
+        assert_eq!(settled(Some(Ok(Reply::Settled))), Settled::Done);
+        assert_eq!(settled(None), Settled::Pending);
+        // A reply of another job is none of the answer's.
+        assert_eq!(
+            settled(Some(Ok(Reply::Ready))),
+            Settled::Failed(NOT_ITS_REPLY)
+        );
+        // Every failure is the error screen; the save stays for the next
+        // START.
+        for (error, unreachable, expected) in [
+            (
+                SettleError::Io(0xd900_458b),
+                None,
+                Fault::JournalRecovery.with(0xd900_458b),
+            ),
+            (SettleError::Changed, None, Fault::JournalRecovery.with(0)),
+            (SettleError::Write, None, Fault::JournalRecovery.with(0)),
+            (
+                SettleError::Refused(Refusal::Damaged),
+                None,
+                Fault::StorageInvalid.with(0),
+            ),
+            (
+                SettleError::Refused(Refusal::NotReady),
+                Some(7),
+                Fault::StorageOpen.with(7),
+            ),
+            (
+                SettleError::Refused(Refusal::NotReady),
+                None,
+                Fault::JournalRecovery.with(0),
+            ),
+        ] {
+            assert_eq!(settle_reply(Err(error), unreachable), Err(expected));
+            assert_eq!(
+                settled(Some(settle_reply(Err(error), unreachable))),
+                Settled::Failed(expected)
+            );
+        }
     }
 
     #[test]

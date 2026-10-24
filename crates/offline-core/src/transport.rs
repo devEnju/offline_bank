@@ -14,6 +14,9 @@
 //!   for the copy to write, and holds to what it says, but not the box.
 //! - **Bank** shows the copy the journal names. If a delivery waits, the
 //!   box in use is empty, and the delivery becomes the box (`on_load`).
+//! - A save in progress Bank left to **Transporter's question**
+//!   (`Metadata::ask`) is refused at START (`Refusal::Asked`), and the
+//!   answer settles it (`settle`).
 //! - On Save and Quit Bank writes the box into the copy `Save::next_mover`
 //!   gives: the one that is not in use, or, while a delivery waits there,
 //!   over the empty box in use, so that the delivery outlasts a save that is
@@ -25,7 +28,7 @@ use crate::{
     pair::{Pair, PairError},
     sections::{occupied, RECORD_SIZE, TRANSPORT_SIZE, TRANSPORT_SLOTS},
     store::{may_deliver, Head, Journal, StoreError},
-    Metadata, Part, Phase, Slot, Storage,
+    Metadata, Part, Phase, RecoveryDecision, Slot, Storage,
 };
 
 /// Length of one copy of the transport file.
@@ -83,6 +86,9 @@ pub enum Refusal {
     /// Both journal records are damaged, or they differ with one sequence:
     /// no power cut leaves that, and Bank cannot open the Bank either.
     Damaged,
+    /// Bank left its save in progress to Transporter's question
+    /// (`Metadata::ask`), which `settle` answers.
+    Asked,
 }
 
 /// What the journal says about a delivery: the record it would follow, and
@@ -98,6 +104,9 @@ fn head<F: Files>(files: &mut F) -> Result<(Head, Slot), Refusal> {
     };
     if !journal.readable() {
         return Err(Refusal::NotReady);
+    }
+    if head.metadata().ask {
+        return Err(Refusal::Asked);
     }
     let Phase::Clean(current) = head.phase() else {
         return Err(Refusal::NotReady);
@@ -134,6 +143,50 @@ pub enum DeliverError<E> {
     /// journal does not say whether: Bank may hold the delivery. Every other
     /// error leaves none.
     Unconfirmed,
+}
+
+/// Why Transporter's answer did not settle the save in progress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettleError<E> {
+    Io(E),
+    /// The journal is not there, or both records are damaged.
+    Refused(Refusal),
+    /// The record in force leaves no save to the question any more, or it
+    /// changed while it was answered.
+    Changed,
+    /// The record could not be written for another reason.
+    Write,
+}
+
+/// Settles the save in progress Bank left to Transporter's question, to the
+/// snapshot of `decision`: the answer Yes keeps the save before, No makes
+/// the save after current. Only the journal is written, the record Bank's
+/// reconciliation writes for that snapshot (`Journal::settle`).
+pub fn settle<F: Files>(
+    files: &mut F,
+    decision: RecoveryDecision,
+) -> Result<(), SettleError<<F::Storage as Storage>::Error>> {
+    let journal = files
+        .journal()
+        .ok_or(SettleError::Refused(Refusal::NotReady))?;
+    let mut journal = Journal::new(journal);
+    let head = match journal.load() {
+        Ok(Some(head)) => head,
+        Ok(None) => return Err(SettleError::Refused(Refusal::NotReady)),
+        Err(StoreError::Io(error)) => return Err(SettleError::Io(error)),
+        Err(StoreError::NoValidMetadata | StoreError::ConflictingMetadata) => {
+            return Err(SettleError::Refused(Refusal::Damaged))
+        }
+        Err(_) => return Err(SettleError::Write),
+    };
+    journal
+        .settle(&head, decision)
+        .map(|_| ())
+        .map_err(|error| match error {
+            StoreError::Io(error) => SettleError::Io(error),
+            StoreError::StaleHead | StoreError::NoPendingTransfer => SettleError::Changed,
+            _ => SettleError::Write,
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -417,6 +470,54 @@ mod tests {
         }
         // While a save is in progress the save before it is in force.
         assert_eq!(on_load(&in_progress()).source.slot, Slot::A);
+    }
+
+    #[test]
+    fn a_save_left_to_the_question_is_refused_at_start_and_settled_by_the_answer() {
+        let asked = Metadata {
+            ask: true,
+            ..in_progress()
+        };
+        let Phase::Prepared(pending) = asked.phase else {
+            unreachable!()
+        };
+        for (decision, current) in [
+            (RecoveryDecision::KeepBefore, pending.before),
+            (RecoveryDecision::CommitAfter, pending.after),
+        ] {
+            let mut card = card(Some(asked));
+            assert_eq!(check(&mut card), Err(Refusal::Asked));
+            let (_, mover) = card.bytes();
+            assert_eq!(settle(&mut card, decision), Ok(()));
+            // Only the journal is written: the record Bank's own
+            // reconciliation writes, with nothing left to the question.
+            let now = record_in_force(&mut card);
+            assert_eq!(now.phase, Phase::Clean(current));
+            assert!(!now.ask);
+            assert_eq!(now.sequence, asked.sequence + 1);
+            assert_eq!(card.bytes().1, mover);
+            // Once settled, Bank's other rules hold again.
+            assert_eq!(check(&mut card), Ok(()));
+        }
+        // A save Bank settles itself is not the question's.
+        let mut card = card(Some(in_progress()));
+        let before = card.bytes();
+        assert_eq!(check(&mut card), Err(Refusal::NotReady));
+        assert_eq!(
+            settle(&mut card, RecoveryDecision::KeepBefore),
+            Err(SettleError::Changed)
+        );
+        assert!(card.bytes() == before);
+        // Nor is a Bank at rest, or none.
+        let mut card = self::card(Some(clean(Slot::A, 0, None)));
+        assert_eq!(
+            settle(&mut card, RecoveryDecision::KeepBefore),
+            Err(SettleError::Changed)
+        );
+        assert_eq!(
+            settle(&mut self::card(None), RecoveryDecision::KeepBefore),
+            Err(SettleError::Refused(Refusal::NotReady))
+        );
     }
 
     #[test]

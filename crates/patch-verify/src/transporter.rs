@@ -25,7 +25,7 @@ pub static PROGRAM: Program = Program {
     startup_call: 0x00103D9C,
 };
 
-const EDITS: [Edit; 56] = [
+const EDITS: [Edit; 59] = [
     (0x00103D9C, 0xEB000228, Bl(Sym("patch_bootstrap_startup"))),
     (0x00242EF8, 0xEBFFFF28, Bl(Sym("transporter_next"))),
     (
@@ -53,6 +53,9 @@ const EDITS: [Edit; 56] = [
     (0x002E697C, 0x00248C68, Ptr(Sym("transporter_bank"))),
     (0x002E67D0, 0x00247304, Ptr(Sym("transporter_question"))),
     (0x002E6A9C, 0x0024A0C4, Ptr(Sym("transporter_transfer"))),
+    (0x002E6578, 0x00243AF4, Ptr(Sym("transporter_restore"))),
+    (0x00244470, 0xEBFD5BB2, Raw(0xE320F000)),
+    (0x0024447C, 0xEBFD609F, Raw(0xE320F000)),
     (0x00246208, 0xEBFD5552, Raw(0xE3A00001)),
     (0x00246278, 0xEBFD5536, Raw(0xE3A00001)),
     (0x002462E8, 0xEBFD551A, Raw(0xE3A00001)),
@@ -144,7 +147,7 @@ const EDITS: [Edit; 56] = [
 /// before SVC 08. Checked native objects: the factory's bound and case
 /// targets, constructor vtable literals, the update slots that are no edits,
 /// and the Bank object's construction at +0xCC.
-const RELIES: [(u32, u32); 30] = [
+const RELIES: [(u32, u32); 32] = [
     (0x001E3FC8, 0xE3550020),
     (0x001E3FD0, 0x92850020),
     (0x001E3FD8, 0x9A000008),
@@ -162,6 +165,7 @@ const RELIES: [(u32, u32); 30] = [
     (0x0019CF24, 0x0019D2C8),
     (0x0019CF2C, 0x0019D360),
     (0x0019CF30, 0x0019D3B4),
+    (0x0019CF38, 0x0019D45C),
     (0x0019D620, 0x002E6680),
     (0x0019D638, 0x002E6A90),
     (0x0019D63C, 0x002E6774),
@@ -169,6 +173,7 @@ const RELIES: [(u32, u32); 30] = [
     (0x0019D644, 0x002E66B8),
     (0x0019D64C, 0x002E6970),
     (0x0019D650, 0x002E67C4),
+    (0x0019D658, 0x002E656C),
     (0x002E668C, 0x0024538C),
     (0x002E6624, 0x002445A4),
     (0x0010DA38, 0x002E6DD0),
@@ -182,8 +187,8 @@ const RELIES: [(u32, u32); 30] = [
 /// whose languages the hooks copied (39 rows of three words at 002AFE0C, one
 /// word each at 002C2B1C). The factory, the Bank constructor and the
 /// vtables' first three words stay native too, as do the update slots that
-/// are no edits.
-const PROTECTED: [(u32, u32); 15] = [
+/// are no edits, and the restore task's update, which its entry runs.
+const PROTECTED: [(u32, u32); 17] = [
     (0x00242BA0, 0x268),
     (0x002AFE0C, 39 * 12),
     (0x002C2B1C, 39 * 4),
@@ -198,6 +203,8 @@ const PROTECTED: [(u32, u32); 15] = [
     (0x002E66B8, 0xC),
     (0x002E6970, 0xC),
     (0x002E67C4, 0xC),
+    (0x002E656C, 0xC),
+    (0x00243AF4, 0x570),
     (0x002E6DD0, 0x18),
 ];
 
@@ -209,7 +216,7 @@ pub fn expectation() -> Expectation {
         relies: RELIES.to_vec(),
         protected: PROTECTED.to_vec(),
         router: "transporter_next",
-        entries: 32,
+        entries: 33,
         menu_edits: 0,
         extra,
         checks: &[

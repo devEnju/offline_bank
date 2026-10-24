@@ -118,9 +118,16 @@ pub fn refusal_message(refusal: Refusal) -> u32 {
         // converted, or one whose next save replaces the file. A damaged
         // journal is the error screen (`storage_worker::check_reply`) and
         // never comes here; were it to, Bank says what is wrong.
-        Refusal::NotReady | Refusal::Damaged => MESSAGE_OPEN_BANK,
+        // A save left to the restore question never comes here
+        // (`storage_worker::checked`); were it to, Bank says what to do.
+        Refusal::NotReady | Refusal::Damaged | Refusal::Asked => MESSAGE_OPEN_BANK,
     }
 }
+
+/// The original's message 4, the loading text of its restore: "Communication
+/// in your last session did not complete correctly. Performing cleanup
+/// process now..."
+pub const MESSAGE_CLEANUP: u32 = 4;
 
 /// An object of the original a screen needs is not there, or not made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -348,6 +355,27 @@ mod native {
         }?;
         unsafe { shared::keep_first_line(string) };
         Some(loaded)
+    }
+
+    /// The text of a loading panel: `0019C700(ui, message)` shows the text
+    /// frame and puts message `message` of text file 23 into it, as the
+    /// restore task does for its own panel (`00243FCC`).
+    const PANEL_TEXT: usize = 0x0019_c700;
+
+    /// Starts the general loading panel on `ui` with the restore's text,
+    /// "Communication in your last session did not complete correctly.
+    /// Performing cleanup process now..." (`MESSAGE_CLEANUP`), as the
+    /// original's restore task starts it after its last Yes
+    /// (`00243FBC`..`00243FCC`).
+    /// # Safety
+    /// `ui` is the live shared UI, on the main thread.
+    pub unsafe fn cleanup(ui: *mut u8) {
+        unsafe {
+            let start: unsafe extern "aapcs" fn(*mut u8) = transmute(PANEL_START);
+            start(ui);
+            let text: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(PANEL_TEXT);
+            text(ui, super::MESSAGE_CLEANUP);
+        }
     }
 
     /// Starts the general loading panel on `ui` with the text of the game

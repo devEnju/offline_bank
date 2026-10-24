@@ -93,6 +93,16 @@ const EDITS: &[Edit] = &[
     (0x002e_697c, 0x0024_8c68, Entry("transporter_bank")),
     (0x002e_67d0, 0x0024_7304, Entry("transporter_question")),
     (0x002e_6a9c, 0x0024_a0c4, Entry("transporter_transfer")),
+    // The restore task's update in its vtable (was: 00243AF4), entered only
+    // for a save in progress Bank left to its question. The entry asks the
+    // first question of the original and settles the save as the answer
+    // chose, behind the restore's own loading panel.
+    (0x002e_6578, 0x0024_3af4, Entry("transporter_restore")),
+    // The restore task's set-up, the start of its loading panel and of its
+    // text (was: bl 0019B340, bl 0019C700): the question comes first, and
+    // the entry puts the panel up once it is answered.
+    (0x0024_4470, 0xebfd_5bb2, Raw(0xe320_f000)),
+    (0x0024_447c, 0xebfd_609f, Raw(0xe320_f000)),
     // Reading the chosen game, the 1.5 s before each of its errors: a
     // damaged save (state 0xB), no save (0xC), no Game Card (0xD) (was:
     // bl 0019B758 with 1500 ms). An error ends the panel as soon as it is
@@ -272,16 +282,16 @@ mod tests {
     use crate::profile::sample::{at, branch_target};
 
     #[test]
-    fn fifty_six_words_and_thirty_two_entry_functions() {
-        assert_eq!(PROFILE.regions(), 57);
-        assert_eq!(PROFILE.entries().len(), 32);
-        // Every edit lies in the original text or, for the five updates in
+    fn fifty_nine_words_and_thirty_three_entry_functions() {
+        assert_eq!(PROFILE.regions(), 60);
+        assert_eq!(PROFILE.entries().len(), 33);
+        // Every edit lies in the original text or, for the six updates in
         // their vtables, its read-only data, which ends where its data
         // begins (002EC000).
         assert!(EDITS
             .iter()
             .all(|(address, _, _)| *address < BOOTSTRAP_ADDRESS
-                || (0x002e_6618..0x002e_c000).contains(address)));
+                || (0x002e_6578..0x002e_c000).contains(address)));
     }
 
     #[test]

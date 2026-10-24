@@ -15,7 +15,7 @@ use transporter_payload::language::{LIST_CAPACITY, VC_LANGUAGES, VC_TITLE_LANGUA
 use transporter_payload::sdsave::GAMES;
 use transporter_payload::task::{
     BANK_VTABLE, TASK_BANK, TASK_COUNT, TASK_LANGUAGE, TASK_LIST, TASK_QUESTION, TASK_READ,
-    TASK_SEARCH, TASK_TRANSFER,
+    TASK_RESTORE, TASK_SEARCH, TASK_TRANSFER,
 };
 
 pub const TITLE_ID: u64 = 0x0004_0000_000c_9c00;
@@ -96,7 +96,7 @@ pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
 /// edits; the others name their original words. Bank data comes from
 /// constructor 0010D8EC: it installs BANK_VTABLE and startup stores its
 /// result at +0xCC.
-pub(crate) const NATIVE_OBJECTS: [(u32, u32); 21] = [
+pub(crate) const NATIVE_OBJECTS: [(u32, u32); 23] = [
     (0x0019_cee8, 0xe351_0000 | TASK_COUNT),
     (0x0019_cf04, 0x0019_cf8c),
     (0x0019_cf18, 0x0019_d1a4),
@@ -105,6 +105,7 @@ pub(crate) const NATIVE_OBJECTS: [(u32, u32); 21] = [
     (0x0019_cf24, 0x0019_d2c8),
     (0x0019_cf2c, 0x0019_d360),
     (0x0019_cf30, 0x0019_d3b4),
+    (0x0019_cf38, 0x0019_d45c),
     (0x0019_d620, TASK_LANGUAGE),
     (0x0019_d638, TASK_TRANSFER),
     (0x0019_d63c, TASK_SEARCH),
@@ -112,6 +113,7 @@ pub(crate) const NATIVE_OBJECTS: [(u32, u32); 21] = [
     (0x0019_d644, TASK_READ),
     (0x0019_d64c, TASK_BANK),
     (0x0019_d650, TASK_QUESTION),
+    (0x0019_d658, TASK_RESTORE),
     (TASK_LANGUAGE + 0xc, 0x0024_538c),
     (TASK_LIST + 0xc, 0x0024_45a4),
     (0x0010_da38, BANK_VTABLE),

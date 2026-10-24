@@ -90,6 +90,14 @@ Choose **(before)**. “Play and save” below means making a new save in the ga
 | 3 | Withdraw one | Play and save, then reopen. | Pokémon remains in Bank and is absent from the game. |
 | 4 | Deposit one, withdraw one | Play and save, then reopen. | "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.", then the title; START shows it again. Remove the game and START: the different-copy notice instead. Put it back and START: the message again. |
 
+Then, from the state of case 4:
+
+| Case | Step | Expected |
+| --- | --- | --- |
+| 4a | Open Transporter and START. On the question press HOME and close Transporter; open it and START again. | The checking screen, then "You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?" with Yes and No, without "This is your final warning…". HOME works on it; the second START asks again. |
+| 4b | Answer Yes. Open Bank and the game. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for about 1.5 s, the closing screen, the title. Bank opens: the withdrawn Pokémon is in Bank, the deposited one in the game; nothing lost. |
+| 4c | Repeat case 4 from the backup, answer No. Open Bank. | The same screens. Bank opens with the deposited Pokémon, which is also in the game; the withdrawn Pokémon is lost. |
+
 **Case 4 leaves a save that only an answer can settle. Use disposable Pokémon.**
 
 ### The cartridge is absent

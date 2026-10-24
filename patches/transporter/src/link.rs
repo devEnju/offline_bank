@@ -23,6 +23,7 @@ mod linked {
         transporter_bank,
         transporter_question,
         transporter_transfer,
+        transporter_restore,
         transporter_slot_stub,
         transporter_cart_id_stub,
         transporter_cart_read,
