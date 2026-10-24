@@ -43,6 +43,24 @@ pub struct Disk {
     pub open: usize,
     /// Pairs of files the Transporter patch holds open right now.
     pub visitors: usize,
+    /// The card has no room: a file that is not there cannot be made.
+    pub full: bool,
+}
+
+/// What the simulated card answers an operation it refuses with: whether it
+/// refused for lack of space (`fs::NoRoom`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refused {
+    pub full: bool,
+}
+impl Refused {
+    pub const FAILED: Self = Self { full: false };
+    pub const FULL: Self = Self { full: true };
+}
+impl crate::fs::NoRoom for Refused {
+    fn no_room(&self) -> bool {
+        self.full
+    }
 }
 #[derive(Clone, Default)]
 pub struct Shared(pub Rc<RefCell<Disk>>);
@@ -101,7 +119,7 @@ impl Drop for Handle {
 }
 impl Rest for Handle {
     /// The open unit file is flushed if it holds writes, as on the console.
-    fn rest(&mut self) -> Result<(), ()> {
+    fn rest(&mut self) -> Result<(), Refused> {
         if self.2 != Hold::Bank {
             return Ok(());
         }
@@ -121,7 +139,7 @@ impl Rest for Handle {
     }
 }
 impl Shared {
-    pub(crate) fn tick(&self) -> Result<(), ()> {
+    pub(crate) fn tick(&self) -> Result<(), Refused> {
         let mut disk = self.0.borrow_mut();
         if let Some(budget) = &mut disk.budget {
             if *budget == 0 {
@@ -129,7 +147,7 @@ impl Shared {
                     let lost: Vec<UnitId> = disk.unsynced.iter().copied().collect();
                     disk.unreadable.extend(lost);
                 }
-                return Err(());
+                return Err(Refused::FAILED);
             }
             *budget -= 1;
         }
@@ -148,6 +166,7 @@ impl Shared {
             operations: 0,
             open: 0,
             visitors: 0,
+            full: disk.full,
         })))
     }
     /// A copy that behaves like the console, or like the simple card.
@@ -191,28 +210,31 @@ impl Handle {
     }
 }
 impl Storage for Handle {
-    type Error = ();
-    fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+    type Error = Refused;
+    fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), Refused> {
         self.take_up();
         let units = self.units(at, out.len() as u64);
         let disk = (self.0).0.borrow();
         if units.iter().any(|unit| disk.unreadable.contains(unit)) {
-            return Err(());
+            return Err(Refused::FAILED);
         }
         let file = &disk.files[&(self.1 as u8)];
         out.copy_from_slice(&file[at as usize..at as usize + out.len()]);
         Ok(())
     }
-    fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
+    fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), Refused> {
         self.take_up();
         let units = self.units(at, bytes.len() as u64);
         let [unit] = units[..] else {
             panic!("a write must lie in one unit file");
         };
         if (self.0).0.borrow().unreadable.contains(&unit) {
-            return Err(());
+            return Err(Refused::FAILED);
         }
         if (self.0).0.borrow().absent.contains(&unit) {
+            if (self.0).0.borrow().full {
+                return Err(Refused::FULL);
+            }
             // The first write creates the file; that is a step of its own.
             (self.0).0.borrow_mut().unsynced.insert(unit);
             self.0.tick()?;
@@ -226,12 +248,12 @@ impl Storage for Handle {
         let file = disk.files.get_mut(&(self.1 as u8)).unwrap();
         file[at as usize..at as usize + length].copy_from_slice(&bytes[..length]);
         if cut {
-            Err(())
+            Err(Refused::FAILED)
         } else {
             Ok(())
         }
     }
-    fn sync(&mut self) -> Result<(), ()> {
+    fn sync(&mut self) -> Result<(), Refused> {
         self.take_up();
         self.0.tick()?;
         let file = self.1 as u8;
@@ -242,11 +264,14 @@ impl Storage for Handle {
             .retain(|unit| unit.0 != file);
         Ok(())
     }
-    fn recreate(&mut self, at: u64, length: u64) -> Result<(), ()> {
+    fn recreate(&mut self, at: u64, length: u64) -> Result<(), Refused> {
         self.take_up();
         let unit = self
             .unit(at, length)
             .expect("only a whole unit is recreated");
+        if (self.0).0.borrow().full {
+            return Err(Refused::FULL);
+        }
         self.0.tick()?;
         let mut disk = (self.0).0.borrow_mut();
         let file = disk.files.get_mut(&(self.1 as u8)).unwrap();
@@ -260,7 +285,7 @@ impl Storage for Handle {
 impl Files for Shared {
     type Storage = Handle;
     /// `None` when not one unit file of the container exists.
-    fn open(&mut self, file: FileName) -> Result<Option<Handle>, ()> {
+    fn open(&mut self, file: FileName) -> Result<Option<Handle>, Refused> {
         let disk = self.0.borrow();
         let Some(bytes) = disk.files.get(&(file as u8)) else {
             return Ok(None);
@@ -271,8 +296,11 @@ impl Files for Shared {
         Ok(exists.then(|| Handle::held(self, file)))
     }
     /// Creates the unit files one after the other.
-    fn create(&mut self, file: FileName) -> Result<Handle, ()> {
+    fn create(&mut self, file: FileName) -> Result<Handle, Refused> {
         let count = file.units().len();
+        if self.0.borrow().full {
+            return Err(Refused::FULL);
+        }
         {
             let mut disk = self.0.borrow_mut();
             let old = disk.files.insert(file as u8, vec![0; file.size() as usize]);
@@ -316,33 +344,33 @@ impl Drop for Visitor {
     }
 }
 impl Storage for Visitor {
-    type Error = ();
+    type Error = Refused;
     /// A unit file that is not there is not read (`fs::Split::visit`).
-    fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+    fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), Refused> {
         let units = self.0.units(at, out.len() as u64);
         if units
             .iter()
             .any(|unit| ((self.0).0).0.borrow().absent.contains(unit))
         {
-            return Err(());
+            return Err(Refused::FAILED);
         }
         self.0.read(at, out)
     }
-    fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
+    fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), Refused> {
         let units = self.0.units(at, bytes.len() as u64);
         if units
             .iter()
             .any(|unit| ((self.0).0).0.borrow().absent.contains(unit))
         {
-            return Err(());
+            return Err(Refused::FAILED);
         }
         self.0.write(at, bytes)
     }
-    fn sync(&mut self) -> Result<(), ()> {
+    fn sync(&mut self) -> Result<(), Refused> {
         self.0.sync()
     }
-    fn recreate(&mut self, _: u64, _: u64) -> Result<(), ()> {
-        Err(())
+    fn recreate(&mut self, _: u64, _: u64) -> Result<(), Refused> {
+        Err(Refused::FAILED)
     }
 }
 
@@ -380,6 +408,43 @@ pub fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
         let species = if slot < pokemon { 25 + slot as u16 } else { 0 };
         bytes[at..at + RECORD_SIZE].copy_from_slice(&record(species));
         bytes[TRANSPORT_TAGS.start + slot] = if slot < pokemon { 2 } else { 0 };
+    }
+    bytes
+}
+/// A stored Pokémon of species 133 whose identity is `id`, below 0x1000:
+/// its encryption constant holds it.
+pub fn pokemon(id: u32) -> [u8; RECORD_SIZE] {
+    let mut out = [0u8; RECORD_SIZE];
+    // Bits 13..18 of the key choose the block order; they stay zero.
+    let key = id << 20 | 0x155;
+    out[..4].copy_from_slice(&key.to_le_bytes());
+    let mut seed = key;
+    for index in 0..112 {
+        seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
+        let plain = if index == 0 { 133 } else { 0 };
+        out[8 + index * 2..10 + index * 2]
+            .copy_from_slice(&(plain ^ (seed >> 16) as u16).to_le_bytes());
+    }
+    out
+}
+/// A body whose boxes hold exactly `boxed`, each at (box, slot), and whose
+/// transport box holds `transport` Pokémon; `fill` marks the rest.
+pub fn with_boxes(
+    fill: u8,
+    boxed: &[(usize, usize, [u8; RECORD_SIZE])],
+    transport: usize,
+) -> Vec<u8> {
+    let mut bytes = body(fill, 0x44, transport);
+    let place = |index: usize, slot: usize| 0x17C + index * 0x1B56 + slot * RECORD_SIZE;
+    for index in 0..100 {
+        for slot in 0..30 {
+            let at = place(index, slot);
+            bytes[at..at + RECORD_SIZE].copy_from_slice(&record(0));
+        }
+    }
+    for (index, slot, record) in boxed {
+        let at = place(*index, *slot);
+        bytes[at..at + RECORD_SIZE].copy_from_slice(record);
     }
     bytes
 }

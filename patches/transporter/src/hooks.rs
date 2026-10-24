@@ -2,30 +2,41 @@
 //! assembly stubs of the sites that need one. The original task calls an
 //! entry every frame until it answers. The file work runs on the patch's one
 //! worker thread (`storage_worker`), which the first START starts; the main
-//! thread never waits for it.
+//! thread never waits for it. What is not expected ends the session on the
+//! error screen, as in Bank (`Runtime::report_failure`).
 
 use crate::{
     cart, navigation,
     panel::{self, Panel},
     program::Transporter15,
+    sdcard::WriteFault,
     storage_worker::{
-        checked, delivered, Checked, Failed, Job, Reply, TransporterRequests, TransporterWorker,
+        checked, delivered, Checked, Delivered, Job, Reply, TransporterRequests, TransporterWorker,
         DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING,
     },
     task::*,
-    ui::{self, from_second_page, loading, stop_loading, MESSAGE_OPEN_BANK},
+    ui::{self, loading, stop_loading, Chosen, Shown, MESSAGE_FAILURE, MESSAGE_NO_CARD},
 };
-use core::{mem::transmute, slice};
+use bank_common::{fault::Fault, worker::WorkerError};
+use core::{
+    mem::transmute,
+    slice,
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+};
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
     exclusive::Exclusive,
     native::{follow, read_word, write_word, Ended},
+    numbers::Label,
     spinner::{self, Spinner},
     worker::{Polled, Requests},
 };
 
 /// What the version line says behind "Ver. 1.5".
 const VERSION_SUFFIX: &[u8] = b"-offline";
+/// What the error screen says above its two numbers: the version, as
+/// Bank's offline patch says it (`patch_common::numbers::Label`).
+const LABEL: Label = Label::of(b"");
 /// A task's state, and the transfer's flag that it is to end (set by
 /// `0025CDC0`; its update then selects sub-state `0x14`, `0024A0CC`).
 const TASK_STATE: usize = 0x10;
@@ -36,9 +47,12 @@ const LIST_BEGAN: usize = 0x70;
 
 /// The original updates the entries replace in their vtables and run
 /// behind their own work: the game search, reading the chosen game, the
-/// question and the transfer.
+/// Bank task, the question and the transfer.
 const SEARCH_UPDATE: usize = 0x0024_6f04;
 const READ_UPDATE: usize = 0x0024_55d0;
+const BANK_UPDATE: usize = 0x0024_8c68;
+/// The Bank task's shared UI, on which it shows its messages (`00248E78`).
+const BANK_UI: usize = 0x38;
 const QUESTION_UPDATE: usize = 0x0024_7304;
 const TRANSFER_UPDATE: usize = 0x0024_a0c4;
 /// The game search's first state, which starts the cartridge scan; its
@@ -55,12 +69,21 @@ const SEARCH_NONE: u8 = 2;
 /// and never depend on whether a hook holds the state.
 static PANEL: Panel = Panel::new();
 
-/// The worker and the job it has out, and when the loading screen that is
-/// up went up. Only the main thread takes it.
+/// The worker and the job it has out, when the loading screen that is up
+/// went up, and the error the session stopped with. Only the main thread
+/// takes it.
 struct Runtime {
     /// The worker and the job out, for the kind of job that submitted it.
     requests: TransporterRequests,
     spinner: Spinner,
+    failure: Option<Failure>,
+}
+/// An error the session stopped with: its two numbers, and whether its
+/// screen is up.
+#[derive(Clone, Copy)]
+struct Failure {
+    numbers: [u32; 2],
+    shown: bool,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
 // main thread.
@@ -68,8 +91,12 @@ static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
         requests: Requests::new(),
         spinner: Spinner::new(),
+        failure: None,
     })
 };
+/// An object the job needs is not what the hook expects, or the job's reply
+/// belongs to another: as Bank's hooks answer one (`Fault::NativeObject`).
+const NOT_NATIVE: WorkerError = Fault::NativeObject.with(0);
 
 impl Runtime {
     /// One frame of `kind`: on the first the worker is started if it is not
@@ -81,14 +108,14 @@ impl Runtime {
         &mut self,
         kind: Job,
         stage: impl FnOnce(&mut TransporterWorker) -> Option<()>,
-    ) -> Option<Result<Reply, Failed>> {
+    ) -> Option<Result<Reply, WorkerError>> {
         if !self.requests.is_out() {
             let worker = match unsafe { self.requests.worker() } {
                 Ok(worker) => worker,
                 Err(failed) => return Some(Err(failed)),
             };
             if stage(worker).is_none() {
-                return Some(Err(Failed));
+                return Some(Err(NOT_NATIVE));
             }
             return match unsafe { self.requests.submit(kind, kind) } {
                 Ok(()) => None,
@@ -102,8 +129,66 @@ impl Runtime {
             Polled::Waiting => None,
             Polled::Reply(reply) => Some(Ok(reply)),
             Polled::Failed(failed) => Some(Err(failed)),
-            Polled::Foreign => Some(Err(Failed)),
+            Polled::Foreign => Some(Err(NOT_NATIVE)),
         }
+    }
+    /// The session stops with `error`: its screen comes up on the next
+    /// frame of the task (`report_failure`).
+    fn fail(&mut self, error: WorkerError) {
+        self.fail_with(error.numbers());
+    }
+    /// The same with the two numbers of an error.
+    fn fail_with(&mut self, numbers: [u32; 2]) {
+        self.failure.get_or_insert(Failure {
+            numbers,
+            shown: false,
+        });
+    }
+    /// One frame of a task after an error, as Bank's: the session is over,
+    /// and the task never ends. A job that is still out is waited for
+    /// first, with the loading screen up and HOME refused. Then the loading
+    /// panel ends and the error screen comes up on `ui`, which lets HOME
+    /// through, so that Transporter is closed from the HOME Menu; every
+    /// later frame keeps it. False only for a screen that could not be
+    /// shown: the task then ends as it would without one.
+    /// # Safety
+    /// `ui` is the live shared UI of the task, on the main thread.
+    unsafe fn report_failure(&mut self, ui: *mut u8) -> bool {
+        let Some(failure) = self.failure.as_mut() else {
+            return false;
+        };
+        if failure.shown {
+            unsafe { ui::keep_dialog(ui) };
+            return true;
+        }
+        // A job that is still out holds what the task lent it.
+        if !self.requests.settle() {
+            return true;
+        }
+        failure.shown = true;
+        let [first, second] = failure.numbers;
+        unsafe {
+            if let Some(panel) = PANEL.release() {
+                stop_loading(panel as *mut u8);
+            }
+            stop_loading(ui);
+        }
+        refuse_home(false);
+        unsafe { ui::stop(ui, &LABEL, first, second) }.is_ok()
+    }
+    /// One frame of the task whose shared UI is `ui`, if the session has
+    /// stopped: true while the error screen holds it.
+    /// # Safety
+    /// As `report_failure`.
+    unsafe fn stopped(
+        &mut self,
+        ui: Result<*mut u8, patch_common::native::NotNative>,
+    ) -> Option<bool> {
+        self.failure?;
+        Some(match ui {
+            Ok(ui) => unsafe { self.report_failure(ui) },
+            Err(_) => false,
+        })
     }
 }
 
@@ -376,28 +461,38 @@ unsafe fn check(task: Task) -> Check {
     let Some(mut state) = STATE.take() else {
         return Check::Pending;
     };
+    if let Some(held) = unsafe { state.stopped(task.pointer(TASK_UI)) } {
+        return if held { Check::Pending } else { Check::End };
+    }
     if !PANEL.up() {
-        // No file work without its panel: without one the search refuses
-        // as a worker that fails does.
-        let ui = task.pointer(TASK_UI).ok();
-        if let Some(ui) = ui.filter(|&ui| unsafe { loading(ui) }.is_ok()) {
+        // No file work without its panel. Without what it needs of the
+        // shared UI the search stops on the error screen, as Bank's hooks
+        // do for an object that is not what they expect.
+        let Ok(ui) = task.pointer(TASK_UI) else {
+            return Check::End;
+        };
+        if unsafe { loading(ui) }.is_ok() {
             PANEL.start(ui as usize);
             state.spinner.up(now());
             return Check::Pending;
         }
-        drop(state);
-        return unsafe { show(task, MESSAGE_OPEN_BANK) };
+        state.fail(NOT_NATIVE);
+        return Check::Pending;
     }
     if !state.requests.is_out() && state.spinner.idle(now()) {
         return Check::Pending;
     }
     let answer = unsafe { state.job(Job::Check, |_| Some(())) };
-    drop(state);
     let message = match checked(answer) {
         Checked::Pending => return Check::Pending,
         Checked::Go => return Check::Go,
         Checked::Refused(message) => message,
+        Checked::Failed(error) => {
+            state.fail(error);
+            return Check::Pending;
+        }
     };
+    drop(state);
     unsafe { show(task, message) }
 }
 
@@ -437,11 +532,74 @@ unsafe fn update(raw: *mut u8, id: u32, update: usize) -> u32 {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
         return 1;
     };
+    if id == navigation::TRANSFER {
+        return unsafe { saving(task, TRANSFER_UI, update, false) };
+    }
     if unsafe { waits(task, id) } {
         return 0;
     }
     unsafe { original(update, task.raw()) }
 }
+/// Replaces the Bank task's update in its vtable (`002E697C`, was
+/// `00248C68`), the task that saves the original's note into the chosen
+/// game (`saving`).
+/// # Safety
+/// The original's task driver supplies the live Bank task, on the main
+/// thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_bank(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_BANK]) }) else {
+        return 1;
+    };
+    unsafe { saving(task, BANK_UI, BANK_UPDATE, true) }
+}
+
+/// One frame of the update at `update` of a task that saves the chosen
+/// game: the Bank task, which saves the original's note (`note`), and the
+/// transfer, which waits for its loading panel first (`waits`). A failed
+/// save the error screen stands for (`Shown::Numbers`), or a message that
+/// cannot be loaded, is noted by the message-text entry when the original
+/// shows its message, and this entry puts the error screen in its place on
+/// the task's shared UI at `ui` in the same frame, before it is drawn. From
+/// then on the task stays on it, as the search does.
+/// # Safety
+/// `task` is the live Bank task or transfer, on the main thread.
+unsafe fn saving(task: Task, ui: usize, update: usize, note: bool) -> u32 {
+    {
+        let Some(mut state) = STATE.take() else {
+            // Its state is a hook's: this frame waits, as Bank's hooks do.
+            return 0;
+        };
+        if unsafe { state.stopped(task.pointer(ui)) } == Some(true) {
+            return 0;
+        }
+    }
+    if !note && unsafe { waits(task, navigation::TRANSFER) } {
+        return 0;
+    }
+    // The failure message names the chosen game's kind (`ui::Chosen`).
+    if let Ok(manager) = task.pointer(TASK_MANAGER) {
+        MANAGER.store(manager as usize, Ordering::Relaxed);
+    }
+    DUE.store(0, Ordering::Relaxed);
+    NOTE_SAVE.store(note, Ordering::Relaxed);
+    let finished = unsafe { original(update, task.raw()) };
+    NOTE_SAVE.store(false, Ordering::Relaxed);
+    let first = DUE.swap(0, Ordering::Relaxed);
+    if first == 0 {
+        return finished;
+    }
+    let Some(mut state) = STATE.take() else {
+        return finished;
+    };
+    state.fail_with([first, DUE_SECOND.load(Ordering::Relaxed)]);
+    match unsafe { state.stopped(task.pointer(ui)) } {
+        Some(true) => 0,
+        // No screen to show it on: the task ends as without one.
+        _ => finished,
+    }
+}
+
 /// The original update at `address`.
 unsafe fn original(address: usize, raw: *mut u8) -> u32 {
     let update: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(address) };
@@ -491,9 +649,34 @@ unsafe fn show(task: Task, message: u32) -> Check {
     Check::Shown
 }
 
+/// The manager of the transfer, noted by the delivery entry, for what the
+/// chosen game is (`ui::Chosen`).
+static MANAGER: AtomicUsize = AtomicUsize::new(0);
+/// The last delivery did not happen for lack of room on the SD card, for the
+/// message the transfer shows next: taken by the message-text entry.
+static DELIVERY_NO_ROOM: AtomicBool = AtomicBool::new(false);
+/// The original update of the Bank task runs (`transporter_bank`): a
+/// failure message shown now is the one after its note save.
+static NOTE_SAVE: AtomicBool = AtomicBool::new(false);
+/// The error screen is to take the place of the message the task just
+/// showed, with these numbers; the first is never 0. Taken by `saving`.
+static DUE: AtomicU32 = AtomicU32::new(0);
+static DUE_SECOND: AtomicU32 = AtomicU32::new(0);
+
+/// Notes `error` for the error screen that takes the place of the message
+/// being loaded (`saving`).
+fn due(error: WorkerError) {
+    let [first, second] = error.numbers();
+    DUE_SECOND.store(second, Ordering::Relaxed);
+    DUE.store(first, Ordering::Relaxed);
+}
+
 /// Replaces the load of a message in the original's "show a message"
-/// (`0019B578`): the original loads it, and the failure message then keeps
-/// only what follows its first page (`ui::from_second_page`).
+/// (`0019B578`): the original loads it, and what is shown follows from what
+/// the last write to the game that failed left and what the delivery
+/// answered (`ui::shown`): the failure message from its second page, "The
+/// SD card is full." in its place, or the error screen. The error screen's
+/// failure message is kept whole (`ui::whole`).
 /// # Safety
 /// Called only from that site, with the arguments of the replaced call.
 #[no_mangle]
@@ -502,8 +685,45 @@ pub unsafe extern "aapcs" fn transporter_message_text(
     message: u32,
     string: *mut u8,
 ) -> u32 {
+    let shown = if ui::whole() {
+        Shown::Whole
+    } else {
+        let fault = if matches!(message, MESSAGE_FAILURE | MESSAGE_NO_CARD) {
+            cart::take_write_fault()
+        } else {
+            (WriteFault::None, 0)
+        };
+        let manager = MANAGER.load(Ordering::Relaxed) as *mut u8;
+        let chosen = if patch_common::native::pointer(manager as u32).is_none() {
+            Chosen::CardOut
+        } else if unsafe { cart::chosen_virtual_console(manager) } {
+            Chosen::VirtualConsole
+        } else if unsafe { cart::chosen_card_missing(manager) } {
+            Chosen::CardOut
+        } else {
+            Chosen::CardIn
+        };
+        let no_room = matches!(message, MESSAGE_FAILURE | MESSAGE_NO_CARD)
+            && DELIVERY_NO_ROOM.swap(false, Ordering::Relaxed);
+        let note_save = NOTE_SAVE.load(Ordering::Relaxed);
+        ui::shown(message, fault, chosen, no_room, note_save)
+    };
+    match shown {
+        Shown::SdFull => {
+            if let Some(loaded) = unsafe { ui::sd_full(messages, string) } {
+                return loaded;
+            }
+            // Its text cannot be loaded: the error screen, never another
+            // message in its place.
+            due(NOT_NATIVE);
+        }
+        // The task's entry puts the error screen in its place before the
+        // frame is drawn (`saving`).
+        Shown::Numbers(second) => due(Fault::GameWrite.with(second)),
+        Shown::Whole | Shown::SecondPage => {}
+    }
     let loaded = unsafe { ui::load_message(messages, message, string) };
-    if from_second_page(message) {
+    if shown != Shown::Whole {
         unsafe { patch_common::ui::keep_rest(string) };
     }
     loaded
@@ -533,12 +753,14 @@ patch_common::stub!(
     done = const DELIVER_DONE,
     pending = const DELIVER_PENDING,
 );
-/// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
-/// flushed, and read back; `DELIVER_PENDING` while that is in progress; and
-/// `DELIVER_FAILED` when the delivery is not confirmed, in which case the
-/// original removes nothing from the source game. Bank may hold the
-/// delivery all the same, if only the record announcing it did not read
-/// back (`Journal::announce`): a duplicate, never a loss.
+/// Replaces the upload (`storage_worker::delivered`). Returns `DELIVER_DONE`
+/// when Bank holds the delivery; `DELIVER_PENDING` while it is written;
+/// `DELIVER_FAILED` when Bank holds none, for certain, because the card is
+/// gone or the SD card had no room. Every other answer, a delivery Bank may
+/// hold included, ends the session on the error screen, and the transfer
+/// waits on it (`DELIVER_PENDING`). Only `DELIVER_DONE` lets the original
+/// remove the Pokémon from the source game: after a delivery Bank may hold
+/// they may be in both, a duplicate, never a loss.
 ///
 /// Bank is written only while the game the Pokémon leave can be saved: for
 /// a cartridge whose card is gone the answer is `DELIVER_FAILED` before
@@ -552,10 +774,22 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return DELIVER_PENDING;
     };
-    if !state.requests.is_out() {
-        let Ok(manager) = task.pointer(TASK_MANAGER) else {
-            return DELIVER_FAILED;
+    if let Some(held) = unsafe { state.stopped(task.pointer(TRANSFER_UI)) } {
+        return if held {
+            DELIVER_PENDING
+        } else {
+            DELIVER_FAILED
         };
+    }
+    if !state.requests.is_out() {
+        // A manager that is not a pointer is an object the hook does not
+        // know: the error screen, as in Bank.
+        let Ok(manager) = task.pointer(TASK_MANAGER) else {
+            state.fail(NOT_NATIVE);
+            return DELIVER_PENDING;
+        };
+        MANAGER.store(manager as usize, Ordering::Relaxed);
+        DELIVERY_NO_ROOM.store(false, Ordering::Relaxed);
         if unsafe { cart::chosen_card_missing(manager) } {
             return DELIVER_FAILED;
         }
@@ -567,7 +801,18 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
             stage_box(task, worker.staging_mut().ok()?)
         })
     };
-    delivered(answer)
+    match delivered(answer) {
+        Delivered::Pending => DELIVER_PENDING,
+        Delivered::Done => DELIVER_DONE,
+        Delivered::NoRoom => {
+            DELIVERY_NO_ROOM.store(true, Ordering::Relaxed);
+            DELIVER_FAILED
+        }
+        Delivered::Failed(error) => {
+            state.fail(error);
+            DELIVER_PENDING
+        }
+    }
 }
 
 /// Replaces the start screen's call that writes its version line

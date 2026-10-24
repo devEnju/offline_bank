@@ -42,6 +42,9 @@ pub const RECORDS_LEN: usize = TRANSPORT_SLOTS * RECORD_SIZE;
 /// (`0024704C`): the first argument of the original's "show message and
 /// wait", `0019B50C(ui, message, 1)`, as the search calls it for message 0.
 pub const TASK_UI: usize = 0x34;
+/// The shared UI of the transfer task, whose closing and failure messages
+/// it shows (`0024A2A8`, `0024A5AC`).
+pub const TRANSFER_UI: usize = 0x38;
 
 /// Refuses HOME and sleep, or lets them through again
 /// (`patch_common::home`).

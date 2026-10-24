@@ -95,10 +95,9 @@ impl Builder<'_> {
             .collect::<Vec<_>>()
             .join(",");
         let link = format!("{}-link", package.krate);
-        let bank = package.program == Program::Bank;
         // The payload reads whether it is a release, and of a draft the
         // commit, from these variables when it is compiled
-        // (numbers::VERSION).
+        // (numbers::VERSION), for the error screen of either program.
         let cargo = |command: &str| {
             let mut cargo = process::cargo(&self.toolchain);
             cargo
@@ -107,10 +106,10 @@ impl Builder<'_> {
                 .args(ARM)
                 .env_remove("OFFLINE_BANK_RELEASE")
                 .env_remove("OFFLINE_BANK_COMMIT");
-            if bank && self.options.release {
+            if self.options.release {
                 cargo.env("OFFLINE_BANK_RELEASE", "1");
             }
-            if let (true, Some(commit)) = (bank, &self.draft) {
+            if let Some(commit) = &self.draft {
                 cargo.env("OFFLINE_BANK_COMMIT", commit);
             }
             cargo

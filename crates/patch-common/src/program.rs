@@ -56,6 +56,14 @@ pub trait Program: 'static {
     const FIND_PANE: usize;
     /// `(pane, string, -1)`: sets a text pane's text.
     const PANE_TEXT: usize;
+    /// A message file of the original, opened as the original gives a
+    /// screen its messages (`ui::with_messages`): `ALLOCATE(size, heap)`
+    /// allocates, `TEXT_ARCHIVE(10)` names the text archive of the screens'
+    /// language, and `OPEN_MESSAGES(memory, archive, file, heap, 1, 5)` makes
+    /// the file object in that memory and returns it.
+    const ALLOCATE: usize;
+    const TEXT_ARCHIVE: usize;
+    const OPEN_MESSAGES: usize;
 
     /// The end of the shared UI's loading panel (`ui::end_loading`), the
     /// same code in both programs: `STOP_SOUND(sound, 0, -1)` stops a

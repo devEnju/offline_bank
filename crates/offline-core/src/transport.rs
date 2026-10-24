@@ -10,7 +10,8 @@
 //!   copy that is not in use, makes it durable and reads it back, and only
 //!   then announces it in the journal. Until the journal says so there is no
 //!   delivery. It may deliver only while `check` allows it, which it asks
-//!   before a session begins and once more when it delivers.
+//!   before a session begins. When it delivers it reads the journal again,
+//!   for the copy to write, and holds to what it says, but not the box.
 //! - **Bank** shows the copy the journal names. If a delivery waits, the
 //!   box in use is empty, and the delivery becomes the box (`on_load`).
 //! - On Save and Quit Bank writes the box into the copy `Save::next_mover`
@@ -68,47 +69,54 @@ pub trait Files {
     fn mover(&mut self) -> Option<Self::Storage>;
 }
 
-/// Why Transporter cannot deliver now. Opening Bank shows or solves each.
+/// Why Transporter cannot deliver now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// Pokémon are in the way: in the transport box, or in a delivery that
-    /// waits.
+    /// waits. Opening Bank solves it.
     Occupied,
-    /// No Bank exists, a save of it is in progress, or a file that would be
-    /// written cannot be read: Transporter replaces no file of Bank's, and
-    /// Bank's next save does.
+    /// No Bank exists, a save of it is in progress, a file that would be
+    /// written cannot be read, or the journal is of another version:
+    /// Transporter replaces no file of Bank's, and Bank's next start or save
+    /// does, or says what to do.
     NotReady,
+    /// Both journal records are damaged, or they differ with one sequence:
+    /// no power cut leaves that, and Bank cannot open the Bank either.
+    Damaged,
 }
 
-/// The record a delivery would follow, and the transport file, open.
-fn ready<F: Files>(files: &mut F) -> Result<(Head, Pair<F::Storage>), Refusal> {
-    let head = {
-        let mut journal = Journal::new(files.journal().ok_or(Refusal::NotReady)?);
-        let Ok(Some(head)) = journal.load() else {
-            return Err(Refusal::NotReady);
-        };
-        if !journal.readable() {
-            return Err(Refusal::NotReady);
+/// What the journal says about a delivery: the record it would follow, and
+/// the copy of the transport box it would write. Only the journal is read.
+fn head<F: Files>(files: &mut F) -> Result<(Head, Slot), Refusal> {
+    let mut journal = Journal::new(files.journal().ok_or(Refusal::NotReady)?);
+    let head = match journal.load() {
+        Ok(Some(head)) => head,
+        Err(StoreError::NoValidMetadata | StoreError::ConflictingMetadata) => {
+            return Err(Refusal::Damaged)
         }
-        head
+        _ => return Err(Refusal::NotReady),
     };
+    if !journal.readable() {
+        return Err(Refusal::NotReady);
+    }
     let Phase::Clean(current) = head.phase() else {
         return Err(Refusal::NotReady);
     };
     if !may_deliver(head.metadata()) {
         return Err(Refusal::Occupied);
     }
-    let mut file = Pair::new(files.mover().ok_or(Refusal::NotReady)?, LEN);
-    if file.checksum(current.mover.slot.other()).is_err() {
-        return Err(Refusal::NotReady);
-    }
-    Ok((head, file))
+    let slot = current.mover.slot.other();
+    Ok((head, slot))
 }
 
-/// Transporter's question before a session begins, and the first thing a
-/// delivery asks again: may a box be handed over now? Nothing is written.
+/// Transporter's question before a session begins: may a box be handed
+/// over now? The journal allows it, and the copy of the transport box a
+/// delivery would write can be read. Nothing is written.
 pub fn check<F: Files>(files: &mut F) -> Result<(), Refusal> {
-    ready(files).map(|_| ())
+    let (_, slot) = head(files)?;
+    let mut file = Pair::new(files.mover().ok_or(Refusal::NotReady)?, LEN);
+    file.checksum(slot).map_err(|_| Refusal::NotReady)?;
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -122,6 +130,10 @@ pub enum DeliverError<E> {
     Refused(Refusal),
     /// The journal or the transport file cannot be used.
     Write,
+    /// The record announcing the delivery may have been written, and the
+    /// journal does not say whether: Bank may hold the delivery. Every other
+    /// error leaves none.
+    Unconfirmed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,10 +143,15 @@ pub struct Delivery {
     pub crc: u32,
 }
 
-/// Transporter's whole part of the hand-over: checks the rule, writes the
-/// box into the copy Bank is not using, then announces it. `records` and
+/// Transporter's whole part of the hand-over: reads the journal, which
+/// says which copy to write and still has to allow it, writes the box into
+/// the copy Bank is not using, then announces it. The box is not read
+/// before it is written: `check` read it at START. `records` and
 /// `tags` are the native transport box, unchanged. A cut leaves no delivery
-/// at all, or the complete one.
+/// at all, or the complete one. The answer is what Bank will find: `Ok`
+/// when it holds the delivery, an error when it holds none, and
+/// `Unconfirmed` when that cannot be told: an announcement failed, and the
+/// journal read again shows neither the record before it nor the new one.
 pub fn deliver<F: Files>(
     files: &mut F,
     records: &[u8],
@@ -147,8 +164,13 @@ pub fn deliver<F: Files>(
     if count == 0 {
         return Err(DeliverError::Empty);
     }
-    let (head, mut file) = ready(files).map_err(DeliverError::Refused)?;
-    let slot = head.phase().current().mover.slot.other();
+    let (head, slot) = head(files).map_err(DeliverError::Refused)?;
+    let mut file = Pair::new(
+        files
+            .mover()
+            .ok_or(DeliverError::Refused(Refusal::NotReady))?,
+        LEN,
+    );
     let crc = file
         .write(slot, &[records, tags])
         .map_err(|error| match error {
@@ -158,14 +180,24 @@ pub fn deliver<F: Files>(
     drop(file);
     let journal = files.journal();
     let mut journal = Journal::new(journal.ok_or(DeliverError::Refused(Refusal::NotReady))?);
-    journal.announce(&head, crc).map_err(|error| match error {
-        StoreError::Io(error) => DeliverError::Io(error),
-        StoreError::DeliveryRefused | StoreError::StaleHead => {
-            DeliverError::Refused(Refusal::NotReady)
+    let failed = match journal.announce(&head, crc) {
+        Ok(_) => return Ok(Delivery { slot, count, crc }),
+        // Refused before anything was written.
+        Err(StoreError::DeliveryRefused | StoreError::StaleHead) => {
+            return Err(DeliverError::Refused(Refusal::NotReady))
         }
-        _ => DeliverError::Write,
-    })?;
-    Ok(Delivery { slot, count, crc })
+        Err(StoreError::Io(error)) => DeliverError::Io(error),
+        Err(_) => DeliverError::Write,
+    };
+    drop(journal);
+    // The record written first may be durable all the same: the record in
+    // force now says whether Bank holds the delivery.
+    let mut journal = Journal::new(files.journal().ok_or(DeliverError::Unconfirmed)?);
+    match journal.announced(&head, crc) {
+        Ok(true) => Ok(Delivery { slot, count, crc }),
+        Ok(false) => Err(failed),
+        Err(_) => Err(DeliverError::Unconfirmed),
+    }
 }
 
 #[cfg(test)]
@@ -191,16 +223,28 @@ mod tests {
         /// The journal record whose file takes a write and then does not
         /// read: written, but not confirmed.
         unread: Option<Slot>,
+        /// That record stays unreadable when the journal is opened again;
+        /// otherwise only the handle that wrote it cannot read it.
+        lasting: bool,
+        /// Whether `unread` was written and does not read now.
+        written: Rc<Cell<bool>>,
     }
     /// An open file: its bytes, the count of open files, the offset that
-    /// takes no write, and the offset that does not read once written.
-    struct Open(Bytes, Rc<Cell<usize>>, Option<u64>, Option<u64>, bool);
+    /// takes no write, the offset that does not read once written, and
+    /// whether it was written.
+    struct Open(
+        Bytes,
+        Rc<Cell<usize>>,
+        Option<u64>,
+        Option<u64>,
+        Rc<Cell<bool>>,
+    );
     impl Card {
         fn open(&self, file: &Option<Bytes>, refused: Option<u64>) -> Option<Open> {
             let file = file.clone()?;
             self.open.set(self.open.get() + 1);
             assert_eq!(self.open.get(), 1, "both pairs open at once");
-            Some(Open(file, self.open.clone(), refused, None, false))
+            Some(Open(file, self.open.clone(), refused, None, Rc::default()))
         }
         fn bytes(&self) -> (Vec<u8>, Vec<u8>) {
             let of = |file: &Option<Bytes>| file.as_ref().unwrap().borrow().clone();
@@ -217,8 +261,12 @@ mod tests {
         fn journal(&mut self) -> Option<Open> {
             let refused = self.broken.map(|slot| slot.index() * METADATA_SIZE as u64);
             let unread = self.unread.map(|slot| slot.index() * METADATA_SIZE as u64);
+            if !self.lasting {
+                self.written.set(false);
+            }
             self.open(&self.journal, refused).map(|mut open| {
                 open.3 = unread;
+                open.4 = self.written.clone();
                 open
             })
         }
@@ -229,7 +277,7 @@ mod tests {
     impl Storage for Open {
         type Error = ();
         fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
-            if self.4 && self.3 == Some(at) {
+            if self.4.get() && self.3 == Some(at) {
                 return Err(());
             }
             let bytes = self.0.borrow();
@@ -242,7 +290,7 @@ mod tests {
                 return Err(());
             }
             if self.3 == Some(at) {
-                self.4 = true;
+                self.4.set(true);
             }
             self.0.borrow_mut()[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
             Ok(())
@@ -330,6 +378,8 @@ mod tests {
             open: Rc::new(Cell::new(0)),
             broken: None,
             unread: None,
+            lasting: false,
+            written: Rc::default(),
         }
     }
     fn record_in_force(card: &mut Card) -> Metadata {
@@ -421,6 +471,57 @@ mod tests {
         assert_eq!(check(&mut current_short), Ok(()));
     }
 
+    /// The transport box as a delivery opens it: no read before the first
+    /// write, and with `flip` every written byte changed after it was
+    /// written, so that its read-back fails.
+    struct WriteFirst(Open, bool, bool);
+    impl Storage for WriteFirst {
+        type Error = ();
+        fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+            assert!(self.1, "the box was read before it was written");
+            self.0.read(at, out)
+        }
+        fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
+            self.1 = true;
+            self.0.write(at, bytes)?;
+            if self.2 && !bytes.is_empty() {
+                self.0 .0.borrow_mut()[at as usize] ^= 0x40;
+            }
+            Ok(())
+        }
+        fn sync(&mut self) -> Result<(), ()> {
+            self.0.sync()
+        }
+        fn recreate(&mut self, at: u64, len: u64) -> Result<(), ()> {
+            self.0.recreate(at, len)
+        }
+    }
+    /// The card, with its transport box opened as `WriteFirst`.
+    struct NoRead<'a>(&'a mut Card, bool);
+    impl Files for NoRead<'_> {
+        type Storage = WriteFirst;
+        fn journal(&mut self) -> Option<Self::Storage> {
+            self.0.journal().map(|open| WriteFirst(open, true, false))
+        }
+        fn mover(&mut self) -> Option<Self::Storage> {
+            self.0.mover().map(|open| WriteFirst(open, false, self.1))
+        }
+    }
+
+    #[test]
+    fn a_delivery_reads_the_box_only_back_after_writing_it() {
+        let mut card = card(Some(clean(Slot::A, 0, None)));
+        let (records, tags) = a_box(3);
+        let done = deliver(&mut NoRead(&mut card, false), &records, &tags).unwrap();
+        assert_eq!(done.count, 3);
+        assert_eq!(record_in_force(&mut card).delivery, Some(done.crc));
+        // A box that does not read back as written is not announced.
+        let mut card = self::card(Some(clean(Slot::A, 0, None)));
+        let before = record_in_force(&mut card);
+        assert!(deliver(&mut NoRead(&mut card, true), &records, &tags).is_err());
+        assert_eq!(record_in_force(&mut card), before);
+    }
+
     #[test]
     fn a_delivery_goes_into_the_copy_not_in_use_and_is_announced_last() {
         for current in [Slot::A, Slot::B] {
@@ -495,19 +596,83 @@ mod tests {
         assert!(on_load(&announced).delivery);
         assert_eq!(check(&mut card), Err(Refusal::Occupied));
         // If the record written first is durable but does not read back,
-        // the delivery is not confirmed: Transporter is told it failed and
-        // keeps the Pokémon in the game, and Bank finds them all the same.
-        // A duplicate, never a loss.
+        // the journal is read again: it announces the delivery, which is
+        // there for Bank, and Transporter is told so.
         let mut card = self::card(Some(clean(Slot::A, 0, None)));
         card.unread = Some(Slot::B);
+        let done = deliver(&mut card, &records, &tags).unwrap();
+        card.unread = None;
+        let announced = record_in_force(&mut card);
+        assert_eq!(announced.delivery, Some(done.crc));
+        assert!(on_load(&announced).delivery);
+        // If it does not read when read again either, whether Bank holds
+        // the delivery cannot be told: Transporter keeps the Pokémon in the
+        // game and says nothing went through for certain. Bank finds them
+        // all the same once the record reads: a duplicate, never a loss.
+        let mut card = self::card(Some(clean(Slot::A, 0, None)));
+        card.unread = Some(Slot::B);
+        card.lasting = true;
         assert_eq!(
             deliver(&mut card, &records, &tags),
-            Err(DeliverError::Io(()))
+            Err(DeliverError::Unconfirmed)
         );
         card.unread = None;
         let announced = record_in_force(&mut card);
         assert!(announced.delivery.is_some());
         assert!(on_load(&announced).delivery);
+    }
+
+    #[test]
+    fn a_journal_no_power_cut_leaves_is_damaged_and_not_for_bank_to_repair() {
+        // Both records torn.
+        let mut both = card(Some(clean(Slot::A, 0, None)));
+        {
+            let mut journal = both.journal.as_ref().unwrap().borrow_mut();
+            journal[9] ^= 1;
+            journal[METADATA_SIZE + 9] ^= 1;
+        }
+        assert_eq!(check(&mut both), Err(Refusal::Damaged));
+        let (records, tags) = a_box(1);
+        let before = both.bytes();
+        assert_eq!(
+            deliver(&mut both, &records, &tags),
+            Err(DeliverError::Refused(Refusal::Damaged))
+        );
+        assert!(both.bytes() == before);
+        // One torn record is what a cut leaves: the other one is in force.
+        let mut one = card(Some(clean(Slot::A, 0, None)));
+        one.journal.as_ref().unwrap().borrow_mut()[9] ^= 1;
+        assert_eq!(check(&mut one), Ok(()));
+    }
+
+    #[test]
+    fn every_failed_delivery_says_whether_bank_holds_it() {
+        let (records, tags) = a_box(3);
+        for current in [Slot::A, Slot::B] {
+            for (broken, unread, lasting) in [
+                (Some(Slot::A), None, false),
+                (Some(Slot::B), None, false),
+                (None, Some(Slot::A), false),
+                (None, Some(Slot::B), false),
+                (None, Some(Slot::A), true),
+                (None, Some(Slot::B), true),
+                (Some(Slot::A), Some(Slot::B), true),
+                (Some(Slot::B), Some(Slot::A), true),
+            ] {
+                let mut card = card(Some(clean(current, 0, None)));
+                (card.broken, card.unread, card.lasting) = (broken, unread, lasting);
+                let answer = deliver(&mut card, &records, &tags);
+                // As Bank reads the journal once the card works again.
+                (card.broken, card.unread) = (None, None);
+                let held = on_load(&record_in_force(&mut card)).delivery;
+                let case = (current, broken, unread, lasting);
+                match answer {
+                    Ok(_) => assert!(held, "{case:?}"),
+                    Err(DeliverError::Unconfirmed) => {}
+                    Err(error) => assert!(!held, "{case:?} {error:?}"),
+                }
+            }
+        }
     }
 
     #[test]

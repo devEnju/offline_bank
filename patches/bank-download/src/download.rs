@@ -108,10 +108,10 @@ mod tests {
         struct Inaccessible;
         impl bank_files::Files for Inaccessible {
             type Storage = Handle;
-            fn open(&mut self, _: bank_files::FileName) -> Result<Option<Handle>, ()> {
-                Err(()) // Includes native wrong-size, permission and I/O failures.
+            fn open(&mut self, _: bank_files::FileName) -> Result<Option<Handle>, Refused> {
+                Err(Refused::FAILED) // Includes native wrong-size, permission and I/O failures.
             }
-            fn create(&mut self, _: bank_files::FileName) -> Result<Handle, ()> {
+            fn create(&mut self, _: bank_files::FileName) -> Result<Handle, Refused> {
                 panic!("a failed inspection must not reach creation")
             }
         }

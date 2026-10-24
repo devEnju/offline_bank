@@ -17,13 +17,19 @@
 //! it reads or saves a DS game. Those questions come here too, so that a
 //! removed card concerns the cartridge alone (`Saves::card_missing`).
 
+use crate::sdcard::WriteFault;
 use crate::{
     language,
     sdcard::{self, Sd, COPY_CHUNK},
     sdsave::Saves,
     task::{Task, TASK_LIST, TASK_MANAGER},
 };
-use core::{cell::UnsafeCell, mem::transmute, slice};
+use core::{
+    cell::UnsafeCell,
+    mem::transmute,
+    slice,
+    sync::atomic::{AtomicU32, AtomicU8, Ordering},
+};
 use patch_common::native::read_word;
 
 const ORIGINAL_CART_ID: usize = 0x0021_aa0c;
@@ -104,6 +110,7 @@ unsafe extern "aapcs" fn cart_id(out: *mut u32, task: *const u8) -> i32 {
         // language screen are offered; a Gen 5 cartridge in that language
         // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
+        note(WriteFault::None, 0);
         saves.scan(cartridge, language::filter_letter(), |path, offsets| {
             sdcard::identity(&mut Sd, path, offsets)
         });
@@ -161,16 +168,40 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
     let Some(save) = saves.current() else {
         let original: unsafe extern "aapcs" fn(u32, u32, *const u8, u32) -> i32 =
             unsafe { transmute(ORIGINAL_CART_WRITE) };
-        return unsafe { original(kind, offset, buffer, length) };
+        let code = unsafe { original(kind, offset, buffer, length) };
+        if code < 0 {
+            note(WriteFault::Cartridge, code as u32);
+        }
+        return code;
     };
     let bytes = unsafe { slice::from_raw_parts(buffer, length as usize) };
     // SAFETY: see `Shared`; only this thread uses the copy buffer.
     let chunk = unsafe { &mut *CHUNK.0.get() };
-    if sdcard::write(&mut Sd, saves, save, offset, bytes, chunk) {
-        0
-    } else {
-        FAILED
+    match sdcard::write(&mut Sd, saves, save, offset, bytes, chunk) {
+        Ok(()) => 0,
+        Err(failed) => {
+            note(WriteFault::of_save(saves, failed), failed.result());
+            FAILED
+        }
     }
+}
+
+/// The last write to the game that failed in this session (`WriteFault`),
+/// and the console's result for it, for the message the original shows for
+/// it. Written by the cartridge task's thread, read by the main thread once
+/// that task has ended.
+static WRITE_FAULT: AtomicU8 = AtomicU8::new(0);
+static WRITE_RESULT: AtomicU32 = AtomicU32::new(0);
+fn note(fault: WriteFault, result: u32) {
+    WRITE_RESULT.store(result, Ordering::Relaxed);
+    WRITE_FAULT.store(fault as u8, Ordering::Release);
+}
+/// What the last write to the game that failed left, and the console's
+/// result for it, 0 where none is known (`hooks::transporter_message_text`).
+/// Asking clears it.
+pub fn take_write_fault() -> (WriteFault, u32) {
+    let fault = WriteFault::of(WRITE_FAULT.swap(0, Ordering::Acquire));
+    (fault, WRITE_RESULT.swap(0, Ordering::Relaxed))
 }
 
 // 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.
@@ -238,14 +269,16 @@ unsafe extern "aapcs" fn list_next(raw: *mut u8) {
 /// `manager` is the live manager, on the main thread, while no cartridge
 /// task runs.
 pub unsafe fn chosen_card_missing(manager: *mut u8) -> bool {
-    unsafe {
-        let version = read_word(manager, MANAGER_VERSION);
-        let title = read_word(manager, MANAGER_TITLE);
-        if version != 0 && title != 0 {
-            return false;
-        }
-        saves().card_missing(|| card_removed(manager))
-    }
+    unsafe { !chosen_virtual_console(manager) && saves().card_missing(|| card_removed(manager)) }
+}
+
+/// Whether the chosen game is a Virtual Console title, as the original
+/// tells one: the version and the second word it stores when such an entry
+/// is confirmed are both set (`0024A27C`..`0024A290`).
+/// # Safety
+/// `manager` is the live manager, on the main thread.
+pub unsafe fn chosen_virtual_console(manager: *mut u8) -> bool {
+    unsafe { read_word(manager, MANAGER_VERSION) != 0 && read_word(manager, MANAGER_TITLE) != 0 }
 }
 
 /// Replaces the original's question whether the Game Card was taken out

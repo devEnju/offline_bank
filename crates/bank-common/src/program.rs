@@ -14,6 +14,9 @@ use patch_common::program::Program;
 ///   (`0010ba7c`);
 /// - the start screen's call for its version line, message 0x4E
 ///   (`002b49c4`), and the two calls it hands the line to the pane with;
+/// - how a screen's context opens its message file (`001e7dd8`..`001e7e0c`):
+///   `00235bc8` allocates, `00230a90` names the text archive, `00229c00`
+///   makes the file object;
 /// - its task router `002a5580` and its factory's bound
 ///   (`task::TASK_COUNT`), and the vtable `003626FC` the Bank data object's
 ///   constructor `0010EA48` installs (`native_bank::VTABLE_ADDRESS`);
@@ -40,6 +43,9 @@ impl Program for Bank15 {
     const PANE_MESSAGE: usize = 0x001e_21c8;
     const FIND_PANE: usize = 0x001e_264c;
     const PANE_TEXT: usize = 0x0029_a628;
+    const ALLOCATE: usize = 0x0023_5bc8;
+    const TEXT_ARCHIVE: usize = 0x0023_0a90;
+    const OPEN_MESSAGES: usize = 0x0022_9c00;
     const STOP_SOUND: usize = 0x001d_6200;
     const PANE_SHOWN: usize = 0x001e_7084;
     const UNBIND_ANIMATION: usize = 0x001e_69ac;

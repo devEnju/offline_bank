@@ -20,6 +20,7 @@ mod linked {
         transporter_message_text,
         transporter_search,
         transporter_read,
+        transporter_bank,
         transporter_question,
         transporter_transfer,
         transporter_slot_stub,

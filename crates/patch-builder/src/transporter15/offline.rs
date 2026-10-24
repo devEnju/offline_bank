@@ -88,6 +88,9 @@ const EDITS: &[Edit] = &[
     // first state, which ends the panel of the reading, and the transfer's
     // closing message wait for its 1.5 s.
     (0x002e_66c4, 0x0024_55d0, Entry("transporter_read")),
+    // The Bank task's update in its vtable (was: the original update): a
+    // note save that ends on the error screen keeps it there.
+    (0x002e_697c, 0x0024_8c68, Entry("transporter_bank")),
     (0x002e_67d0, 0x0024_7304, Entry("transporter_question")),
     (0x002e_6a9c, 0x0024_a0c4, Entry("transporter_transfer")),
     // Reading the chosen game, the 1.5 s before each of its errors: a
@@ -269,10 +272,10 @@ mod tests {
     use crate::profile::sample::{at, branch_target};
 
     #[test]
-    fn fifty_five_words_and_thirty_one_entry_functions() {
-        assert_eq!(PROFILE.regions(), 56);
-        assert_eq!(PROFILE.entries().len(), 31);
-        // Every edit lies in the original text or, for the four updates in
+    fn fifty_six_words_and_thirty_two_entry_functions() {
+        assert_eq!(PROFILE.regions(), 57);
+        assert_eq!(PROFILE.entries().len(), 32);
+        // Every edit lies in the original text or, for the five updates in
         // their vtables, its read-only data, which ends where its data
         // begins (002EC000).
         assert!(EDITS

@@ -152,6 +152,20 @@ pub enum Error<E> {
     Bank(session::Error<E>),
     Side(FileName, Problem),
 }
+impl<E> Error<E> {
+    /// The card's own error, when a read or write of a file failed on it;
+    /// `None` for a file that is not what the journal says, a Bank that is
+    /// not ready, and every other refusal of this crate.
+    pub fn card(&self) -> Option<&E> {
+        match self {
+            Self::Io(error)
+            | Self::Bank(session::Error::Storage(offline_core::StoreError::Io(error))) => {
+                Some(error)
+            }
+            _ => None,
+        }
+    }
+}
 type Outcome<T, F> = Result<T, Error<<<F as Files>::Storage as Storage>::Error>>;
 
 #[cfg(feature = "test-build")]
@@ -963,47 +977,14 @@ mod tests {
         );
     }
 
-    /// An occupied record of its own identity; `id` must stay below 0x1000.
-    fn pokemon(id: u32) -> [u8; RECORD_SIZE] {
-        let mut out = [0u8; RECORD_SIZE];
-        // Bits 13..18 of the key choose the block order; they stay zero.
-        let key = id << 20 | 0x155;
-        out[..4].copy_from_slice(&key.to_le_bytes());
-        let mut seed = key;
-        for index in 0..112 {
-            seed = seed.wrapping_mul(0x41C6_4E6D).wrapping_add(0x6073);
-            let plain = if index == 0 { 133 } else { 0 };
-            out[8 + index * 2..10 + index * 2]
-                .copy_from_slice(&(plain ^ (seed >> 16) as u16).to_le_bytes());
-        }
-        out
-    }
-    /// A body whose boxes hold exactly `boxed`, each at (box, slot), and
-    /// whose transport box holds `transport` Pokémon.
-    fn bank(fill: u8, boxed: &[(usize, usize, [u8; RECORD_SIZE])], transport: usize) -> Vec<u8> {
-        let mut bytes = body(fill, 0x44, transport);
-        let place = |index: usize, slot: usize| 0x17C + index * 0x1B56 + slot * RECORD_SIZE;
-        for index in 0..100 {
-            for slot in 0..30 {
-                let at = place(index, slot);
-                bytes[at..at + RECORD_SIZE].copy_from_slice(&record(0));
-            }
-        }
-        for (index, slot, record) in boxed {
-            let at = place(*index, *slot);
-            bytes[at..at + RECORD_SIZE].copy_from_slice(record);
-        }
-        bytes
-    }
-
     #[test]
     fn a_save_in_progress_is_settled_by_what_it_moved_when_the_game_cannot_say() {
-        let old = bank(
+        let old = with_boxes(
             0x31,
             &[(0, 0, pokemon(1)), (0, 1, pokemon(2)), (99, 29, pokemon(3))],
             0,
         );
-        let disk = fresh(&bank(0, &[], 0));
+        let disk = fresh(&with_boxes(0, &[], 0));
         let mut files = opened(&disk);
         load(&mut files);
         files
@@ -1045,7 +1026,7 @@ mod tests {
             ),
         ];
         for (name, boxes, expected, decision) in sessions {
-            let new = bank(0x52, &boxes, 0);
+            let new = with_boxes(0x52, &boxes, 0);
             let prepared = base.copy();
             let mut files = opened(&prepared);
             load(&mut files);
@@ -1088,8 +1069,8 @@ mod tests {
 
     #[test]
     fn a_taken_delivery_and_a_release_are_counted_for_what_they_are() {
-        let old = bank(0x31, &[(0, 0, pokemon(1)), (0, 1, pokemon(2))], 0);
-        let disk = fresh(&bank(0, &[], 0));
+        let old = with_boxes(0x31, &[(0, 0, pokemon(1)), (0, 1, pokemon(2))], 0);
+        let disk = fresh(&with_boxes(0, &[], 0));
         let mut files = opened(&disk);
         load(&mut files);
         files
@@ -1122,7 +1103,7 @@ mod tests {
         };
         // `body` keeps the first Pokémon in the transport box, so the two
         // that stay are the first two; the other three go into boxes.
-        let moved_in = bank(
+        let moved_in = with_boxes(
             0x52,
             &[
                 (0, 0, pokemon(1)),
@@ -1157,7 +1138,7 @@ mod tests {
         load(&mut files);
         files
             .prepare(
-                &mut bank(0x52, &[(0, 0, pokemon(1))], 0),
+                &mut with_boxes(0x52, &[(0, 0, pokemon(1))], 0),
                 GAME,
                 BEFORE,
                 AFTER,
@@ -1581,10 +1562,10 @@ mod tests {
     #[test]
     fn a_save_that_waits_for_its_game_writes_nothing_and_is_settled_once_it_is_there() {
         // A session that deposited one Pokémon and withdrew another.
-        let old = bank(0x31, &[(0, 0, pokemon(1)), (0, 1, pokemon(2))], 0);
-        let new = bank(0x52, &[(0, 0, pokemon(1)), (3, 3, pokemon(9))], 0);
+        let old = with_boxes(0x31, &[(0, 0, pokemon(1)), (0, 1, pokemon(2))], 0);
+        let new = with_boxes(0x52, &[(0, 0, pokemon(1)), (3, 3, pokemon(9))], 0);
         for (game, kept) in [(BEFORE, &old), (AFTER, &new)] {
-            let disk = fresh(&bank(0, &[], 0));
+            let disk = fresh(&with_boxes(0, &[], 0));
             let mut files = BankFiles::new(disk.clone());
             files.open().unwrap();
             load(&mut files);

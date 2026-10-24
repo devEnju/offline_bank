@@ -224,6 +224,8 @@ pub struct Saves {
     /// for it is cleared by every read that starts, a save's included, so
     /// it is kept here as well.
     cartridge_removed: bool,
+    /// A write of this session has reached a save's file (`touch`).
+    touched: bool,
 }
 impl Saves {
     pub const EMPTY: Self = Self {
@@ -240,6 +242,7 @@ impl Saves {
         entry_count: 0,
         backed_up: 0,
         cartridge_removed: false,
+        touched: false,
     };
 
     /// A new session. `cartridge` is the game code the cartridge slot
@@ -377,6 +380,15 @@ impl Saves {
     /// Undoes `take_backup_duty` after a failed backup.
     pub fn backup_failed(&mut self) {
         self.backed_up &= !(1u8 << (self.current as u32 % 8));
+    }
+    /// Notes that a write is about to reach a save's file.
+    pub fn touch(&mut self) {
+        self.touched = true;
+    }
+    /// Whether a write of this session has reached a save's file: from then
+    /// on a failed write may leave the save half-written.
+    pub fn touched(&self) -> bool {
+        self.touched
     }
 }
 
