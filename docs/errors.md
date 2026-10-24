@@ -271,7 +271,8 @@ flowchart TD
     PANEL --> SETTLE{"Settle Bank's journal<br/>to the chosen snapshot"}
     SETTLE -->|"Required Bank file cannot be opened"| F3["HOME error: 03"]
     SETTLE -->|"Damaged or conflicting journal"| F5["HOME error: 05"]
-    SETTLE -->|"First journal record not written,<br/>including insufficient space or changed state"| F10["HOME error: 10 + result or zero"]
+    SETTLE -->|"First journal record not written,<br/>including insufficient space or changed state"| F10["HOME error: 10 + result or zero<br/>Question still pending"]
+    SETTLE -->|"First journal record written,<br/>its read-back failed"| F10U["HOME error: 10 + result or zero<br/>The answer may already hold;<br/>the next START shows which"]
     SETTLE -->|"Completed"| CLOSE["Finish loading;<br/>Transporter's closing screen"]
     CLOSE --> TITLE(["Transporter start screen"])
     TITLE -.->|"Close Transporter; open Bank and press START"| BANK(["Bank opens the selected snapshot;<br/>normal startup checks apply"])
