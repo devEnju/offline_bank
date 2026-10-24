@@ -236,6 +236,14 @@ fn hand_over<S: Storage>(
     })
 }
 
+/// Whether both replicas hold `metadata`: each reads, and is that record.
+/// A replica that is missing reads as zeros to Bank and holds nothing.
+fn both_hold<S: Storage>(storage: &mut S, metadata: &Metadata) -> bool {
+    [Slot::A, Slot::B].into_iter().all(
+        |slot| matches!(read_record(storage, slot), Ok(Record::Valid(found)) if found == *metadata),
+    )
+}
+
 /// Whether both replicas can be read, valid or not.
 fn both_readable<S: Storage>(storage: &mut S) -> bool {
     let mut bytes = [0; METADATA_SIZE];
@@ -569,16 +577,17 @@ impl<S: Storage> BankStore<S> {
     /// Leaves the save in progress to Transporter's question, or takes it
     /// back (`Metadata::ask`): the same record with the next sequence number
     /// and `ask`. Nothing is written when the record says so already, unless
-    /// it leaves the save to the question while one replica does not read:
+    /// it leaves the save to the question while one replica does not hold
+    /// it: one that does not read, is missing, or holds another record.
     /// Transporter reads the question only from a journal whose replicas
-    /// both read, and replaces none, so the record is written again, which
-    /// replaces that replica (`put_replica`).
+    /// both read, and replaces or creates none, so the record is written
+    /// again, which replaces or creates that replica (`put_replica`).
     pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
         let head = self.check_head(head)?;
         if !matches!(head.phase(), Phase::Prepared(_)) {
             return Err(StoreError::NoPendingTransfer);
         }
-        if head.metadata.ask == ask && (!ask || both_readable(&mut self.storage)) {
+        if head.metadata.ask == ask && (!ask || both_hold(&mut self.storage, &head.metadata)) {
             return Ok(head);
         }
         let sequence = next_sequence(&head)?;

@@ -700,6 +700,42 @@ fn a_cut_while_asking_or_settling_leaves_the_record_before_or_after() {
 }
 
 #[test]
+fn asking_again_writes_a_record_that_is_missing_or_holds_another() {
+    let layout = Layout::new(CAPACITY);
+    for slot in [Slot::A, Slot::B] {
+        let start = layout.metadata_offset(slot) as usize;
+        for spoil in ["zeros", "torn"] {
+            let (store, head) = asked(baseline());
+            let mut memory = store.into_inner().reboot();
+            // A replica a recreation emptied before a cut, or one torn.
+            let record = &mut memory.bytes[start..start + METADATA_SIZE];
+            match spoil {
+                "zeros" => record.fill(0),
+                _ => record[9] ^= 1,
+            }
+            let mut store = BankStore::new(memory, layout);
+            let head = store.ask(&head, true).unwrap();
+            let memory = store.into_inner().reboot();
+            for slot in [Slot::A, Slot::B] {
+                let at = layout.metadata_offset(slot) as usize;
+                assert_eq!(
+                    Metadata::decode(&memory.bytes[at..at + METADATA_SIZE]).as_ref(),
+                    Ok(head.metadata()),
+                    "{spoil} {slot:?}"
+                );
+            }
+            assert!(Journal::new(memory).readable());
+        }
+    }
+    // Both replicas hold the record: nothing is written.
+    let (store, head) = asked(baseline());
+    let mut store = BankStore::new(store.into_inner().reboot(), layout);
+    let before = store.storage_mut().bytes.clone();
+    store.ask(&head, true).unwrap();
+    assert_eq!(store.storage_mut().bytes, before);
+}
+
+#[test]
 fn asking_again_replaces_a_record_a_cut_left_unreadable() {
     let layout = Layout::new(CAPACITY);
     for unit in 0..2 {

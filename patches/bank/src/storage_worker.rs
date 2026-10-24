@@ -1728,6 +1728,58 @@ mod tests {
     }
 
     #[test]
+    fn after_a_cut_while_bank_repairs_a_journal_record_transporter_still_asks() {
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+        game.save = Some((OTHER, LOADED));
+        let start = |card: &Shared, game: &mut Simulated| {
+            let mut files = opened(card);
+            let settled = settle(
+                &mut files,
+                Some(game),
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                &in_progress,
+                Rule::Start,
+                None,
+                &mut held(),
+            );
+            drop(files);
+            settled
+        };
+        drop(files);
+        assert_eq!(start(&disk, &mut game).unwrap(), Settled::Asks);
+        // Each journal record in turn left unreadable by a cut, so that
+        // Bank's next write recreates it; that START is cut at every step,
+        // the recreation's deletion among them, which leaves the record
+        // missing unless the console makes it unreadable. Then Bank's START
+        // once more: it sends the user to Transporter, and Transporter asks.
+        for (console, record) in [(true, 0), (true, 1), (false, 0), (false, 1)] {
+            let spoiled = disk.like(console);
+            spoiled.0.borrow_mut().unreadable.insert((0, record));
+            for budget in 0.. {
+                let card = spoiled.cut_after(budget);
+                let cut = start(&card, &mut game);
+                let card = card.reboot();
+                assert_eq!(
+                    start(&card, &mut game).unwrap(),
+                    Settled::Asks,
+                    "console {console}, record {record}, cut after {budget}"
+                );
+                assert_eq!(
+                    transport_check(&card),
+                    Err(offline_core::transport::Refusal::Asked),
+                    "console {console}, record {record}, cut after {budget}"
+                );
+                if cut.is_ok() {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn at_start_a_game_whose_card_is_gone_leaves_the_save_for_the_next_one() {
         let (old, sessions) = sessions();
         for (moved, new) in &sessions {
