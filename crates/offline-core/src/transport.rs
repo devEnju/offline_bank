@@ -10,7 +10,8 @@
 //!   copy that is not in use, makes it durable and reads it back, and only
 //!   then announces it in the journal. Until the journal says so there is no
 //!   delivery. It may deliver only while `check` allows it, which it asks
-//!   before a session begins and once more when it delivers.
+//!   before a session begins. When it delivers it reads the journal again,
+//!   for the copy to write, and holds to what it says, but not the box.
 //! - **Bank** shows the copy the journal names. If a delivery waits, the
 //!   box in use is empty, and the delivery becomes the box (`on_load`).
 //! - On Save and Quit Bank writes the box into the copy `Save::next_mover`
@@ -84,39 +85,38 @@ pub enum Refusal {
     Damaged,
 }
 
-/// The record a delivery would follow, and the transport file, open.
-fn ready<F: Files>(files: &mut F) -> Result<(Head, Pair<F::Storage>), Refusal> {
-    let head = {
-        let mut journal = Journal::new(files.journal().ok_or(Refusal::NotReady)?);
-        let head = match journal.load() {
-            Ok(Some(head)) => head,
-            Err(StoreError::NoValidMetadata | StoreError::ConflictingMetadata) => {
-                return Err(Refusal::Damaged)
-            }
-            _ => return Err(Refusal::NotReady),
-        };
-        if !journal.readable() {
-            return Err(Refusal::NotReady);
+/// What the journal says about a delivery: the record it would follow, and
+/// the copy of the transport box it would write. Only the journal is read.
+fn head<F: Files>(files: &mut F) -> Result<(Head, Slot), Refusal> {
+    let mut journal = Journal::new(files.journal().ok_or(Refusal::NotReady)?);
+    let head = match journal.load() {
+        Ok(Some(head)) => head,
+        Err(StoreError::NoValidMetadata | StoreError::ConflictingMetadata) => {
+            return Err(Refusal::Damaged)
         }
-        head
+        _ => return Err(Refusal::NotReady),
     };
+    if !journal.readable() {
+        return Err(Refusal::NotReady);
+    }
     let Phase::Clean(current) = head.phase() else {
         return Err(Refusal::NotReady);
     };
     if !may_deliver(head.metadata()) {
         return Err(Refusal::Occupied);
     }
-    let mut file = Pair::new(files.mover().ok_or(Refusal::NotReady)?, LEN);
-    if file.checksum(current.mover.slot.other()).is_err() {
-        return Err(Refusal::NotReady);
-    }
-    Ok((head, file))
+    let slot = current.mover.slot.other();
+    Ok((head, slot))
 }
 
-/// Transporter's question before a session begins, and the first thing a
-/// delivery asks again: may a box be handed over now? Nothing is written.
+/// Transporter's question before a session begins: may a box be handed
+/// over now? The journal allows it, and the copy of the transport box a
+/// delivery would write can be read. Nothing is written.
 pub fn check<F: Files>(files: &mut F) -> Result<(), Refusal> {
-    ready(files).map(|_| ())
+    let (_, slot) = head(files)?;
+    let mut file = Pair::new(files.mover().ok_or(Refusal::NotReady)?, LEN);
+    file.checksum(slot).map_err(|_| Refusal::NotReady)?;
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -143,8 +143,10 @@ pub struct Delivery {
     pub crc: u32,
 }
 
-/// Transporter's whole part of the hand-over: checks the rule, writes the
-/// box into the copy Bank is not using, then announces it. `records` and
+/// Transporter's whole part of the hand-over: reads the journal, which
+/// says which copy to write and still has to allow it, writes the box into
+/// the copy Bank is not using, then announces it. The box is not read
+/// before it is written: `check` read it at START. `records` and
 /// `tags` are the native transport box, unchanged. A cut leaves no delivery
 /// at all, or the complete one. The answer is what Bank will find: `Ok`
 /// when it holds the delivery, an error when it holds none, and
@@ -162,8 +164,13 @@ pub fn deliver<F: Files>(
     if count == 0 {
         return Err(DeliverError::Empty);
     }
-    let (head, mut file) = ready(files).map_err(DeliverError::Refused)?;
-    let slot = head.phase().current().mover.slot.other();
+    let (head, slot) = head(files).map_err(DeliverError::Refused)?;
+    let mut file = Pair::new(
+        files
+            .mover()
+            .ok_or(DeliverError::Refused(Refusal::NotReady))?,
+        LEN,
+    );
     let crc = file
         .write(slot, &[records, tags])
         .map_err(|error| match error {
@@ -462,6 +469,57 @@ mod tests {
         let mut current_short = card(Some(clean(Slot::B, 0, None)));
         current_short.mover.as_ref().unwrap().borrow_mut().pop();
         assert_eq!(check(&mut current_short), Ok(()));
+    }
+
+    /// The transport box as a delivery opens it: no read before the first
+    /// write, and with `flip` every written byte changed after it was
+    /// written, so that its read-back fails.
+    struct WriteFirst(Open, bool, bool);
+    impl Storage for WriteFirst {
+        type Error = ();
+        fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+            assert!(self.1, "the box was read before it was written");
+            self.0.read(at, out)
+        }
+        fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
+            self.1 = true;
+            self.0.write(at, bytes)?;
+            if self.2 && !bytes.is_empty() {
+                self.0 .0.borrow_mut()[at as usize] ^= 0x40;
+            }
+            Ok(())
+        }
+        fn sync(&mut self) -> Result<(), ()> {
+            self.0.sync()
+        }
+        fn recreate(&mut self, at: u64, len: u64) -> Result<(), ()> {
+            self.0.recreate(at, len)
+        }
+    }
+    /// The card, with its transport box opened as `WriteFirst`.
+    struct NoRead<'a>(&'a mut Card, bool);
+    impl Files for NoRead<'_> {
+        type Storage = WriteFirst;
+        fn journal(&mut self) -> Option<Self::Storage> {
+            self.0.journal().map(|open| WriteFirst(open, true, false))
+        }
+        fn mover(&mut self) -> Option<Self::Storage> {
+            self.0.mover().map(|open| WriteFirst(open, false, self.1))
+        }
+    }
+
+    #[test]
+    fn a_delivery_reads_the_box_only_back_after_writing_it() {
+        let mut card = card(Some(clean(Slot::A, 0, None)));
+        let (records, tags) = a_box(3);
+        let done = deliver(&mut NoRead(&mut card, false), &records, &tags).unwrap();
+        assert_eq!(done.count, 3);
+        assert_eq!(record_in_force(&mut card).delivery, Some(done.crc));
+        // A box that does not read back as written is not announced.
+        let mut card = self::card(Some(clean(Slot::A, 0, None)));
+        let before = record_in_force(&mut card);
+        assert!(deliver(&mut NoRead(&mut card, true), &records, &tags).is_err());
+        assert_eq!(record_in_force(&mut card), before);
     }
 
     #[test]
