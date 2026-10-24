@@ -29,8 +29,9 @@ pub enum Fault {
     JournalRecovery = 16,
     RewardState = 18,
     RewardClaim = 19,
-    /// Transporter: the transport box handed to the delivery is no whole
-    /// box that holds Pokémon (`transporter_payload::storage_worker`).
+    /// Transporter: the delivery did not happen, or whether Bank holds it
+    /// cannot be told; the second number says which
+    /// (`transporter_payload::storage_worker::delivery_reply`).
     Delivery = 20,
     /// Test builds: a Save and Quit stopped on purpose by the chosen
     /// rehearsal (`rehearsal`). Its second number is the stop point: 1

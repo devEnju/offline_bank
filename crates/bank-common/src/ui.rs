@@ -138,7 +138,7 @@ pub unsafe fn stop(
     let Ok(Some(Text { object, room, len })) = (unsafe { text(ui) }) else {
         return Ok(());
     };
-    let Some(home) = numbers::home_page(&room[..len], label.units(), first, second) else {
+    let Some(home) = numbers::home_page(&room[..len], label, first, second) else {
         return Ok(());
     };
     let Some(reason) = reason else {

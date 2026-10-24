@@ -288,7 +288,7 @@ mod native {
         let Ok(Some(Text { room, len, .. })) = (unsafe { shared::text(object) }) else {
             return Ok(());
         };
-        let Some(home) = numbers::home_page(&room[..len], label.units(), first, second) else {
+        let Some(home) = numbers::home_page(&room[..len], label, first, second) else {
             return Ok(());
         };
         WHOLE.store(true, Ordering::Relaxed);

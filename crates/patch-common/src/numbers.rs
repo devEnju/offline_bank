@@ -130,7 +130,7 @@ pub fn line(first: u32, second: u32) -> [u16; LEN] {
 
 /// The room for the page about the HOME Menu with its label and numbers.
 /// The line has 11 to 42 units in the ten languages of the original.
-pub const HOME_ROOM: usize = 128;
+const HOME_ROOM: usize = 128;
 
 /// The page about the HOME Menu, complete: the original's line, `label` on
 /// the second line and the numbers on the third.
@@ -149,8 +149,9 @@ impl HomePage {
 /// was loaded. `None` unless it is one line and all of it, the label and
 /// the numbers fit: the screen then shows the line alone, unchanged, and
 /// never a part of what belongs under it.
-pub fn home_page(notice: &[u16], label: &[u16], first: u32, second: u32) -> Option<HomePage> {
-    if notice.is_empty() || label.is_empty() || first_line(notice) != notice.len() {
+pub fn home_page(notice: &[u16], label: &Label, first: u32, second: u32) -> Option<HomePage> {
+    let label = label.units();
+    if notice.is_empty() || first_line(notice) != notice.len() {
         return None;
     }
     let len = notice.len() + 1 + label.len() + 1 + LEN;
@@ -203,7 +204,7 @@ pub fn error_pages(text: &mut [u16], len: usize, home: &HomePage) -> Option<usiz
 /// messages, and the page's text. Answers the new length, or `None` with
 /// the message untouched if the room is too small. As in `put`, the unit
 /// after the message stays free for its end mark.
-pub fn append_page(text: &mut [u16], len: usize, page: &[u16]) -> Option<usize> {
+fn append_page(text: &mut [u16], len: usize, page: &[u16]) -> Option<usize> {
     let lead = [CONTROL, 1, NEW_PAGE, LINE_FEED];
     let new_len = len.checked_add(lead.len())?.checked_add(page.len())?;
     if len > text.len() || new_len >= text.len() {
@@ -306,7 +307,7 @@ mod tests {
 
     #[test]
     fn the_home_page_is_the_line_the_label_and_the_numbers() {
-        let label = units("v0.4.0-test");
+        let label = Label::new(b"v0.4.0", b"-test").unwrap();
         let page = home_page(&units("HOME"), &label, 3, 0x7a00_0201).unwrap();
         assert_eq!(
             String::from_utf16(page.units()).unwrap(),
@@ -315,20 +316,19 @@ mod tests {
         // A line that is no single line, or nothing, is not a page.
         assert_eq!(home_page(&units("A\nB"), &label, 3, 0), None);
         assert_eq!(home_page(&[], &label, 3, 0), None);
-        assert_eq!(home_page(&units("HOME"), &[], 3, 0), None);
     }
 
     #[test]
     fn a_home_page_that_does_not_fit_is_none_and_never_shortened() {
-        let label = units("v0.4.0-test");
-        let fits = HOME_ROOM - 2 - label.len() - LEN;
+        let label = Label::new(b"v0.4.0", b"-test").unwrap();
+        let fits = HOME_ROOM - 2 - label.units().len() - LEN;
         assert!(home_page(&vec![0x41; fits], &label, 1, 2).is_some());
         assert_eq!(home_page(&vec![0x41; fits + 1], &label, 1, 2), None);
     }
 
     #[test]
     fn the_home_page_alone_replaces_the_line_where_it_fits() {
-        let page = home_page(&units("HOME"), &units("v1"), 1, 2).unwrap();
+        let page = home_page(&units("HOME"), &Label::new(b"v1", b"").unwrap(), 1, 2).unwrap();
         let mut text = vec![0xffff; page.units().len() + 1];
         assert_eq!(put_home(&mut text, &page), Some(page.units().len()));
         assert_eq!(&text[..page.units().len()], page.units());
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn the_error_screen_is_the_reason_as_it_is_and_then_the_home_page() {
         let label = Label::new(b"v1.2.3", b"-test").unwrap();
-        let home = home_page(&message(&[1]), label.units(), 3, 0x7a00_0201).unwrap();
+        let home = home_page(&message(&[1]), &label, 3, 0x7a00_0201).unwrap();
         // Bank's failure message, cut after its first page.
         let reason = message(&[2, 3]);
         let mut buffer = vec![0xffff; 128];
