@@ -249,7 +249,7 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `5` | The stored data is not valid |
 | `6` | Console clock |
 | `9` | Loading |
-| `A`–`E` | Game save |
+| `A`–`E` | Game save; `D` in Transporter: the save before the question could not be written, on the SD card (the console's code) or of a Virtual Console title (0) |
 | `F` | Preparing the save |
 | `10` | Finishing or undoing an interrupted save |
 | `12`, `13` | Rewards |

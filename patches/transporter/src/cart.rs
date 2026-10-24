@@ -28,7 +28,7 @@ use core::{
     cell::UnsafeCell,
     mem::transmute,
     slice,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU32, AtomicU8, Ordering},
 };
 use patch_common::native::read_word;
 
@@ -110,7 +110,7 @@ unsafe extern "aapcs" fn cart_id(out: *mut u32, task: *const u8) -> i32 {
         // language screen are offered; a Gen 5 cartridge in that language
         // hides the save of its own game.
         let cartridge = (code >= 0).then(|| unsafe { out.read() }.to_le_bytes());
-        note(WriteFault::None);
+        note(WriteFault::None, 0);
         saves.scan(cartridge, language::filter_letter(), |path, offsets| {
             sdcard::identity(&mut Sd, path, offsets)
         });
@@ -170,7 +170,7 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
             unsafe { transmute(ORIGINAL_CART_WRITE) };
         let code = unsafe { original(kind, offset, buffer, length) };
         if code < 0 {
-            note(WriteFault::Cartridge);
+            note(WriteFault::Cartridge, code as u32);
         }
         return code;
     };
@@ -180,23 +180,28 @@ pub unsafe extern "aapcs" fn transporter_cart_write(
     match sdcard::write(&mut Sd, saves, save, offset, bytes, chunk) {
         Ok(()) => 0,
         Err(failed) => {
-            note(WriteFault::of_save(saves, failed));
+            note(WriteFault::of_save(saves, failed), failed.result());
             FAILED
         }
     }
 }
 
 /// The last write to the game that failed in this session (`WriteFault`),
-/// for the message the original shows for it. Written by the cartridge
-/// task's thread, read by the main thread once that task has ended.
+/// and the console's result for it, for the message the original shows for
+/// it. Written by the cartridge task's thread, read by the main thread once
+/// that task has ended.
 static WRITE_FAULT: AtomicU8 = AtomicU8::new(0);
-fn note(fault: WriteFault) {
+static WRITE_RESULT: AtomicU32 = AtomicU32::new(0);
+fn note(fault: WriteFault, result: u32) {
+    WRITE_RESULT.store(result, Ordering::Relaxed);
     WRITE_FAULT.store(fault as u8, Ordering::Release);
 }
-/// What the last write to the game that failed left
-/// (`hooks::transporter_message_text`). Asking clears it.
-pub fn take_write_fault() -> WriteFault {
-    WriteFault::of(WRITE_FAULT.swap(0, Ordering::Acquire))
+/// What the last write to the game that failed left, and the console's
+/// result for it, 0 where none is known (`hooks::transporter_message_text`).
+/// Asking clears it.
+pub fn take_write_fault() -> (WriteFault, u32) {
+    let fault = WriteFault::of(WRITE_FAULT.swap(0, Ordering::Acquire));
+    (fault, WRITE_RESULT.swap(0, Ordering::Relaxed))
 }
 
 // 00244F10 (was: str r6, [r4, #0x10], state = 3). r4 = list task.

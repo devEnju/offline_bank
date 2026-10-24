@@ -21,7 +21,7 @@ use bank_common::{fault::Fault, worker::WorkerError};
 use core::{
     mem::transmute,
     slice,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
@@ -47,9 +47,12 @@ const LIST_BEGAN: usize = 0x70;
 
 /// The original updates the entries replace in their vtables and run
 /// behind their own work: the game search, reading the chosen game, the
-/// question and the transfer.
+/// Bank task, the question and the transfer.
 const SEARCH_UPDATE: usize = 0x0024_6f04;
 const READ_UPDATE: usize = 0x0024_55d0;
+const BANK_UPDATE: usize = 0x0024_8c68;
+/// The Bank task's shared UI, on which it shows its messages (`00248E78`).
+const BANK_UI: usize = 0x38;
 const QUESTION_UPDATE: usize = 0x0024_7304;
 const TRANSFER_UPDATE: usize = 0x0024_a0c4;
 /// The game search's first state, which starts the cartridge scan; its
@@ -530,6 +533,55 @@ unsafe fn update(raw: *mut u8, id: u32, update: usize) -> u32 {
     }
     unsafe { original(update, task.raw()) }
 }
+/// Replaces the Bank task's update in its vtable (`002E697C`, was
+/// `00248C68`), the task that saves the original's note into the chosen
+/// game. A note save that the SD card refused, but for lack of space, that
+/// may have left a save on the SD card half-written, or of a Virtual
+/// Console title, ends on the error screen with `Fault::GameWrite` and the
+/// console's result: the message-text entry notes it when the original shows
+/// its failure message (`ui::shown`), and this entry puts the error screen
+/// in its place in the same frame, before it is drawn. From then on the
+/// task stays on it, as the search and the transfer do. Every other frame is
+/// the original's update.
+/// # Safety
+/// The original's task driver supplies the live Bank task, on the main
+/// thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_bank(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_BANK]) }) else {
+        return 1;
+    };
+    {
+        let Some(mut state) = STATE.take() else {
+            // Its state is a hook's: this frame waits, as Bank's hooks do.
+            return 0;
+        };
+        if unsafe { state.stopped(task.pointer(BANK_UI)) } == Some(true) {
+            return 0;
+        }
+    }
+    // The failure message names the chosen game's kind (`ui::Chosen`).
+    if let Ok(manager) = task.pointer(TASK_MANAGER) {
+        MANAGER.store(manager as usize, Ordering::Relaxed);
+    }
+    NUMBERS_DUE.store(false, Ordering::Relaxed);
+    NOTE_SAVE.store(true, Ordering::Relaxed);
+    let finished = unsafe { original(BANK_UPDATE, raw) };
+    NOTE_SAVE.store(false, Ordering::Relaxed);
+    if !NUMBERS_DUE.swap(false, Ordering::Relaxed) {
+        return finished;
+    }
+    let Some(mut state) = STATE.take() else {
+        return finished;
+    };
+    state.fail(Fault::GameWrite.with(NUMBERS.load(Ordering::Relaxed)));
+    match unsafe { state.stopped(task.pointer(BANK_UI)) } {
+        Some(true) => 0,
+        // No screen to show it on: the task ends as without one.
+        _ => finished,
+    }
+}
+
 /// The original update at `address`.
 unsafe fn original(address: usize, raw: *mut u8) -> u32 {
     let update: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(address) };
@@ -585,6 +637,14 @@ static MANAGER: AtomicUsize = AtomicUsize::new(0);
 /// What the delivery answered last (`ui::Delivery`, as its word), for the
 /// message the transfer shows next: taken by the message-text entry.
 static DELIVERY: AtomicU32 = AtomicU32::new(0);
+/// The original update of the Bank task runs (`transporter_bank`): a
+/// failure message shown now is the one after its note save.
+static NOTE_SAVE: AtomicBool = AtomicBool::new(false);
+/// The error screen is to take the place of the failure message the Bank
+/// task just showed (`Shown::Numbers`), with this second number; taken by
+/// the Bank task's entry.
+static NUMBERS_DUE: AtomicBool = AtomicBool::new(false);
+static NUMBERS: AtomicU32 = AtomicU32::new(0);
 
 /// Replaces the load of a message in the original's "show a message"
 /// (`0019B578`): the original loads it, and what is shown follows from what
@@ -606,7 +666,7 @@ pub unsafe extern "aapcs" fn transporter_message_text(
         let fault = if matches!(message, MESSAGE_FAILURE | MESSAGE_NO_CARD) {
             cart::take_write_fault()
         } else {
-            WriteFault::None
+            (WriteFault::None, 0)
         };
         let manager = MANAGER.load(Ordering::Relaxed) as *mut u8;
         let chosen = if patch_common::native::pointer(manager as u32).is_none() {
@@ -623,7 +683,8 @@ pub unsafe extern "aapcs" fn transporter_message_text(
         } else {
             ui::Delivery::None
         };
-        ui::shown(message, fault, chosen, delivery)
+        let note_save = NOTE_SAVE.load(Ordering::Relaxed);
+        ui::shown(message, fault, chosen, delivery, note_save)
     };
     match shown {
         Shown::SdFull => {
@@ -634,10 +695,16 @@ pub unsafe extern "aapcs" fn transporter_message_text(
         Shown::Instead(instead) => {
             return unsafe { ui::load_message(messages, instead, string) };
         }
+        // The Bank task's entry puts the error screen in its place before
+        // the frame is drawn.
+        Shown::Numbers(second) => {
+            NUMBERS.store(second, Ordering::Relaxed);
+            NUMBERS_DUE.store(true, Ordering::Relaxed);
+        }
         Shown::Whole | Shown::SecondPage => {}
     }
     let loaded = unsafe { ui::load_message(messages, message, string) };
-    if shown != Shown::Whole {
+    if shown == Shown::SecondPage {
         unsafe { patch_common::ui::keep_rest(string) };
     }
     loaded

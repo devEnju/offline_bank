@@ -10,6 +10,7 @@
 
 use crate::sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE};
 use offline_core::Crc32;
+use patch_common::fs_result::lack_of_space;
 
 /// The SDK's open flags: read, read and write, write and create.
 pub const OPEN_READ: u32 = 1;
@@ -19,15 +20,24 @@ pub const OPEN_WRITE_CREATE: u32 = 6;
 pub const COPY_CHUNK: usize = 0x8000;
 const _: () = assert!(SAVE_SIZE % COPY_CHUNK as u64 == 0);
 
-/// Why the card refused to open or write a file: for lack of space
-/// (`patch_common::fs_result::lack_of_space`), or for anything else.
+/// Why the card refused to open or write a file: the console's result, 0
+/// where a call reported none (a read that came short, a close that
+/// failed, a copy that does not read back as the save).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refused {
-    pub full: bool,
+    pub result: u32,
 }
 impl Refused {
-    pub const OTHER: Self = Self { full: false };
-    pub const FULL: Self = Self { full: true };
+    pub const OTHER: Self = Self { result: 0 };
+    /// The console's result for a card without room.
+    pub const FULL: Self = Self {
+        result: 0xc860_44d2,
+    };
+    /// For lack of space, by the original's own test
+    /// (`patch_common::fs_result::lack_of_space`).
+    pub const fn full(self) -> bool {
+        lack_of_space(self.result)
+    }
 }
 
 /// Why a write to a save did not count.
@@ -37,8 +47,17 @@ pub enum Unwritten {
     /// refused it.
     Before(Refused),
     /// The save may hold part of it: the write, its read-back or the close
-    /// failed.
-    After,
+    /// failed, with the console's result of the write (0 for the others).
+    After(u32),
+}
+impl Unwritten {
+    /// The console's result, for the error screen's second number.
+    pub const fn result(self) -> u32 {
+        match self {
+            Self::Before(refused) => refused.result,
+            Self::After(result) => result,
+        }
+    }
 }
 
 /// What a write to the game that failed leaves, for the message the
@@ -74,7 +93,7 @@ impl WriteFault {
     pub fn of_save(saves: &Saves, failed: Unwritten) -> Self {
         match failed {
             Unwritten::Before(refused) if !saves.touched() => {
-                if refused.full {
+                if refused.full() {
                     Self::Full
                 } else {
                     Self::Untouched
@@ -214,18 +233,18 @@ pub fn write<C: Card>(
     let file = open_save(card, save, false, OPEN_READ_WRITE).map_err(Unwritten::Before)?;
     saves.touch();
     file.write(u64::from(offset), bytes, true)
-        .map_err(|_| Unwritten::After)?;
+        .map_err(|refused| Unwritten::After(refused.result))?;
     for (index, written) in bytes.chunks(COPY_CHUNK).enumerate() {
         let read = &mut chunk[..written.len()];
         let at = u64::from(offset) + (index * COPY_CHUNK) as u64;
         if !file.read(at, read) || read != written {
-            return Err(Unwritten::After);
+            return Err(Unwritten::After(0));
         }
     }
     if file.close() {
         Ok(())
     } else {
-        Err(Unwritten::After)
+        Err(Unwritten::After(0))
     }
 }
 
@@ -237,12 +256,12 @@ mod native {
     use super::{Card, Refused, SdFile};
     use crate::program::Transporter15;
     use core::mem::transmute;
-    use patch_common::{file, fs_result::lack_of_space, program::Program};
+    use patch_common::{file, program::Program};
 
     /// How the card refused a call that failed with `code`.
     fn refused(code: file::Code) -> Refused {
         Refused {
-            full: lack_of_space(code as u32),
+            result: code as u32,
         }
     }
 
@@ -576,7 +595,7 @@ mod tests {
             ..Faults::default()
         };
         let torn = write(&mut sim, &mut saves, save, 0x100, &[1, 2, 3, 4], &mut chunk);
-        assert_eq!(torn, Err(Unwritten::After));
+        assert_eq!(torn, Err(Unwritten::After(0)));
         assert_eq!(
             WriteFault::of_save(&saves, torn.unwrap_err()),
             WriteFault::Torn

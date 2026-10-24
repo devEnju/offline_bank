@@ -25,7 +25,7 @@ pub static PROGRAM: Program = Program {
     startup_call: 0x00103D9C,
 };
 
-const EDITS: [Edit; 55] = [
+const EDITS: [Edit; 56] = [
     (0x00103D9C, 0xEB000228, Bl(Sym("patch_bootstrap_startup"))),
     (0x00242EF8, 0xEBFFFF28, Bl(Sym("transporter_next"))),
     (
@@ -50,6 +50,7 @@ const EDITS: [Edit; 55] = [
     (0x00248EBC, 0xE3A01022, Raw(0xE3A0100B)),
     (0x00248F88, 0x0AFFFFF4, Raw(0x0AFFFFBA)),
     (0x002E66C4, 0x002455D0, Ptr(Sym("transporter_read"))),
+    (0x002E697C, 0x00248C68, Ptr(Sym("transporter_bank"))),
     (0x002E67D0, 0x00247304, Ptr(Sym("transporter_question"))),
     (0x002E6A9C, 0x0024A0C4, Ptr(Sym("transporter_transfer"))),
     (0x00246208, 0xEBFD5552, Raw(0xE3A00001)),
@@ -143,7 +144,7 @@ const EDITS: [Edit; 55] = [
 /// before SVC 08. Checked native objects: the factory's bound and case
 /// targets, constructor vtable literals, the update slots that are no edits,
 /// and the Bank object's construction at +0xCC.
-const RELIES: [(u32, u32); 31] = [
+const RELIES: [(u32, u32); 30] = [
     (0x001E3FC8, 0xE3550020),
     (0x001E3FD0, 0x92850020),
     (0x001E3FD8, 0x9A000008),
@@ -170,7 +171,6 @@ const RELIES: [(u32, u32); 31] = [
     (0x0019D650, 0x002E67C4),
     (0x002E668C, 0x0024538C),
     (0x002E6624, 0x002445A4),
-    (0x002E697C, 0x00248C68),
     (0x0010DA38, 0x002E6DD0),
     (0x0010D8FC, 0xE5840000),
     (0x0010624C, 0xE58400CC),
@@ -196,7 +196,7 @@ const PROTECTED: [(u32, u32); 15] = [
     (0x002E6774, 0xC),
     (0x002E6618, 0x10),
     (0x002E66B8, 0xC),
-    (0x002E6970, 0x10),
+    (0x002E6970, 0xC),
     (0x002E67C4, 0xC),
     (0x002E6DD0, 0x18),
 ];
@@ -209,7 +209,7 @@ pub fn expectation() -> Expectation {
         relies: RELIES.to_vec(),
         protected: PROTECTED.to_vec(),
         router: "transporter_next",
-        entries: 31,
+        entries: 32,
         menu_edits: 0,
         extra,
         checks: &[
