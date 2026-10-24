@@ -15,10 +15,10 @@ pub const LEN: usize = 17;
 const LINE: usize = 3;
 
 /// The version this package was built as. A release (`OFFLINE_BANK_RELEASE`,
-/// which `Build-Patches.ps1 -Release` sets, docs/building.md) has the
+/// which `cargo xtask release` sets, docs/building.md) has the
 /// workspace's version from `Cargo.toml`; every other build is a draft and
 /// has none, but names the commit it was built from (`OFFLINE_BANK_COMMIT`,
-/// which `Build-Patches.ps1` sets to the short hash), as "draft-a782e1b".
+/// which `cargo xtask build` sets to the short hash), as "draft-a782e1b".
 pub const VERSION: &[u8] = match option_env!("OFFLINE_BANK_RELEASE") {
     Some(_) => concat!("v", env!("CARGO_PKG_VERSION")).as_bytes(),
     None => &DRAFT_OF_COMMIT,

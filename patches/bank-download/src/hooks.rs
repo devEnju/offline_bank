@@ -17,7 +17,7 @@ use bank_common::{
     fs,
     native_bank::NativeBank,
     program::Bank15,
-    task::{checked_pointer, refuse_home, Notice, Task, TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN},
+    task::{refuse_home, BankTask, Notice, Task, TASK_OPEN, TASK_REWARD_GUARD, TASK_SCAN},
     ui,
     worker::WorkerError,
 };
@@ -25,10 +25,10 @@ use core::mem::transmute;
 use offline_core::native_blob::BLOB_SIZE;
 use patch_common::{
     exclusive::Exclusive,
-    native::{read_word, write_word, Ended},
+    native::{follow, read_word, write_word, Ended},
     program::Program,
     spinner::{self, Spinner},
-    worker::{JobId, Service, Shared, Worker},
+    worker::{Polled, Requests, Service, Shared, Worker},
 };
 
 /// The numbers when a hook itself could not go on: a native object was not
@@ -108,9 +108,8 @@ impl Service for Files {
 }
 
 struct Runtime {
-    worker: Option<Worker<Files>>,
-    owner: usize,
-    job: Option<JobId>,
+    /// The worker and the job out, for the task that submitted it.
+    requests: Requests<Files, usize>,
     stage: Stage,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
@@ -126,9 +125,7 @@ struct Runtime {
 // main thread, which owns the original's objects the state points to.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
-        worker: None,
-        owner: 0,
-        job: None,
+        requests: Requests::new(),
         stage: Stage::Looking,
         numbers: None,
         panel: false,
@@ -149,7 +146,7 @@ fn held(first: u32, spinner: &Spinner) -> bool {
 
 impl Runtime {
     fn worker(&mut self) -> Result<&mut Worker<Files>, [u32; 2]> {
-        unsafe { Worker::get(&mut self.worker) }.map_err(WorkerError::numbers)
+        unsafe { self.requests.worker() }.map_err(WorkerError::numbers)
     }
     fn decide(&mut self, numbers: [u32; 2]) {
         self.numbers = Some(numbers);
@@ -162,25 +159,24 @@ impl Runtime {
         task: Task,
         begin: impl FnOnce(&mut Self) -> Result<Job, [u32; 2]>,
     ) -> Result<Option<Reply>, [u32; 2]> {
-        if self.job.is_none() {
+        if !self.requests.is_out() {
             let job = begin(self)?;
-            let submitted = unsafe { self.worker()?.submit(job) };
-            self.job = Some(submitted.map_err(WorkerError::numbers)?);
-            self.owner = task.raw() as usize;
+            let submitted = unsafe { self.requests.submit(task.raw() as usize, job) };
+            submitted.map_err(WorkerError::numbers)?;
             return Ok(None);
         }
-        if self.owner != task.raw() as usize {
-            return Err(NATIVE);
+        match self.requests.poll(task.raw() as usize) {
+            Polled::Waiting => Ok(None),
+            Polled::Reply(reply) => Ok(Some(reply)),
+            Polled::Failed(error) => Err(WorkerError::numbers(error)),
+            // Another task's job has ended; this task's work is not there.
+            Polled::Foreign => Err(NATIVE),
         }
-        let mut job = self.job;
-        let polled = self.worker()?.collect(&mut job);
-        self.job = job;
-        polled.map_err(WorkerError::numbers)
     }
     /// Task 3 before anything is contacted: the loading panel, and once it
     /// has stood for 0.5 s the worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
-        if self.job.is_none() {
+        if !self.requests.is_out() {
             if !self.panel {
                 let panel = task.ui().map_err(|_| NATIVE)?;
                 unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
@@ -270,7 +266,6 @@ unsafe fn scan(raw: *mut u8, original: usize) -> u32 {
             Ok(None) => return 0,
             Ok(Some(Reply::Absent)) => {
                 state.stage = Stage::Preparing;
-                state.owner = 0;
                 state.panel = false;
                 task.end_busy();
                 unsafe { write_word(raw, 0x10, 0) };
@@ -366,8 +361,8 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
     // one. This patch creates nothing; it ends the task as failed, which
     // the original answers with cleanup and disconnect.
     if update && unsafe { read_word(raw, 0x10) } == 0 {
-        let reply = checked_pointer(unsafe { read_word(raw, REPLY) });
-        if reply.is_ok_and(|reply| unsafe { reply.add(REPLY_BANK).read() } == NO_BANK) {
+        let reply = unsafe { follow(raw, REPLY) };
+        if reply.is_some_and(|reply| unsafe { reply.add(REPLY_BANK).read() } == NO_BANK) {
             state.decide([REFUSED, NO_BANK_ON_SERVER]);
             return task.finish(false);
         }
@@ -424,7 +419,6 @@ pub unsafe extern "aapcs" fn bank_download_save(raw: *mut u8) -> u32 {
             Err(numbers) => state.decide(numbers),
         }
     }
-    state.owner = 0;
     cancel(raw)
 }
 

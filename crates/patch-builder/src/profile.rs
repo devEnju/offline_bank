@@ -64,7 +64,7 @@ pub type Edit = (u32, u32, Word);
 /// One kind of package of a program.
 pub struct Profile {
     /// The package kind: its name on the command line, in the manifest and
-    /// in the scripts.
+    /// in xtask.
     pub name: &'static str,
     pub program: &'static Program,
     /// Every edit but the start-up hook's bytes, in groups that profiles

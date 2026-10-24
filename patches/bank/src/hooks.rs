@@ -9,7 +9,7 @@ use crate::{
     },
     panel::{self, Panel},
     save_steps,
-    storage_worker::{BankWorker, GameEvidence, Job, Reply},
+    storage_worker::{BankRequests, BankWorker, GameEvidence, Job, Reply},
     transaction::Trainer,
 };
 use bank_common::{
@@ -18,8 +18,8 @@ use bank_common::{
     native_bank::NativeBank,
     program::Bank15,
     task::{
-        checked_pointer, refuse_home, Notice, Task, LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS,
-        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN, TEXT,
+        refuse_home, BankTask, Notice, Task, LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS,
+        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
     },
     worker::WorkerError,
 };
@@ -32,10 +32,10 @@ use offline_core::{
 };
 use patch_common::{
     exclusive::Exclusive,
-    native::{read_word, write_word, Ended},
+    native::{code, follow, pointer, read_word, write_word, Ended, NotNative},
     program::Program,
     spinner::{self, Spinner},
-    worker::{JobId, Worker},
+    worker::{Polled, Requests},
 };
 
 /// `001d5ec0(helper)`: the Pokémon in the Bank's hundred boxes, with the
@@ -103,11 +103,11 @@ enum Step {
     Save(save_steps::Step),
 }
 struct Runtime {
-    worker: Option<BankWorker>,
     game: Option<NativeGameSession>,
     owner: usize,
     step: Step,
-    job: Option<JobId>,
+    /// The worker and the job out, for the task that submitted it.
+    requests: BankRequests,
     baseline: Option<Baseline>,
     fault: Fault,
     native_result: u32,
@@ -177,11 +177,10 @@ struct ClaimProbe {
 // main thread, which owns the original's objects the state points to.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
-        worker: None,
         game: None,
         owner: 0,
         step: Step::Idle,
-        job: None,
+        requests: Requests::new(),
         baseline: None,
         fault: Fault::None,
         native_result: 0,
@@ -220,14 +219,10 @@ fn game_count(task: Task) -> Result<Option<u32>, Fault> {
     match unsafe { native_game::selected(task.pointer(8)?) } {
         Ok((game, kind)) => unsafe {
             let boxes = game.add(if kind.gen7() { 0x769dc } else { 0x1e51c });
-            let vtable = checked_pointer(read_word(boxes, 0))?;
-            let address = read_word(vtable, 0xc);
-            if address & 3 != 0 || !TEXT.contains(&address) {
-                return Err(Fault::NativeObject);
-            }
+            let vtable = follow(boxes, 0).ok_or(NotNative)?;
+            let address = code::<Bank15>(read_word(vtable, 0xc)).ok_or(Fault::NativeObject)?;
             let heap: unsafe extern "aapcs" fn(u32) -> u32 = transmute(HEAP);
-            let count: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 =
-                transmute(address as usize);
+            let count: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 = transmute(address);
             Ok(Some(count(boxes, heap(0x17), 1)))
         },
         Err(NativeGameError::NotLoaded) => Ok(None),
@@ -238,7 +233,7 @@ fn game_count(task: Task) -> Result<Option<u32>, Fault> {
 /// for the transfer record and for the Miles.
 fn bank_count(task: Task) -> Result<u32, Fault> {
     let bank = task.bank_pointer()?;
-    let helper = checked_pointer(unsafe { read_word(bank, 0xbb520) })?;
+    let helper = unsafe { follow(bank, 0xbb520) }.ok_or(NotNative)?;
     let count: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(BANK_COUNT) };
     Ok(unsafe { count(helper) })
 }
@@ -281,15 +276,11 @@ fn gen7_gift_count(game: *mut u8) -> u32 {
 /// native 002a9ed8..002a9ef0.
 fn gen6_gift(game: *mut u8) -> Result<*mut u8, Fault> {
     let owner = unsafe { game.add(0x1c384) };
-    let vtable = checked_pointer(unsafe { read_word(owner, 0) })?;
-    let address = unsafe { read_word(vtable, 8) };
-    if address & 3 != 0 || !TEXT.contains(&address) {
-        return Err(Fault::NativeObject);
-    }
-    let buffer: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 =
-        unsafe { transmute(address as usize) };
+    let vtable = unsafe { follow(owner, 0) }.ok_or(NotNative)?;
+    let address = code::<Bank15>(unsafe { read_word(vtable, 8) }).ok_or(Fault::NativeObject)?;
+    let buffer: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 = unsafe { transmute(address) };
     let gift = unsafe { buffer(owner) };
-    checked_pointer(gift as u32)?;
+    pointer(gift as u32).ok_or(NotNative)?;
     Ok(gift)
 }
 impl Runtime {
@@ -299,11 +290,9 @@ impl Runtime {
     /// the loading screen stays and HOME is refused.
     fn report_failure(&mut self, task: Task) -> u32 {
         if !self.stopped {
-            if let (Some(_), Some(worker)) = (self.job, self.worker.as_mut()) {
-                // A job that is still out holds what the task lent it.
-                if let Ok(None) = worker.collect(&mut self.job) {
-                    return 0;
-                }
+            // A job that is still out holds what the task lent it.
+            if !self.requests.settle() {
+                return 0;
             }
             self.stopped = true;
         }
@@ -317,7 +306,7 @@ impl Runtime {
         error.fault()
     }
     fn worker(&mut self) -> Result<&mut BankWorker, Fault> {
-        match unsafe { Worker::get(&mut self.worker) } {
+        match unsafe { self.requests.worker() } {
             Ok(worker) => Ok(worker),
             Err(error) => {
                 self.native_result = error.native_result();
@@ -326,27 +315,27 @@ impl Runtime {
         }
     }
     fn submit(&mut self, task: Task, step: Step, job: Job) -> Result<(), Fault> {
-        if self.job.is_some() {
+        if self.requests.is_out() {
             return Err(Fault::Reentrant);
         }
         // Busy protection retains every archive and frozen native block until poll.
-        let result = unsafe { self.worker()?.submit(job) };
-        let id = result.map_err(|e| self.worker_error(e))?;
+        let result = unsafe { self.requests.submit(task.raw() as usize, job) };
+        result.map_err(|e| self.worker_error(e))?;
         // Files are being read or written until `complete`.
         refuse_home(true);
         self.owner = task.raw() as usize;
         self.step = step;
-        self.job = Some(id);
         Ok(())
     }
     fn poll(&mut self, task: Task) -> Result<Option<Reply>, Fault> {
-        if self.owner != task.raw() as usize {
-            return Err(Fault::NativeObject);
+        match self.requests.poll(task.raw() as usize) {
+            Polled::Waiting => Ok(None),
+            Polled::Reply(reply) => Ok(Some(reply)),
+            Polled::Failed(error) => Err(self.worker_error(error)),
+            // Another task's job has ended; this task's work is not
+            // there.
+            Polled::Foreign => Err(Fault::NativeObject),
         }
-        let mut job = self.job;
-        let result = self.worker()?.collect(&mut job);
-        self.job = job;
-        result.map_err(|error| self.worker_error(error))
     }
     /// Stages the live native body for the worker, which cuts it into files.
     /// For a save, the worker keeps its checksum to check the Bank it reads
@@ -616,7 +605,7 @@ impl Runtime {
         let down = task
             .ui()
             .is_ok_and(|ui| !unsafe { bank_common::ui::loading_shown(ui) }.unwrap_or(false));
-        if down && self.job.is_none() {
+        if down && !self.requests.is_out() {
             refuse_home(false);
         }
     }
@@ -630,7 +619,6 @@ impl Runtime {
     fn end_task(&mut self, task: Task) -> bool {
         self.owner = 0;
         self.step = Step::Idle;
-        self.job = None;
         self.game = None;
         task.end_busy();
         true
@@ -826,7 +814,7 @@ impl Runtime {
                     .ok_or(Fault::StorageInvalid)?
                     .gen7();
                 let ui = task.ui()?;
-                let heap = checked_pointer(unsafe { read_word(task.raw(), 0xc) })?;
+                let heap = task.pointer(0xc)?;
                 unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
                 self.turn_back = true;
                 self.step = Step::TurnBack;
@@ -1118,7 +1106,7 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
         || (crate::navigation::takes_panel(destination) && unsafe { panel_left(manager) })
     {
         refuse_home(true);
-    } else if state.job.is_none() {
+    } else if !state.requests.is_out() {
         refuse_home(false);
     }
     // The task's set-up puts up its loading panel on a later frame; its
@@ -1129,10 +1117,25 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     destination
 }
 
+// The original's "show a message" function, 001d6650(ui, kind, message,
+// wait), its first instruction (was: push {r4-r8, lr}); r3 = whether the
+// message waits for an answer (`patch_common`'s `message_stub!`).
+patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
+/// A message that waits for an answer lets HOME and sleep through, unless a
+/// job is still out. A hook that holds the state shows one, or calls the
+/// original's update that does (the welcome, the rewards), only while no job
+/// is out. The original's own bit for a game save that is being written is
+/// not this one and stays as it is.
+extern "aapcs" fn message_waits() {
+    if STATE.take().is_none_or(|state| !state.requests.is_out()) {
+        refuse_home(false);
+    }
+}
+
 /// Whether the task that has just ended leaves the loading panel on screen:
 /// Bank loading hands its panel to the reward step (`navigation::takes_panel`).
 unsafe fn panel_left(manager: *mut u8) -> bool {
-    let Ok(raw) = checked_pointer(unsafe { read_word(manager, 0x10) }) else {
+    let Some(raw) = (unsafe { follow(manager, 0x10) }) else {
         return false;
     };
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_LOAD, TASK_REWARD_GUARD]) }) else {
@@ -1279,11 +1282,11 @@ pub unsafe extern "aapcs" fn bank_offline_save(raw: *mut u8) -> u32 {
 fn freeze_accrual_date(task: Task) -> Result<(), Fault> {
     let session = task.pointer(0x28)?;
     let bank = task.bank_pointer()?;
-    let header = checked_pointer(unsafe { read_word(bank, 0xbb528) })?;
+    let header = unsafe { follow(bank, 0xbb528) }.ok_or(NotNative)?;
     let date_pointer: unsafe extern "aapcs" fn(*mut u8) -> *mut u8 =
         unsafe { transmute(REWARD_DATE) };
     let date = unsafe { date_pointer(header) };
-    checked_pointer(date as u32)?;
+    pointer(date as u32).ok_or(NotNative)?;
     // Native timestamp has minute precision. Matching the session date gives
     // zero whole elapsed hours, so the native hourly accrual adds nothing on
     // top of the accounting applied when the Bank was loaded, which keeps
@@ -1534,10 +1537,10 @@ pub unsafe extern "aapcs" fn bank_test_menu_chosen(listener: *mut u8, entry: u32
         3 => Rehearsal::TearBoxes,
         _ => return unsafe { original(listener, entry) },
     };
-    if checked_pointer(task as u32).is_err() || unsafe { read_word(task, 0x10) } != 1 {
+    if pointer(task as u32).is_none() || unsafe { read_word(task, 0x10) } != 1 {
         return unsafe { original(listener, entry) };
     }
-    let Ok(ui) = checked_pointer(unsafe { read_word(task, 0x38) }) else {
+    let Some(ui) = (unsafe { follow(task, 0x38) }) else {
         return unsafe { original(listener, entry) };
     };
     choose(rehearsal);
@@ -1581,7 +1584,7 @@ const MENU_USE_MESSAGE: u32 = 0x29;
 pub unsafe extern "aapcs" fn bank_test_menu_update(task: *mut u8) -> u32 {
     let original: unsafe extern "aapcs" fn(*mut u8) -> u32 = unsafe { transmute(MENU_UPDATE) };
     if unsafe { read_word(task, 0x10) } == 0 {
-        if let Ok(ui) = checked_pointer(unsafe { read_word(task, 0x38) }) {
+        if let Some(ui) = unsafe { follow(task, 0x38) } {
             for (pane, suffix) in MENU_SUFFIXES {
                 unsafe { bank_common::ui::button(ui, 1, pane, MENU_USE_MESSAGE, suffix) };
             }

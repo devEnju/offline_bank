@@ -21,13 +21,13 @@ pub const PROFILE: Profile = Profile {
 const EDITS: &[Edit] = &[
     // --- Start-up: run application init, then make the payload executable. ---
     (STARTUP_CALL, 0xeb00_0228, BranchLink(BOOTSTRAP_ADDRESS)),
-    // --- Offline flow: the server steps are removed. ---
+    // --- Offline flow: the server tasks are removed. ---
     // The one call of the router, get_next_state (was: bl 00242BA0). The
     // entry asks the original and changes its answer in four places: after
     // SHOW_GAMES comes GET_POKEMON, where the original connected; after
     // GET_POKEMON comes CHECK_IF_USER_CAN_TRANSFER; and instead of the cancel
-    // step and of the failure step comes the disconnect step. It also refuses HOME and
-    // sleep for the steps that read or write, as the connect step did for
+    // task and of the failure task comes the disconnect task. It also refuses HOME and
+    // sleep for the tasks that read or write, as the connect task did for
     // the whole session.
     (0x0024_2ef8, 0xebff_ff28, Call("transporter_next")),
     // Game list, the first instruction of its update (was: ldr r0, [r4,
@@ -53,7 +53,7 @@ const EDITS: &[Edit] = &[
     // The original's "show a message" function, its first instruction (was:
     // push {r4-r8, lr}). The stub runs it, lets HOME and sleep through if
     // the message waits for an answer, and goes on at 0019B510. A branch,
-    // not a call: lr is the caller's. Every message a step that reads or
+    // not a call: lr is the caller's. Every message a task that reads or
     // writes ends with comes through here: "Could not find a game", the
     // three about the chosen game's save or card, and the closing message
     // of a transfer.
@@ -67,12 +67,12 @@ const EDITS: &[Edit] = &[
     // state the entry asks whether Bank can take a delivery, and either runs
     // the original update or ends the search through its own states.
     (0x002e_6780, 0x0024_6f04, Entry("transporter_search")),
-    // Bank step, sub-state 0 (was: the start of creating the server
+    // Bank task, sub-state 0 (was: the start of creating the server
     // request): on to where the original continues after a "yes", which
     // stores its record in the chosen game and saves it. Sub-states 1 to 3,
     // the request and its reply, are never entered.
     (0x0024_8cdc, 0xe59f_0304, Branch(0x0024_8e44)),
-    // Bank step, the Game Card gone before the note is saved (was: mov r1,
+    // Bank task, the Game Card gone before the note is saved (was: mov r1,
     // #0x22, "No compatible Pokémon Game Card detected"): nothing was
     // written, and the failure message's advice to check the card follows.
     // A note save that failed (was: beq 00248F60, the end without a
@@ -100,13 +100,13 @@ const EDITS: &[Edit] = &[
     // Reading Gen 5 and Gen 1/2: skip the remote validation.
     (0x0024_5728, 0xe59f_0c74, Branch(0x0024_5800)),
     (0x0024_60b8, 0xe59f_02e4, Branch(0x0024_61d0)),
-    // Step 0xA, the server's question whether a transfer is open: its
-    // request counts as made. The step itself is never entered.
+    // Task 0xA, the server's question whether a transfer is open: its
+    // request counts as made. The task itself is never entered.
     (0x0024_88a0, 0xebfd_4ca3, Raw(0xe3a0_0001)),
     // Reading Gen 5, per-slot result code (was: ldr r0, [r1, r7]). The stub
     // gives empty slots the skip code the server used to send.
     (0x0024_58dc, 0xe791_0007, Call("transporter_slot_stub")),
-    // Question step, sub-state 2: skip the notice that nicknames and OT names
+    // Question task, sub-state 2: skip the notice that nicknames and OT names
     // with prohibited words will be erased (message 0x10). Only the server
     // made that decision, so offline it never happens. Continue at the
     // original "go to sub-state 4".
@@ -127,7 +127,7 @@ const EDITS: &[Edit] = &[
     (0x0024_4908, 0xe3a0_0000, Call("transporter_select_stub")),
     // The original's question whether the Game Card was taken out (was:
     // bl 001DE43C): before the first item of the list is read, before the
-    // chosen game is read, before the Bank step saves its note, and before
+    // chosen game is read, before the Bank task saves its note, and before
     // each save of the transfer. The entry answers it for the cartridge
     // slot only; a save on the SD card never needs the card.
     (0x0024_4f00, 0xebfe_654d, Call("transporter_card_removed")),
@@ -182,16 +182,20 @@ const EDITS: &[Edit] = &[
         0xea00_0054,
         To("transporter_language_back_stub"),
     ),
-    // Title screen's constructor (0024B9E4), before and after the call that
+    // Start screen's constructor (0024B9E4), before and after the call that
     // loads its archives (0024BA70; was: mov r7, #3 and mov r3, #0x27): the
     // archive with the logo and the start prompt is read in the chosen
     // language, and the reading language is set back.
     (
         0x0024_ba44,
         0xe3a0_7003,
-        Call("transporter_title_begin_stub"),
+        Call("transporter_start_screen_begin_stub"),
     ),
-    (0x0024_ba74, 0xe3a0_3027, Call("transporter_title_end_stub")),
+    (
+        0x0024_ba74,
+        0xe3a0_3027,
+        Call("transporter_start_screen_end_stub"),
+    ),
     // The same constructor's call that writes the version line, "Ver. 1.5"
     // (was: bl 001D33CC, "put message 0x29 into its pane"): the entry makes
     // the call and adds the patch's name to the line.
@@ -317,7 +321,7 @@ mod tests {
         assert!(EDITS
             .iter()
             .all(|(address, _, _)| !(0x0024_2ba0..0x0024_2e08).contains(address)));
-        // The Bank step goes from its first instruction to where the
+        // The Bank task goes from its first instruction to where the
         // original continues after a "yes"; its reply parsing is not edited.
         assert_eq!(at(&PROFILE, 0x0024_8cdc), Some(0xea00_0058));
         assert!(at(&PROFILE, 0x0024_8d58).is_none());

@@ -66,7 +66,7 @@ The two files of a title only work as a pair; never mix files from different rel
 
 ### Why can't I see some of my Virtual Console titles?
 
-Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's title screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
+Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's start screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
 
 The choice lasts until Transporter is closed. More in [docs/transporter.md](docs/transporter.md#choosing-the-language-of-the-games). A save on the SD card is only listed under its exact name, see [the names per game and language](docs/transporter.md#blackwhite-saves-on-the-sd-card).
 

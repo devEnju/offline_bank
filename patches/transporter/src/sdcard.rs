@@ -9,6 +9,7 @@
 //! (`bank_common::fs::Visit`).
 
 use crate::sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE};
+use offline_core::Crc32;
 
 /// The SDK's open flags: read, read and write, write and create.
 pub const OPEN_READ: u32 = 1;
@@ -67,7 +68,9 @@ fn in_save(offset: u32, length: usize) -> bool {
 }
 
 /// Copies the untouched save to `<name>.sav.bak`, flushed and closed, before
-/// the first change of a session. `chunk` is the copy buffer.
+/// the first change of a session, and reads the copy back: it must hold
+/// what was read from the save, as Bank's own files are read back before
+/// they count. `chunk` is the copy buffer.
 fn back_up<C: Card>(card: &mut C, save: Save, chunk: &mut [u8; COPY_CHUNK]) -> bool {
     let (Some(source), Some(target)) = (
         open_save(card, save, false, OPEN_READ),
@@ -75,15 +78,32 @@ fn back_up<C: Card>(card: &mut C, save: Save, chunk: &mut [u8; COPY_CHUNK]) -> b
     ) else {
         return false;
     };
+    let mut copied = Crc32::new();
     let mut offset = 0;
     while offset < SAVE_SIZE {
         let last = offset + COPY_CHUNK as u64 == SAVE_SIZE;
         if !source.read(offset, chunk) || !target.write(offset, chunk, last) {
             return false;
         }
+        copied.update(chunk);
         offset += COPY_CHUNK as u64;
     }
-    target.size() == Some(SAVE_SIZE) && target.close()
+    if target.size() != Some(SAVE_SIZE) || !target.close() {
+        return false;
+    }
+    let Some(backup) = open_save(card, save, true, OPEN_READ) else {
+        return false;
+    };
+    let mut read = Crc32::new();
+    let mut offset = 0;
+    while offset < SAVE_SIZE {
+        if !backup.read(offset, chunk) {
+            return false;
+        }
+        read.update(chunk);
+        offset += COPY_CHUNK as u64;
+    }
+    read.finish() == copied.finish()
 }
 
 /// Reads `bytes` at `offset` of the save, as the cartridge read does.
@@ -94,8 +114,11 @@ pub fn read<C: Card>(card: &mut C, save: Save, offset: u32, bytes: &mut [u8]) ->
 }
 
 /// Writes `bytes` at `offset` of the save, flushed, as the cartridge write
-/// does. The first write of a session to a save backs it up first; without
-/// the backup nothing is changed, and the next write tries it again.
+/// does, reads them back and closes the save: it is written only if the
+/// card holds them and the close reports no error, as the backup and Bank's
+/// own files are. The first write of a session to a save backs it up
+/// first; without the backup nothing is changed, and the next write tries
+/// it again. `chunk` is the copy buffer.
 pub fn write<C: Card>(
     card: &mut C,
     saves: &mut Saves,
@@ -111,8 +134,20 @@ pub fn write<C: Card>(
         saves.backup_failed();
         return false;
     }
-    open_save(card, save, false, OPEN_READ_WRITE)
-        .is_some_and(|file| file.write(u64::from(offset), bytes, true))
+    let Some(file) = open_save(card, save, false, OPEN_READ_WRITE) else {
+        return false;
+    };
+    if !file.write(u64::from(offset), bytes, true) {
+        return false;
+    }
+    for (index, written) in bytes.chunks(COPY_CHUNK).enumerate() {
+        let read = &mut chunk[..written.len()];
+        let at = u64::from(offset) + (index * COPY_CHUNK) as u64;
+        if !file.read(at, read) || read != written {
+            return false;
+        }
+    }
+    file.close()
 }
 
 #[cfg(target_arch = "arm")]
@@ -209,6 +244,13 @@ mod tests {
         short_read: Option<&'static [u8]>,
         short_write: Option<&'static [u8]>,
         close: Option<&'static [u8]>,
+        /// The write of this number to the file, counted from 0, writes the
+        /// first half of its bytes and fails, as a write cut short on the
+        /// card does.
+        torn_write: Option<(&'static [u8], usize)>,
+        /// Writes to the file report success but store one byte changed,
+        /// as a card that loses data without telling would.
+        garbled_write: Option<&'static [u8]>,
     }
     #[derive(Default)]
     struct Disk {
@@ -216,6 +258,8 @@ mod tests {
         faults: Faults,
         /// Writes with a flush: path and offset.
         flushes: Vec<(Vec<u8>, u64)>,
+        /// Writes to the file of `torn_write` so far.
+        writes: usize,
     }
     fn matches(path: &[u8], end: Option<&[u8]>) -> bool {
         end.is_some_and(|end| path.ends_with(end))
@@ -253,12 +297,32 @@ mod tests {
             if matches(&self.1, disk.faults.short_write) {
                 return false;
             }
+            let mut bytes = bytes;
+            let mut torn = false;
+            if let Some((end, at)) = disk.faults.torn_write {
+                if self.1.ends_with(end) {
+                    torn = disk.writes == at;
+                    disk.writes += 1;
+                }
+            }
+            if torn {
+                bytes = &bytes[..bytes.len() / 2];
+            }
+            let mut garbled;
+            if matches(&self.1, disk.faults.garbled_write) && !bytes.is_empty() {
+                garbled = bytes.to_vec();
+                garbled[0] ^= 0x40;
+                bytes = &garbled;
+            }
             let data = disk.files.get_mut(&self.1).unwrap();
             let end = offset as usize + bytes.len();
             if data.len() < end {
                 data.resize(end, 0);
             }
             data[offset as usize..end].copy_from_slice(bytes);
+            if torn {
+                return false;
+            }
             if flush {
                 disk.flushes.push((self.1.clone(), offset));
             }
@@ -374,6 +438,114 @@ mod tests {
             ));
             assert_eq!(file(&sim, BAK), original);
             assert_eq!(file(&sim, SAV)[0x100..0x104], [1, 2, 3, 4]);
+        }
+    }
+
+    #[test]
+    fn a_backup_cut_short_after_some_chunks_leaves_the_save_and_is_made_whole_next_time() {
+        let chunks = (SAVE_SIZE / COPY_CHUNK as u64) as usize;
+        for at in [0, 2, chunks - 1] {
+            let (mut sim, mut saves, save, original) = card();
+            // The backup of an earlier session, of other bytes.
+            let mut path = [0; PATH_CAPACITY];
+            let length = save.path(true, &mut path);
+            sim.0
+                .borrow_mut()
+                .files
+                .insert(path[..length].to_vec(), vec![0xee; SAVE_SIZE as usize]);
+            let mut chunk = [0; COPY_CHUNK];
+            sim.0.borrow_mut().faults = Faults {
+                torn_write: Some((BAK, at)),
+                ..Faults::default()
+            };
+            assert!(!write(
+                &mut sim,
+                &mut saves,
+                save,
+                0x100,
+                &[1, 2, 3, 4],
+                &mut chunk
+            ));
+            // The save is untouched, and the backup is neither the old one
+            // nor the new one.
+            assert_eq!(file(&sim, SAV), original, "chunk {at}");
+            let torn = file(&sim, BAK);
+            assert!(torn != original && torn != vec![0xee; SAVE_SIZE as usize]);
+            // The next write backs up again, whole, and then writes.
+            sim.0.borrow_mut().faults = Faults::default();
+            assert!(write(
+                &mut sim,
+                &mut saves,
+                save,
+                0x100,
+                &[1, 2, 3, 4],
+                &mut chunk
+            ));
+            assert_eq!(file(&sim, BAK), original, "chunk {at}");
+            assert_eq!(file(&sim, SAV)[0x100..0x104], [1, 2, 3, 4]);
+        }
+    }
+
+    #[test]
+    fn a_backup_that_does_not_read_back_as_the_save_leaves_the_save_unchanged() {
+        let (mut sim, mut saves, save, original) = card();
+        let mut chunk = [0; COPY_CHUNK];
+        sim.0.borrow_mut().faults = Faults {
+            garbled_write: Some(BAK),
+            ..Faults::default()
+        };
+        assert!(!write(
+            &mut sim,
+            &mut saves,
+            save,
+            0x100,
+            &[1, 2, 3, 4],
+            &mut chunk
+        ));
+        assert_eq!(file(&sim, SAV), original);
+        assert!(file(&sim, BAK) != original);
+        // The next write backs up again; read back whole, the save changes.
+        sim.0.borrow_mut().faults = Faults::default();
+        assert!(write(
+            &mut sim,
+            &mut saves,
+            save,
+            0x100,
+            &[1, 2, 3, 4],
+            &mut chunk
+        ));
+        assert_eq!(file(&sim, BAK), original);
+        assert_eq!(file(&sim, SAV)[0x100..0x104], [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_save_write_counts_only_when_the_card_holds_it_and_closes_the_save() {
+        for faults in [
+            // A card that changes a byte without telling.
+            Faults {
+                garbled_write: Some(SAV),
+                ..Faults::default()
+            },
+            // A close of the save that reports an error.
+            Faults {
+                close: Some(SAV),
+                ..Faults::default()
+            },
+        ] {
+            let (mut sim, mut saves, save, original) = card();
+            let mut chunk = [0; COPY_CHUNK];
+            // The session's backup is made first, as it always is.
+            assert!(write(&mut sim, &mut saves, save, 0x10, &[7; 4], &mut chunk));
+            sim.0.borrow_mut().faults = faults;
+            // A write longer than the copy buffer is read back in parts.
+            let bytes = vec![0x5a; COPY_CHUNK + 100];
+            assert!(!write(
+                &mut sim, &mut saves, save, 0x200, &bytes, &mut chunk
+            ));
+            assert_eq!(file(&sim, BAK), original);
+            sim.0.borrow_mut().faults = Faults::default();
+            assert!(write(&mut sim, &mut saves, save, 0x200, &bytes, &mut chunk));
+            assert_eq!(file(&sim, SAV)[0x200..0x200 + bytes.len()], bytes[..]);
         }
     }
 

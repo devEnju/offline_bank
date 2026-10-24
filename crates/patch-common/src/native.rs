@@ -1,8 +1,9 @@
 //! Objects of the original, as a hook reaches them.
 
-use core::ptr::NonNull;
+use crate::program::Program;
 #[cfg(target_arch = "arm")]
-use {crate::program::Program, core::mem::transmute};
+use core::mem::transmute;
+use core::{marker::PhantomData, ptr::NonNull};
 
 /// A pointer or object of the original that is not what a hook expects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,6 +28,17 @@ pub unsafe fn object(raw: *mut u8, expected: &[u32]) -> Result<NonNull<u8>, NotN
 /// patch checks a pointer it reads from an object of the original this way.
 pub fn pointer(value: u32) -> Option<*mut u8> {
     (value != 0 && value & 3 == 0).then_some(value as *mut u8)
+}
+
+/// `address`, read from an object of the original, as a function of program
+/// `P`: word aligned and inside its code (`Program::TEXT`). Every patch
+/// checks a function pointer it reads from an object of the original this
+/// way before it calls it.
+pub fn code<P: Program>(address: u32) -> Option<usize> {
+    within(&P::TEXT, address)
+}
+fn within(text: &core::ops::Range<u32>, address: u32) -> Option<usize> {
+    (address & 3 == 0 && text.contains(&address)).then_some(address as usize)
 }
 
 /// The word at `base + offset`.
@@ -72,7 +84,7 @@ impl Ended {
         let task = unsafe { follow(manager, 0x10) }?;
         // Read before the router runs, which clears the flag.
         let cancelled = unsafe { manager.add(0x1a).read() } != 0;
-        let outcome = unsafe { task.add(0x30).read() };
+        let outcome = unsafe { task.add(TASK_OUTCOME).read() };
         let router: unsafe extern "aapcs" fn(*mut u8, u32) -> u32 = unsafe { transmute(P::ROUTER) };
         Some(Self {
             outcome,
@@ -82,11 +94,58 @@ impl Ended {
     }
 }
 
-/// The pointer at `base + offset` (`pointer`).
+/// The pointer at `base + offset` (`pointer`). Every patch reads a pointer
+/// from an object of the original this way.
 /// # Safety
 /// `base + offset` must be four readable bytes.
 pub unsafe fn follow(base: *const u8, offset: usize) -> Option<*mut u8> {
     pointer(unsafe { base.add(offset).cast::<u32>().read() })
+}
+
+/// Where a task keeps its manager, and the manager the Bank data object;
+/// the same in both programs.
+pub const TASK_MANAGER: usize = 0x8;
+pub const MANAGER_BANK_OBJECT: usize = 0xcc;
+/// The byte a task ends with, which the router reads (`Ended`).
+pub const TASK_OUTCOME: usize = 0x30;
+
+/// A task of the original of program `P`, as a hook is given it: its
+/// vtable checked (`object`), and every pointer it leads to checked before
+/// it is followed.
+pub struct Task<P>(NonNull<u8>, PhantomData<fn() -> P>);
+impl<P> Clone for Task<P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<P> Copy for Task<P> {}
+impl<P: Program> Task<P> {
+    /// The task a hook is given, if its vtable is one of `expected`.
+    /// # Safety
+    /// `raw` is the live task object the patched site passes, on the main
+    /// thread.
+    pub unsafe fn from_raw(raw: *mut u8, expected: &[u32]) -> Result<Self, NotNative> {
+        unsafe { object(raw, expected) }.map(|raw| Self(raw, PhantomData))
+    }
+    pub fn raw(self) -> *mut u8 {
+        self.0.as_ptr()
+    }
+    /// The pointer the task holds at `offset` (`follow`).
+    pub fn pointer(self, offset: usize) -> Result<*mut u8, NotNative> {
+        unsafe { follow(self.raw(), offset) }.ok_or(NotNative)
+    }
+    /// The manager's Bank data object, if its vtable is the one its
+    /// constructor installs (`Program::BANK_VTABLE`), before anything of it
+    /// is read.
+    pub fn bank_pointer(self) -> Result<*mut u8, NotNative> {
+        let manager = self.pointer(TASK_MANAGER)?;
+        let bank = unsafe { follow(manager, MANAGER_BANK_OBJECT) }.ok_or(NotNative)?;
+        unsafe { object(bank, &[P::BANK_VTABLE]) }.map(NonNull::as_ptr)
+    }
+    /// Ends the task with `outcome`, which the router reads.
+    pub fn set_outcome(self, outcome: u8) {
+        unsafe { self.raw().add(TASK_OUTCOME).write(outcome) }
+    }
 }
 
 #[cfg(test)]
@@ -100,6 +159,24 @@ mod tests {
         }
         for value in [0, 1, 2, 0x0010_0002, u32::MAX] {
             assert_eq!(pointer(value), None, "{value:#x}");
+        }
+    }
+
+    #[test]
+    fn only_aligned_words_inside_the_text_are_code() {
+        let text = 0x0010_0000..0x0028_d1ac;
+        for address in [0x0010_0000, 0x0019_b50c, 0x0028_d1a8] {
+            assert_eq!(within(&text, address), Some(address as usize));
+        }
+        for address in [
+            0,
+            0x000f_fffc,
+            0x0019_b50e,
+            0x0028_d1ac,
+            0x0036_4000,
+            u32::MAX,
+        ] {
+            assert_eq!(within(&text, address), None, "{address:#x}");
         }
     }
 

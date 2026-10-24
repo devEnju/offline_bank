@@ -188,14 +188,19 @@ mod tests {
         open: Rc<Cell<usize>>,
         /// The journal record whose file takes no write.
         broken: Option<Slot>,
+        /// The journal record whose file takes a write and then does not
+        /// read: written, but not confirmed.
+        unread: Option<Slot>,
     }
-    struct Open(Bytes, Rc<Cell<usize>>, Option<u64>);
+    /// An open file: its bytes, the count of open files, the offset that
+    /// takes no write, and the offset that does not read once written.
+    struct Open(Bytes, Rc<Cell<usize>>, Option<u64>, Option<u64>, bool);
     impl Card {
         fn open(&self, file: &Option<Bytes>, refused: Option<u64>) -> Option<Open> {
             let file = file.clone()?;
             self.open.set(self.open.get() + 1);
             assert_eq!(self.open.get(), 1, "both pairs open at once");
-            Some(Open(file, self.open.clone(), refused))
+            Some(Open(file, self.open.clone(), refused, None, false))
         }
         fn bytes(&self) -> (Vec<u8>, Vec<u8>) {
             let of = |file: &Option<Bytes>| file.as_ref().unwrap().borrow().clone();
@@ -211,7 +216,11 @@ mod tests {
         type Storage = Open;
         fn journal(&mut self) -> Option<Open> {
             let refused = self.broken.map(|slot| slot.index() * METADATA_SIZE as u64);
-            self.open(&self.journal, refused)
+            let unread = self.unread.map(|slot| slot.index() * METADATA_SIZE as u64);
+            self.open(&self.journal, refused).map(|mut open| {
+                open.3 = unread;
+                open
+            })
         }
         fn mover(&mut self) -> Option<Open> {
             self.open(&self.mover, None)
@@ -220,6 +229,9 @@ mod tests {
     impl Storage for Open {
         type Error = ();
         fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), ()> {
+            if self.4 && self.3 == Some(at) {
+                return Err(());
+            }
             let bytes = self.0.borrow();
             let from = bytes.get(at as usize..at as usize + out.len()).ok_or(())?;
             out.copy_from_slice(from);
@@ -228,6 +240,9 @@ mod tests {
         fn write(&mut self, at: u64, bytes: &[u8]) -> Result<(), ()> {
             if self.2 == Some(at) {
                 return Err(());
+            }
+            if self.3 == Some(at) {
+                self.4 = true;
             }
             self.0.borrow_mut()[at as usize..at as usize + bytes.len()].copy_from_slice(bytes);
             Ok(())
@@ -314,6 +329,7 @@ mod tests {
             mover: Some(Rc::new(RefCell::new(vec![0xAA; 2 * TRANSPORT_SIZE]))),
             open: Rc::new(Cell::new(0)),
             broken: None,
+            unread: None,
         }
     }
     fn record_in_force(card: &mut Card) -> Metadata {
@@ -478,6 +494,20 @@ mod tests {
         assert_eq!(announced.delivery, Some(done.crc));
         assert!(on_load(&announced).delivery);
         assert_eq!(check(&mut card), Err(Refusal::Occupied));
+        // If the record written first is durable but does not read back,
+        // the delivery is not confirmed: Transporter is told it failed and
+        // keeps the Pokémon in the game, and Bank finds them all the same.
+        // A duplicate, never a loss.
+        let mut card = self::card(Some(clean(Slot::A, 0, None)));
+        card.unread = Some(Slot::B);
+        assert_eq!(
+            deliver(&mut card, &records, &tags),
+            Err(DeliverError::Io(()))
+        );
+        card.unread = None;
+        let announced = record_in_force(&mut card);
+        assert!(announced.delivery.is_some());
+        assert!(on_load(&announced).delivery);
     }
 
     #[test]

@@ -8,14 +8,16 @@ pub mod elf;
 mod formats;
 mod hash;
 mod ips;
+pub mod link;
 pub mod placement;
 pub mod profile;
 pub mod transporter15;
 
-pub use artifacts::{build, Artifacts};
+pub use artifacts::{build, package_name, Artifacts};
 pub use formats::*;
 pub use hash::{hex, sha256};
 pub use ips::{build_ips, encode_arm_branch, CheckedEdit};
+pub use link::linker_script;
 pub use profile::{prepare_patch, profile, PreparedPatch, Profile, Program, PROFILES};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

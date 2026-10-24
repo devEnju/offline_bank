@@ -27,7 +27,9 @@ pub enum Reply {
     Refused(Refusal),
     /// The delivery is written, flushed and read back.
     Delivered,
-    /// Nothing was delivered.
+    /// The delivery is not confirmed: it was not written, or the record
+    /// announcing it did not read back, in which case Bank may hold it all
+    /// the same (`Journal::announce`). The Pokémon stay in the game.
     NotDelivered,
 }
 
@@ -43,7 +45,7 @@ impl From<Control> for Failed {
 }
 
 #[cfg(target_arch = "arm")]
-pub(crate) use arm::TransporterWorker;
+pub(crate) use arm::{TransporterRequests, TransporterWorker};
 
 #[cfg(target_arch = "arm")]
 mod arm {
@@ -69,6 +71,8 @@ mod arm {
     static SHARED: Shared<StorageWorker> = Shared::new([0; STAGING_LEN]);
     /// The worker of the Transporter patch.
     pub(crate) type TransporterWorker = Worker<StorageWorker>;
+    /// The worker and the job out, for the kind of job that submitted it.
+    pub(crate) type TransporterRequests = patch_common::worker::Requests<StorageWorker, Job>;
 
     impl Service for StorageWorker {
         type Program = Transporter15;
@@ -102,9 +106,96 @@ mod arm {
     }
 }
 
+/// One frame of a job, as the hooks ask for it: `None` while it runs.
+pub type Answer = Option<Result<Reply, Failed>>;
+
+/// What the check at START leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Checked {
+    /// Not answered yet.
+    Pending,
+    /// Bank can take a delivery: the search goes on.
+    Go,
+    /// The original's message to show instead (`ui`).
+    Refused(u32),
+}
+
+/// The check's answer. A worker that failed refuses as Bank's files that
+/// do not read do.
+pub fn checked(answer: Answer) -> Checked {
+    match answer {
+        None => Checked::Pending,
+        Some(Ok(Reply::Ready)) => Checked::Go,
+        Some(Ok(Reply::Refused(refusal))) => Checked::Refused(crate::ui::refusal_message(refusal)),
+        Some(_) => Checked::Refused(crate::ui::MESSAGE_OPEN_BANK),
+    }
+}
+
+/// The delivery entry's answers, as its stub tests them. Only `DONE` lets
+/// the original go on and take the Pokémon out of the game.
+pub const DELIVER_FAILED: u32 = 0;
+pub const DELIVER_DONE: u32 = 1;
+pub const DELIVER_PENDING: u32 = 2;
+
+/// The delivery's answer: done only for a delivery that is written,
+/// flushed and read back.
+pub fn delivered(answer: Answer) -> u32 {
+    match answer {
+        None => DELIVER_PENDING,
+        Some(Ok(Reply::Delivered)) => DELIVER_DONE,
+        Some(_) => DELIVER_FAILED,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every answer a frame of a job can give.
+    fn answers() -> [Answer; 7] {
+        [
+            None,
+            Some(Ok(Reply::Ready)),
+            Some(Ok(Reply::Refused(Refusal::Occupied))),
+            Some(Ok(Reply::Refused(Refusal::NotReady))),
+            Some(Ok(Reply::Delivered)),
+            Some(Ok(Reply::NotDelivered)),
+            Some(Err(Failed)),
+        ]
+    }
+
+    #[test]
+    fn only_a_delivery_that_is_written_lets_the_pokemon_leave_the_game() {
+        for answer in answers() {
+            let expected = match answer {
+                None => DELIVER_PENDING,
+                Some(Ok(Reply::Delivered)) => DELIVER_DONE,
+                _ => DELIVER_FAILED,
+            };
+            assert_eq!(delivered(answer), expected, "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn the_search_goes_on_only_when_bank_can_take_a_delivery() {
+        for answer in answers() {
+            let result = checked(answer);
+            match answer {
+                None => assert_eq!(result, Checked::Pending),
+                Some(Ok(Reply::Ready)) => assert_eq!(result, Checked::Go),
+                Some(Ok(Reply::Refused(Refusal::Occupied))) => {
+                    assert_eq!(result, Checked::Refused(crate::ui::MESSAGE_BOX_NOT_EMPTY))
+                }
+                // Every other refusal, and a worker that failed, asks to
+                // open Bank.
+                _ => assert_eq!(
+                    result,
+                    Checked::Refused(crate::ui::MESSAGE_OPEN_BANK),
+                    "{answer:?}"
+                ),
+            }
+        }
+    }
 
     #[test]
     fn the_staging_buffer_holds_one_transport_box() {

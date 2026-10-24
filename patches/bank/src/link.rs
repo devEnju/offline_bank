@@ -11,7 +11,7 @@ mod linked {
     patch_common::link_roots!(
         patch_common::bootstrap::patch_bootstrap_startup,
         bank_offline_next,
-        bank_common::task::bank_message_stub,
+        bank_message_stub,
         bank_version_shown,
         bank_offline_no_game_stub,
         bank_offline_timestamp,

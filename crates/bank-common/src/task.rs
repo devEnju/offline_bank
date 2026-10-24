@@ -7,7 +7,6 @@
 
 #[cfg(target_arch = "arm")]
 use core::mem::transmute;
-use core::ptr::NonNull;
 
 /// Factory `002a5a7c` accepts IDs below 0x1e (`002a5a80`).
 pub const TASK_COUNT: u32 = 0x1e;
@@ -26,9 +25,6 @@ pub const SELECTED_GAME: usize = 0x0023_3a6c;
 /// timestamp. It keeps upper flag bits of the two words, so they start
 /// zeroed.
 pub const LOCAL_DATE: usize = 0x0023_a754;
-/// The original's code. A function pointer read from an object of the
-/// original must lie here.
-pub const TEXT: core::ops::Range<u32> = 0x0010_0000..0x0031_3910;
 /// Busy protection of a task: `0025c420(task, 1, 0)` begins it,
 /// `0025c3e8(task)` ends it.
 #[cfg(target_arch = "arm")]
@@ -44,33 +40,24 @@ impl From<NotNative> for crate::fault::Fault {
     }
 }
 
-/// `value` as a pointer of the original (`patch_common::native::pointer`).
-pub fn checked_pointer(value: u32) -> Result<*mut u8, NotNative> {
-    patch_common::native::pointer(value).ok_or(NotNative)
-}
+/// A task of Bank 1.5 (`patch_common::native::Task`), with what only Bank's
+/// tasks have in `BankTask`.
+pub type Task = patch_common::native::Task<crate::program::Bank15>;
 
-#[derive(Clone, Copy)]
-pub struct Task(NonNull<u8>);
-impl Task {
-    /// The task a hook is given, if its vtable is one of `expected`
-    /// (`patch_common::native::object`).
-    /// # Safety
-    /// `raw` is the live task object the original's task driver passes to
-    /// the hooked virtual function, on the main thread.
-    pub unsafe fn from_raw(raw: *mut u8, expected: &[u32]) -> Result<Self, NotNative> {
-        unsafe { patch_common::native::object(raw, expected) }.map(Self)
-    }
-    pub fn raw(self) -> *mut u8 {
-        self.0.as_ptr()
-    }
-    pub fn pointer(self, offset: usize) -> Result<*mut u8, NotNative> {
-        checked_pointer(unsafe { read_word(self.raw(), offset) })
-    }
-    pub fn bank_pointer(self) -> Result<*mut u8, NotNative> {
-        let coordinator = self.pointer(8)?;
-        checked_pointer(unsafe { read_word(coordinator, 0xcc) })
-    }
-    pub fn ui(self) -> Result<*mut u8, NotNative> {
+/// What Bank's tasks have beyond every task: the shared UI, kept at an
+/// offset of each task's own, the busy protection, and the outcomes a
+/// task update ends with.
+pub trait BankTask {
+    fn ui(self) -> Result<*mut u8, NotNative>;
+    #[cfg(target_arch = "arm")]
+    fn begin_busy(self);
+    #[cfg(target_arch = "arm")]
+    fn end_busy(self);
+    /// Ends the task as done (4) or failed (3); the update answers 1.
+    fn finish(self, success: bool) -> u32;
+}
+impl BankTask for Task {
+    fn ui(self) -> Result<*mut u8, NotNative> {
         let offset = match unsafe { read_word(self.raw(), 0) } {
             TASK_LOAD | TASK_REWARD_GUARD => 0x38,
             TASK_SCAN | TASK_REWARDS => 0x40,
@@ -79,14 +66,14 @@ impl Task {
         self.pointer(offset)
     }
     #[cfg(target_arch = "arm")]
-    pub fn begin_busy(self) {
+    fn begin_busy(self) {
         let begin: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe { transmute(BEGIN_BUSY) };
         unsafe {
             begin(self.raw(), 1, 0);
         }
     }
     #[cfg(target_arch = "arm")]
-    pub fn end_busy(self) {
+    fn end_busy(self) {
         if unsafe { self.raw().add(0x25).read() } != 0 {
             let end: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(END_BUSY) };
             unsafe {
@@ -94,10 +81,8 @@ impl Task {
             }
         }
     }
-    pub fn finish(self, success: bool) -> u32 {
-        unsafe {
-            self.raw().add(0x30).write(if success { 4 } else { 3 });
-        }
+    fn finish(self, success: bool) -> u32 {
+        self.set_outcome(if success { 4 } else { 3 });
         1
     }
 }
@@ -107,17 +92,6 @@ impl Task {
 #[cfg(target_arch = "arm")]
 pub fn refuse_home(refuse: bool) {
     patch_common::home::refuse::<crate::program::Bank15>(refuse);
-}
-
-// The original's "show a message" function, 001d6650(ui, kind, message,
-// wait), as every patch but the download enters it (`patch_common`'s
-// `message_stub!`). The original's own bit for a game save that is being
-// written is not the one let through here and stays as it is.
-#[cfg(target_arch = "arm")]
-patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
-#[cfg(target_arch = "arm")]
-extern "aapcs" fn message_waits() {
-    refuse_home(false);
 }
 
 /// The screen a patch ends on when nothing can go on (`ui::stop`): one

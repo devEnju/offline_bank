@@ -1,0 +1,456 @@
+//! Tests the verifier on the built packages: each passes, and a copy with
+//! one thing changed is refused for that thing. Where a change touches
+//! bytes, the copy's manifest gets the new hashes, so that the refusal comes
+//! from the independent comparison and not from a hash. The changes are made
+//! to Bank's and Transporter's packages, which must be built; of the
+//! others, each one built is checked unchanged. Works on copies in a
+//! temporary folder, which it deletes.
+
+use crate::{
+    packages::{package, Package, PACKAGES},
+    read, root,
+    verify::{verify, Places},
+    write, Result,
+};
+use patch_verify::{sha256, Json};
+use std::path::{Path, PathBuf};
+
+/// The IPS records: offset, length and where the data begins in the file.
+/// The builder writes no RLE record, so every record carries its data.
+fn ips_records(ips: &[u8]) -> Result<Vec<(usize, usize, usize)>> {
+    let mut records = Vec::new();
+    let mut at = 5;
+    while ips.get(at..at + 3).ok_or("IPS ends early")? != b"EOF" {
+        let byte = |i: usize| ips[at + i] as usize;
+        let (offset, length) = (
+            byte(0) << 16 | byte(1) << 8 | byte(2),
+            byte(3) << 8 | byte(4),
+        );
+        if length == 0 {
+            return Err("test-verify expects no RLE record".into());
+        }
+        records.push((offset, length, at + 5));
+        at += 5 + length;
+    }
+    Ok(records)
+}
+
+fn read_manifest(dir: &Path) -> Result<Json> {
+    let text = String::from_utf8(read(&dir.join("manifest.json"))?)
+        .map_err(|_| "manifest.json is not UTF-8")?;
+    Json::parse(&text)
+}
+
+fn write_manifest(dir: &Path, manifest: &Json) -> Result<()> {
+    write(&dir.join("manifest.json"), manifest.to_pretty().as_bytes())
+}
+
+fn set(manifest: &mut Json, path: &[&str], value: Json) -> Result<()> {
+    let mut json = manifest;
+    for key in path {
+        json = json
+            .get_mut(key)
+            .ok_or_else(|| format!("manifest has no {key}"))?;
+    }
+    *json = value;
+    Ok(())
+}
+
+fn number(manifest: &Json, path: &[&str]) -> Result<u64> {
+    path.iter()
+        .try_fold(manifest, |json, key| json.get(key))
+        .and_then(Json::as_u64)
+        .ok_or_else(|| format!("manifest has no number {}", path.join(".")))
+}
+
+/// The unpacked original of the program of `package`.
+fn original(package: &Package) -> Result<PathBuf> {
+    let program = patch_verify::expectation(package.kind)?.program;
+    patch_verify::find_original(&root().join("build/extracted"), program)
+}
+
+/// Gives the copy's manifest the hashes of its changed files (the ELF,
+/// both package files, the image the IPS makes of the original, and the
+/// payload's part of it) and its PACKAGE.txt the name of its files.
+fn update_hashes(dir: &Path, package: &Package) -> Result<()> {
+    let mut manifest = read_manifest(dir)?;
+    let ips = read(&dir.join("code.ips"))?;
+    let hash = |file: &str| Ok::<_, String>(Json::string(sha256(&read(&dir.join(file))?)));
+    set(&mut manifest, &["source_elf_sha256"], hash("payload.elf")?)?;
+    set(
+        &mut manifest,
+        &["artifacts", "code.ips", "sha256"],
+        hash("code.ips")?,
+    )?;
+    set(
+        &mut manifest,
+        &["artifacts", "exheader.bin", "sha256"],
+        hash("exheader.bin")?,
+    )?;
+    let code = read(&original(package)?.join("exefs/code.bin"))?;
+    let mut image = vec![0; number(&manifest, &["expanded_code_bytes"])? as usize];
+    image[..code.len()].copy_from_slice(&code);
+    for (offset, length, data) in ips_records(&ips)? {
+        image[offset..offset + length].copy_from_slice(&ips[data..data + length]);
+    }
+    set(
+        &mut manifest,
+        &["expanded_code_sha256"],
+        Json::string(sha256(&image)),
+    )?;
+    // The payload's part: its code and its data as the ELF loads them.
+    if let Ok(elf) = patch_verify::elf::read(&read(&dir.join("payload.elf"))?) {
+        let (rx, rw) = (elf.rx(), elf.rw());
+        let start = (rx.address - 0x0010_0000) as usize;
+        let end = (rw.address + rw.file_bytes - 0x0010_0000) as usize;
+        if let Some(payload) = image.get(start..end) {
+            set(
+                &mut manifest,
+                &["payload_image_sha256"],
+                Json::string(sha256(payload)),
+            )?;
+        }
+    }
+    write_manifest(dir, &manifest)?;
+    let name = patch_builder::package_name(&ips, &read(&dir.join("exheader.bin"))?);
+    write(&dir.join("PACKAGE.txt"), format!("{name}\n").as_bytes())
+}
+
+/// Flips one bit of `file` in the copy at `at`.
+fn flip(dir: &Path, file: &str, at: usize) -> Result<()> {
+    let path = dir.join(file);
+    let mut bytes = read(&path)?;
+    *bytes.get_mut(at).ok_or("flip outside the file")? ^= 0x01;
+    write(&path, &bytes)
+}
+
+/// Changes the byte of the image at `address` in the ELF and in code.ips
+/// alike, as a payload linked otherwise would be: the image is still the
+/// ELF's, so only a check of what the payload must hold can refuse it.
+fn change_payload(dir: &Path, address: u64) -> Result<()> {
+    let bytes = read(&dir.join("payload.elf"))?;
+    let elf = patch_verify::elf::read(&bytes)?;
+    let load = elf
+        .loads
+        .iter()
+        .find(|l| (l.address as u64..l.address as u64 + l.file_bytes as u64).contains(&address))
+        .ok_or_else(|| format!("no ELF segment holds {address:08X}"))?;
+    flip(
+        dir,
+        "payload.elf",
+        load.offset as usize + (address - load.address as u64) as usize,
+    )?;
+    flip(dir, "code.ips", ips_byte(dir, address)?)
+}
+
+/// The address of the ELF symbol `name`.
+fn symbol(dir: &Path, name: &str) -> Result<u64> {
+    let elf = patch_verify::elf::read(&read(&dir.join("payload.elf"))?)?;
+    elf.symbols
+        .get(name)
+        .map(|s| s.value as u64)
+        .ok_or_else(|| format!("no ELF symbol {name}"))
+}
+
+/// The address of the first `text` in the payload's code.
+fn text(dir: &Path, text: &[u8]) -> Result<u64> {
+    let bytes = read(&dir.join("payload.elf"))?;
+    let elf = patch_verify::elf::read(&bytes)?;
+    let rx = elf.rx();
+    let code = &bytes[rx.offset as usize..(rx.offset + rx.file_bytes) as usize];
+    code.windows(text.len())
+        .position(|w| w == text)
+        .map(|at| rx.address as u64 + at as u64)
+        .ok_or_else(|| "the payload's code does not hold the text".to_owned())
+}
+
+/// Where in code.ips the byte of the image at `address` lies.
+fn ips_byte(dir: &Path, address: u64) -> Result<usize> {
+    let offset = address as usize - 0x0010_0000;
+    ips_records(&read(&dir.join("code.ips"))?)?
+        .into_iter()
+        .find(|&(start, length, _)| (start..start + length).contains(&offset))
+        .map(|(start, _, data)| data + offset - start)
+        .ok_or_else(|| format!("no IPS record holds {address:08X}"))
+}
+
+type Change = Box<dyn Fn(&Path) -> Result<()>>;
+/// Where in the image a case changes a byte.
+type Place = fn(&Path) -> Result<u64>;
+
+struct Run {
+    work: PathBuf,
+    failures: Vec<String>,
+    /// The original the next case is checked against, if not the one under
+    /// `build/extracted/`.
+    original: Option<PathBuf>,
+}
+
+impl Run {
+    /// A copy of the package of `package` and its ELF, as `payload.elf`.
+    fn copy(&self, package: &Package, name: &str) -> Result<PathBuf> {
+        let dir = self.work.join(name);
+        std::fs::create_dir(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        let folder = package.folder(&root());
+        for file in ["code.ips", "exheader.bin", "manifest.json", "PACKAGE.txt"] {
+            write(&dir.join(file), &read(&folder.join(file))?)?;
+        }
+        write(&dir.join("payload.elf"), &read(&package.elf(&root()))?)?;
+        Ok(dir)
+    }
+
+    /// Checks a copy of `package`, changed by `change`, as a package of
+    /// `checked_as`; `expect` is the refusal looked for, or none.
+    fn case(
+        &mut self,
+        package: &Package,
+        name: &str,
+        change: Option<Change>,
+        expect: Option<&str>,
+        checked_as: &Package,
+    ) -> Result<()> {
+        let folder = format!(
+            "{}-{}",
+            package.kind,
+            name.replace(|c: char| !c.is_alphanumeric(), "-")
+        );
+        let dir = self.copy(package, &folder)?;
+        if let Some(change) = change {
+            change(&dir)?;
+        }
+        let places = Places {
+            package: Some(dir.clone()),
+            elf: Some(dir.join("payload.elf")),
+            original: self.original.take(),
+        };
+        let refusal = verify(checked_as, places).err();
+        let result = match (expect, refusal) {
+            (None, None) => "passed".to_owned(),
+            (None, Some(message)) => format!("FAILED: refused ({message})"),
+            (Some(_), None) => "FAILED: accepted".to_owned(),
+            (Some(expect), Some(message)) if !message.contains(expect) => {
+                format!("FAILED: refused for another reason ({message})")
+            }
+            (Some(_), Some(_)) => "refused".to_owned(),
+        };
+        println!("{:<12} {:<28} {result}", package.kind, name);
+        if result.starts_with("FAILED") {
+            self.failures.push(format!("{} {name}", package.kind));
+        }
+        Ok(())
+    }
+}
+
+fn manifest_change(edit: impl Fn(&mut Json) -> Result<()> + 'static) -> Option<Change> {
+    Some(Box::new(move |dir: &Path| {
+        let mut manifest = read_manifest(dir)?;
+        edit(&mut manifest)?;
+        write_manifest(dir, &manifest)
+    }))
+}
+
+fn cases(run: &mut Run) -> Result<()> {
+    for package in &PACKAGES {
+        if matches!(package.kind, "bank" | "transporter")
+            || package.folder(&root()).join("manifest.json").is_file()
+        {
+            run.case(package, "unchanged", None, None, package)?;
+        } else {
+            println!("{:<12} {:<28} not built", package.kind, "unchanged");
+        }
+    }
+    for kind in ["bank", "transporter"] {
+        let package = package(kind)?;
+        let bytes = |file: &'static str, at: fn(&Path) -> Result<usize>| -> Option<Change> {
+            Some(Box::new(move |dir: &Path| {
+                flip(dir, file, at(dir)?)?;
+                update_hashes(dir, package)
+            }))
+        };
+        let differs = Some("Expanded image differs from independent expected image");
+        run.case(
+            package,
+            "ELF header",
+            bytes("payload.elf", |_| Ok(4)),
+            Some("ELF32 little-endian header"),
+            package,
+        )?;
+        run.case(
+            package,
+            "start-up hook byte",
+            bytes("code.ips", |dir| {
+                ips_byte(
+                    dir,
+                    number(&read_manifest(dir)?, &["placement", "bootstrap_address"])? + 8,
+                )
+            }),
+            differs,
+            package,
+        )?;
+        run.case(
+            package,
+            "payload byte",
+            bytes("code.ips", |dir| {
+                ips_byte(
+                    dir,
+                    number(&read_manifest(dir)?, &["placement", "payload_address"])? + 0x40,
+                )
+            }),
+            differs,
+            package,
+        )?;
+        run.case(
+            package,
+            "exheader size field",
+            bytes("exheader.bin", |_| Ok(0x3d)),
+            Some("Unexpected paired-exheader edit"),
+            package,
+        )?;
+        run.case(
+            package,
+            "manifest export",
+            manifest_change(|manifest| {
+                let first = manifest
+                    .get("exports")
+                    .and_then(|e| e.members().first())
+                    .map(|(name, _)| name.clone())
+                    .ok_or("manifest has no export")?;
+                set(manifest, &["exports", &first], Json::number(0))
+            }),
+            Some("Manifest export "),
+            package,
+        )?;
+        run.case(
+            package,
+            "manifest placement",
+            manifest_change(|manifest| {
+                let bytes = number(manifest, &["placement", "payload_rw_bytes"])?;
+                set(
+                    manifest,
+                    &["placement", "payload_rw_bytes"],
+                    Json::number(bytes + 0x1000),
+                )
+            }),
+            Some("Manifest placement"),
+            package,
+        )?;
+        run.case(
+            package,
+            "manifest kind",
+            manifest_change(|manifest| set(manifest, &["patch"], Json::string("download"))),
+            Some("Manifest names another patch"),
+            package,
+        )?;
+        run.case(
+            package,
+            "package name",
+            Some(Box::new(|dir: &Path| {
+                write(&dir.join("PACKAGE.txt"), b"0000000000000000\n")
+            })),
+            Some("PACKAGE.txt does not name the package's files"),
+            package,
+        )?;
+    }
+    // What only one program's package must hold, changed in a payload that
+    // is otherwise whole: only that program's own check can refuse it.
+    let special: [(&str, &str, Place, &str); 3] = [
+        (
+            "bank",
+            "no-game stub",
+            |dir| symbol(dir, "bank_offline_no_game_stub"),
+            "No-game stub must pass r4",
+        ),
+        (
+            "transporter",
+            "layout check",
+            |dir| symbol(dir, "transporter_layout_check_stub"),
+            "Layout check lies beside the start-up hook",
+        ),
+        (
+            "transporter",
+            "mover file name",
+            |dir| text(dir, b"/mover.bin"),
+            "Payload names /mover.bin",
+        ),
+    ];
+    for (kind, name, at, expect) in special {
+        let package = package(kind)?;
+        run.case(
+            package,
+            name,
+            Some(Box::new(move |dir: &Path| {
+                change_payload(dir, at(dir)?)?;
+                update_hashes(dir, package)
+            })),
+            Some(expect),
+            package,
+        )?;
+    }
+    // The original is found by its hash, whatever its extraction's folder
+    // is called, as for a CIA that holds the same program packed otherwise:
+    // a copy under another name, in a folder of extractions of its own, is
+    // found and checked against. The real extractions stay as they are.
+    for kind in ["bank", "transporter"] {
+        let package = package(kind)?;
+        let source = original(package)?;
+        let extracted = run.work.join(format!("{kind}-extracted"));
+        let copy = extracted.join("another-name");
+        std::fs::create_dir_all(copy.join("exefs"))
+            .map_err(|e| format!("cannot create {}: {e}", copy.display()))?;
+        for file in ["exefs/code.bin", "exheader.bin"] {
+            write(&copy.join(file), &read(&source.join(file))?)?;
+        }
+        let program = patch_verify::expectation(package.kind)?.program;
+        let found = patch_verify::find_original(&extracted, program)?;
+        if found != copy {
+            return Err(format!(
+                "the copy of the {kind} original was not found by its hash"
+            ));
+        }
+        run.original = Some(found);
+        run.case(package, "original in another folder", None, None, package)?;
+    }
+    // The package of one kind is not that of another, when the other is
+    // built.
+    if !package("test")?.elf(&root()).is_file() {
+        println!(
+            "{:<12} {:<28} not built",
+            "bank", "checked as the test build"
+        );
+        return Ok(());
+    }
+    run.case(
+        package("bank")?,
+        "checked as the test build",
+        None,
+        Some("Manifest names another patch"),
+        package("test")?,
+    )
+}
+
+pub fn test_verify() -> Result<()> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let work = std::env::temp_dir().join(format!(
+        "offline_bank-verify-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&work).map_err(|e| format!("cannot create {}: {e}", work.display()))?;
+    let mut run = Run {
+        work: work.clone(),
+        failures: Vec::new(),
+        original: None,
+    };
+    let result = cases(&mut run);
+    let _ = std::fs::remove_dir_all(&work);
+    result?;
+    if !run.failures.is_empty() {
+        return Err(format!(
+            "Verifier tests failed: {}",
+            run.failures.join(", ")
+        ));
+    }
+    println!("Verifier tests passed.");
+    Ok(())
+}

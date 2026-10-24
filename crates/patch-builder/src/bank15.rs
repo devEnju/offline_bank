@@ -14,6 +14,7 @@ use crate::{
     profile::{Edit, Program, Word::*},
     Result,
 };
+use bank_common::native_bank::VTABLE_ADDRESS as BANK_VTABLE;
 use bank_common::task::{
     TASK_COUNT, TASK_LOAD, TASK_OPEN, TASK_REWARDS, TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
 };
@@ -177,8 +178,10 @@ pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
 /// Factory bound, case targets and constructor vtable literals of the
 /// tasks the checked task views accept. Tasks 0x10 and 0x1C share one
 /// literal; the reward claim (0xD) is built by its constructor 002ABB10.
-/// The update slots are edits, which name their original words.
-pub(crate) const NATIVE_OBJECTS: [(u32, u32); 17] = [
+/// The update slots are edits, which name their original words. Bank data
+/// comes from constructor 0010EA48: it installs BANK_VTABLE, and startup
+/// allocates it and stores its result at +0xCC.
+pub(crate) const NATIVE_OBJECTS: [(u32, u32); 21] = [
     (0x002a_5a80, 0xe351_0000 | TASK_COUNT),
     (0x002a_5aa4, 0x002a_5bdc),
     (0x002a_5ab4, 0x002a_5da4),
@@ -196,6 +199,10 @@ pub(crate) const NATIVE_OBJECTS: [(u32, u32); 17] = [
     (0x002a_bbf0, TASK_REWARDS),
     (0x002a_bb40, 0xe580_6000),
     (0x002a_5c1c, 0xe580_3000),
+    (0x0010_eb94, BANK_VTABLE),
+    (0x0010_ea58, 0xe584_0000),
+    (0x0010_6eac, 0xe584_00cc),
+    (0x0010_6fc0, 0x000b_b530),
 ];
 
 /// The main menu's locations that only the console test build may edit:

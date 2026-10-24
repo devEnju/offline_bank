@@ -3,7 +3,7 @@
 //! also closes the kernel handle (the SDK's close does not). Each answers the
 //! native result, negative for a failure. Opening a file is the caller's:
 //! Bank's files are opened in their archive (`bank_common::fs`), the SD
-//! card's with their archive in one call (Transporter's `fs`).
+//! card's with their archive in one call (Transporter's `sdcard`).
 
 /// A failure: the native result.
 pub type Code = i32;

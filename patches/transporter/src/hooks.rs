@@ -8,9 +8,12 @@ use crate::{
     cart, navigation,
     panel::{self, Panel},
     program::Transporter15,
-    storage_worker::{Failed, Job, Reply, TransporterWorker},
+    storage_worker::{
+        checked, delivered, Checked, Failed, Job, Reply, TransporterRequests, TransporterWorker,
+        DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING,
+    },
     task::*,
-    ui::{self, from_second_page, loading, refusal_message, stop_loading, MESSAGE_OPEN_BANK},
+    ui::{self, from_second_page, loading, stop_loading, MESSAGE_OPEN_BANK},
 };
 use core::{mem::transmute, slice};
 use offline_core::sections::TRANSPORT_SLOTS;
@@ -18,7 +21,7 @@ use patch_common::{
     exclusive::Exclusive,
     native::{follow, read_word, write_word, Ended},
     spinner::{self, Spinner},
-    worker::JobId,
+    worker::{Polled, Requests},
 };
 
 /// What the version line says behind "Ver. 1.5".
@@ -41,15 +44,10 @@ const TRANSFER_UPDATE: usize = 0x0024_a0c4;
 /// The game search's first state, which starts the cartridge scan; its
 /// state that waits for the acknowledgement of a message and ends the
 /// search (selected at `00247000`); and the outcome "none" it ends with
-/// (`0024702C`), which the router answers with the disconnect step.
+/// (`0024702C`), which the router answers with the disconnect task.
 const SEARCH_START: u32 = 0;
 const SEARCH_MESSAGE: u32 = 5;
 const SEARCH_NONE: u8 = 2;
-const TASK_OUTCOME: usize = 0x30;
-/// Answers of the delivery entry, as its stub tests them.
-const DELIVER_FAILED: u32 = 0;
-const DELIVER_DONE: u32 = 1;
-const DELIVER_PENDING: u32 = 2;
 
 /// The panel the search started (`panel`). It is kept apart from `STATE`,
 /// unlike Bank's scan panel, which only its own hook uses: the entries that
@@ -60,16 +58,15 @@ static PANEL: Panel = Panel::new();
 /// The worker and the job it has out, and when the loading screen that is
 /// up went up. Only the main thread takes it.
 struct Runtime {
-    worker: Option<TransporterWorker>,
-    job: Option<(JobId, Job)>,
+    /// The worker and the job out, for the kind of job that submitted it.
+    requests: TransporterRequests,
     spinner: Spinner,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
 // main thread.
 static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
-        worker: None,
-        job: None,
+        requests: Requests::new(),
         spinner: Spinner::new(),
     })
 };
@@ -80,41 +77,33 @@ impl Runtime {
     /// while it runs. A job whose worker cannot say whether it is still
     /// running stays out: what it holds stays lent, and the next frame asks
     /// again.
-    unsafe fn step(
+    unsafe fn job(
         &mut self,
         kind: Job,
         stage: impl FnOnce(&mut TransporterWorker) -> Option<()>,
     ) -> Option<Result<Reply, Failed>> {
-        let Some((id, out)) = self.job else {
-            let worker = match unsafe { TransporterWorker::get(&mut self.worker) } {
+        if !self.requests.is_out() {
+            let worker = match unsafe { self.requests.worker() } {
                 Ok(worker) => worker,
                 Err(failed) => return Some(Err(failed)),
             };
             if stage(worker).is_none() {
                 return Some(Err(Failed));
             }
-            return match unsafe { worker.submit(kind) } {
-                Ok(id) => {
-                    self.job = Some((id, kind));
-                    None
-                }
+            return match unsafe { self.requests.submit(kind, kind) } {
+                Ok(()) => None,
                 Err(failed) => Some(Err(failed)),
             };
-        };
-        // The check and the delivery are steps of their own and never
-        // overlap; a reply is only ever the job's that asked for it. A job of
-        // another kind is waited for and its reply dropped: what it holds
-        // stays lent until it ends, and only then is this one a failure.
-        let worker = self.worker.as_mut()?;
-        let mut job = Some(id);
-        let polled = worker.collect(&mut job);
-        if job.is_none() {
-            self.job = None;
         }
-        if out != kind {
-            return job.is_none().then_some(Err(Failed));
+        // The check and the delivery belong to tasks of their own and never
+        // overlap; a reply is only ever the job's that asked for it
+        // (`Pending`).
+        match self.requests.poll(kind) {
+            Polled::Waiting => None,
+            Polled::Reply(reply) => Some(Ok(reply)),
+            Polled::Failed(failed) => Some(Err(failed)),
+            Polled::Foreign => Some(Err(Failed)),
         }
-        polled.transpose()
     }
 }
 
@@ -144,8 +133,8 @@ unsafe fn stage_box(task: Task, staging: &mut [u8]) -> Option<()> {
 /// Replaces the one call of the original's router (`00242EF8`). The
 /// original is asked first; its answer is changed where the offline flow
 /// differs, and HOME and sleep are refused or let through by the kind of
-/// the step that comes next (`navigation`). A manager or task that is not a
-/// pointer, or a state a hook holds, ends the session: the disconnect step,
+/// the task that comes next (`navigation`). A manager or task that is not a
+/// pointer, or a state a hook holds, ends the session: the disconnect task,
 /// and the original is not asked.
 /// # Safety
 /// Called only from the patched call site, on the main thread, with the
@@ -164,14 +153,14 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
         return navigation::DISCONNECT;
     };
     let next = navigation::destination(current, outcome, native, cancelled);
-    // A step that reads or writes refuses HOME and sleep from the moment it
+    // A task that reads or writes refuses HOME and sleep from the moment it
     // is chosen; one that waits lets them through, unless a job is still out.
     if navigation::loads(next) {
         refuse_home(true);
-    } else if state.job.is_none() {
+    } else if !state.requests.is_out() {
         refuse_home(false);
     }
-    // The step's set-up puts up its loading panel on a later frame; its
+    // The task's set-up puts up its loading panel on a later frame; its
     // time is taken on the first frame of the patch behind it.
     if navigation::spins(next) {
         state.spinner.coming();
@@ -189,20 +178,29 @@ pub unsafe extern "aapcs" fn transporter_next(manager: *mut u8, current: u32) ->
 // The original's "show a message" function, its first instruction
 // (0019B50C, was: push {r4-r8, lr}). r0 = ui, r1 = message, r2 = whether the
 // message waits for an answer (`patch_common`'s `message_stub!`). Every
-// message a step that reads or writes ends with comes through here.
+// message a task that reads or writes ends with comes through here.
 patch_common::message_stub!(transporter_message_stub, "r2", "0x0019b510", message_waits);
 /// The original's "show a message" function was entered with a message that
-/// waits for an answer. Such a message is where a step that reads or writes
+/// waits for an answer. Such a message is where a task that reads or writes
 /// has nothing left to do but end, so the refusal the router entry began for
-/// it ends here. The original's own bit for a Virtual Console save that is
-/// being written is not this one and stays as it is.
+/// it ends here, unless a job is still out (`let_through`). The original's
+/// own bit for a Virtual Console save that is being written is not this one
+/// and stays as it is.
 extern "aapcs" fn message_waits() {
     // A refusal or "Could not find a game" comes without the search's
     // panel, as the reader's messages come without its own.
     if let Some(ui) = PANEL.release() {
         unsafe { stop_loading(ui as *mut u8) };
     }
-    refuse_home(false);
+    let_through();
+}
+/// A screen that waits for the user: HOME and sleep go through again, unless
+/// a job is still out. Every hook lets go of the state before it calls the
+/// original or shows a message, so one that holds it is no such screen's.
+fn let_through() {
+    if STATE.take().is_none_or(|state| !state.requests.is_out()) {
+        refuse_home(false);
+    }
 }
 
 // Game list set-up, state 0: the call that starts its indicator (00244EAC,
@@ -322,7 +320,7 @@ unsafe extern "aapcs" fn list_ready(raw: *mut u8) {
     if let Some(ui) = PANEL.release() {
         unsafe { stop_loading(ui as *mut u8) };
     }
-    refuse_home(false);
+    let_through();
 }
 
 /// Replaces the game search's update in its vtable (`002E6780`, was
@@ -331,7 +329,7 @@ unsafe extern "aapcs" fn list_ready(raw: *mut u8) {
 /// take a delivery: the question the original put to the server after a
 /// game was chosen. If not, the original's message for it is shown here and
 /// the search goes to its own state that waits for it and ends as for "no
-/// game found": back to the title screen. Every other frame is the
+/// game found": back to the start screen. Every other frame is the
 /// original's update.
 /// # Safety
 /// The original's task driver supplies the live game-search task, on the
@@ -352,7 +350,7 @@ pub unsafe extern "aapcs" fn transporter_search(raw: *mut u8) -> u32 {
                 return 0;
             }
             Check::End => {
-                unsafe { raw.add(TASK_OUTCOME).write(SEARCH_NONE) };
+                task.set_outcome(SEARCH_NONE);
                 return 1;
             }
         }
@@ -390,17 +388,15 @@ unsafe fn check(task: Task) -> Check {
         drop(state);
         return unsafe { show(task, MESSAGE_OPEN_BANK) };
     }
-    if state.job.is_none() && state.spinner.idle(now()) {
+    if !state.requests.is_out() && state.spinner.idle(now()) {
         return Check::Pending;
     }
-    let answer = unsafe { state.step(Job::Check, |_| Some(())) };
+    let answer = unsafe { state.job(Job::Check, |_| Some(())) };
     drop(state);
-    // A worker that failed refuses as a file that does not read does.
-    let message = match answer {
-        None => return Check::Pending,
-        Some(Ok(Reply::Ready)) => return Check::Go,
-        Some(Ok(Reply::Refused(refusal))) => refusal_message(refusal),
-        Some(_) => MESSAGE_OPEN_BANK,
+    let message = match checked(answer) {
+        Checked::Pending => return Check::Pending,
+        Checked::Go => return Check::Go,
+        Checked::Refused(message) => message,
     };
     unsafe { show(task, message) }
 }
@@ -411,8 +407,8 @@ unsafe fn check(task: Task) -> Check {
 /// the loading panel (`waits`) the update returns 0, as on a frame it has
 /// nothing to do; otherwise the original's update runs.
 /// # Safety
-/// The original's task driver supplies the live task of the step, on the
-/// main thread.
+/// The original's task driver supplies the live task, on the main
+/// thread.
 #[no_mangle]
 pub unsafe extern "aapcs" fn transporter_read(raw: *mut u8) -> u32 {
     unsafe { update(raw, navigation::READ, READ_UPDATE) }
@@ -429,12 +425,22 @@ pub unsafe extern "aapcs" fn transporter_question(raw: *mut u8) -> u32 {
 pub unsafe extern "aapcs" fn transporter_transfer(raw: *mut u8) -> u32 {
     unsafe { update(raw, navigation::TRANSFER, TRANSFER_UPDATE) }
 }
-/// One frame of `step`'s update: none while it waits, else the original's.
-unsafe fn update(raw: *mut u8, step: u32, update: usize) -> u32 {
-    if unsafe { waits(raw, step) } {
+/// One frame of the update of task `id`: none while it waits, else the
+/// original's. An object that is not the task `id` is not touched: the
+/// update answers finished, as the search's and Bank's task entries do.
+unsafe fn update(raw: *mut u8, id: u32, update: usize) -> u32 {
+    let expected = match id {
+        navigation::READ => TASK_READ,
+        navigation::QUESTION => TASK_QUESTION,
+        _ => TASK_TRANSFER,
+    };
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
+        return 1;
+    };
+    if unsafe { waits(task, id) } {
         return 0;
     }
-    unsafe { original(update, raw) }
+    unsafe { original(update, task.raw()) }
 }
 /// The original update at `address`.
 unsafe fn original(address: usize, raw: *mut u8) -> u32 {
@@ -442,25 +448,15 @@ unsafe fn original(address: usize, raw: *mut u8) -> u32 {
     unsafe { update(raw) }
 }
 
-/// Whether this frame of `step`'s update waits for its loading panel
+/// Whether this frame of the update of task `id` waits for its loading panel
 /// (`panel::waits`). A transfer the original is ending is not held up. The
 /// frame the question's first state runs, which takes down the panel of
 /// the reading, lets HOME and sleep through.
 /// # Safety
-/// `raw` is the live task of `step`, on the main thread.
-unsafe fn waits(raw: *mut u8, step: u32) -> bool {
-    let expected = match step {
-        navigation::READ => TASK_READ,
-        navigation::QUESTION => TASK_QUESTION,
-        navigation::TRANSFER => TASK_TRANSFER,
-        _ => return false,
-    };
-    let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
-        // The original update runs unchanged for an unexpected task.
-        return false;
-    };
+/// `task` is the live task `id`, on the main thread.
+unsafe fn waits(task: Task, id: u32) -> bool {
     let task = task.raw();
-    if step == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
+    if id == navigation::TRANSFER && unsafe { task.add(TRANSFER_ENDING).read() } != 0 {
         return false;
     }
     let Some(mut state) = STATE.take() else {
@@ -472,12 +468,12 @@ unsafe fn waits(raw: *mut u8, step: u32) -> bool {
     state.spinner.seen(now);
     let task_state = unsafe { read_word(task, TASK_STATE) };
     let waits = panel::waits(
-        step,
+        id,
         task_state,
         state.spinner.idle(now),
         state.spinner.held(now),
     );
-    if !waits && panel::ends_panel(step, task_state) {
+    if !waits && panel::ends_panel(id, task_state) && !state.requests.is_out() {
         refuse_home(false);
     }
     waits
@@ -539,8 +535,10 @@ patch_common::stub!(
 );
 /// Replaces the upload. Returns `DELIVER_DONE` when the delivery is written,
 /// flushed, and read back; `DELIVER_PENDING` while that is in progress; and
-/// `DELIVER_FAILED` when nothing was delivered, in which case the original
-/// must not remove anything from the source game.
+/// `DELIVER_FAILED` when the delivery is not confirmed, in which case the
+/// original removes nothing from the source game. Bank may hold the
+/// delivery all the same, if only the record announcing it did not read
+/// back (`Journal::announce`): a duplicate, never a loss.
 ///
 /// Bank is written only while the game the Pokémon leave can be saved: for
 /// a cartridge whose card is gone the answer is `DELIVER_FAILED` before
@@ -554,7 +552,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     let Some(mut state) = STATE.take() else {
         return DELIVER_PENDING;
     };
-    if state.job.is_none() {
+    if !state.requests.is_out() {
         let Ok(manager) = task.pointer(TASK_MANAGER) else {
             return DELIVER_FAILED;
         };
@@ -565,18 +563,14 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     // The transport box goes to the worker in its staging buffer, copied
     // here: the worker touches no object of the original.
     let answer = unsafe {
-        state.step(Job::Deliver, |worker| {
+        state.job(Job::Deliver, |worker| {
             stage_box(task, worker.staging_mut().ok()?)
         })
     };
-    match answer {
-        None => DELIVER_PENDING,
-        Some(Ok(Reply::Delivered)) => DELIVER_DONE,
-        Some(_) => DELIVER_FAILED,
-    }
+    delivered(answer)
 }
 
-/// Replaces the title screen's call that writes its version line
+/// Replaces the start screen's call that writes its version line
 /// (`0024BAE8`): the line says which patch runs (`patch_common::ui`).
 /// # Safety
 /// Called only from that site, with the arguments of the replaced call.
