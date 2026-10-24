@@ -1,7 +1,7 @@
 //! The first of the two numbers on the error screen of Bank and of
 //! Transporter: what could not go on. Every patch of either program shows
 //! the same number for the same thing; the second number says why
-//! (docs/bank.md, "Troubleshooting").
+//! (docs/errors.md, "Every active first error number").
 
 use crate::{bank_files, fs, session, worker::WorkerError};
 use offline_core::StoreError;

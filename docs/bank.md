@@ -217,27 +217,11 @@ Until you answer nothing is changed: press HOME and close Poké Transporter to d
 
 Bank shows one of the original's messages for these, and after A it is back on its start screen. Bank does not have to be closed: put the cartridge back, or close Bank and free space, and press START. Nothing is lost by the message itself.
 
-| When | Message | What happened |
-| --- | --- | --- |
-| Creating the Bank at the first start, and the SD card is full | "Pokémon Bank could not be started due to a lack of space on your SD card." | No Bank was created. The next START creates it, with the welcome again. |
-| START with an interrupted Save and Quit, and the cartridge is pulled | "Please confirm that your Game Card is properly inserted, and then try again." | Nothing changed. The next START with the game finishes or undoes the save ([above](#if-save-and-quit-is-interrupted)). |
-| Loading the chosen game, and the cartridge is pulled | the same | Nothing changed. |
-| Save and Quit, before the game is written, and the cartridge is pulled | the same | Nothing was saved; the session's changes are gone. |
-| Save and Quit, and a file of the Bank that was missing has to be made again, but the SD card is full | "The SD card is full." | Nothing was saved. |
-| Save and Quit, while or after the game is written | by what the game's save holds now, next table | |
+- **A pulled cartridge** gets "Please confirm that your Game Card is properly inserted, and then try again." wherever nothing changed or the next START with the game can decide: at START, when the chosen game is loaded, and at Save and Quit. A Save and Quit whose game write has begun decides at once by what the game's save holds, as the next start would ([above](#if-save-and-quit-is-interrupted)).
+- **A full SD card** gets "Pokémon Bank could not be started due to a lack of space on your SD card." at the first start, and "The SD card is full." at Save and Quit; nothing is saved then.
+- **Anything else** shows the error screen with two numbers ([Troubleshooting](#troubleshooting)): the SD card refusing Bank's files for another reason, and an installed game whose save cannot be read or written, which has no card to put back.
 
-If the SD card refuses to read or write Bank's files for another reason than lack of space, Bank shows its error screen with the two numbers instead ([Troubleshooting](#troubleshooting)): retrying would not help, and the numbers say what to report. The same goes for an installed game whose save cannot be read or written: it has no card to put back.
-
-When the game's write has begun, Bank looks at the game's save at once and decides as it would at the next start:
-
-| The game's save | Message | Bank |
-| --- | --- | --- |
-| The one Bank wrote | "Success! Changes saved." | Keeps its new boxes. Everything was moved. |
-| Unchanged | "Please confirm that your Game Card is properly inserted, and then try again." | Back to its old boxes. Nothing was moved. |
-| Something else, and the session moved Pokémon one way or none | the same | The write was cut off. Bank decides by what the session moved ([above](#if-save-and-quit-is-interrupted)); some Pokémon may exist twice. |
-| Something else, and the session moved Pokémon both ways; or the cartridge is pulled | the same | Nothing is decided yet: put the same game in and press START, and Bank finishes or undoes the save; if the game's save is still neither, Bank leaves it to Poké Transporter ([above](#a-save-left-to-transporter)). |
-
-For an installed game Bank shows its error screen in place of the advice about the Game Card; what it decides is the same.
+[errors.md](errors.md) shows every case as a flow, with each message and number (diagrams 1 to 3).
 
 ## A damaged game save
 
@@ -249,7 +233,7 @@ Bank checks the chosen game's save when it loads it, as the game itself does: ev
 | --- | --- |
 | Bank does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Bank is not version 1.5. |
 | "Your communication with Poké Transporter did not complete correctly…" at START. | An interrupted Save and Quit that only you can settle, in Poké Transporter ([above](#a-save-left-to-transporter)). |
-| "Press HOME to return to the HOME Menu" with two numbers under it. | An error; the numbers say where (below). |
+| "Press HOME to return to the HOME Menu" with two numbers under it. | An error; the numbers say where ([errors.md](errors.md#every-active-first-error-number)). |
 
 An error ends this run of Bank. Stored data is kept. Poké Transporter shows the same screen, with the same numbers, for an error of its patch and for Bank's data it cannot open or finds damaged (`3`, `5`), which Bank could not resolve either ([transporter.md](transporter.md#troubleshooting)). Bank has no general error text, so the patch shows the first sentence of the original's message for a failed save for every error ("The server did not receive the data.", in the console's language). The sentence about the server is not to be taken literally; it only says that something failed.
 
@@ -263,28 +247,7 @@ XXXXXXXX YYYYYYYY
 
 The second line is the version of the patch, with a name behind it if it is not the normal package ("-test", "-migration", "-download"); a package that is no release says "draft" and the commit it was built from in place of the version, as "draft-a782e1b". A migration shows the version whose Bank it converted and its own, as in `v0.2.1-1.2.3`, and `v1.2.3-migration` when it found none to convert. Only the numbers tell what happened: the first says which step failed, the second why. Press HOME, close Bank, and start it again. Bank's files are closed before the error appears. If the version and the numbers cannot be put under the line, the line appears alone.
 
-| First number | Step |
-| --- | --- |
-| `1`, `2` | Bank or Transporter itself: one of its objects is not what the patch expects, or the patch's background thread cannot be used |
-| `3`, `4` | Opening or creating the files |
-| `5` | The stored data is not valid |
-| `6` | Console clock |
-| `9` | Loading |
-| `A`–`E` | Game save; `D` in Transporter: a save of the source game could not be written, before the question or after the delivery, on the SD card (the console's code), on a cartridge whose card is still in after the delivery (the console's code), or of a Virtual Console title (0) |
-| `F` | Preparing the save |
-| `10` | Finishing or undoing an interrupted save |
-| `12`, `13` | Rewards |
-| `14` | Transporter's delivery did not happen: the SD card refused its write for another reason than lack of space (the console's code), Bank's journal or transport file did not take it (3), it was handed no whole transport box with Pokémon (1, or 2 without Pokémon), or Bank's record no longer allows it (5). Or whether Bank received it cannot be told (4): Bank may hold it |
-
-| Second number | Meaning |
-| --- | --- |
-| Small number, for example `00176BF0` | A file exists with that size instead of the expected one. |
-| `78000000` | Bank's own filesystem session was not ready. |
-| `710000oo` | A call succeeded but returned no handle (`oo`: 0 open archive, 3 open file). |
-| `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
-| `79000000` | A file that is needed exists but cannot be opened. |
-| `7A00ffpp` | A problem with one of the files. `ff`: 0 boxes, 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows, 5 not ready: the boxes are not open, or a save is still in progress. |
-| `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
+What each first and second number means is listed in [errors.md](errors.md#every-active-first-error-number), for Bank and Poké Transporter alike.
 
 **Starting over with an empty Bank.** This deletes every Pokémon stored in the offline Bank.
 
