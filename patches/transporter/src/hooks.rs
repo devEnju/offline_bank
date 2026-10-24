@@ -704,7 +704,7 @@ pub unsafe extern "aapcs" fn transporter_message_text(
         Shown::Whole | Shown::SecondPage => {}
     }
     let loaded = unsafe { ui::load_message(messages, message, string) };
-    if shown == Shown::SecondPage {
+    if shown != Shown::Whole {
         unsafe { patch_common::ui::keep_rest(string) };
     }
     loaded
