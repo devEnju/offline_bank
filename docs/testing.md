@@ -88,9 +88,9 @@ Choose **(before)**. “Play and save” below means making a new save in the ga
 | 1 | Deposit one, withdraw one | Reopen with the same game unchanged. | Bank and game are as before the session. |
 | 2 | Deposit one | Play and save, then reopen. | Deposited Pokémon is in Bank and still in the game. |
 | 3 | Withdraw one | Play and save, then reopen. | Pokémon remains in Bank and is absent from the game. |
-| 4 | Deposit one, withdraw one | Play and save, then reopen. | Deposited Pokémon is in both places; the withdrawn Pokémon is lost. |
+| 4 | Deposit one, withdraw one | Play and save, then reopen. | "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.", then the title; START shows it again. Remove the game and START: the different-copy notice instead. Put it back and START: the message again. |
 
-**Case 4 intentionally demonstrates the documented loss case. Use disposable Pokémon.**
+**Case 4 leaves a save that only an answer can settle. Use disposable Pokémon.**
 
 ### The cartridge is absent
 

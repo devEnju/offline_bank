@@ -852,6 +852,12 @@ impl Runtime {
                     )
                 })
             }
+            // The save in progress is left to Transporter's question: the
+            // original's message that sends the user to Transporter for the
+            // cleanup, then the start screen.
+            (Step::Recover, Reply::AskTransporter) => self.turn_back(task, |ui| unsafe {
+                bank_common::ui::notice(ui, bank_common::ui::OPEN_TRANSPORTER)
+            }),
             // The Game Card is gone: nothing of the session was saved, and
             // what the journal holds is the next START's to settle
             // (docs/internals.md, "When a job cannot finish").

@@ -179,6 +179,11 @@ pub const BANK_LOADING_MESSAGE: u32 = 0xe;
 /// Native message 0xA: "You previously used a different copy of this game.
 /// Please try again using {name}'s game (Trainer ID No. {number})."
 const OTHER_COPY_NOTICE: u32 = 0xa;
+/// Native message 5, two pages: "Your communication with Poké Transporter
+/// did not complete correctly during your last session." and "Please open
+/// Poké Transporter and perform the cleanup process before using Pokémon
+/// Bank." For a save in progress left to Transporter's question.
+pub const OPEN_TRANSPORTER: u32 = 5;
 
 /// Starts the native loading panel, sound, and animation through 001d5b44,
 /// then lets 0025da24 load the original localized message into the UI's own

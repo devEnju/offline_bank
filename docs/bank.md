@@ -157,7 +157,7 @@ Until step 3 Bank still holds both sets of boxes. If the power fails, the next s
 | --- | --- | --- |
 | Unchanged | The power failed before step 2 was finished. | Goes back to its old boxes. Nothing was moved. |
 | The one Bank wrote | The power failed after step 2. | Keeps its new boxes. Everything was moved. |
-| Something else: the game was played and saved, a new game was started on it, it is another cartridge of the game, or step 2 was cut off midway | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. A save that step 2 left damaged is then refused when that game is chosen ([below](#a-damaged-game-save)). |
+| Something else: the game was played and saved, a new game was started on it, it is another cartridge of the game, or step 2 was cut off midway | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. A save that step 2 left damaged is then refused when that game is chosen ([below](#a-damaged-game-save)). A session that moved Pokémon both ways is left to Poké Transporter ([below](#a-save-left-to-transporter)). |
 | The game is not inserted, or only its other copy is there (see below) | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game ([below](#a-save-that-waits-for-its-game)). |
 
 In the first two cases nothing is lost and nothing exists twice. **So after an interrupted Save and Quit, start Bank again with the same game inserted before you play it.**
@@ -169,9 +169,9 @@ When the game's save cannot say, Bank takes the boxes that cannot lose a Pokémo
 | Only deposited Pokémon | Keeps its new boxes | The deposited Pokémon exist twice. |
 | Only withdrew or released Pokémon | Goes back to its old boxes | The withdrawn Pokémon exist twice. |
 | Moved none between Bank and the game | Goes back to its old boxes | Miles of a claim count twice. |
-| Did both | Keeps its new boxes | If the power failed before step 2, the withdrawn Pokémon are lost and the deposited ones exist twice. |
+| Did both | Decides nothing: the game is not there, so it waits ([below](#a-save-that-waits-for-its-game)), or it is, saved on, so Poké Transporter asks you ([below](#a-save-left-to-transporter)) | Depends on your answer: one of the two choices loses Pokémon. |
 
-Only the last row can lose Pokémon. Pokémon moved between Bank's own boxes, and a delivery from Poké Transporter taken in that session, count as neither deposited nor withdrawn.
+Only the last row can lose Pokémon, and only by the answer given in Poké Transporter. Pokémon moved between Bank's own boxes, and a delivery from Poké Transporter taken in that session, count as neither deposited nor withdrawn.
 
 ### A save that waits for its game
 
@@ -190,6 +190,26 @@ Name and number are those of the game the session was made with; the number has 
 The message only comes for a Save and Quit that was cut off. A cartridge pulled out during a session gets one of the original's messages instead, and Bank returns to its start screen ([below](#a-pulled-game-card-or-a-full-sd-card)); put it back and press START, and if a save was left in progress, this section applies.
 
 **The same game as a cartridge and installed.** Bank uses one copy of each game: the cartridge if it is inserted, otherwise the installed copy. If the session was with the cartridge and the cartridge is taken out, the installed copy takes its place with a save of its own, and the same happens the other way round when a cartridge is inserted beside an installed copy. Bank notices that it is the other kind of copy and treats the game as not inserted. This only concerns you if you have a game in both forms and have played both.
+
+### A save left to Transporter
+
+When the interrupted session moved Pokémon both ways and its game is there, on the same kind of copy, but was saved on since (or a new game was started on it, or it is another cartridge of the game), neither choice is safe for Bank to make: keeping the old boxes loses the deposited Pokémon if step 2 had finished, keeping the new ones loses the withdrawn Pokémon if it had not. Bank changes nothing and sends you to Poké Transporter, with the original's message for it:
+
+> Your communication with Poké Transporter did not complete correctly during your last session.
+> (A)
+> Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.
+
+After A Bank is back on its start screen, and every START with that game shows the message again. Start Poké Transporter and press START: it asks whether to restore your data ([transporter.md](transporter.md#a-save-left-to-transporter)). **Yes** goes back to the old boxes, **No** keeps the new ones.
+
+**Before you answer**, look in your game's boxes and party:
+
+| In your game now | Answer | Why |
+| --- | --- | --- |
+| The Pokémon you put **into** Bank in that session | Yes | The game kept its old save: Bank's old boxes hold the ones you took out. |
+| The Pokémon you took **out of** Bank in that session | No | The game has the new save: Bank's new boxes hold the ones you put in. |
+| Neither, or you are not sure | back up first | Back up the game's save and Bank's data (for example with Checkpoint), then answer. A wrong answer can then be undone by restoring both. |
+
+Until you answer nothing is changed: press HOME and close Poké Transporter to decide later. If you take the game out instead, or put back a save that is one of the two (a backup from before the session), Bank decides by itself at its next START, as in the first table.
 
 **After updating the patch.** A Save and Quit that was interrupted is finished by any later release that stores the Bank the same way. A Bank that a release stored in an earlier way needs the migration, which finishes no save in progress itself: it says so (`00000BAD 00000007`), and the last release of that way finishes it, v0.2.1 for a Bank from v0.2.1 or before and v0.4.0 for one from v0.4.0 or before. A save in progress that v0.3.0 began is recorded in a form v0.4.0 does not read; the migration writes it in v0.4.0's form first, so that v0.4.0 finishes it too. If the game is not inserted then, v0.4.0's message names no trainer, because v0.3.0 did not record one.
 
@@ -215,7 +235,7 @@ When the game's write has begun, Bank looks at the game's save at once and decid
 | The one Bank wrote | "Success! Changes saved." | Keeps its new boxes. Everything was moved. |
 | Unchanged | "Please confirm that your Game Card is properly inserted, and then try again." | Back to its old boxes. Nothing was moved. |
 | Something else, and the session moved Pokémon one way or none | the same | The write was cut off. Bank decides by what the session moved ([above](#if-save-and-quit-is-interrupted)); some Pokémon may exist twice. |
-| Something else, and the session moved Pokémon both ways; or the cartridge is pulled | the same | Nothing is decided yet: put the same game in and press START, and Bank finishes or undoes the save. |
+| Something else, and the session moved Pokémon both ways; or the cartridge is pulled | the same | Nothing is decided yet: put the same game in and press START, and Bank finishes or undoes the save; if the game's save is still neither, Bank leaves it to Poké Transporter ([above](#a-save-left-to-transporter)). |
 
 For an installed game Bank shows its error screen in place of the advice about the Game Card; what it decides is the same.
 
@@ -280,6 +300,6 @@ Deleting Bank's Extra Data in System Settings may not remove the files.
 - **First start.** Creating the files runs in the background. Two original steps still run in the foreground and can cause short pauses: the game scan creates the extdata archive, and the default box and group names are formatted in one call. If the power fails while the Bank is being created ("Preparing Pokémon Bank for your use…"), the next start creates it again from the beginning, welcome included; nothing has to be deleted.
 - **Backups.** The journal cannot repair a game save damaged mid-write, and cannot detect restoring a Bank backup and a game backup from different times. Always back up Bank's extdata and your games together.
 - **Power cuts.** A cut during Save and Quit can only damage the file being written, which Bank does not need and replaces. It cannot protect against damage to the SD card's own file table; that holds for every save on the console.
-- **Interrupted Save and Quit.** One case can lose Pokémon: see [If Save and Quit is interrupted](#if-save-and-quit-is-interrupted).
+- **Interrupted Save and Quit.** One case can lose Pokémon, by the answer you give in Poké Transporter: see [A save left to Transporter](#a-save-left-to-transporter).
 - **Clock.** A console date set ahead is paid as if the time had passed.
 - **Errors are final for a run of Bank.** After the message only the line about the HOME Menu follows, with the two numbers. Close Bank from the HOME Menu and start it again. A save that waits for its game is not an error, and neither is a pulled Game Card or a full SD card: they lead back to the start screen ([above](#a-pulled-game-card-or-a-full-sd-card)).

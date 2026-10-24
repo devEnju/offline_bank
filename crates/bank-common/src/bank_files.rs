@@ -521,6 +521,13 @@ impl<F: Files> BankFiles<F> {
     /// game whose save is neither of its two images (`moved::choose`). The
     /// journal's own rule is not loosened: this names the image the game is
     /// taken to have been saved from. Follow it with `read`, as `reconcile`.
+    /// Leaves the save in progress to Transporter's question, or takes it
+    /// back (`offline_core::Metadata::ask`). Only the journal is written,
+    /// and only if it does not say so already.
+    pub fn ask(&mut self, ask: bool) -> Outcome<(), F> {
+        self.bank()?.ask(ask).map_err(Error::Bank)
+    }
+
     pub fn reconcile_as(&mut self, decision: RecoveryDecision) -> Outcome<RecoveryDecision, F> {
         let Phase::Prepared(pending) = self.phase()? else {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
@@ -1046,11 +1053,12 @@ mod tests {
             assert_eq!((moved.deposited, moved.withdrawn), expected, "{name}");
             // Looking wrote nothing, and the save is still in progress.
             assert!(matches!(files.phase(), Ok(Phase::Prepared(_))));
-            assert_eq!(moved::choose(moved), decision, "{name}");
-            // Without the game the same answer, except for the session
-            // that moved Pokémon both ways: that one waits for its game.
+            // Every session but the one that moved Pokémon both ways has a
+            // snapshot that cannot lose one; that one is settled by its game
+            // or by the user, here as the answer No to Transporter's
+            // question gives it.
             assert_eq!(
-                moved::choose_unseen(moved),
+                moved::choose(moved),
                 (name != "both ways").then_some(decision),
                 "{name}"
             );
@@ -1589,7 +1597,7 @@ mod tests {
                     .pending_moves(&mut vec![0; BLOB_SIZE], &mut before, &mut after)
                     .unwrap();
                 assert_eq!((moved.deposited, moved.withdrawn), (1, 1));
-                assert_eq!(moved::choose_unseen(moved), None);
+                assert_eq!(moved::choose(moved), None);
                 assert_eq!(disk.0.borrow().operations, written);
                 assert!(matches!(files.phase(), Ok(Phase::Prepared(_))));
                 end_session(&mut files, &disk);

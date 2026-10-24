@@ -129,6 +129,10 @@ pub enum Reply {
         title: u64,
         trainer: Trainer,
     },
+    /// The save in progress moved Pokémon both ways and its game, there and
+    /// saved on since, no longer tells which snapshot loses none: it is left
+    /// to Transporter's question (`Settled::Asks`).
+    AskTransporter,
     /// The job could not finish, and this is what it leaves.
     Ended(Ending),
 }
@@ -306,12 +310,14 @@ fn undo<F: Files>(files: &mut BankFiles<F>) -> Result<(), FilesError<F>> {
 /// Which way a save in progress that is neither image is settled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rule {
-    /// At START: with a game of the kind of copy it was made with, by what
-    /// it moved, also when that was both ways (`moved::choose`).
+    /// At START: by what it moved (`moved::choose`); one that moved Pokémon
+    /// both ways is left to Transporter's question when its game is there
+    /// on the kind of copy it was made with (`Settled::Asks`), and waits
+    /// for its game otherwise.
     Start,
-    /// After its own write: one that moved Pokémon both ways is left for
-    /// the next START with its game (`moved::choose_unseen`), and the image
-    /// written counts only with the secure pair it was prepared with.
+    /// After its own write: by what it moved; one that moved Pokémon both
+    /// ways is left for the next START with its game, and the image written
+    /// counts only with the secure pair it was prepared with.
     AfterWrite,
 }
 
@@ -323,9 +329,15 @@ pub enum Settled {
     Exact(RecoveryDecision),
     /// The game holds neither, or is not there: settled by what it moved.
     ByMoves(RecoveryDecision),
-    /// Not settled, and nothing written: it moved Pokémon both ways, and the
-    /// game cannot tell. It waits for its game.
+    /// Not settled: it moved Pokémon both ways, and its game is not there,
+    /// or only on the other kind of copy. It waits for its game. Nothing is
+    /// written, but a save left to Transporter's question is taken back.
     Waits,
+    /// Not settled: it moved Pokémon both ways, and its game is there on the
+    /// kind of copy it was made with, saved on since, so that it no longer
+    /// tells which snapshot loses none. It is left to Transporter's
+    /// question, which asks the user (`Metadata::ask`).
+    Asks,
     /// Not settled: the game cannot be read, as its Game Card is gone. The
     /// journal still holds it, for the next start.
     Open,
@@ -400,10 +412,11 @@ where
 }
 
 /// Settles the save in progress by what it moved, toward the snapshot that
-/// cannot lose a Pokémon. `seen` says that a game of its title is there,
-/// with a save that is neither image. Without one only a save that moved
-/// Pokémon one way, or none, is settled; one that moved them both ways
-/// waits for its game, and nothing is written.
+/// cannot lose a Pokémon: a save that moved Pokémon one way, or none. One
+/// that moved them both ways is not settled here. `seen` says that its
+/// game is there on the kind of copy it was made with, at START, with a
+/// save that is neither image: then it is left to Transporter's question
+/// (`Settled::Asks`). Otherwise it waits for its game.
 fn by_moves<F: Files>(
     files: &mut BankFiles<F>,
     staging: &mut [u8],
@@ -416,13 +429,11 @@ where
     let moved = files
         .pending_moves(staging, before, after)
         .map_err(files_failed(Fault::JournalRecovery))?;
-    let decision = if seen {
-        Some(moved::choose(moved))
-    } else {
-        moved::choose_unseen(moved)
-    };
-    let Some(decision) = decision else {
-        return Ok(Settled::Waits);
+    let Some(decision) = moved::choose(moved) else {
+        files
+            .ask(seen)
+            .map_err(files_failed(Fault::JournalRecovery))?;
+        return Ok(if seen { Settled::Asks } else { Settled::Waits });
     };
     files
         .reconcile_as(decision)
@@ -491,14 +502,18 @@ where
         }
         // A card that is gone is only ever a cartridge's (`card_gone`).
         Settled::Open => Ok(Finalized::Ended(Ending::Retry)),
-        Settled::Exact(RecoveryDecision::KeepBefore) | Settled::ByMoves(_) | Settled::Waits
+        Settled::Exact(RecoveryDecision::KeepBefore)
+        | Settled::ByMoves(_)
+        | Settled::Waits
+        | Settled::Asks
             if cartridge =>
         {
             Ok(Finalized::Ended(Ending::Retry))
         }
-        Settled::Exact(RecoveryDecision::KeepBefore) | Settled::ByMoves(_) | Settled::Waits => {
-            Err(Fault::GameWrite.with(status).into())
-        }
+        Settled::Exact(RecoveryDecision::KeepBefore)
+        | Settled::ByMoves(_)
+        | Settled::Waits
+        | Settled::Asks => Err(Fault::GameWrite.with(status).into()),
     }
 }
 
@@ -791,6 +806,7 @@ mod arm {
                             title: pending.game.title_id,
                             trainer: Trainer::of(&pending.game),
                         }),
+                        Settled::Asks => Ok(Reply::AskTransporter),
                         Settled::Open => Ok(Reply::Ended(Ending::Retry)),
                     }
                 }
@@ -1022,7 +1038,7 @@ mod tests {
     use super::*;
     use bank_common::{
         bank_files::FileName,
-        testing::{body, fresh, load, opened, pokemon, with_boxes, Refused, Shared},
+        testing::{asked, body, fresh, load, opened, pokemon, with_boxes, Refused, Shared},
     };
     use offline_core::sections::RECORD_SIZE;
     use std::{boxed::Box, collections::BTreeMap, vec::Vec};
@@ -1562,6 +1578,98 @@ mod tests {
                     assert!(settled_bank(&card) == *new, "cut after {budget}");
                 }
                 other => panic!("cut after {budget}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn at_start_a_game_saved_on_since_leaves_a_save_that_moved_both_ways_to_transporter() {
+        let (old, sessions) = sessions();
+        fn start(
+            files: &mut BankFiles<Shared>,
+            game: Option<&mut Simulated>,
+            pending: &PendingTransfer,
+        ) -> Settled {
+            settle(
+                files,
+                game,
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                pending,
+                Rule::Start,
+                None,
+                &mut held(),
+            )
+            .unwrap()
+        }
+        for cartridge in [true, false] {
+            for (moved, new) in &sessions {
+                let case = std::format!("{moved}, cartridge {cartridge}");
+                // The game of the kind of copy the save was made with,
+                // saved on since: neither image.
+                let mut game = Simulated::loaded(cartridge);
+                let (disk, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
+                game.save = Some((OTHER, LOADED));
+                let settled = start(&mut files, Some(&mut game), &in_progress);
+                if *moved != "both ways" {
+                    // One way, or none: the snapshot that cannot lose.
+                    let kept = if *moved == "deposited" { new } else { &old };
+                    drop(files);
+                    assert!(settled_bank(&disk) == *kept, "{case}");
+                    assert!(!asked(&disk), "{case}");
+                    continue;
+                }
+                // Both ways: left to Transporter's question, nothing else
+                // written.
+                assert_eq!(settled, Settled::Asks, "{case}");
+                assert_eq!(pending(&mut files), Some(in_progress), "{case}");
+                drop(files);
+                assert!(asked(&disk), "{case}");
+                // The next START with the same game asks again, and writes
+                // nothing more.
+                let mut files = opened(&disk);
+                let before = stored(&disk);
+                assert_eq!(
+                    start(&mut files, Some(&mut game), &in_progress),
+                    Settled::Asks,
+                    "{case}"
+                );
+                assert_eq!(pending(&mut files), Some(in_progress), "{case}");
+                drop(files);
+                assert!(stored(&disk) == before, "{case}");
+                // Without its game, or with only the other kind of copy: it
+                // waits for its game again, and Transporter's question is
+                // taken back.
+                for other in [None, Some(Simulated::loaded(!cartridge))] {
+                    let mut other = other.map(|mut game| {
+                        game.save = Some((OTHER, LOADED));
+                        game
+                    });
+                    let mut files = opened(&disk);
+                    assert_eq!(
+                        start(&mut files, other.as_mut(), &in_progress),
+                        Settled::Waits,
+                        "{case}"
+                    );
+                    assert_eq!(pending(&mut files), Some(in_progress), "{case}");
+                    drop(files);
+                    assert!(!asked(&disk), "{case}");
+                    // Asked again by the next START with the game.
+                    let mut files = opened(&disk);
+                    start(&mut files, Some(&mut game), &in_progress);
+                    drop(files);
+                    assert!(asked(&disk), "{case}");
+                }
+                // The game back with the image it was saved from: settled.
+                game.save = Some((BEFORE, LOADED));
+                let mut files = opened(&disk);
+                assert_eq!(
+                    start(&mut files, Some(&mut game), &in_progress),
+                    Settled::Exact(RecoveryDecision::KeepBefore),
+                    "{case}"
+                );
+                drop(files);
+                assert!(settled_bank(&disk) == old, "{case}");
+                assert!(!asked(&disk), "{case}");
             }
         }
     }

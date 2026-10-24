@@ -539,13 +539,15 @@ A save in progress (`Phase::Prepared`) is settled by the next start, in `Job::Re
 | --- | --- | --- |
 | Its file is the before-image | Keep the save before | `reconcile`; the platform secure value must be the file's (`require_secure`) |
 | Its file is the after-image | Make the new save current | `reconcile`; the platform secure value is advanced if the cut came before that (`finish_secure`) |
-| Its file is neither, on the kind of copy the save was made with (`Found::SameKind`) | By what the save moved | `by_moves(.., true)`, `moved::choose` |
-| Its file is neither, on the other kind of copy (`Found::StandIn`) | As for a game that is not there, next row | `by_moves(.., false)`, `moved::choose_unseen` |
-| Not among the games the scan loaded (`NativeGameError::NotLoaded`, `Job::Recover { game: None }`) | By what the save moved if that was one way; otherwise the save waits: nothing is written and the reply is `Reply::Waiting` with the title and the trainer | `by_moves(.., false)`, `moved::choose_unseen` |
+| Its file is neither, on the kind of copy the save was made with (`Found::SameKind`) | By what the save moved if that was one way or none; otherwise the save is left to Transporter's question: bit 2 of the record's byte 8 is set, and the reply is `Reply::AskTransporter` | `by_moves(.., true)`, `moved::choose` |
+| Its file is neither, on the other kind of copy (`Found::StandIn`) | As for a game that is not there, next row | `by_moves(.., false)`, `moved::choose` |
+| Not among the games the scan loaded (`NativeGameError::NotLoaded`, `Job::Recover { game: None }`) | By what the save moved if that was one way or none; otherwise the save waits: bit 2 is cleared if it was set, nothing else is written, and the reply is `Reply::Waiting` with the title and the trainer | `by_moves(.., false)`, `moved::choose` |
 
 **A save that waits** is not an error. The hook shows the original's message `0xA` with the trainer's name and ID ([Tasks and routing](#tasks-and-routing)) and ends task 9 through cleanup, where the files are closed, then the start screen. The worker keeps no failed state for it, so the next START opens the files again and settles the save if its game is there. Three related checks have numbers of their own: a record whose title is none of the eight games is fault `5`; a game object of that title that is not what the patch expects is fault `A`, as when a game is loaded; a game loaded while a save is still in progress is fault `10`. An opening settles a save in progress or ends there, so the last cannot be reached.
 
 A file that is neither image, on the same kind of copy, was written since the cut: by the game played on, by a new game started on it, or it is another cartridge. Nothing in it tells for certain which image it was made from, and the three are not told apart.
+
+**A save left to Transporter's question** is not an error either. The hook shows the original's message 5, "Your communication with Poké Transporter did not complete correctly during your last session." and after A "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.", and ends task 9 as for message `0xA`. Setting bit 2 is one journal write (`BankFiles::ask`, `BankStore::ask`: the same record with the next sequence number), behind START's loading screen; a record that has it already is not written again. Every START decides anew: the game with one of its two images settles the save, the game gone or only on the other kind of copy clears bit 2 and the save waits, and the game still saved on keeps it. Transporter asks only while bit 2 is set, and its answer settles the save ([Tasks and routing](#tasks-and-routing-1)).
 
 **The kind of copy.** The original holds one copy per title: its mount (`00163F24`) opens archive `567890B4` for the title on medium 2, the game card, and only if that fails on medium 1, the SD card. When the copy of a save in progress is gone, the other kind stands in under the same title with an unrelated save, and the game must count as absent. The console says which kind a loaded copy is: the reply to the secure-value query (`0876`) carries a flag for a title on a game card, the one the original's check at `0016443C` uses to accept any value for cartridges (`PlatformSecureValue::gamecard`). At recovery the binding is computed for both kinds from the record's own name and ID (`transaction::bound`); the one that fits tells which kind the save was made with. An exact image is accepted from either kind. A binding that fits neither is fault `B`, also when no game is there to look at: that is a damaged record, or a save in progress begun by a build with another form of binding, which only that build finishes. A record holding anything else there, such as a whole SHA-256, does not come out of its own first 28 bytes again; no other form is read.
 
@@ -558,18 +560,18 @@ A file that is neither image, on the same kind of copy, was written since the cu
 
 The two lists are compared as multisets ([moved.rs](../crates/offline-core/src/moved.rs)). What only the save after holds was deposited; what only the one before holds was withdrawn or released; a Pokémon moved inside the Bank is in both.
 
-| Deposited | Withdrawn | `choose` (a game is there) | `choose_unseen` (none is) |
-| --- | --- | --- | --- |
-| some | none | Commit | Commit |
-| none | some | Keep | Keep |
-| none | none | Keep | Keep |
-| some | some | Commit | Wait |
+| Deposited | Withdrawn | `choose` |
+| --- | --- | --- |
+| some | none | Commit |
+| none | some | Keep |
+| none | none | Keep |
+| some | some | none: Transporter's question with the game there, else wait |
 
-The first two rows cannot lose a Pokémon whichever way the game's save went, and the third cannot lose the Miles of a claim. The last row has no such answer: after a commit, if the game's save had not been written, the withdrawn Pokémon are in neither place.
+The first two rows cannot lose a Pokémon whichever way the game's save went, and the third cannot lose the Miles of a claim. The last row has no such answer: after a commit, if the game's save had not been written, the withdrawn Pokémon are in neither place, and after an undo, if it had, the deposited ones are. So Bank does not choose there: the user does, who can look into the game.
 
 - The chosen save is made current through `reconcile` with that image's fingerprint (`BankFiles::reconcile_as`): the journal makes a save current only with one of its two images, and refuses any other fingerprint.
 - No secure value is checked or changed in the last three rows of the first table. If a game that was not there holds the after-image and the cut came before the original writer advanced the platform value, that value is one step behind; the next load of that game advances it (`finish_secure` in `Job::LoadGame`).
-- After Bank's own write (`Job::Finalize`) the same code settles it at once (`settle` with `Rule::AfterWrite`): a game that is neither image is settled by the moves only if they went one way or none, and a game that cannot be read leaves it to the next start ([When a job cannot finish](#when-a-job-cannot-finish)).
+- After Bank's own write (`Job::Finalize`) the same code settles it at once (`settle` with `Rule::AfterWrite`): a game that is neither image is settled by the moves only if they went one way or none, and a game that cannot be read leaves it to the next start ([When a job cannot finish](#when-a-job-cannot-finish)). Only a START leaves a save to Transporter's question.
 
 ### Hand-over from Transporter
 
