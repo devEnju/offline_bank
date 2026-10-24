@@ -157,7 +157,7 @@ Until step 3 Bank still holds both sets of boxes. If the power fails, the next s
 | --- | --- | --- |
 | Unchanged | The power failed before step 2 was finished. | Goes back to its old boxes. Nothing was moved. |
 | The one Bank wrote | The power failed after step 2. | Keeps its new boxes. Everything was moved. |
-| Something else: the game was played and saved, a new game was started on it, or it is another cartridge of the game | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. |
+| Something else: the game was played and saved, a new game was started on it, it is another cartridge of the game, or step 2 was cut off midway | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. A save that step 2 left damaged is then refused when that game is chosen ([below](#a-damaged-game-save)). |
 | The game is not inserted, or only its other copy is there (see below) | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game ([below](#a-save-that-waits-for-its-game)). |
 
 In the first two cases nothing is lost and nothing exists twice. **So after an interrupted Save and Quit, start Bank again with the same game inserted before you play it.**
@@ -206,16 +206,22 @@ Bank shows one of the original's messages for these, and after A it is back on i
 | Save and Quit, and a file of the Bank that was missing has to be made again, but the SD card is full | "The SD card is full." | Nothing was saved. |
 | Save and Quit, while or after the game is written | by what the game's save holds now, next table | |
 
-If the SD card refuses to read or write Bank's files for another reason than lack of space, Bank shows its error screen with the two numbers instead ([Troubleshooting](#troubleshooting)): retrying would not help, and the numbers say what to report.
+If the SD card refuses to read or write Bank's files for another reason than lack of space, Bank shows its error screen with the two numbers instead ([Troubleshooting](#troubleshooting)): retrying would not help, and the numbers say what to report. The same goes for an installed game whose save cannot be read or written: it has no card to put back.
 
 When the game's write has begun, Bank looks at the game's save at once and decides as it would at the next start:
 
 | The game's save | Message | Bank |
 | --- | --- | --- |
-| Unchanged | "Please confirm that your Game Card is properly inserted, and then try again." | Back to its old boxes. Nothing was moved. |
 | The one Bank wrote | "Success! Changes saved." | Keeps its new boxes. Everything was moved. |
-| Something else, and the session moved Pokémon one way or none | "The saved data in your Pokémon game is corrupted." | The write was cut off. Bank decides by what the session moved ([above](#if-save-and-quit-is-interrupted)); some Pokémon may exist twice. Check the game before you play it. |
-| Something else, and the session moved Pokémon both ways; or the cartridge is pulled | "Please confirm that your Game Card is properly inserted, and then try again." | Nothing is decided yet: put the same game in and press START, and Bank finishes or undoes the save. |
+| Unchanged | "Please confirm that your Game Card is properly inserted, and then try again." | Back to its old boxes. Nothing was moved. |
+| Something else, and the session moved Pokémon one way or none | the same | The write was cut off. Bank decides by what the session moved ([above](#if-save-and-quit-is-interrupted)); some Pokémon may exist twice. |
+| Something else, and the session moved Pokémon both ways; or the cartridge is pulled | the same | Nothing is decided yet: put the same game in and press START, and Bank finishes or undoes the save. |
+
+For an installed game Bank shows its error screen in place of the advice about the Game Card; what it decides is the same.
+
+## A damaged game save
+
+Bank checks the chosen game's save when it loads it, as the game itself does: every block's checksum, and in Sun to Ultra Moon its signature. A save that fails is not loaded. Bank shows "The saved data in your Pokémon game is corrupted." and after A returns to its start screen; every other game can be chosen as usual. This is what a Save and Quit cut off during the game's write can leave: Bank has decided by then what its boxes hold, and the game's save needs its backup. Restore it, and the game loads again.
 
 ## Troubleshooting
 

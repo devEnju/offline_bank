@@ -73,9 +73,11 @@ pub enum Job {
     },
     /// Save and Quit once the original's writer has ended, whether it
     /// wrote the game or failed: the save is settled from what the game
-    /// holds (`finalize`).
+    /// holds (`finalize`). `status` is the writer's result, 0 when it
+    /// reported none.
     Finalize {
         game: GameIoDescriptor,
+        status: u32,
     },
 }
 
@@ -85,18 +87,16 @@ pub enum Job {
 /// the worker stays usable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ending {
-    /// The game's Game Card is gone, by the original's own test, and
-    /// nothing changed, or what is left is settled best by the next START
-    /// with the game: the original's advice to check that the Game Card is
-    /// inserted and try again.
+    /// A cartridge: its Game Card is gone, by the original's own test, and
+    /// nothing changed, or what its write left is settled best by the next
+    /// START with the game, whose selection then finds a damaged save (the
+    /// original's check, `002cbea0`): the original's advice to check that
+    /// the Game Card is inserted and try again. Never for an installed copy,
+    /// which has no card to take out: its failure shows the numbers.
     Retry,
     /// A file could not be made for lack of space on the SD card, and
     /// nothing changed.
     NoSpace,
-    /// Bank's own write left the game's save neither of its images: it was
-    /// cut off mid-write. The save in progress was settled by what it
-    /// moved, and Pokémon may be doubled.
-    Torn,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,7 +238,7 @@ where
     // A Game Card taken out by now ends the save as `Detect` does: nothing
     // is written yet.
     let (images, cartridge) = match read() {
-        Err(_) if !detected(game) => return Ok(Prepared::Ended(Ending::Retry)),
+        Err(_) if card_gone(game, baseline.cartridge) => return Ok(Prepared::Ended(Ending::Retry)),
         read => read?,
     };
     // The same save and the same kind of copy as the one loaded.
@@ -279,7 +279,7 @@ where
         require_secure(game, unchanged.secure.current)
     };
     if let Err(error) = check() {
-        let missing = !detected(game);
+        let missing = card_gone(game, baseline.cartridge);
         drop(undo(files));
         return if missing {
             Ok(Prepared::Ended(Ending::Retry))
@@ -352,9 +352,10 @@ where
     let Some(game) = game else {
         return by_moves(files, staging, false, held);
     };
+    let cartridge = made_on_cartridge(pending)?;
     let evidence = match game.inspect() {
         Ok(evidence) => evidence,
-        Err(_) if !detected(game) => return Ok(Settled::Open),
+        Err(_) if card_gone(game, cartridge) => return Ok(Settled::Open),
         Err(error) => return Err(error.into()),
     };
     let mut matched = matched(pending, &evidence)?;
@@ -374,7 +375,7 @@ where
     };
     match secured {
         // The card was taken out meanwhile: nothing is decided now.
-        Err(_) if !detected(game) => return Ok(Settled::Open),
+        Err(_) if card_gone(game, cartridge) => return Ok(Settled::Open),
         secured => secured?,
     }
     match matched {
@@ -448,6 +449,13 @@ pub enum Finalized {
 /// image undoes it; a save that is neither is settled by its moves, and one
 /// that moved Pokémon both ways, or a game that cannot be read, is left for
 /// the next start.
+///
+/// What is not saved is the advice to try again for a cartridge: the next
+/// START with it settles what is left, and its selection finds a save that
+/// the write damaged. An installed copy has no card to take out; its
+/// failure is an error with `status`, the writer's result (0 when it
+/// reported none).
+#[allow(clippy::too_many_arguments)]
 pub fn finalize<F: Files, G: Game>(
     files: &mut BankFiles<F>,
     game: &mut G,
@@ -455,12 +463,14 @@ pub fn finalize<F: Files, G: Game>(
     pending: &PendingTransfer,
     written: Option<SecureValues>,
     staged: Option<u32>,
+    status: u32,
     held: &mut [[Identity; HELD]; 2],
 ) -> Stopped<Finalized, F>
 where
     <F::Storage as Storage>::Error: NoRoom,
 {
-    let ending = match settle(
+    let cartridge = made_on_cartridge(pending)?;
+    match settle(
         files,
         Some(game),
         staging,
@@ -477,14 +487,28 @@ where
             if crc32(staging) != staged {
                 return Err(Fault::StorageLoad.with(0).into());
             }
-            return Ok(Finalized::Saved);
+            Ok(Finalized::Saved)
         }
-        Settled::Exact(RecoveryDecision::KeepBefore) | Settled::Waits | Settled::Open => {
-            Ending::Retry
+        // A card that is gone is only ever a cartridge's (`card_gone`).
+        Settled::Open => Ok(Finalized::Ended(Ending::Retry)),
+        Settled::Exact(RecoveryDecision::KeepBefore) | Settled::ByMoves(_) | Settled::Waits
+            if cartridge =>
+        {
+            Ok(Finalized::Ended(Ending::Retry))
         }
-        Settled::ByMoves(_) => Ending::Torn,
-    };
-    Ok(Finalized::Ended(ending))
+        Settled::Exact(RecoveryDecision::KeepBefore) | Settled::ByMoves(_) | Settled::Waits => {
+            Err(Fault::GameWrite.with(status).into())
+        }
+    }
+}
+
+/// Whether the save in progress was made with a cartridge, by the kind of
+/// copy its record is bound to (`transaction::bound`). A record bound to
+/// neither is fault `B`, as when it is matched with a game.
+fn made_on_cartridge(pending: &PendingTransfer) -> Result<bool, WorkerError> {
+    transaction::bound(pending)
+        .map(|medium| medium == Medium::Cartridge)
+        .map_err(|_| Fault::GameChanged.with(0))
 }
 
 /// Which image of the save in progress the game's save is, if either.
@@ -497,13 +521,18 @@ fn matched(pending: &PendingTransfer, evidence: &GameEvidence) -> Result<Match, 
     )
     .map_err(|_| Fault::GameChanged.with(0))
 }
-/// Whether the game's Game Card is there, by the original's own test: its
+/// Whether the console cannot find the game, by the original's own test: its
 /// game selection asks for the game's secure value (00292d64, 001643dc,
 /// 00164370 → 0016578c) and shows message 0x1F, "No Pokémon Game Card
 /// detected", when the query fails. An answer that is not what the query
 /// gives is not taken for a missing card.
-fn detected<G: Game>(game: &mut G) -> bool {
-    !matches!(game.platform(), Err(error) if error.native_result() != 0)
+fn query_fails<G: Game>(game: &mut G) -> bool {
+    matches!(game.platform(), Err(error) if error.native_result() != 0)
+}
+/// Whether the Game Card of a `cartridge` is gone (`query_fails`). An
+/// installed copy has no card to take out: a failure of it is an error.
+fn card_gone<G: Game>(game: &mut G, cartridge: bool) -> bool {
+    cartridge && query_fails(game)
 }
 fn require_secure<G: Game>(game: &mut G, expected: u64) -> Result<(), WorkerError> {
     if game.platform()?.matches_native_rule(expected) {
@@ -537,14 +566,25 @@ fn finish_secure<G: Game>(game: &mut G, verified: SecureValues) -> Result<(), Wo
 /// console's secure value advanced if a save in progress that was settled
 /// without the game left it one step behind. A Game Card that is gone is
 /// `Ending::Retry`: nothing of the Bank is written here.
+///
+/// The console's answer about the game comes first, before anything is
+/// read: it says whether the copy is a cartridge. A query that fails then
+/// is the original's missing card, whatever the copy, as its game selection
+/// shows message 0x1F for it; a later failure counts as a card that is gone
+/// only for a cartridge.
 pub fn load_game<G: Game>(game: &mut G) -> Result<Result<GameEvidence, Ending>, WorkerError> {
+    let cartridge = match game.platform() {
+        Ok(console) => console.gamecard,
+        Err(error) if error.native_result() != 0 => return Ok(Err(Ending::Retry)),
+        Err(error) => return Err(error),
+    };
     let evidence = match game.inspect() {
         Ok(evidence) => evidence,
-        Err(_) if !detected(game) => return Ok(Err(Ending::Retry)),
+        Err(_) if card_gone(game, cartridge) => return Ok(Err(Ending::Retry)),
         Err(error) => return Err(error),
     };
     match finish_secure(game, evidence.secure) {
-        Err(_) if !detected(game) => Ok(Err(Ending::Retry)),
+        Err(_) if card_gone(game, cartridge) => Ok(Err(Ending::Retry)),
         finished => finished.map(|()| Ok(evidence)),
     }
 }
@@ -701,10 +741,11 @@ mod arm {
                 Job::Detect { game } => {
                     // A reply, not an error: the worker stays usable for
                     // the next session. Nothing of the save is read yet.
-                    if detected(&mut Console::of(game)) {
-                        Ok(Reply::Detected)
-                    } else {
+                    // Only a cartridge's is an ending (`save_steps`).
+                    if query_fails(&mut Console::of(game)) {
                         Ok(Reply::Ended(Ending::Retry))
+                    } else {
+                        Ok(Reply::Detected)
                     }
                 }
                 Job::LoadGame { game } => {
@@ -753,7 +794,7 @@ mod arm {
                         Settled::Open => Ok(Reply::Ended(Ending::Retry)),
                     }
                 }
-                Job::Finalize { game } => {
+                Job::Finalize { game, status } => {
                     let Phase::Prepared(pending) = self.phase()? else {
                         return Err(Fault::JournalRecovery.with(0));
                     };
@@ -769,6 +810,7 @@ mod arm {
                         &pending,
                         written,
                         staged,
+                        status,
                         held(),
                     )
                     .map_err(stopped)?;
@@ -1146,12 +1188,16 @@ mod tests {
             Stop::Files(fault, _) => fault,
         }
     }
+    /// The writer's result `finalize` is handed for a write that failed.
+    const STATUS: u32 = 0xc8a0_4554;
+    /// Save and Quit's end after a writer that failed with `STATUS`: what it
+    /// left, or the fault and second number of its error.
     fn finish(
         files: &mut BankFiles<Shared>,
         game: &mut Simulated,
         pending: &PendingTransfer,
         staged: u32,
-    ) -> Finalized {
+    ) -> Result<Finalized, (Fault, u32)> {
         let mut staging = std::vec![0; offline_core::native_blob::BLOB_SIZE];
         finalize(
             files,
@@ -1160,9 +1206,13 @@ mod tests {
             pending,
             Some(WRITTEN),
             Some(staged),
+            STATUS,
             &mut held(),
         )
-        .unwrap()
+        .map_err(|stop| match stop {
+            Stop::Worker(error) => (error.fault(), error.native_result()),
+            Stop::Files(fault, _) => (fault, 0),
+        })
     }
 
     #[test]
@@ -1185,6 +1235,7 @@ mod tests {
                 &in_progress,
                 Some(WRITTEN),
                 Some(staged),
+                0,
                 &mut held(),
             );
             assert_eq!(finalized.unwrap(), Finalized::Saved);
@@ -1214,6 +1265,17 @@ mod tests {
             assert!(stored(&disk) == before, "{calls}");
             assert!(pending(&mut files).is_none());
         }
+        // An installed copy has no card to take out: its failure is an
+        // error, with nothing written.
+        let mut game = Simulated::loaded(false);
+        let baseline = game.evidence();
+        game.out_after = Some(0);
+        let before = stored(&disk);
+        let mut staging = body.clone();
+        let result = prepare(&mut files, &mut game, &mut staging, baseline, trainer());
+        assert_eq!(fault(result), Fault::GameRead);
+        assert!(stored(&disk) == before);
+        assert!(pending(&mut files).is_none());
     }
 
     #[test]
@@ -1363,52 +1425,72 @@ mod tests {
     #[test]
     fn after_its_write_a_save_is_settled_at_once_by_what_the_game_holds() {
         let (old, sessions) = sessions();
-        for (moved, new) in sessions {
-            // The writer failed and left the game as it was: undone, and
-            // nothing changed.
-            let mut game = Simulated::loaded(true);
-            let (disk, mut files, in_progress, staged) = prepared_save(&old, &new, &mut game);
-            let ending = finish(&mut files, &mut game, &in_progress, staged);
-            assert_eq!(ending, Finalized::Ended(Ending::Retry), "{moved}");
-            drop(files);
-            assert!(settled_bank(&disk) == old, "{moved}");
-
-            // The writer reported a failure but wrote the whole new image:
-            // the save is current.
-            let mut game = Simulated::loaded(true);
-            let (disk, mut files, in_progress, staged) = prepared_save(&old, &new, &mut game);
-            game.write(WRITTEN);
-            let ending = finish(&mut files, &mut game, &in_progress, staged);
-            assert_eq!(ending, Finalized::Saved, "{moved}");
-            drop(files);
-            assert!(settled_bank(&disk) == new, "{moved}");
-
-            // Neither image: by what the session moved, at once, unless it
-            // moved Pokémon both ways, which waits for the next START with
-            // the game.
-            let mut game = Simulated::loaded(true);
-            let (disk, mut files, in_progress, staged) = prepared_save(&old, &new, &mut game);
-            game.save = Some((OTHER, WRITTEN));
-            let ending = finish(&mut files, &mut game, &in_progress, staged);
-            if moved == "both ways" {
-                assert_eq!(ending, Finalized::Ended(Ending::Retry));
-                assert_eq!(pending(&mut files), Some(in_progress));
+        for cartridge in [true, false] {
+            // What is not saved: the advice to try again for a cartridge,
+            // whose next START settles what is left; an installed copy's
+            // error with the writer's result.
+            let unsaved = if cartridge {
+                Ok(Finalized::Ended(Ending::Retry))
             } else {
-                assert_eq!(ending, Finalized::Ended(Ending::Torn), "{moved}");
+                Err((Fault::GameWrite, STATUS))
+            };
+            for (moved, new) in &sessions {
+                let case = std::format!("{moved}, cartridge {cartridge}");
+                // The writer failed and left the game as it was: undone,
+                // and nothing changed.
+                let mut game = Simulated::loaded(cartridge);
+                let (disk, mut files, in_progress, staged) = prepared_save(&old, new, &mut game);
+                let ending = finish(&mut files, &mut game, &in_progress, staged);
+                assert_eq!(ending, unsaved, "{case}");
                 drop(files);
-                let kept = if moved == "deposited" { &new } else { &old };
-                assert!(settled_bank(&disk) == *kept, "{moved}");
-            }
+                assert!(settled_bank(&disk) == old, "{case}");
 
-            // The card is out: nothing is decided, for the next START.
+                // The writer reported a failure but wrote the whole new
+                // image: the save is current.
+                let mut game = Simulated::loaded(cartridge);
+                let (disk, mut files, in_progress, staged) = prepared_save(&old, new, &mut game);
+                game.write(WRITTEN);
+                let ending = finish(&mut files, &mut game, &in_progress, staged);
+                assert_eq!(ending, Ok(Finalized::Saved), "{case}");
+                drop(files);
+                assert!(settled_bank(&disk) == *new, "{case}");
+
+                // Neither image: by what the session moved, at once, unless
+                // it moved Pokémon both ways, which waits for the next START
+                // with the game.
+                let mut game = Simulated::loaded(cartridge);
+                let (disk, mut files, in_progress, staged) = prepared_save(&old, new, &mut game);
+                game.save = Some((OTHER, WRITTEN));
+                let ending = finish(&mut files, &mut game, &in_progress, staged);
+                assert_eq!(ending, unsaved, "{case}");
+                if *moved == "both ways" {
+                    assert_eq!(pending(&mut files), Some(in_progress), "{case}");
+                } else {
+                    drop(files);
+                    let kept = if *moved == "deposited" { new } else { &old };
+                    assert!(settled_bank(&disk) == *kept, "{case}");
+                }
+            }
+        }
+        // A cartridge whose card is out: nothing is decided, for the next
+        // START.
+        for (moved, new) in &sessions {
             let mut game = Simulated::loaded(true);
-            let (_, mut files, in_progress, staged) = prepared_save(&old, &new, &mut game);
+            let (_, mut files, in_progress, staged) = prepared_save(&old, new, &mut game);
             game.write(WRITTEN);
             game.save = None;
             let ending = finish(&mut files, &mut game, &in_progress, staged);
-            assert_eq!(ending, Finalized::Ended(Ending::Retry), "{moved}");
+            assert_eq!(ending, Ok(Finalized::Ended(Ending::Retry)), "{moved}");
             assert_eq!(pending(&mut files), Some(in_progress), "{moved}");
         }
+        // An installed copy that cannot be read is an error, with the
+        // save left for the next START.
+        let mut game = Simulated::loaded(false);
+        let (_, mut files, in_progress, staged) = prepared_save(&old, &sessions[0].1, &mut game);
+        game.save = None;
+        let ending = finish(&mut files, &mut game, &in_progress, staged);
+        assert_eq!(ending, Err((Fault::GameRead, NO_CARD)));
+        assert_eq!(pending(&mut files), Some(in_progress));
     }
 
     #[test]
@@ -1420,7 +1502,7 @@ mod tests {
         let (disk, mut files, in_progress, staged) = prepared_save(&old, new, &mut game);
         game.save = Some((AFTER, LOADED));
         let ending = finish(&mut files, &mut game, &in_progress, staged);
-        assert_eq!(ending, Finalized::Ended(Ending::Torn));
+        assert_eq!(ending, Ok(Finalized::Ended(Ending::Retry)));
         drop(files);
         // It deposited: the new boxes, which cannot lose the Pokémon.
         assert!(settled_bank(&disk) == *new);
@@ -1448,6 +1530,7 @@ mod tests {
                 &in_progress,
                 Some(WRITTEN),
                 Some(staged),
+                0,
                 &mut held(),
             );
             drop(files);
@@ -1486,9 +1569,9 @@ mod tests {
     #[test]
     fn at_start_a_game_whose_card_is_gone_leaves_the_save_for_the_next_one() {
         let (old, sessions) = sessions();
-        for (moved, new) in sessions {
+        for (moved, new) in &sessions {
             let mut game = Simulated::loaded(true);
-            let (_, mut files, in_progress, _) = prepared_save(&old, &new, &mut game);
+            let (_, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
             game.save = None;
             let settled = settle(
                 &mut files,
@@ -1502,17 +1585,48 @@ mod tests {
             assert_eq!(settled.unwrap(), Settled::Open, "{moved}");
             assert_eq!(pending(&mut files), Some(in_progress), "{moved}");
         }
+        // A save made with an installed copy that cannot be read: an
+        // error, with the save left as it was.
+        let new = &sessions[0].1;
+        let mut game = Simulated::loaded(false);
+        let (_, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
+        game.save = None;
+        let settled = settle(
+            &mut files,
+            Some(&mut game),
+            &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+            &in_progress,
+            Rule::Start,
+            None,
+            &mut held(),
+        );
+        assert_eq!(fault(settled), Fault::GameRead);
+        assert_eq!(pending(&mut files), Some(in_progress));
     }
 
     #[test]
     fn a_game_whose_card_is_gone_is_not_loaded() {
-        let mut game = Simulated::loaded(true);
-        assert_eq!(load_game(&mut game).unwrap(), Ok(game.evidence()));
-        // Gone before the read, and between the read and its secure value.
-        for calls in [0, 1] {
+        for cartridge in [true, false] {
+            let mut game = Simulated::loaded(cartridge);
+            assert_eq!(load_game(&mut game).unwrap(), Ok(game.evidence()));
+        }
+        // Gone at the first question, before anything is read: the
+        // original's missing card, whatever the copy.
+        for cartridge in [true, false] {
+            let mut game = Simulated::loaded(cartridge);
+            game.out_after = Some(0);
+            assert_eq!(load_game(&mut game).unwrap(), Err(Ending::Retry));
+        }
+        // Gone later, before the read or between the read and its secure
+        // value: a cartridge's card that is gone; an installed copy has no
+        // card to take out, and its failure is an error.
+        for calls in [1, 2] {
             let mut game = Simulated::loaded(true);
             game.out_after = Some(calls);
             assert_eq!(load_game(&mut game).unwrap(), Err(Ending::Retry), "{calls}");
+            let mut game = Simulated::loaded(false);
+            game.out_after = Some(calls);
+            assert!(load_game(&mut game).is_err(), "{calls}");
         }
     }
 
@@ -1575,6 +1689,7 @@ mod tests {
                 &in_progress,
                 Some(secure),
                 Some(staged),
+                0,
                 &mut held(),
             );
             assert_eq!(finalized.unwrap(), Finalized::Saved);

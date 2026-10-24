@@ -681,6 +681,28 @@ mod arm {
             self.phase = Phase::Prepared;
             Ok(())
         }
+        /// The original's check of the game's save as it was loaded
+        /// (`002cbea0`, as `PreparedImage::check` makes it of a prepared
+        /// one): every block's checksum against the one its metadata holds
+        /// and, in Sun to Ultra Moon, the signature. The original's load
+        /// does not make it (its read passes 0 to `001d38d8` at
+        /// `002bb120`), so a save that a write left damaged would be loaded
+        /// and saved again with new checksums over its mixed blocks. On the
+        /// main thread, before anything of the save is changed.
+        pub fn check_loaded(&self) -> Result<(), NativeGameError> {
+            if self.phase != Phase::Ready {
+                return Err(NativeGameError::InvalidPhase);
+            }
+            self.check_idle()?;
+            type Validate = unsafe extern "aapcs" fn(*mut u8, *mut u32) -> u32;
+            let validate: Validate = unsafe { transmute(VALIDATE) };
+            let mut detail = 0;
+            let status = unsafe { validate(self.game.as_ptr(), &mut detail) };
+            if status != 1 {
+                return Err(NativeGameError::Validation { status, detail });
+            }
+            Ok(())
+        }
         pub fn prepared(&self) -> Result<NativePreparedGame<'_>, NativeGameError> {
             if self.phase != Phase::Prepared {
                 return Err(NativeGameError::InvalidPhase);

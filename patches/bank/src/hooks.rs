@@ -771,6 +771,15 @@ impl Runtime {
                     NativeGameSession::from_raw(task.pointer(8)?, read_word(task.raw(), 0xc))
                 }
                 .map_err(|_| Fault::GameRead)?;
+                // A save that fails the original's check is not loaded: the
+                // game cannot read it either, and a session on it would save
+                // its mixed blocks with new checksums. Only this game stops;
+                // a save in progress was settled by the opening.
+                if game.check_loaded().is_err() {
+                    self.owner = task.raw() as usize;
+                    return self
+                        .turn_back(task, |ui| unsafe { bank_common::ui::save_corrupted(ui) });
+                }
                 let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
                 self.game = Some(game);
                 self.submit(task, Step::Load, Job::LoadGame { game: descriptor })?;
@@ -955,19 +964,23 @@ impl Runtime {
             }
             Save::Write => {
                 let game = self.game.as_mut().ok_or(Fault::GameWrite)?;
-                return match game.poll() {
-                    Ok(NativePoll::Pending) => Ok(None),
-                    // The writer has ended, whether it wrote the game or
-                    // failed, a pulled Game Card among the reasons: the
-                    // worker settles the save from what the game holds.
-                    Ok(NativePoll::Complete) | Err(NativeGameError::NativeStatus(_)) => {
-                        let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
-                        let finalize = Job::Finalize { game: descriptor };
-                        self.submit(task, Step::Save(Save::Finalize), finalize)?;
-                        Ok(None)
-                    }
-                    Err(_) => Err(Fault::GameWrite),
+                // The writer has ended, whether it wrote the game or
+                // failed, a pulled Game Card among the reasons: the worker
+                // settles the save from what the game holds, with the
+                // writer's result for an error.
+                let status = match game.poll() {
+                    Ok(NativePoll::Pending) => return Ok(None),
+                    Ok(NativePoll::Complete) => 0,
+                    Err(NativeGameError::NativeStatus(status)) => status,
+                    Err(_) => return Err(Fault::GameWrite),
                 };
+                let descriptor = game.io_descriptor().map_err(|_| Fault::GameRead)?;
+                let finalize = Job::Finalize {
+                    game: descriptor,
+                    status,
+                };
+                self.submit(task, Step::Save(Save::Finalize), finalize)?;
+                return Ok(None);
             }
             Save::CountBank { game } => {
                 let coordinator = task.pointer(8)?;
@@ -1070,7 +1083,6 @@ impl Runtime {
                         // card; its first part names a server.
                         Ending::Retry => bank_common::ui::try_again(ui),
                         Ending::NoSpace => bank_common::ui::sd_full(ui),
-                        Ending::Torn => bank_common::ui::save_corrupted(ui),
                     }
                 }
                 .map_err(|_| Fault::NativeObject)?;
