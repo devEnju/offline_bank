@@ -214,6 +214,28 @@ fn put_replica<S: Storage>(
     Ok(())
 }
 
+/// Transporter's write of `metadata`: the replica that was not selected
+/// first, and the record is in force once that one is durable and read
+/// back; the other is then written too. If that one cannot be written, the
+/// journal is as after a power cut between the two, and Bank's next write
+/// of the journal writes it. An error means that the first replica was not
+/// written and read back; only if its read-back alone failed can the record
+/// be in force all the same.
+fn hand_over<S: Storage>(
+    storage: &mut S,
+    selected: Slot,
+    metadata: Metadata,
+) -> Result<Head, StoreError<S::Error>> {
+    let bytes = metadata.encode().map_err(StoreError::Format)?;
+    let first = selected.other();
+    put_replica(storage, first, &bytes)?;
+    let _ = put_replica(storage, selected, &bytes);
+    Ok(Head {
+        metadata,
+        preferred: first,
+    })
+}
+
 /// Whether both replicas can be read, valid or not.
 fn both_readable<S: Storage>(storage: &mut S) -> bool {
     let mut bytes = [0; METADATA_SIZE];
@@ -279,11 +301,9 @@ impl<S: Storage> Journal<S> {
     /// Publishes a delivery whose bytes, with the checksum `crc`, are durable
     /// in the transport file's copy that is not in use. The delivery exists
     /// from the moment the first replica is durable, and that is what this
-    /// answers for. If the second replica cannot be written, the journal is
-    /// as after a power cut between the two, and Bank's next save writes
-    /// it. An error means that the first replica was not written and read
-    /// back; only if its read-back alone fails can a delivery be there
-    /// all the same, which leaves the Pokémon in the game as well.
+    /// answers for (`hand_over`). Only if the first replica's read-back alone
+    /// fails can a delivery be there after an error, which leaves the
+    /// Pokémon in the game as well.
     pub fn announce(&mut self, head: &Head, crc: u32) -> Result<Head, StoreError<S::Error>> {
         // The record in force, and the replica that holds it.
         let selected = match self.load()? {
@@ -294,14 +314,7 @@ impl<S: Storage> Journal<S> {
             return Err(StoreError::DeliveryRefused);
         }
         let metadata = announcing(head, crc)?;
-        let bytes = metadata.encode().map_err(StoreError::Format)?;
-        let first = selected.other();
-        put_replica(&mut self.storage, first, &bytes)?;
-        let _ = put_replica(&mut self.storage, selected, &bytes);
-        Ok(Head {
-            metadata,
-            preferred: first,
-        })
+        hand_over(&mut self.storage, selected, metadata)
     }
 
     /// After `announce` with `head` and `crc` failed: whether the delivery
@@ -328,7 +341,10 @@ impl<S: Storage> Journal<S> {
 
     /// Settles the save in progress that `head` left to Transporter's
     /// question (`Metadata::ask`), to the snapshot of `decision`, as Bank's
-    /// reconciliation settles one (`settled`). Only the journal is written.
+    /// reconciliation settles one (`settled`). Only the journal is written,
+    /// and the answer holds from the moment the first replica is durable
+    /// (`hand_over`): only if that one's read-back alone fails can it hold
+    /// after an error.
     pub fn settle(
         &mut self,
         head: &Head,
@@ -342,7 +358,7 @@ impl<S: Storage> Journal<S> {
             return Err(StoreError::NoPendingTransfer);
         }
         let metadata = settled(head, decision)?;
-        publish(&mut self.storage, selected, metadata)
+        hand_over(&mut self.storage, selected, metadata)
     }
 }
 

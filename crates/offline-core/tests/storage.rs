@@ -672,15 +672,29 @@ fn a_cut_while_asking_or_settling_leaves_the_record_before_or_after() {
         let settled = complete.settle(&head, decision).unwrap();
         let total = complete.into_inner().operations;
         for cut in 0..=total {
-            let mut journal = Journal::new(base.clone().cut_after(cut));
-            let _ = journal.settle(&head, decision);
-            let mut store = BankStore::new(journal.into_inner().reboot(), Layout::new(CAPACITY));
-            let now =
-                inspect_all(&mut store).unwrap_or_else(|err| panic!("settle cut {cut}: {err:?}"));
-            assert!(
-                now.metadata() == head.metadata() || now.phase() == settled.phase(),
-                "settle cut {cut}"
-            );
+            for console in [false, true] {
+                let base = if console {
+                    base.clone().console()
+                } else {
+                    base.clone()
+                };
+                let mut journal = Journal::new(base.cut_after(cut));
+                let answered = journal.settle(&head, decision);
+                let mut store =
+                    BankStore::new(journal.into_inner().reboot(), Layout::new(CAPACITY));
+                let now = inspect_all(&mut store)
+                    .unwrap_or_else(|err| panic!("settle cut {cut}: {err:?}"));
+                // An answer reported as given holds: its first replica is
+                // durable, whatever became of the second.
+                if answered.is_ok() {
+                    assert_eq!(now.phase(), settled.phase(), "settle cut {cut}");
+                } else {
+                    assert!(
+                        now.metadata() == head.metadata() || now.phase() == settled.phase(),
+                        "settle cut {cut}"
+                    );
+                }
+            }
         }
     }
 }

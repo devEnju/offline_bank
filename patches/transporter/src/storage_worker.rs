@@ -112,8 +112,11 @@ pub fn delivery_reply(
 /// card's result as the second number, and `unreachable` as for
 /// `check_reply`. Every failure is the error screen of Bank's own failure
 /// to settle a save (`Fault::JournalRecovery`), or of Bank's files that do
-/// not open or a journal no power cut leaves, as Bank shows them; the save
-/// stays as it was, for the next START.
+/// not open or a journal no power cut leaves, as Bank shows them. The save
+/// then stays left to the question, for the next START, unless the first
+/// record of the answer was written and only its read-back failed
+/// (`Journal::settle`): then the answer may hold, and the next START of
+/// either program finds which.
 pub fn settle_reply(
     settled: Result<(), SettleError<u32>>,
     unreachable: Option<u32>,

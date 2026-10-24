@@ -271,7 +271,7 @@ flowchart TD
     PANEL --> SETTLE{"Settle Bank's journal<br/>to the chosen snapshot"}
     SETTLE -->|"Required Bank file cannot be opened"| F3["HOME error: 03"]
     SETTLE -->|"Damaged or conflicting journal"| F5["HOME error: 05"]
-    SETTLE -->|"Other settlement failure,<br/>including insufficient space or changed state"| F10["HOME error: 10 + result or zero"]
+    SETTLE -->|"First journal record not written,<br/>including insufficient space or changed state"| F10["HOME error: 10 + result or zero"]
     SETTLE -->|"Completed"| CLOSE["Finish loading;<br/>Transporter's closing screen"]
     CLOSE --> TITLE(["Transporter start screen"])
     TITLE -.->|"Close Transporter; open Bank and press START"| BANK(["Bank opens the selected snapshot;<br/>normal startup checks apply"])
@@ -287,7 +287,7 @@ Only Bank's journal is written. This chooses which existing Bank snapshot is cur
 | The Pokémon withdrawn from Bank in that session | No | New Bank boxes, retaining the Pokémon deposited into Bank |
 | Neither, or uncertain | Decide after backing up the game save and Bank together | A wrong choice can lose Pokémon; paired backups allow the choice to be undone |
 
-If a Transporter delivery was waiting before the interrupted Bank session, Yes leaves it waiting; No accepts it as part of the after-snapshot and clears the waiting-delivery record. On a later Transporter START the ordinary readiness check applies again. Settlement failures use Bank's storage/recovery numbers, including `10` for insufficient space; they do not use the ordinary full-card notice or delivery error `14`. After an error, restart re-reads the durable journal.
+If a Transporter delivery was waiting before the interrupted Bank session, Yes leaves it waiting; No accepts it as part of the after-snapshot and clears the waiting-delivery record. On a later Transporter START the ordinary readiness check applies again. The answer holds once the first of the two journal records is written and read back; a failure of the second is no error, and Bank's next journal write replaces that record. Settlement failures use Bank's storage/recovery numbers, including `10` for insufficient space; they do not use the ordinary full-card notice or delivery error `14`. After an error the question normally stays for the next START. Only if the first record was written and its read-back failed may the answer already hold; restarting rereads the journal, and either Transporter asks again or Bank opens with the chosen boxes.
 
 ## 6. Transporter: delivery and the saves after delivery
 
