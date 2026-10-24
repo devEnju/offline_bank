@@ -1,18 +1,13 @@
-//! What a patch does to a message of the original for its last screen: the
-//! line of two numbers behind its first part (`patch_common::message`),
-//! with the line above it that says which version and package shows them;
-//! and the page that follows.
-//!
-//! The dialog holds three lines, and the numbers are always its third: only
-//! a first part of one or two lines gets them. The label is the second
-//! line, where the first part leaves it free.
+//! The screen every patch ends on after an error, and with a result: the
+//! original's reason up to the end of its first part
+//! (`patch_common::message`), and after it the page about the HOME Menu, the
+//! original's line with the version and package on the second line and the
+//! two numbers on the third. That page is complete or not changed at all.
 
-use crate::message::{cut, CONTROL, LINE_FEED, NEW_PAGE};
+use crate::message::{cut, first_line, CONTROL, LINE_FEED, NEW_PAGE};
 
 /// Two numbers of eight digits with a space between them.
 pub const LEN: usize = 17;
-/// The dialog's last line.
-const LINE: usize = 3;
 
 /// The version this package was built as. A release (`OFFLINE_BANK_RELEASE`,
 /// which `cargo xtask release` sets, docs/building.md) has the
@@ -133,42 +128,74 @@ pub fn line(first: u32, second: u32) -> [u16; LEN] {
     out
 }
 
-/// Ends the message in `text[..len]` after its first part (`cut`) and puts
-/// the numbers on the third line there, with `label` on the second if the
-/// first part is one line. `text` is the whole room of the string, and the
-/// unit after the message stays free for its end mark. Without room for
-/// the label the numbers go alone. Answers the new length, or `None` with
-/// the message untouched: its first page has three lines already, or the
-/// room is too small for the numbers.
-pub fn put(text: &mut [u16], len: usize, label: &[u16], first: u32, second: u32) -> Option<usize> {
+/// The room for the page about the HOME Menu with its label and numbers.
+/// The line has 11 to 42 units in the ten languages of the original.
+pub const HOME_ROOM: usize = 128;
+
+/// The page about the HOME Menu, complete: the original's line, `label` on
+/// the second line and the numbers on the third.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HomePage {
+    units: [u16; HOME_ROOM],
+    len: usize,
+}
+impl HomePage {
+    pub fn units(&self) -> &[u16] {
+        &self.units[..self.len]
+    }
+}
+
+/// The page about the HOME Menu from `notice`, the original's line as it
+/// was loaded. `None` unless it is one line and all of it, the label and
+/// the numbers fit: the screen then shows the line alone, unchanged, and
+/// never a part of what belongs under it.
+pub fn home_page(notice: &[u16], label: &[u16], first: u32, second: u32) -> Option<HomePage> {
+    if notice.is_empty() || label.is_empty() || first_line(notice) != notice.len() {
+        return None;
+    }
+    let len = notice.len() + 1 + label.len() + 1 + LEN;
+    if len > HOME_ROOM {
+        return None;
+    }
+    let mut units = [0; HOME_ROOM];
+    let mut at = 0;
+    for part in [
+        notice,
+        &[LINE_FEED],
+        label,
+        &[LINE_FEED],
+        &line(first, second),
+    ] {
+        units[at..at + part.len()].copy_from_slice(part);
+        at += part.len();
+    }
+    Some(HomePage { units, len })
+}
+
+/// Replaces the message in `text` by `page` alone. `text` is the whole room
+/// of the string, and the unit after the page stays free for its end mark.
+/// Answers the new length, or `None` with the message untouched.
+pub fn put_home(text: &mut [u16], page: &HomePage) -> Option<usize> {
+    let page = page.units();
+    if page.len() >= text.len() {
+        return None;
+    }
+    text[..page.len()].copy_from_slice(page);
+    Some(page.len())
+}
+
+/// The error screen in `text[..len]`, the original's reason as it was
+/// loaded: its first part (`cut`), unchanged, and `home` as the page after
+/// it. Answers the new length, or `None` with the message untouched if the
+/// reason has no first part or the room is too small.
+pub fn error_pages(text: &mut [u16], len: usize, home: &HomePage) -> Option<usize> {
     if len > text.len() {
         return None;
     }
-    let end = cut(&text[..len]);
-    let lines = 1 + text[..end]
-        .iter()
-        .filter(|&&unit| unit == LINE_FEED)
-        .count();
-    if lines >= LINE {
-        return None;
+    match cut(&text[..len]) {
+        0 => None,
+        end => append_page(text, end, home.units()),
     }
-    let feeds = LINE - lines;
-    // Only a free line between takes the label.
-    let label = if feeds == 2 { label } else { &[] };
-    let new_len = end + feeds + label.len() + LEN;
-    if new_len >= text.len() {
-        return if label.is_empty() {
-            None
-        } else {
-            put(text, len, &[], first, second)
-        };
-    }
-    let numbers = new_len - LEN;
-    text[end] = LINE_FEED;
-    text[end + 1..end + 1 + label.len()].copy_from_slice(label);
-    text[numbers - 1] = LINE_FEED;
-    text[numbers..new_len].copy_from_slice(&line(first, second));
-    Some(new_len)
 }
 
 /// Adds `page` behind the message in `text[..len]` as one more page: the
@@ -215,25 +242,11 @@ mod tests {
         out
     }
 
-    fn put_in(text: &[u16], room: usize) -> Option<Vec<u16>> {
-        let mut buffer = vec![0xffff; room];
-        buffer[..text.len()].copy_from_slice(text);
-        let len = put(&mut buffer, text.len(), &[], 3, 0x7a00_0201)?;
-        assert!(len < room);
-        // Nothing behind the new end was needed for it.
-        Some(buffer[..len].to_vec())
-    }
     fn numbers() -> Vec<u16> {
         "00000003 7A000201".encode_utf16().collect()
     }
-    /// The lines of the first page, as text.
-    fn first_page(text: &[u16]) -> Vec<String> {
-        let end = page_end(text, 1).unwrap_or(text.len());
-        String::from_utf16(&text[..end])
-            .unwrap()
-            .split('\n')
-            .map(String::from)
-            .collect()
+    fn units(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
     }
 
     #[test]
@@ -247,26 +260,6 @@ mod tests {
             String::from_utf16(&line(0, u32::MAX)).unwrap(),
             "00000000 FFFFFFFF"
         );
-    }
-
-    #[test]
-    fn the_message_ends_with_the_numbers_on_the_third_line() {
-        // One line: an empty line between, as under the HOME line.
-        let out = put_in(&message(&[1]), 64).unwrap();
-        assert_eq!(first_page(&out), ["text", "", "00000003 7A000201"]);
-        // Bank's failure message: its first page has one or two lines, and
-        // what follows that page is dropped.
-        for first in [1, 2] {
-            let out = put_in(&message(&[first, 2]), 96).unwrap();
-            assert_eq!(page_end(&out, 1), None);
-            assert_eq!(out[out.len() - LEN..], numbers());
-            assert_eq!(first_page(&out).len(), 3);
-        }
-        let out = put_in(&message(&[2, 3]), 96).unwrap();
-        assert_eq!(first_page(&out), ["text", "text", "00000003 7A000201"]);
-        // One language has it on one page, its first sentence on one line.
-        let out = put_in(&message(&[2]), 64).unwrap();
-        assert_eq!(first_page(&out), ["text", "", "00000003 7A000201"]);
     }
 
     #[test]
@@ -312,53 +305,37 @@ mod tests {
     }
 
     #[test]
-    fn the_label_is_the_second_line_where_that_line_is_free() {
-        let label: Vec<u16> = "v0.4.0-test".encode_utf16().collect();
-        let with = |text: &[u16], room: usize| {
-            let mut buffer = vec![0xffff; room];
-            buffer[..text.len()].copy_from_slice(text);
-            let len = put(&mut buffer, text.len(), &label, 3, 0x7a00_0201)?;
-            assert!(len < room);
-            Some(buffer[..len].to_vec())
-        };
-        // The line about the HOME Menu is one line in every language.
-        let out = with(&message(&[1]), 64).unwrap();
+    fn the_home_page_is_the_line_the_label_and_the_numbers() {
+        let label = units("v0.4.0-test");
+        let page = home_page(&units("HOME"), &label, 3, 0x7a00_0201).unwrap();
         assert_eq!(
-            first_page(&out),
-            ["text", "v0.4.0-test", "00000003 7A000201"]
+            String::from_utf16(page.units()).unwrap(),
+            "HOME\nv0.4.0-test\n00000003 7A000201"
         );
-        // A first part of two lines has no line for it: the numbers alone,
-        // where they always are.
-        let out = with(&message(&[2, 3]), 96).unwrap();
-        assert_eq!(first_page(&out), ["text", "text", "00000003 7A000201"]);
-        // Without room for both, the numbers alone; without room for
-        // them, nothing.
-        let text = message(&[1]);
-        let plain = put_in(&text, 64).unwrap();
-        let full = plain.len() + label.len();
-        assert_eq!(with(&text, full + 1).unwrap().len(), full);
-        assert_eq!(with(&text, full).unwrap(), plain);
-        assert_eq!(with(&text, plain.len() + 1).unwrap(), plain);
-        assert_eq!(with(&text, plain.len()), None);
+        // A line that is no single line, or nothing, is not a page.
+        assert_eq!(home_page(&units("A\nB"), &label, 3, 0), None);
+        assert_eq!(home_page(&[], &label, 3, 0), None);
+        assert_eq!(home_page(&units("HOME"), &[], 3, 0), None);
     }
 
     #[test]
-    fn a_first_page_of_three_lines_is_left_alone() {
-        assert_eq!(put_in(&message(&[3, 3]), 128), None);
-        assert_eq!(put_in(&message(&[4, 1]), 128), None);
+    fn a_home_page_that_does_not_fit_is_none_and_never_shortened() {
+        let label = units("v0.4.0-test");
+        let fits = HOME_ROOM - 2 - label.len() - LEN;
+        assert!(home_page(&vec![0x41; fits], &label, 1, 2).is_some());
+        assert_eq!(home_page(&vec![0x41; fits + 1], &label, 1, 2), None);
     }
 
     #[test]
-    fn without_room_nothing_is_written() {
-        let text = message(&[2, 2]);
-        let needed = put_in(&text, 128).unwrap().len();
+    fn the_home_page_alone_replaces_the_line_where_it_fits() {
+        let page = home_page(&units("HOME"), &units("v1"), 1, 2).unwrap();
+        let mut text = vec![0xffff; page.units().len() + 1];
+        assert_eq!(put_home(&mut text, &page), Some(page.units().len()));
+        assert_eq!(&text[..page.units().len()], page.units());
         // One unit stays free for the end mark.
-        assert!(put_in(&text, needed + 1).is_some());
-        let mut buffer = vec![0xffff; needed];
-        buffer[..text.len()].copy_from_slice(&text);
-        assert_eq!(put(&mut buffer, text.len(), &[], 1, 2), None);
-        assert_eq!(buffer[..text.len()], text);
-        assert_eq!(put(&mut [0; 4], 5, &[], 1, 2), None);
+        let mut text = vec![0xffff; page.units().len()];
+        assert_eq!(put_home(&mut text, &page), None);
+        assert!(text.iter().all(|&unit| unit == 0xffff));
     }
 
     /// The pages of a message, each without the line feed a later page
@@ -394,23 +371,25 @@ mod tests {
     }
 
     #[test]
-    fn the_error_screen_is_the_reason_as_it_is_and_then_the_home_line_with_the_numbers() {
-        // The HOME line is one line: the numbers go two lines under it.
-        let mut home = [0xffff; 64];
-        home[..4].copy_from_slice(&message(&[1]));
+    fn the_error_screen_is_the_reason_as_it_is_and_then_the_home_page() {
         let label = Label::new(b"v1.2.3", b"-test").unwrap();
-        let home_len = put(&mut home, 4, label.units(), 3, 0x7a00_0201).unwrap();
+        let home = home_page(&message(&[1]), label.units(), 3, 0x7a00_0201).unwrap();
         // Bank's failure message, cut after its first page.
         let reason = message(&[2, 3]);
         let mut buffer = vec![0xffff; 128];
         buffer[..reason.len()].copy_from_slice(&reason);
-        let len = cut(&reason);
-        let len = append_page(&mut buffer, len, &home[..home_len]).unwrap();
+        let len = error_pages(&mut buffer, reason.len(), &home).unwrap();
         let all: Vec<String> = pages(&buffer[..len])
             .iter()
             .map(|page| String::from_utf16(page).unwrap())
             .collect();
         assert_eq!(all, ["text\ntext", "text\nv1.2.3-test\n00000003 7A000201"]);
+        // Without room for the page, or without a reason, nothing changes.
+        let mut short = vec![0xffff; reason.len() + 4];
+        short[..reason.len()].copy_from_slice(&reason);
+        assert_eq!(error_pages(&mut short, reason.len(), &home), None);
+        assert_eq!(short[..reason.len()], reason);
+        assert_eq!(error_pages(&mut [0; 8], 0, &home), None);
     }
 
     #[test]

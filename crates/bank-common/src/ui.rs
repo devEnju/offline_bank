@@ -82,11 +82,6 @@ pub const FAILURE_NOTICE: u32 = 0xb;
 /// to the HOME Menu". One line in every language of the original.
 pub const HOME_NOTICE: u32 = 0x4d;
 
-/// The longest line about the HOME Menu with its label and its numbers
-/// that is carried from one message to the other. The line has 11 to 42
-/// units in the ten languages of the original.
-const HOME_ROOM: usize = 128;
-
 /// The dialog's own text, in the UI's string object at `ui + 0x94`
 /// (`patch_common::ui::text`). `None` if it is not a text that can be
 /// changed in place. The caller uses it before the dialog's string changes
@@ -121,11 +116,12 @@ unsafe fn begin(context: *mut u8, text: *mut u8, room: &mut [u16], len: usize) {
 /// numbers on its third.
 ///
 /// Both texts are the original's, loaded by 001d6650 into the UI's own
-/// string object: first the line, which is copied out, then the reason. The
-/// string is changed in place and handed to the dialog again (001d643c, the
-/// call 001d6650 ends its text set-up with). Without room for the label
-/// the numbers go alone, without room for the numbers the line stays as it
-/// is; without room for the page the reason stays alone.
+/// string object: first the line, from which the page is made
+/// (`numbers::home_page`), then the reason. The string is changed in place
+/// and handed to the dialog again (001d643c, the call 001d6650 ends its
+/// text set-up with). Where the page or the reason with it does not fit,
+/// the line about the HOME Menu is shown alone, as the original has it:
+/// never a part of the screen.
 /// # Safety
 /// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
 /// (task10). Its context and allocated string object must remain live while
@@ -137,45 +133,29 @@ pub unsafe fn stop(
     first: u32,
     second: u32,
 ) -> Result<(), Error> {
-    let label = label.units();
     let context = unsafe { context(ui) }?;
-    let mut home = [0u16; HOME_ROOM];
-    let mut home_len = 0;
     unsafe { display(ui, HOME_NOTICE, false)? };
-    if let Some(Text {
-        object: text,
-        room,
-        len,
-    }) = unsafe { text(ui)? }
-    {
-        let Some(_) = reason else {
-            let len = numbers::put(room, len, label, first, second).unwrap_or(len);
-            unsafe { begin(context, text, room, len) };
-            return Ok(());
-        };
-        if len < HOME_ROOM {
-            home[..len].copy_from_slice(&room[..len]);
-            home_len = numbers::put(&mut home, len, label, first, second).unwrap_or(len);
+    let Ok(Some(Text { object, room, len })) = (unsafe { text(ui) }) else {
+        return Ok(());
+    };
+    let Some(home) = numbers::home_page(&room[..len], label.units(), first, second) else {
+        return Ok(());
+    };
+    let Some(reason) = reason else {
+        if let Some(len) = numbers::put_home(room, &home) {
+            unsafe { begin(context, object, room, len) };
+        }
+        return Ok(());
+    };
+    if unsafe { display(ui, reason, false) }.is_ok() {
+        if let Ok(Some(Text { object, room, len })) = unsafe { text(ui) } {
+            if let Some(len) = numbers::error_pages(room, len, &home) {
+                unsafe { begin(context, object, room, len) };
+                return Ok(());
+            }
         }
     }
-    let Some(reason) = reason else {
-        return Ok(());
-    };
-    unsafe { display(ui, reason, false)? };
-    let Some(Text {
-        object: text,
-        room,
-        len,
-    }) = (unsafe { text(ui)? })
-    else {
-        return Ok(());
-    };
-    let mut len = message::cut(&room[..len]);
-    if home_len != 0 {
-        len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
-    }
-    unsafe { begin(context, text, room, len) };
-    Ok(())
+    unsafe { display(ui, HOME_NOTICE, false) }
 }
 
 /// One frame of a dialog (001d6600). True once a waiting dialog was

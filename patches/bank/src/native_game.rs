@@ -760,6 +760,12 @@ mod arm {
                 Err(NativeGameError::NativeStatus(status))
             }
         }
+        /// False while the original's writer runs. An error waits for it
+        /// before its screen lets HOME through; the journal stays as it is,
+        /// for START to settle, and the error stays the one that was found.
+        pub fn settle(&mut self) -> bool {
+            self.phase != Phase::Running || !matches!(self.poll(), Ok(NativePoll::Pending))
+        }
     }
     impl GameIoDescriptor {
         /// Captures a validated game without changing the manager selection.

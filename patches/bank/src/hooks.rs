@@ -284,13 +284,17 @@ fn gen6_gift(game: *mut u8) -> Result<*mut u8, Fault> {
 }
 impl Runtime {
     /// One frame of a task after an error: the session is over. A job that
-    /// is still out is waited for first, since the error screen lets HOME
-    /// through: it lets go of the files when it ends (`rest`). Until then
-    /// the loading screen stays and HOME is refused.
+    /// is still out, and the original's writer of a game save that runs, are
+    /// waited for first, since the error screen lets HOME through: the job
+    /// lets go of the files when it ends (`rest`). Until then the loading
+    /// screen stays and HOME is refused.
     fn report_failure(&mut self, task: Task) -> u32 {
         if !self.stopped {
             // A job that is still out holds what the task lent it.
             if !self.requests.settle() {
+                return 0;
+            }
+            if self.game.as_mut().is_some_and(|game| !game.settle()) {
                 return 0;
             }
             self.stopped = true;

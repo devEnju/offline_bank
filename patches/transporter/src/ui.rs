@@ -183,7 +183,6 @@ mod native {
         sync::atomic::{AtomicBool, Ordering},
     };
     use patch_common::{
-        message,
         native::follow,
         numbers::{self, Label},
         program::Program,
@@ -294,10 +293,6 @@ mod native {
     /// The original's message `0x27`, the start screen's line: "Press HOME to
     /// return to the HOME Menu". One line in every language of the original.
     const HOME_NOTICE: u32 = 0x27;
-    /// The longest line about the HOME Menu with its label and its numbers
-    /// that is carried from one message to the other: the line has 11 to 42
-    /// units in the ten languages, as Bank's.
-    const HOME_ROOM: usize = 128;
     /// The next load of the failure message is kept whole (`whole`), for
     /// the error screen's first part.
     static WHOLE: AtomicBool = AtomicBool::new(false);
@@ -314,10 +309,11 @@ mod native {
     /// data."), and after A the line about the HOME Menu with `label` on its
     /// second line and the two numbers on its third. Both are the
     /// original's, loaded into the UI's string object by "show a message":
-    /// first the line, which is copied out, then the failure message, which
-    /// is cut and given the line as its next page, and handed to the dialog
-    /// again. Without room for the label the numbers go alone, without room
-    /// for the page the first part stays alone.
+    /// first the line, from which the page is made (`numbers::home_page`),
+    /// then the failure message, which is cut and given the page, and handed
+    /// to the dialog again. Where the page or the message with it does not
+    /// fit, the line about the HOME Menu is shown alone, as the original has
+    /// it: never a part of the screen.
     /// # Safety
     /// `ui` is the live shared UI, on the main thread, with no other dialog
     /// shown.
@@ -333,36 +329,32 @@ mod native {
                 follow(ui, UI_STRING).ok_or(Unavailable)?,
             )
         };
-        let mut home = [0u16; HOME_ROOM];
-        let mut home_len = 0;
         unsafe { show_still(ui, HOME_NOTICE) };
-        if let Ok(Some(Text { room, len, .. })) = unsafe { shared::text(object) } {
-            if len < HOME_ROOM {
-                home[..len].copy_from_slice(&room[..len]);
-                home_len =
-                    numbers::put(&mut home, len, label.units(), first, second).unwrap_or(len);
-            }
-        }
+        let Ok(Some(Text { room, len, .. })) = (unsafe { shared::text(object) }) else {
+            return Ok(());
+        };
+        let Some(home) = numbers::home_page(&room[..len], label.units(), first, second) else {
+            return Ok(());
+        };
         WHOLE.store(true, Ordering::Relaxed);
         unsafe { show_still(ui, MESSAGE_FAILURE) };
         WHOLE.store(false, Ordering::Relaxed);
-        let Ok(Some(Text {
+        if let Ok(Some(Text {
             object: text,
             room,
             len,
-        })) = (unsafe { shared::text(object) })
-        else {
-            return Ok(());
-        };
-        let mut len = message::cut(&room[..len]);
-        if home_len != 0 {
-            len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
+        })) = unsafe { shared::text(object) }
+        {
+            if let Some(len) = numbers::error_pages(room, len, &home) {
+                unsafe {
+                    shared::end(text, room, len);
+                    let hand: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(DIALOG_TEXT);
+                    hand(context, text);
+                }
+                return Ok(());
+            }
         }
-        unsafe {
-            shared::end(text, room, len);
-            let hand: unsafe extern "aapcs" fn(*mut u8, *mut u8) = transmute(DIALOG_TEXT);
-            hand(context, text);
-        }
+        unsafe { show_still(ui, HOME_NOTICE) };
         Ok(())
     }
 
