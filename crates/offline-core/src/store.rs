@@ -214,6 +214,14 @@ fn put_replica<S: Storage>(
     Ok(())
 }
 
+/// Whether both replicas can be read, valid or not.
+fn both_readable<S: Storage>(storage: &mut S) -> bool {
+    let mut bytes = [0; METADATA_SIZE];
+    [Slot::A, Slot::B]
+        .into_iter()
+        .all(|slot| storage.read(record_offset(slot), &mut bytes).is_ok())
+}
+
 fn put_record<S: Storage>(
     storage: &mut S,
     offset: u64,
@@ -265,10 +273,7 @@ impl<S: Storage> Journal<S> {
     /// interrupted write left unreadable cannot be written either until it
     /// is replaced, which only Bank does, with its next save.
     pub fn readable(&mut self) -> bool {
-        let mut bytes = [0; METADATA_SIZE];
-        [Slot::A, Slot::B]
-            .into_iter()
-            .all(|slot| self.storage.read(record_offset(slot), &mut bytes).is_ok())
+        both_readable(&mut self.storage)
     }
 
     /// Publishes a delivery whose bytes, with the checksum `crc`, are durable
@@ -547,13 +552,17 @@ impl<S: Storage> BankStore<S> {
 
     /// Leaves the save in progress to Transporter's question, or takes it
     /// back (`Metadata::ask`): the same record with the next sequence number
-    /// and `ask`. Nothing is written when the record says so already.
+    /// and `ask`. Nothing is written when the record says so already, unless
+    /// it leaves the save to the question while one replica does not read:
+    /// Transporter reads the question only from a journal whose replicas
+    /// both read, and replaces none, so the record is written again, which
+    /// replaces that replica (`put_replica`).
     pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
         let head = self.check_head(head)?;
         if !matches!(head.phase(), Phase::Prepared(_)) {
             return Err(StoreError::NoPendingTransfer);
         }
-        if head.metadata.ask == ask {
+        if head.metadata.ask == ask && (!ask || both_readable(&mut self.storage)) {
             return Ok(head);
         }
         let sequence = next_sequence(&head)?;

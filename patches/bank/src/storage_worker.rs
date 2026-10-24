@@ -1038,7 +1038,9 @@ mod tests {
     use super::*;
     use bank_common::{
         bank_files::FileName,
-        testing::{asked, body, fresh, load, opened, pokemon, with_boxes, Refused, Shared},
+        testing::{
+            asked, body, fresh, load, opened, pokemon, transport_check, with_boxes, Refused, Shared,
+        },
     };
     use offline_core::sections::RECORD_SIZE;
     use std::{boxed::Box, collections::BTreeMap, vec::Vec};
@@ -1670,6 +1672,57 @@ mod tests {
                 drop(files);
                 assert!(settled_bank(&disk) == old, "{case}");
                 assert!(!asked(&disk), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn after_a_cut_while_bank_leaves_a_save_to_transporter_transporter_asks() {
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        assert_eq!(sessions[3].0, "both ways");
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+        drop(files);
+        game.save = Some((OTHER, LOADED));
+        let disk = disk.like(true);
+        // A cut at every step of leaving it to the question, as the console
+        // cuts: a file with writes not yet synced does not read any more.
+        for budget in 0.. {
+            let card = disk.cut_after(budget);
+            let mut files = opened(&card);
+            let settled = settle(
+                &mut files,
+                Some(&mut game),
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                &in_progress,
+                Rule::Start,
+                None,
+                &mut held(),
+            );
+            drop(files);
+            let card = card.reboot();
+            // The next START of Bank sends the user to Transporter, and
+            // Transporter asks: neither sends the user back.
+            let mut files = opened(&card);
+            let again = settle(
+                &mut files,
+                Some(&mut game),
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                &in_progress,
+                Rule::Start,
+                None,
+                &mut held(),
+            );
+            assert_eq!(again.unwrap(), Settled::Asks, "cut after {budget}");
+            drop(files);
+            assert_eq!(
+                transport_check(&card),
+                Err(offline_core::transport::Refusal::Asked),
+                "cut after {budget}"
+            );
+            if settled.is_ok() {
+                break;
             }
         }
     }

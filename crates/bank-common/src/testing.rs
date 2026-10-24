@@ -496,6 +496,10 @@ pub fn asked(disk: &Shared) -> bool {
         .expect("journal")
         .is_some_and(|head| head.metadata().ask)
 }
+/// Transporter's check before a session, as it answers it.
+pub fn transport_check(disk: &Shared) -> Result<(), transport::Refusal> {
+    transport::check(&mut Visit(disk.clone()))
+}
 /// Transporter's check before a session: whether it may deliver now.
 pub fn transport_ok(disk: &Shared) -> bool {
     transport::check(&mut Visit(disk.clone())).is_ok()

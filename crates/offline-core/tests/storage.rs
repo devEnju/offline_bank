@@ -686,6 +686,23 @@ fn a_cut_while_asking_or_settling_leaves_the_record_before_or_after() {
 }
 
 #[test]
+fn asking_again_replaces_a_record_a_cut_left_unreadable() {
+    let layout = Layout::new(CAPACITY);
+    for unit in 0..2 {
+        let (store, head) = asked(baseline());
+        let mut memory = store.into_inner().reboot().console();
+        memory.unreadable[unit] = true;
+        let mut store = BankStore::new(memory, layout);
+        let head = store.ask(&head, true).unwrap();
+        // Both records read again, and Transporter finds the question.
+        let mut journal = Journal::new(store.into_inner().reboot());
+        assert!(journal.readable(), "record {unit}");
+        assert_eq!(journal.load().unwrap().unwrap().metadata(), head.metadata());
+        assert!(head.metadata().ask);
+    }
+}
+
+#[test]
 fn every_prepare_write_boundary_recovers_old_when_game_was_not_changed() {
     let base = baseline();
     let (complete, _) = prepare(base.clone());
