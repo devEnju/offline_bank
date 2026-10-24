@@ -32,10 +32,12 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 | When | Bank | Source game | Message |
 | --- | --- | --- | --- |
 | The cartridge's Game Card is gone at "Yes", checked before anything is written | unchanged | unchanged | "Please confirm that your Game Card is properly inserted, and then try again." |
-| The delivery cannot be written: the SD card refuses it | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
-| Whether Bank received the delivery cannot be read, even when Bank's record is read again | may have the Pokémon | unchanged | "No compatible Pokémon Game Card detected…" |
-| The cartridge is taken out after the delivery, before the game is saved | has the Pokémon | still has them | the same |
-| The game cannot be saved after the delivery, with the cartridge in, a save on the SD card, or a Virtual Console title | has the Pokémon | may still have them, and its save may be damaged | "The saved data in your Pokémon game is corrupted." |
+| Bank's files no longer take a delivery, though they did at START | unchanged | unchanged | the message START shows for it ([below](#troubleshooting)) |
+| The delivery cannot be written: the SD card has no room | unchanged | unchanged | "The SD card is full." |
+| The delivery cannot be written: the SD card refuses it otherwise | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
+| Whether Bank received the delivery cannot be read, even when Bank's record is read again | may have the Pokémon | unchanged | "Your communication with Pokémon Bank did not complete correctly during your last session. Please open Pokémon Bank and perform the cleanup process…" |
+| The game cannot be saved after the delivery, with the cartridge in, a save on the SD card, or a Virtual Console title | has the Pokémon | may still have them, and its save may be damaged | the same |
+| The cartridge is taken out after the delivery, before the game is saved | has the Pokémon | still has them | "No compatible Pokémon Game Card detected…" |
 | Everything is written | has the Pokémon | without them | the original's success message |
 | The patch itself cannot go on, for instance its background thread cannot start, or Bank's data cannot be opened at all | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
 
@@ -131,8 +133,8 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | START always answers "Pokémon remains in the Transport Box". | Open Bank, empty the transport box, and Save and Quit. |
 | START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, check that Bank and Transporter are from the same release, and otherwise please report it. Where Transporter cannot open Bank's data at all, it shows the error screen instead. |
 | "Please confirm that your Game Card is properly inserted" after confirming a transfer. | The cartridge's card was not inserted, or the delivery could not be written. The source game and Bank are unchanged; transfer again. |
-| "No compatible Pokémon Game Card detected" after confirming a transfer. | The cartridge was taken out after the delivery, or whether Bank received the delivery could not be read. The Pokémon may be in Bank's transport box and still in the game: look in Bank before you transfer them again. |
-| "The saved data in your Pokémon game is corrupted." after confirming a transfer. | Saving the game failed in the middle. The Pokémon may be in Bank and still in the game, and the game's save may be damaged: check it before you play. For a save on the SD card, `<name>.sav.bak` holds it as it was before the session. |
+| "No compatible Pokémon Game Card detected" after confirming a transfer. | The cartridge was taken out after the delivery. The Pokémon are in Bank's transport box and still in the game: look in Bank before you transfer them again. |
+| "Did not complete correctly… open Pokémon Bank" after confirming a transfer. | Whether Bank received the delivery could not be read, or saving the game failed after it. The Pokémon may be in Bank's transport box and still in the game: open Bank and look before you transfer them again. If saving the game failed in the middle, choosing it again says "The saved data in your Pokémon game is corrupted."; for a save on the SD card, `<name>.sav.bak` holds it as it was before the session. |
 | "The SD card is full." after choosing a Black/White save on the SD card. | The card has no room for the save's backup (512 KiB). Nothing was written. Free space and start again. |
 | "Press HOME to return to the HOME Menu" with two numbers under it. | The patch itself cannot go on, for instance its background thread cannot start, or something of Transporter it needs is not what it expects, or Bank's data cannot be opened at all or its record is damaged (`3`, `5`), which Bank could not repair either. It is Bank's error screen, with Bank's numbers ([bank.md](bank.md#troubleshooting)). Nothing was written to Bank or the game. Close Transporter from the HOME Menu and start it again; if it stays, please report the numbers. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |

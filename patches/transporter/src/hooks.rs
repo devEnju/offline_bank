@@ -21,7 +21,7 @@ use bank_common::{fault::Fault, worker::WorkerError};
 use core::{
     mem::transmute,
     slice,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 use offline_core::sections::TRANSPORT_SLOTS;
 use patch_common::{
@@ -582,16 +582,16 @@ unsafe fn show(task: Task, message: u32) -> Check {
 /// The manager of the transfer, noted by the delivery entry, for what the
 /// chosen game is (`ui::Chosen`).
 static MANAGER: AtomicUsize = AtomicUsize::new(0);
-/// The delivery answered that Bank may hold it, and the original's message
-/// that no Game Card is detected comes for that (`DELIVER_UNCONFIRMED`).
-static UNCONFIRMED: AtomicBool = AtomicBool::new(false);
+/// What the delivery answered last (`ui::Delivery`, as its word), for the
+/// message the transfer shows next: taken by the message-text entry.
+static DELIVERY: AtomicU32 = AtomicU32::new(0);
 
 /// Replaces the load of a message in the original's "show a message"
 /// (`0019B578`): the original loads it, and what is shown follows from what
-/// the last write to the game that failed left (`ui::shown`): the failure
-/// message from its second page, "The SD card is full." or "The saved data
-/// in your Pokémon game is corrupted." in its place. The error screen's
-/// failure message is kept whole (`ui::whole`).
+/// the last write to the game that failed left and what the delivery
+/// answered (`ui::shown`): the failure message from its second page, "The
+/// SD card is full." or another message of the original in its place. The
+/// error screen's failure message is kept whole (`ui::whole`).
 /// # Safety
 /// Called only from that site, with the arguments of the replaced call.
 #[no_mangle]
@@ -618,8 +618,12 @@ pub unsafe extern "aapcs" fn transporter_message_text(
         } else {
             Chosen::CardIn
         };
-        let unconfirmed = message == MESSAGE_NO_CARD && UNCONFIRMED.swap(false, Ordering::Relaxed);
-        ui::shown(message, fault, chosen, unconfirmed)
+        let delivery = if matches!(message, MESSAGE_FAILURE | MESSAGE_NO_CARD) {
+            ui::Delivery::of(DELIVERY.swap(0, Ordering::Relaxed))
+        } else {
+            ui::Delivery::None
+        };
+        ui::shown(message, fault, chosen, delivery)
     };
     match shown {
         Shown::SdFull => {
@@ -627,8 +631,8 @@ pub unsafe extern "aapcs" fn transporter_message_text(
                 return loaded;
             }
         }
-        Shown::Corrupted => {
-            return unsafe { ui::load_message(messages, ui::MESSAGE_CORRUPTED, string) };
+        Shown::Instead(instead) => {
+            return unsafe { ui::load_message(messages, instead, string) };
         }
         Shown::Whole | Shown::SecondPage => {}
     }
@@ -705,7 +709,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
             return DELIVER_PENDING;
         };
         MANAGER.store(manager as usize, Ordering::Relaxed);
-        UNCONFIRMED.store(false, Ordering::Relaxed);
+        DELIVERY.store(0, Ordering::Relaxed);
         if unsafe { cart::chosen_card_missing(manager) } {
             return DELIVER_FAILED;
         }
@@ -720,9 +724,12 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     match delivered(answer) {
         Delivered::Pending => DELIVER_PENDING,
         Delivered::Done => DELIVER_DONE,
-        Delivered::Retry => DELIVER_FAILED,
+        Delivered::Undelivered(delivery) => {
+            DELIVERY.store(delivery.word(), Ordering::Relaxed);
+            DELIVER_FAILED
+        }
         Delivered::Unconfirmed => {
-            UNCONFIRMED.store(true, Ordering::Relaxed);
+            DELIVERY.store(ui::Delivery::Unconfirmed.word(), Ordering::Relaxed);
             DELIVER_UNCONFIRMED
         }
         Delivered::Failed(error) => {

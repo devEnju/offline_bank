@@ -253,7 +253,7 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `F` | Preparing the save |
 | `10` | Finishing or undoing an interrupted save |
 | `12`, `13` | Rewards |
-| `14` | Transporter's delivery did not happen: the SD card refused its write (the console's code), Bank's journal or transport file did not take it (3), or it was handed no whole transport box with Pokémon (1, or 2 without Pokémon) |
+| `14` | Transporter's delivery did not happen: the SD card refused its write for another reason than lack of space (the console's code), Bank's journal or transport file did not take it (3), or it was handed no whole transport box with Pokémon (1, or 2 without Pokémon) |
 
 | Second number | Meaning |
 | --- | --- |
