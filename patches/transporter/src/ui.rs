@@ -10,11 +10,12 @@ use offline_core::transport::Refusal;
 /// The original's message 3: "Your communication with Pokémon Bank did not
 /// complete correctly during your last session. Please open Pokémon Bank
 /// and perform the cleanup process before using Poké Transporter." The
-/// original shows it where the server asked for that (`0025C964`).
+/// original shows it where the server asked for that (`0025C964`); the
+/// patch only at START (`refusal_message`).
 pub const MESSAGE_OPEN_BANK: u32 = 3;
 /// The original's message 5: "At least one Pokémon remains in the Transport
 /// Box from your previous session. Please empty the Transport Box by using
-/// Pokémon Bank before using Poké Transporter."
+/// Pokémon Bank before using Poké Transporter." Only at START.
 pub const MESSAGE_BOX_NOT_EMPTY: u32 = 5;
 
 /// The original's message `0x0B`: "The server did not receive the data." and,
@@ -40,11 +41,8 @@ pub enum Shown {
     SecondPage,
     /// "The SD card is full." in its place.
     SdFull,
-    /// Another message of the same file in its place, whole.
-    Instead(u32),
-    /// The message whole, and the error screen in its place in the same
-    /// frame, with `Fault::GameWrite` and this second number
-    /// (`hooks::transporter_bank`).
+    /// The error screen in its place in the same frame, with
+    /// `Fault::GameWrite` and this second number (`hooks::saving`).
     Numbers(u32),
 }
 
@@ -59,94 +57,51 @@ pub enum Chosen {
     VirtualConsole,
 }
 
-/// What the delivery entry answered last, for the message the transfer
-/// shows next (`hooks::deliver`). Kept as one word (`word`, `of`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Delivery {
-    /// Nothing to say: no delivery was answered, or it was delivered, or
-    /// the card of the game was gone before it.
-    None,
-    /// Bank holds nothing: its files refused the delivery on the check
-    /// before the write, as they would at START; the message START shows
-    /// for that (`refusal_message`).
-    Refused(u32),
-    /// Bank holds nothing: the SD card had no room for its write.
-    NoRoom,
-    /// Bank may hold it (`DeliverError::Unconfirmed`).
-    Unconfirmed,
-}
-impl Delivery {
-    pub const fn word(self) -> u32 {
-        match self {
-            Self::None => 0,
-            Self::Unconfirmed => 1,
-            Self::NoRoom => 2,
-            Self::Refused(message) => 0x100 | (message & 0xff),
-        }
-    }
-    pub const fn of(word: u32) -> Self {
-        match word {
-            1 => Self::Unconfirmed,
-            2 => Self::NoRoom,
-            0x100..=0x1ff => Self::Refused(word & 0xff),
-            _ => Self::None,
-        }
-    }
-}
-
 /// What is shown for `message`, when the last write to the game that failed
 /// left `fault` with the console's `result` (`cart::take_write_fault`), the
-/// game is `chosen`, the last delivery answered `delivery`, and `note_save`
-/// says that the Bank task shows it, after its note save.
+/// game is `chosen`, `no_room` says that the last delivery did not happen
+/// for lack of room on the SD card, and `note_save` says that the Bank task
+/// shows it, after its note save.
 ///
 /// The failure message stands for a note save that did not count or a
-/// delivery that did not happen. A delivery Bank's files refused gets the
-/// message START shows for that, and one the SD card had no room for "The
-/// SD card is full.", as does a save whose backup had no room. A note save
-/// that the SD card refused otherwise, or that a write may have left
-/// half-written, or of a Virtual Console title, which has no card to take
-/// out, is the error screen: the advice about a Game Card does not help
-/// there, and the reader finds a damaged save when the game is chosen
-/// again. Everything else is the advice to try again: a cartridge, or a
-/// card that is gone.
+/// delivery that did not happen: nothing is in Bank, and the game holds its
+/// Pokémon. A delivery or a save backup the SD card had no room for gets
+/// "The SD card is full.". A note save that the SD card refused otherwise,
+/// or that a write may have left half-written, or of a Virtual Console
+/// title, which has no card to take out, is the error screen: the advice
+/// about a Game Card does not help there, and the reader finds a damaged
+/// save when the game is chosen again. Everything else is the advice to try
+/// again: a cartridge, or a card that is gone.
 ///
-/// The no-card message stands for a save after the delivery that failed, a
-/// card that is gone, or a delivery Bank may hold. Where Bank may hold the
-/// Pokémon while the game still does, and the card is not the reason, it is
-/// the original's message to open Bank: a delivery Bank may hold, and a
-/// save after the delivery that failed on the SD card, on a cartridge whose
-/// card is still in, or of a Virtual Console title, which has no card to
-/// take out. A card that is gone keeps it. Every other message is the
-/// original's.
+/// The no-card message stands for a save after the delivery that failed or
+/// a card that is gone: Bank holds the Pokémon, and the game may still hold
+/// them. A card that is gone keeps it. A save that failed on the SD card, on
+/// a cartridge whose card is still in, or of a Virtual Console title is the
+/// error screen. Bank's own refusals are START's alone (`refusal_message`).
+/// Every other message is the original's.
 pub fn shown(
     message: u32,
     (fault, result): (WriteFault, u32),
     chosen: Chosen,
-    delivery: Delivery,
+    no_room: bool,
     note_save: bool,
 ) -> Shown {
-    match (message, fault, delivery) {
-        (MESSAGE_FAILURE, _, Delivery::Refused(refusal)) => Shown::Instead(refusal),
-        (MESSAGE_FAILURE, _, Delivery::NoRoom) | (MESSAGE_FAILURE, WriteFault::Full, _) => {
-            Shown::SdFull
-        }
-        (MESSAGE_FAILURE, WriteFault::Untouched | WriteFault::Torn, _) if note_save => {
+    let virtual_console = chosen == Chosen::VirtualConsole;
+    match (message, fault) {
+        (MESSAGE_FAILURE, _) if no_room => Shown::SdFull,
+        (MESSAGE_FAILURE, WriteFault::Full) => Shown::SdFull,
+        (MESSAGE_FAILURE, WriteFault::Untouched | WriteFault::Torn) if note_save => {
             Shown::Numbers(result)
         }
-        (MESSAGE_FAILURE, WriteFault::None, _) if note_save && chosen == Chosen::VirtualConsole => {
-            Shown::Numbers(0)
+        (MESSAGE_FAILURE, WriteFault::None) if note_save && virtual_console => Shown::Numbers(0),
+        (MESSAGE_FAILURE, _) => Shown::SecondPage,
+        (MESSAGE_NO_CARD, WriteFault::Full | WriteFault::Untouched | WriteFault::Torn) => {
+            Shown::Numbers(result)
         }
-        (MESSAGE_FAILURE, _, _) => Shown::SecondPage,
-        (MESSAGE_NO_CARD, _, Delivery::Unconfirmed)
-        | (MESSAGE_NO_CARD, WriteFault::Full | WriteFault::Untouched | WriteFault::Torn, _) => {
-            Shown::Instead(MESSAGE_OPEN_BANK)
+        (MESSAGE_NO_CARD, WriteFault::Cartridge) if chosen == Chosen::CardIn => {
+            Shown::Numbers(result)
         }
-        (MESSAGE_NO_CARD, WriteFault::Cartridge, _) if chosen == Chosen::CardIn => {
-            Shown::Instead(MESSAGE_OPEN_BANK)
-        }
-        (MESSAGE_NO_CARD, WriteFault::None, _) if chosen == Chosen::VirtualConsole => {
-            Shown::Instead(MESSAGE_OPEN_BANK)
-        }
+        (MESSAGE_NO_CARD, WriteFault::None) if virtual_console => Shown::Numbers(0),
         _ => Shown::Whole,
     }
 }
@@ -460,69 +415,51 @@ mod tests {
     ];
 
     const RESULT: u32 = 0xc8a0_4554;
-    const DELIVERIES: [Delivery; 5] = [
-        Delivery::None,
-        Delivery::Refused(MESSAGE_OPEN_BANK),
-        Delivery::Refused(MESSAGE_BOX_NOT_EMPTY),
-        Delivery::NoRoom,
-        Delivery::Unconfirmed,
-    ];
 
     #[test]
     fn only_the_failure_and_the_no_card_message_change_with_what_a_write_left() {
         for fault in FAULTS {
             for chosen in [Chosen::CardIn, Chosen::CardOut, Chosen::VirtualConsole] {
-                for (delivery, note_save) in DELIVERIES
-                    .into_iter()
-                    .flat_map(|delivery| [(delivery, false), (delivery, true)])
-                {
+                for (no_room, note_save) in [(false, false), (false, true), (true, false)] {
                     let shown =
-                        |message| shown(message, (fault, RESULT), chosen, delivery, note_save);
-                    let case = std::format!("{fault:?} {chosen:?} {delivery:?} {note_save}");
+                        |message| shown(message, (fault, RESULT), chosen, no_room, note_save);
+                    let case = std::format!("{fault:?} {chosen:?} {no_room} {note_save}");
                     // The refusals and the closing message of a transfer are
                     // shown whole.
                     for message in [0, MESSAGE_OPEN_BANK, MESSAGE_BOX_NOT_EMPTY, 0x0a] {
                         assert_eq!(shown(message), Shown::Whole, "{case}");
                     }
                     // A delivery that did not happen, or the note save that
-                    // did not count.
-                    let expected = match (fault, delivery) {
-                        // What START shows for Bank's refusal.
-                        (_, Delivery::Refused(refusal)) => Shown::Instead(refusal),
-                        (_, Delivery::NoRoom) | (WriteFault::Full, _) => Shown::SdFull,
+                    // did not count: nothing is in Bank.
+                    let expected = match fault {
+                        _ if no_room => Shown::SdFull,
+                        WriteFault::Full => Shown::SdFull,
                         // The note save of a save on the SD card or of a
                         // Virtual Console title: the numbers.
-                        (WriteFault::Untouched | WriteFault::Torn, _) if note_save => {
+                        WriteFault::Untouched | WriteFault::Torn if note_save => {
                             Shown::Numbers(RESULT)
                         }
-                        (WriteFault::None, _) if note_save && chosen == Chosen::VirtualConsole => {
+                        WriteFault::None if note_save && chosen == Chosen::VirtualConsole => {
                             Shown::Numbers(0)
                         }
+                        // A cartridge, or a card that is gone: try again.
                         _ => Shown::SecondPage,
                     };
                     assert_eq!(shown(MESSAGE_FAILURE), expected, "{case}");
-                    // A save after the delivery that failed, a card that is
-                    // gone, or a delivery Bank may hold: the card's message
-                    // only where the card is the reason.
-                    let open_bank = Shown::Instead(MESSAGE_OPEN_BANK);
+                    // A save after the delivery that failed, or a card that
+                    // is gone: Bank holds the Pokémon. The card's message
+                    // only where the card is the reason, never Bank's
+                    // refusal.
                     let expected = match (fault, chosen) {
-                        _ if delivery == Delivery::Unconfirmed => open_bank,
-                        (WriteFault::None, Chosen::VirtualConsole) => open_bank,
+                        (WriteFault::None, Chosen::VirtualConsole) => Shown::Numbers(0),
                         (WriteFault::None, _) => Shown::Whole,
-                        (WriteFault::Cartridge, Chosen::CardIn) => open_bank,
+                        (WriteFault::Cartridge, Chosen::CardIn) => Shown::Numbers(RESULT),
                         (WriteFault::Cartridge, _) => Shown::Whole,
-                        _ => open_bank,
+                        _ => Shown::Numbers(RESULT),
                     };
                     assert_eq!(shown(MESSAGE_NO_CARD), expected, "{case}");
                 }
             }
-        }
-    }
-
-    #[test]
-    fn a_delivery_answer_is_kept_as_one_word() {
-        for delivery in DELIVERIES {
-            assert_eq!(Delivery::of(delivery.word()), delivery);
         }
     }
 

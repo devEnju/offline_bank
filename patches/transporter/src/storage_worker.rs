@@ -26,7 +26,7 @@ pub enum Job {
     Deliver,
 }
 /// What a job found. Which message the screen shows for it is the hooks'
-/// (`ui::refusal_message`).
+/// (`ui::refusal_message`, `ui::shown`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
     /// Bank can take a delivery.
@@ -37,22 +37,8 @@ pub enum Reply {
     /// the record announcing it is in force when Bank's journal is read
     /// again (`transport::deliver`).
     Delivered,
-    /// Bank holds none, for certain, and the Pokémon stay in the game.
-    NotDelivered(Undelivered),
-    /// Whether Bank holds the delivery cannot be told
-    /// (`DeliverError::Unconfirmed`): the Pokémon stay in the game, and Bank
-    /// may hold them as well.
-    Unconfirmed,
-}
-
-/// Why Bank holds no delivery, for certain, where an original message says
-/// it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Undelivered {
-    /// Bank's files refused it on the check before the write, as they would
-    /// at START.
-    Refused(Refusal),
-    /// The SD card had no room for its write (`lack_of_space`).
+    /// Bank holds none, for certain, as the SD card had no room for its
+    /// write (`lack_of_space`), and the Pokémon stay in the game.
     NoRoom,
 }
 
@@ -65,6 +51,13 @@ pub enum Undelivered {
 pub const NOT_ONE_BOX: u32 = 1;
 pub const NO_POKEMON: u32 = 2;
 pub const NOT_WRITTEN: u32 = 3;
+/// Whether Bank holds the delivery cannot be told
+/// (`DeliverError::Unconfirmed`): the Pokémon stay in the game, and Bank may
+/// hold them as well.
+pub const UNCONFIRMED: u32 = 4;
+/// Bank's journal no longer allows a delivery that the check at START
+/// allowed. Bank holds none.
+pub const REFUSED: u32 = 5;
 
 /// The check's reply from what `transport::check` answered. `unreachable`
 /// is the result of a file of Bank's that did not open for a reason Bank
@@ -86,25 +79,21 @@ pub fn check_reply(
 
 /// The delivery's reply from what `transport::deliver` answered, with the
 /// card's results as their numbers, and `unreachable` as for `check_reply`.
-/// A write the SD card had no room for is an ending of its own. Another
-/// write the SD card refused, or a file that did not take it, is the error
-/// screen: Bank holds nothing, and the card is not where the advice to try
-/// again helps.
+/// A write the SD card had no room for is an ending of its own. Everything
+/// else is the error screen: another write the SD card refused, a file that
+/// did not take it, a journal that no longer allows it, and a delivery Bank
+/// may hold. Bank's refusals are START's alone.
 pub fn delivery_reply(
     delivered: Result<(), DeliverError<u32>>,
     unreachable: Option<u32>,
 ) -> Result<Reply, WorkerError> {
     match (delivered, unreachable) {
         (Ok(()), _) => Ok(Reply::Delivered),
-        (Err(DeliverError::Unconfirmed), _) => Ok(Reply::Unconfirmed),
+        (Err(DeliverError::Unconfirmed), _) => Err(Fault::Delivery.with(UNCONFIRMED)),
         (Err(DeliverError::Refused(Refusal::Damaged)), _) => Err(Fault::StorageInvalid.with(0)),
         (Err(DeliverError::Refused(_)), Some(result)) => Err(Fault::StorageOpen.with(result)),
-        (Err(DeliverError::Refused(refusal)), None) => {
-            Ok(Reply::NotDelivered(Undelivered::Refused(refusal)))
-        }
-        (Err(DeliverError::Io(result)), _) if lack_of_space(result) => {
-            Ok(Reply::NotDelivered(Undelivered::NoRoom))
-        }
+        (Err(DeliverError::Refused(_)), None) => Err(Fault::Delivery.with(REFUSED)),
+        (Err(DeliverError::Io(result)), _) if lack_of_space(result) => Ok(Reply::NoRoom),
         (Err(DeliverError::Io(result)), _) => Err(Fault::Delivery.with(result)),
         (Err(DeliverError::Write), _) => Err(Fault::Delivery.with(NOT_WRITTEN)),
         (Err(DeliverError::Layout), _) => Err(Fault::Delivery.with(NOT_ONE_BOX)),
@@ -219,14 +208,12 @@ pub enum Delivered {
     Pending,
     /// Bank holds it: the original removes the Pokémon from the game.
     Done,
-    /// Bank holds nothing, for certain: the transfer's failure message,
-    /// in the place of which the message for this comes (`ui::shown`).
-    Undelivered(crate::ui::Delivery),
-    /// Bank may hold it: the original's message to open Bank, without "try
-    /// again", in the place of the message that no Game Card is detected
-    /// (`ui::shown`).
-    Unconfirmed,
-    /// The worker cannot be used, or the box was no box: the error screen.
+    /// Bank holds nothing, for certain, for lack of room on the SD card: the
+    /// transfer's failure message, in the place of which "The SD card is
+    /// full." comes (`ui::shown`).
+    NoRoom,
+    /// The worker cannot be used, or the delivery failed otherwise or may
+    /// have happened: the error screen.
     Failed(WorkerError),
 }
 
@@ -235,13 +222,7 @@ pub fn delivered(answer: Answer) -> Delivered {
     match answer {
         None => Delivered::Pending,
         Some(Ok(Reply::Delivered)) => Delivered::Done,
-        Some(Ok(Reply::NotDelivered(undelivered))) => Delivered::Undelivered(match undelivered {
-            Undelivered::Refused(refusal) => {
-                crate::ui::Delivery::Refused(crate::ui::refusal_message(refusal))
-            }
-            Undelivered::NoRoom => crate::ui::Delivery::NoRoom,
-        }),
-        Some(Ok(Reply::Unconfirmed)) => Delivered::Unconfirmed,
+        Some(Ok(Reply::NoRoom)) => Delivered::NoRoom,
         Some(Ok(_)) => Delivered::Failed(NOT_ITS_REPLY),
         Some(Err(error)) => Delivered::Failed(error),
     }
@@ -254,32 +235,23 @@ pub fn delivered(answer: Answer) -> Delivered {
 pub const DELIVER_FAILED: u32 = 0;
 pub const DELIVER_DONE: u32 = 1;
 pub const DELIVER_PENDING: u32 = 2;
-pub const DELIVER_UNCONFIRMED: u32 = 3;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::Delivery;
     use patch_common::worker::{Control, ControlKind};
 
     /// Every answer a frame of a job can give.
-    fn answers() -> [Answer; 11] {
+    fn answers() -> [Answer; 8] {
         [
             None,
             Some(Ok(Reply::Ready)),
             Some(Ok(Reply::Refused(Refusal::Occupied))),
             Some(Ok(Reply::Refused(Refusal::NotReady))),
             Some(Ok(Reply::Delivered)),
-            Some(Ok(Reply::NotDelivered(Undelivered::Refused(
-                Refusal::Occupied,
-            )))),
-            Some(Ok(Reply::NotDelivered(Undelivered::Refused(
-                Refusal::NotReady,
-            )))),
-            Some(Ok(Reply::NotDelivered(Undelivered::NoRoom))),
-            Some(Ok(Reply::Unconfirmed)),
+            Some(Ok(Reply::NoRoom)),
             Some(Err(WorkerError::from(Control::new(ControlKind::Resource)))),
-            Some(Err(Fault::Delivery.with(NOT_ONE_BOX))),
+            Some(Err(Fault::Delivery.with(UNCONFIRMED))),
         ]
     }
 
@@ -289,19 +261,10 @@ mod tests {
             let expected = match answer {
                 None => Delivered::Pending,
                 Some(Ok(Reply::Delivered)) => Delivered::Done,
-                // Nothing is in Bank: what START shows for Bank's
-                // refusal, or that the SD card is full.
-                Some(Ok(Reply::NotDelivered(Undelivered::Refused(Refusal::Occupied)))) => {
-                    Delivered::Undelivered(Delivery::Refused(crate::ui::MESSAGE_BOX_NOT_EMPTY))
-                }
-                Some(Ok(Reply::NotDelivered(Undelivered::Refused(_)))) => {
-                    Delivered::Undelivered(Delivery::Refused(crate::ui::MESSAGE_OPEN_BANK))
-                }
-                Some(Ok(Reply::NotDelivered(Undelivered::NoRoom))) => {
-                    Delivered::Undelivered(Delivery::NoRoom)
-                }
-                // It may be: no "try again", which could double them.
-                Some(Ok(Reply::Unconfirmed)) => Delivered::Unconfirmed,
+                // Nothing is in Bank: the SD card is full.
+                Some(Ok(Reply::NoRoom)) => Delivered::NoRoom,
+                // Everything else is the error screen, a delivery Bank may
+                // hold too: the Pokémon stay in the game.
                 Some(Err(error)) => Delivered::Failed(error),
                 // A reply of the check is none of the delivery's.
                 Some(Ok(_)) => Delivered::Failed(NOT_ITS_REPLY),
@@ -346,13 +309,14 @@ mod tests {
     }
 
     #[test]
-    fn what_bank_resolves_goes_to_bank_and_everything_else_shows_the_numbers() {
-        // The refusals Bank resolves send the user there.
+    fn bank_is_named_only_at_start_and_everything_else_shows_the_numbers() {
         for refusal in [Refusal::Occupied, Refusal::NotReady] {
+            // At START the refusal sends the user to Bank.
             assert_eq!(check_reply(Err(refusal), None), Ok(Reply::Refused(refusal)));
+            // At the delivery it is an error: START allowed it.
             assert_eq!(
                 delivery_reply(Err(DeliverError::Refused(refusal)), None),
-                Ok(Reply::NotDelivered(Undelivered::Refused(refusal)))
+                Err(Fault::Delivery.with(REFUSED))
             );
             // A file that did not open for another reason: Bank's number.
             let error = Fault::StorageOpen.with(0xd900_458b);
@@ -370,12 +334,14 @@ mod tests {
             damaged
         );
         assert_eq!(check_reply(Ok(()), Some(1)), Ok(Reply::Ready));
-        // A delivery the card did not take: the delivery's number.
+        // A delivery the card did not take, or one Bank may hold: the
+        // delivery's number.
         for (error, second) in [
             (DeliverError::Io(0xd900_458b), 0xd900_458b),
             (DeliverError::Write, NOT_WRITTEN),
             (DeliverError::Layout, NOT_ONE_BOX),
             (DeliverError::Empty, NO_POKEMON),
+            (DeliverError::Unconfirmed, UNCONFIRMED),
         ] {
             assert_eq!(
                 delivery_reply(Err(error), None),
@@ -385,13 +351,9 @@ mod tests {
         // One the card had no room for: said so, without numbers.
         assert_eq!(
             delivery_reply(Err(DeliverError::Io(0xc86044d2)), None),
-            Ok(Reply::NotDelivered(Undelivered::NoRoom))
+            Ok(Reply::NoRoom)
         );
         assert_eq!(delivery_reply(Ok(()), None), Ok(Reply::Delivered));
-        assert_eq!(
-            delivery_reply(Err(DeliverError::Unconfirmed), None),
-            Ok(Reply::Unconfirmed)
-        );
     }
 
     #[test]

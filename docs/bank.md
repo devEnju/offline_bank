@@ -249,11 +249,11 @@ The second line is the version of the patch, with a name behind it if it is not 
 | `5` | The stored data is not valid |
 | `6` | Console clock |
 | `9` | Loading |
-| `A`–`E` | Game save; `D` in Transporter: the save before the question could not be written, on the SD card (the console's code) or of a Virtual Console title (0) |
+| `A`–`E` | Game save; `D` in Transporter: a save of the source game could not be written, before the question or after the delivery, on the SD card (the console's code), on a cartridge whose card is still in after the delivery (the console's code), or of a Virtual Console title (0) |
 | `F` | Preparing the save |
 | `10` | Finishing or undoing an interrupted save |
 | `12`, `13` | Rewards |
-| `14` | Transporter's delivery did not happen: the SD card refused its write for another reason than lack of space (the console's code), Bank's journal or transport file did not take it (3), or it was handed no whole transport box with Pokémon (1, or 2 without Pokémon) |
+| `14` | Transporter's delivery did not happen: the SD card refused its write for another reason than lack of space (the console's code), Bank's journal or transport file did not take it (3), it was handed no whole transport box with Pokémon (1, or 2 without Pokémon), or Bank's record no longer allows it (5). Or whether Bank received it cannot be told (4): Bank may hold it |
 
 | Second number | Meaning |
 | --- | --- |

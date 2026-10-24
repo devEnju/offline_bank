@@ -12,7 +12,7 @@ use crate::{
     sdcard::WriteFault,
     storage_worker::{
         checked, delivered, Checked, Delivered, Job, Reply, TransporterRequests, TransporterWorker,
-        DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING, DELIVER_UNCONFIRMED,
+        DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING,
     },
     task::*,
     ui::{self, loading, stop_loading, Chosen, Shown, MESSAGE_FAILURE, MESSAGE_NO_CARD},
@@ -135,8 +135,12 @@ impl Runtime {
     /// The session stops with `error`: its screen comes up on the next
     /// frame of the task (`report_failure`).
     fn fail(&mut self, error: WorkerError) {
+        self.fail_with(error.numbers());
+    }
+    /// The same with the two numbers of an error.
+    fn fail_with(&mut self, numbers: [u32; 2]) {
         self.failure.get_or_insert(Failure {
-            numbers: error.numbers(),
+            numbers,
             shown: false,
         });
     }
@@ -528,6 +532,9 @@ unsafe fn update(raw: *mut u8, id: u32, update: usize) -> u32 {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[expected]) }) else {
         return 1;
     };
+    if id == navigation::TRANSFER {
+        return unsafe { saving(task, TRANSFER_UI, update, false) };
+    }
     if unsafe { waits(task, id) } {
         return 0;
     }
@@ -535,14 +542,7 @@ unsafe fn update(raw: *mut u8, id: u32, update: usize) -> u32 {
 }
 /// Replaces the Bank task's update in its vtable (`002E697C`, was
 /// `00248C68`), the task that saves the original's note into the chosen
-/// game. A note save that the SD card refused, but for lack of space, that
-/// may have left a save on the SD card half-written, or of a Virtual
-/// Console title, ends on the error screen with `Fault::GameWrite` and the
-/// console's result: the message-text entry notes it when the original shows
-/// its failure message (`ui::shown`), and this entry puts the error screen
-/// in its place in the same frame, before it is drawn. From then on the
-/// task stays on it, as the search and the transfer do. Every other frame is
-/// the original's update.
+/// game (`saving`).
 /// # Safety
 /// The original's task driver supplies the live Bank task, on the main
 /// thread.
@@ -551,31 +551,49 @@ pub unsafe extern "aapcs" fn transporter_bank(raw: *mut u8) -> u32 {
     let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_BANK]) }) else {
         return 1;
     };
+    unsafe { saving(task, BANK_UI, BANK_UPDATE, true) }
+}
+
+/// One frame of the update at `update` of a task that saves the chosen
+/// game: the Bank task, which saves the original's note (`note`), and the
+/// transfer, which waits for its loading panel first (`waits`). A failed
+/// save the error screen stands for (`Shown::Numbers`), or a message that
+/// cannot be loaded, is noted by the message-text entry when the original
+/// shows its message, and this entry puts the error screen in its place on
+/// the task's shared UI at `ui` in the same frame, before it is drawn. From
+/// then on the task stays on it, as the search does.
+/// # Safety
+/// `task` is the live Bank task or transfer, on the main thread.
+unsafe fn saving(task: Task, ui: usize, update: usize, note: bool) -> u32 {
     {
         let Some(mut state) = STATE.take() else {
             // Its state is a hook's: this frame waits, as Bank's hooks do.
             return 0;
         };
-        if unsafe { state.stopped(task.pointer(BANK_UI)) } == Some(true) {
+        if unsafe { state.stopped(task.pointer(ui)) } == Some(true) {
             return 0;
         }
+    }
+    if !note && unsafe { waits(task, navigation::TRANSFER) } {
+        return 0;
     }
     // The failure message names the chosen game's kind (`ui::Chosen`).
     if let Ok(manager) = task.pointer(TASK_MANAGER) {
         MANAGER.store(manager as usize, Ordering::Relaxed);
     }
-    NUMBERS_DUE.store(false, Ordering::Relaxed);
-    NOTE_SAVE.store(true, Ordering::Relaxed);
-    let finished = unsafe { original(BANK_UPDATE, raw) };
+    DUE.store(0, Ordering::Relaxed);
+    NOTE_SAVE.store(note, Ordering::Relaxed);
+    let finished = unsafe { original(update, task.raw()) };
     NOTE_SAVE.store(false, Ordering::Relaxed);
-    if !NUMBERS_DUE.swap(false, Ordering::Relaxed) {
+    let first = DUE.swap(0, Ordering::Relaxed);
+    if first == 0 {
         return finished;
     }
     let Some(mut state) = STATE.take() else {
         return finished;
     };
-    state.fail(Fault::GameWrite.with(NUMBERS.load(Ordering::Relaxed)));
-    match unsafe { state.stopped(task.pointer(BANK_UI)) } {
+    state.fail_with([first, DUE_SECOND.load(Ordering::Relaxed)]);
+    match unsafe { state.stopped(task.pointer(ui)) } {
         Some(true) => 0,
         // No screen to show it on: the task ends as without one.
         _ => finished,
@@ -634,24 +652,31 @@ unsafe fn show(task: Task, message: u32) -> Check {
 /// The manager of the transfer, noted by the delivery entry, for what the
 /// chosen game is (`ui::Chosen`).
 static MANAGER: AtomicUsize = AtomicUsize::new(0);
-/// What the delivery answered last (`ui::Delivery`, as its word), for the
+/// The last delivery did not happen for lack of room on the SD card, for the
 /// message the transfer shows next: taken by the message-text entry.
-static DELIVERY: AtomicU32 = AtomicU32::new(0);
+static DELIVERY_NO_ROOM: AtomicBool = AtomicBool::new(false);
 /// The original update of the Bank task runs (`transporter_bank`): a
 /// failure message shown now is the one after its note save.
 static NOTE_SAVE: AtomicBool = AtomicBool::new(false);
-/// The error screen is to take the place of the failure message the Bank
-/// task just showed (`Shown::Numbers`), with this second number; taken by
-/// the Bank task's entry.
-static NUMBERS_DUE: AtomicBool = AtomicBool::new(false);
-static NUMBERS: AtomicU32 = AtomicU32::new(0);
+/// The error screen is to take the place of the message the task just
+/// showed, with these numbers; the first is never 0. Taken by `saving`.
+static DUE: AtomicU32 = AtomicU32::new(0);
+static DUE_SECOND: AtomicU32 = AtomicU32::new(0);
+
+/// Notes `error` for the error screen that takes the place of the message
+/// being loaded (`saving`).
+fn due(error: WorkerError) {
+    let [first, second] = error.numbers();
+    DUE_SECOND.store(second, Ordering::Relaxed);
+    DUE.store(first, Ordering::Relaxed);
+}
 
 /// Replaces the load of a message in the original's "show a message"
 /// (`0019B578`): the original loads it, and what is shown follows from what
 /// the last write to the game that failed left and what the delivery
 /// answered (`ui::shown`): the failure message from its second page, "The
-/// SD card is full." or another message of the original in its place. The
-/// error screen's failure message is kept whole (`ui::whole`).
+/// SD card is full." in its place, or the error screen. The error screen's
+/// failure message is kept whole (`ui::whole`).
 /// # Safety
 /// Called only from that site, with the arguments of the replaced call.
 #[no_mangle]
@@ -678,29 +703,23 @@ pub unsafe extern "aapcs" fn transporter_message_text(
         } else {
             Chosen::CardIn
         };
-        let delivery = if matches!(message, MESSAGE_FAILURE | MESSAGE_NO_CARD) {
-            ui::Delivery::of(DELIVERY.swap(0, Ordering::Relaxed))
-        } else {
-            ui::Delivery::None
-        };
+        let no_room = matches!(message, MESSAGE_FAILURE | MESSAGE_NO_CARD)
+            && DELIVERY_NO_ROOM.swap(false, Ordering::Relaxed);
         let note_save = NOTE_SAVE.load(Ordering::Relaxed);
-        ui::shown(message, fault, chosen, delivery, note_save)
+        ui::shown(message, fault, chosen, no_room, note_save)
     };
     match shown {
         Shown::SdFull => {
             if let Some(loaded) = unsafe { ui::sd_full(messages, string) } {
                 return loaded;
             }
+            // Its text cannot be loaded: the error screen, never another
+            // message in its place.
+            due(NOT_NATIVE);
         }
-        Shown::Instead(instead) => {
-            return unsafe { ui::load_message(messages, instead, string) };
-        }
-        // The Bank task's entry puts the error screen in its place before
-        // the frame is drawn.
-        Shown::Numbers(second) => {
-            NUMBERS.store(second, Ordering::Relaxed);
-            NUMBERS_DUE.store(true, Ordering::Relaxed);
-        }
+        // The task's entry puts the error screen in its place before the
+        // frame is drawn (`saving`).
+        Shown::Numbers(second) => due(Fault::GameWrite.with(second)),
         Shown::Whole | Shown::SecondPage => {}
     }
     let loaded = unsafe { ui::load_message(messages, message, string) };
@@ -713,10 +732,8 @@ pub unsafe extern "aapcs" fn transporter_message_text(
 // Transfer, sub-state 0 (0024A150, was: the start of creating the upload
 // request). r4 = task; lr is free as above. Done: on to the original
 // removal code. Pending: the original return, to come back next frame.
-// Unconfirmed: the original's message that no Game Card is detected
-// (0024A2A8, which takes the task in r4), as for a game that cannot be
-// saved after the delivery. Else: sub-state 0x11, the original failure
-// message, through the store at 0024A4C0.
+// Else: sub-state 0x11, the original failure message, through the store at
+// 0024A4C0.
 patch_common::stub!(
     transporter_deliver_stub,
     [
@@ -728,9 +745,6 @@ patch_common::stub!(
         "cmp r0, #{pending}",
         "ldreq r12, =0x0024a5dc",
         "bxeq r12",
-        "cmp r0, #{unconfirmed}",
-        "ldreq r12, =0x0024a2a8",
-        "bxeq r12",
         "mov r0, #0x11",
         "ldr r12, =0x0024a4c0",
         "bx r12",
@@ -738,16 +752,15 @@ patch_common::stub!(
     deliver = sym deliver,
     done = const DELIVER_DONE,
     pending = const DELIVER_PENDING,
-    unconfirmed = const DELIVER_UNCONFIRMED,
 );
 /// Replaces the upload (`storage_worker::delivered`). Returns `DELIVER_DONE`
 /// when Bank holds the delivery; `DELIVER_PENDING` while it is written;
-/// `DELIVER_FAILED` when Bank holds none, for certain; and
-/// `DELIVER_UNCONFIRMED` when that cannot be told. In the last two the
-/// original removes nothing from the source game: Bank may hold the
-/// Pokémon as well after the last, a duplicate, never a loss. A worker that
-/// cannot be used ends the session on the error screen, and the transfer
-/// waits on it (`DELIVER_PENDING`).
+/// `DELIVER_FAILED` when Bank holds none, for certain, because the card is
+/// gone or the SD card had no room. Every other answer, a delivery Bank may
+/// hold included, ends the session on the error screen, and the transfer
+/// waits on it (`DELIVER_PENDING`). Only `DELIVER_DONE` lets the original
+/// remove the Pokémon from the source game: after a delivery Bank may hold
+/// they may be in both, a duplicate, never a loss.
 ///
 /// Bank is written only while the game the Pokémon leave can be saved: for
 /// a cartridge whose card is gone the answer is `DELIVER_FAILED` before
@@ -776,7 +789,7 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
             return DELIVER_PENDING;
         };
         MANAGER.store(manager as usize, Ordering::Relaxed);
-        DELIVERY.store(0, Ordering::Relaxed);
+        DELIVERY_NO_ROOM.store(false, Ordering::Relaxed);
         if unsafe { cart::chosen_card_missing(manager) } {
             return DELIVER_FAILED;
         }
@@ -791,13 +804,9 @@ unsafe extern "aapcs" fn deliver(raw: *mut u8) -> u32 {
     match delivered(answer) {
         Delivered::Pending => DELIVER_PENDING,
         Delivered::Done => DELIVER_DONE,
-        Delivered::Undelivered(delivery) => {
-            DELIVERY.store(delivery.word(), Ordering::Relaxed);
+        Delivered::NoRoom => {
+            DELIVERY_NO_ROOM.store(true, Ordering::Relaxed);
             DELIVER_FAILED
-        }
-        Delivered::Unconfirmed => {
-            DELIVERY.store(ui::Delivery::Unconfirmed.word(), Ordering::Relaxed);
-            DELIVER_UNCONFIRMED
         }
         Delivered::Failed(error) => {
             state.fail(error);
