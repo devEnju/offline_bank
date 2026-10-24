@@ -320,6 +320,46 @@ impl<S: Storage> Journal<S> {
             Err(StoreError::StaleHead)
         }
     }
+
+    /// Settles the save in progress that `head` left to Transporter's
+    /// question (`Metadata::ask`), to the snapshot of `decision`, as Bank's
+    /// reconciliation settles one (`settled`). Only the journal is written.
+    pub fn settle(
+        &mut self,
+        head: &Head,
+        decision: RecoveryDecision,
+    ) -> Result<Head, StoreError<S::Error>> {
+        let selected = match self.load()? {
+            Some(now) if now.metadata == head.metadata => now.preferred,
+            _ => return Err(StoreError::StaleHead),
+        };
+        if !head.metadata.ask {
+            return Err(StoreError::NoPendingTransfer);
+        }
+        let metadata = settled(head, decision)?;
+        publish(&mut self.storage, selected, metadata)
+    }
+}
+
+/// The record that settles the save in progress of `head` to the snapshot of
+/// `decision`, for Bank's reconciliation and Transporter's question alike. A
+/// save that becomes current has taken the delivery that waited, and the
+/// same record says so: the delivery cannot be taken twice. A save that is
+/// undone leaves it waiting.
+fn settled<E>(head: &Head, decision: RecoveryDecision) -> Result<Metadata, StoreError<E>> {
+    let Phase::Prepared(pending) = head.phase() else {
+        return Err(StoreError::NoPendingTransfer);
+    };
+    let (selected, delivery) = match decision {
+        RecoveryDecision::KeepBefore => (pending.before, head.metadata.delivery),
+        RecoveryDecision::CommitAfter => (pending.after, None),
+    };
+    Ok(Metadata {
+        sequence: next_sequence(head)?,
+        phase: Phase::Clean(selected),
+        delivery,
+        ask: false,
+    })
 }
 
 /// The record that announces a delivery with checksum `crc` after `head`.
@@ -400,6 +440,7 @@ impl<S: Storage> BankStore<S> {
                     held: sides.held,
                 }),
                 delivery: None,
+                ask: false,
             },
         )
     }
@@ -486,10 +527,8 @@ impl<S: Storage> BankStore<S> {
     }
 
     /// Resolves a prepared transfer by the fingerprint of the game's actual
-    /// save, which is one of its two images or is refused without writes.
-    /// A save that becomes current has taken the delivery that waited, and the
-    /// same record says so: the delivery cannot be taken twice. A save that is
-    /// undone leaves it waiting.
+    /// save, which is one of its two images or is refused without writes
+    /// (`settled`).
     pub fn reconcile(
         &mut self,
         head: &Head,
@@ -501,21 +540,32 @@ impl<S: Storage> BankStore<S> {
             Phase::Clean(_) => return Err(StoreError::NoPendingTransfer),
         };
         let decision = decide_recovery(&pending, fingerprint).ok_or(StoreError::NeitherImage)?;
-        let (selected, delivery) = match decision {
-            RecoveryDecision::KeepBefore => (pending.before, head.metadata.delivery),
-            RecoveryDecision::CommitAfter => (pending.after, None),
-        };
+        let metadata = settled(&head, decision)?;
+        let head = publish(&mut self.storage, head.preferred, metadata)?;
+        Ok(Reconciled { head, decision })
+    }
+
+    /// Leaves the save in progress to Transporter's question, or takes it
+    /// back (`Metadata::ask`): the same record with the next sequence number
+    /// and `ask`. Nothing is written when the record says so already.
+    pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        if !matches!(head.phase(), Phase::Prepared(_)) {
+            return Err(StoreError::NoPendingTransfer);
+        }
+        if head.metadata.ask == ask {
+            return Ok(head);
+        }
         let sequence = next_sequence(&head)?;
-        let head = publish(
+        publish(
             &mut self.storage,
             head.preferred,
             Metadata {
                 sequence,
-                phase: Phase::Clean(selected),
-                delivery,
+                ask,
+                ..head.metadata
             },
-        )?;
-        Ok(Reconciled { head, decision })
+        )
     }
 
     /// Test builds only (docs/building.md): publishes the clean record again,

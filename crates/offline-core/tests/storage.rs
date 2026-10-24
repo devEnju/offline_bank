@@ -237,6 +237,7 @@ fn the_journal_record_is_explicit_little_endian_and_checks_every_byte() {
             after_fingerprint: AFTER,
         }),
         delivery: Some(0x6162_6364),
+        ask: false,
     };
     let encoded = record.encode().unwrap();
     assert_eq!(encoded.len(), 140);
@@ -256,6 +257,17 @@ fn the_journal_record_is_explicit_little_endian_and_checks_every_byte() {
     assert_eq!(&encoded[72..104], &BEFORE);
     assert_eq!(&encoded[104..136], &AFTER);
     assert_eq!(Metadata::decode(&encoded), Ok(record));
+    // The same record left to Transporter's question: bit 2 of byte 8, and
+    // nothing else of the record changes.
+    let asked = Metadata {
+        ask: true,
+        ..record
+    };
+    let asking = asked.encode().unwrap();
+    assert_eq!(asking[8], 0x37);
+    assert_eq!(&asking[..8], &encoded[..8]);
+    assert_eq!(&asking[9..136], &encoded[9..136]);
+    assert_eq!(Metadata::decode(&asking), Ok(asked));
     for at in 0..encoded.len() {
         let mut corrupt = encoded;
         corrupt[at] ^= 1;
@@ -272,9 +284,15 @@ fn the_journal_record_is_explicit_little_endian_and_checks_every_byte() {
         sequence: 1,
         phase: Phase::Clean(before),
         delivery: None,
+        ask: false,
     };
     let encoded = clean.encode().unwrap();
     assert_eq!((encoded[8], encoded[9]), (0, 0b010));
+    // Only a save in progress is left to Transporter's question.
+    assert_eq!(
+        Metadata { ask: true, ..clean }.encode(),
+        Err(FormatError::InvalidReference)
+    );
     assert!(encoded[24..136].iter().all(|byte| *byte == 0));
     assert_eq!(Metadata::decode(&encoded), Ok(clean));
 }
@@ -307,6 +325,7 @@ fn a_record_that_breaks_the_rules_of_a_save_is_refused_whoever_wrote_it() {
         sequence: 1,
         phase,
         delivery,
+        ask: false,
     };
     assert!(record(pending(next), None).encode().is_ok());
     let invalid = Err(FormatError::InvalidReference);
@@ -542,6 +561,7 @@ fn equal_sequence_disagreement_is_rejected() {
         sequence: head.metadata().sequence,
         phase: Phase::Clean(pending.before),
         delivery: None,
+        ask: false,
     };
     let start = layout.metadata_offset(Slot::B) as usize;
     memory.bytes[start..start + METADATA_SIZE].copy_from_slice(&conflicting.encode().unwrap());
@@ -549,6 +569,120 @@ fn equal_sequence_disagreement_is_rejected() {
         inspect_all(&mut BankStore::new(memory, layout)),
         Err(StoreError::ConflictingMetadata)
     );
+}
+
+/// The save in progress of `prepare`, left to Transporter's question.
+fn asked(memory: Memory) -> (BankStore<Memory>, Head) {
+    let (mut store, head) = prepare(memory);
+    let head = store.ask(&head, true).unwrap();
+    (store, head)
+}
+
+#[test]
+fn a_save_in_progress_left_to_transporters_question_keeps_everything_else() {
+    let (mut store, prepared) = prepare(baseline());
+    let head = store.ask(&prepared, true).unwrap();
+    assert!(head.metadata().ask);
+    assert_eq!(head.phase(), prepared.phase());
+    assert_eq!(head.metadata().sequence, prepared.metadata().sequence + 1);
+    let mut store = BankStore::new(store.into_inner().reboot(), Layout::new(CAPACITY));
+    assert_eq!(inspect_all(&mut store).unwrap().metadata(), head.metadata());
+    // Asked again: nothing is written. Taken back: the record before, with
+    // the next sequence number.
+    let before = store.storage_mut().bytes.clone();
+    assert_eq!(store.ask(&head, true), Ok(head));
+    assert_eq!(store.storage_mut().bytes, before);
+    let back = store.ask(&head, false).unwrap();
+    assert!(!back.metadata().ask);
+    assert_eq!(back.phase(), prepared.phase());
+    // A Bank at rest has nothing to leave to it.
+    let mut store = BankStore::new(baseline(), Layout::new(CAPACITY));
+    let head = inspect_all(&mut store).unwrap();
+    assert_eq!(store.ask(&head, true), Err(StoreError::NoPendingTransfer));
+}
+
+#[test]
+fn transporters_answer_settles_the_save_as_banks_reconciliation_does() {
+    for (decision, expected) in [
+        (RecoveryDecision::KeepBefore, OLD),
+        (RecoveryDecision::CommitAfter, NEW),
+    ] {
+        let (store, head) = asked(baseline());
+        let mut journal = Journal::new(store.into_inner());
+        let settled = journal.settle(&head, decision).unwrap();
+        assert!(!settled.metadata().ask);
+        let mut store = BankStore::new(journal.into_inner().reboot(), Layout::new(CAPACITY));
+        let head = inspect_all(&mut store).unwrap();
+        assert_eq!(head.metadata(), settled.metadata());
+        assert_eq!(payload(&mut store, &head), expected);
+        // The same record as Bank's own reconciliation writes.
+        let (mut bank, prepared) = prepare(baseline());
+        let image = match decision {
+            RecoveryDecision::KeepBefore => BEFORE,
+            RecoveryDecision::CommitAfter => AFTER,
+        };
+        let reconciled = bank.reconcile(&prepared, image).unwrap().head;
+        assert_eq!(reconciled.phase(), settled.phase());
+        assert_eq!(reconciled.metadata().delivery, settled.metadata().delivery);
+    }
+}
+
+#[test]
+fn transporter_settles_only_a_save_left_to_it_and_only_as_it_read_it() {
+    // A save in progress Bank settles itself.
+    let (store, head) = prepare(baseline());
+    let before = store.into_inner();
+    let mut journal = Journal::new(before.clone());
+    assert_eq!(
+        journal.settle(&head, RecoveryDecision::KeepBefore),
+        Err(StoreError::NoPendingTransfer)
+    );
+    assert_eq!(journal.into_inner().bytes, before.bytes);
+    // A record that changed since it was read.
+    let (store, head) = asked(baseline());
+    let mut store = BankStore::new(store.into_inner(), Layout::new(CAPACITY));
+    store.ask(&head, false).unwrap();
+    let before = store.into_inner();
+    let mut journal = Journal::new(before.clone());
+    assert_eq!(
+        journal.settle(&head, RecoveryDecision::CommitAfter),
+        Err(StoreError::StaleHead)
+    );
+    assert_eq!(journal.into_inner().bytes, before.bytes);
+}
+
+#[test]
+fn a_cut_while_asking_or_settling_leaves_the_record_before_or_after() {
+    let (store, prepared) = prepare(baseline());
+    let base = store.into_inner().reboot();
+    let mut complete = BankStore::new(base.clone(), Layout::new(CAPACITY));
+    complete.ask(&prepared, true).unwrap();
+    let total = complete.into_inner().operations;
+    for cut in 0..=total {
+        let mut store = BankStore::new(base.clone().cut_after(cut), Layout::new(CAPACITY));
+        let _ = store.ask(&prepared, true);
+        let mut store = BankStore::new(store.into_inner().reboot(), Layout::new(CAPACITY));
+        let head = inspect_all(&mut store).unwrap_or_else(|err| panic!("ask cut {cut}: {err:?}"));
+        assert_eq!(head.phase(), prepared.phase(), "ask cut {cut}");
+    }
+    for decision in [RecoveryDecision::KeepBefore, RecoveryDecision::CommitAfter] {
+        let (store, head) = asked(baseline());
+        let base = store.into_inner().reboot();
+        let mut complete = Journal::new(base.clone());
+        let settled = complete.settle(&head, decision).unwrap();
+        let total = complete.into_inner().operations;
+        for cut in 0..=total {
+            let mut journal = Journal::new(base.clone().cut_after(cut));
+            let _ = journal.settle(&head, decision);
+            let mut store = BankStore::new(journal.into_inner().reboot(), Layout::new(CAPACITY));
+            let now =
+                inspect_all(&mut store).unwrap_or_else(|err| panic!("settle cut {cut}: {err:?}"));
+            assert!(
+                now.metadata() == head.metadata() || now.phase() == settled.phase(),
+                "settle cut {cut}"
+            );
+        }
+    }
 }
 
 #[test]

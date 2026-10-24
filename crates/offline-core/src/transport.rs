@@ -340,6 +340,7 @@ mod tests {
             sequence: 4,
             phase: Phase::Clean(save(mover, held)),
             delivery,
+            ask: false,
         }
     }
     fn in_progress() -> Metadata {
@@ -362,6 +363,7 @@ mod tests {
                 after_fingerprint: [2; 32],
             }),
             delivery: None,
+            ask: false,
         }
     }
     /// A card whose journal holds `metadata` in both records, or nothing.
