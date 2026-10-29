@@ -401,11 +401,12 @@ Numbers are hexadecimal; the screen pads each to eight digits. The second number
 | `78000000` | Bank's own filesystem session was not ready. |
 | `710000oo` | A call succeeded but returned no handle (`oo`: 0 open archive, 3 open file). |
 | `720000oo` | A short read or write (`oo`: 5 read, 6 write). |
+| `73000000`–`76000000` | The file layer refused an operation: `73` outside the file, `74` file closed, `75` zero length, `76` a write or creation where only existing files may be written. Transporter writes only Bank's files that exist, so a file gone since START shows `76000000`. |
 | `79000000` | A file that is needed exists but cannot be opened. |
 | `7A00ffpp` | A problem with one of the files. `ff`: 0 boxes, 1 main, 2 transport. `pp`: 1 damaged or missing, 3 Pokémon from Poké Transporter wait but cannot be read, so nothing is saved over them, 4 not the format this version knows, 5 not ready: the boxes are not open, or a save is still in progress. |
 | `8xxxxxxx`–`Fxxxxxxx` | The console's own filesystem result code. |
 
-Transporter's ordinary active set is `02`, `03`, `05`, `0D`, `10`, `14`; `10` covers failure to settle the restore answer. It does not translate all of Bank's faults into its own dialogs. Bank can show the other numbers when Transporter sends the player there. The low-level thread result is a second number under `02`, not a separate user-facing dialog.
+Transporter shows `01`, `02`, `03`, `05`, `0D`, `10` and `14`; `10` covers failure to settle the restore answer. It does not translate all of Bank's faults into its own dialogs. Bank can show the other numbers when Transporter sends the player there. The low-level thread result is a second number under `02`, not a separate user-facing dialog.
 
 For `14`, the second number distinguishes the following outcomes. The native question flow is supposed to prevent malformed/empty boxes reaching delivery.
 
@@ -416,7 +417,7 @@ For `14`, the second number distinguishes the following outcomes. The native que
 | `00000003` | Required delivery write or verification failed | No delivery; source Pokémon retained |
 | `00000004` | Delivery announcement could not be confirmed | Bank may hold it; source Pokémon retained |
 | `00000005` | Journal no longer permits delivery | No delivery; source Pokémon retained |
-| Console result | Other storage IO failure | No delivery; source Pokémon retained |
+| Console result or file-layer code (second-number table above) | Other storage IO failure | No delivery; source Pokémon retained |
 
 ## Retained Bank reward and box restrictions
 

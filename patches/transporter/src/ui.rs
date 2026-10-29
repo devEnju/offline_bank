@@ -172,9 +172,9 @@ mod native {
     const OTHER_FRAME_PANE: u32 = 0x25;
     const TEXT_PANE: u32 = 0x23;
     /// The panel's text, as the game scan of Bank and the game list's own
-    /// indicator show it: message `0x20` of text file 39 ("Die Spielesoftware
-    /// wird überprüft… Bitte weder das System ausschalten, noch Karte oder SD
-    /// Card entfernen."), which the panel's own file 23 has not.
+    /// indicator show it: message `0x20` of text file 39 ("Checking the Game
+    /// Card... Don't turn off the power or remove the Game Card or SD card."),
+    /// which the panel's own file 23 has not.
     const PANEL_TEXT_FILE: u32 = 39;
     const PANEL_TEXT_MESSAGE: u32 = 0x20;
 

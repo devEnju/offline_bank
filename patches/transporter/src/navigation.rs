@@ -24,9 +24,9 @@ pub const DISCONNECT: u32 = 0x10;
 pub const RELOAD: u32 = 0x11;
 /// The server task that cancels a transfer that was begun (`00248360`),
 /// after the Bank task or the question ended without one (outcome `0x10`):
-/// it asks the server and keeps its panel ("Datenübertragung über den
-/// Server…") up for at least 1.5 s. Offline nothing was begun; nothing is
-/// read or written there.
+/// it asks the server and keeps its panel ("Communicating with the Pokémon
+/// Bank server...", 23:0x0F) up for at least 1.5 s. Offline nothing was
+/// begun; nothing is read or written there.
 pub const CANCEL: u32 = 0xf;
 /// The failure task (`002444BC`), after the Bank task or the transfer ended
 /// with outcome `0xF`: it shows the original's message `0x0B`. Offline each

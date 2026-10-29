@@ -60,8 +60,8 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | A Box 1 with an Egg or another Pokémon the original refuses. | The original's refusal dialogs for it; the others are offered. No notice about nicknames or OT names. |
 | START on a console where the offline Bank was never started. | The checking screen, then the original's "did not complete correctly… open Pokémon Bank" message without the spinner behind it, then the title. No game list. |
 | START with no game at all, then START again. | The checking screen, then "Could not find a game…" without the spinner behind it, then the title; the second START shows the checking screen again. |
-| Choose a game whose first box is empty; then choose one with Pokémon and answer "No" at the question. | Both times the original's message, then directly "Software wird beendet…"; no "Datenübertragung über den Server…" in between. |
-| START without a cartridge or SD save: once with only Virtual Console games of the listed language, once with only ones of another language, once with none. | The spinner stops only briefly. The first lists those games as before; the other two end with "Es wurde kein Spiel gefunden…". Transporter starts normally. |
+| Choose a game whose first box is empty; then choose one with Pokémon and answer "No" at the question. | Both times the original's message, then directly "The program is now closing. Please wait..." (23:0x21); no "Communicating with the Pokémon Bank server..." (23:0x0F) in between. |
+| START without a cartridge or SD save: once with only Virtual Console games of the listed language, once with only ones of another language, once with none. | The spinner stops only briefly. The first lists those games as before; the other two end with "Could not find a game that is compatible with Poké Transporter." (23:0x00). Transporter starts normally. |
 | Choose another language on the language screen; then Back, and B. | Only that language's games are listed; the logo and start prompt follow it, the other screens stay in the console's language. Back and B leave the choice unchanged. After a restart the console's language applies again. |
 | Try HOME and sleep while the list is built, a game is read and the transfer runs, then on the title, the list, the question and every message that waits for A. | Refused while Transporter works; they work everywhere else. |
 
@@ -88,7 +88,7 @@ Choose **(before)**. “Play and save” below means making a new save in the ga
 | 1 | Deposit one, withdraw one | Reopen with the same game unchanged. | Bank and game are as before the session. |
 | 2 | Deposit one | Play and save, then reopen. | Deposited Pokémon is in Bank and still in the game. |
 | 3 | Withdraw one | Play and save, then reopen. | Pokémon remains in Bank and is absent from the game. |
-| 4 | Deposit one, withdraw one | Play and save, then reopen. | "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.", then the title; START shows it again. Remove the game and START: the different-copy notice instead. Put it back and START: the message again. |
+| 4 | Deposit one, withdraw one | Play and save, then reopen. | "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.", then the title; START shows it again. With a cartridge game and another readable compatible game present ([why](#the-cartridge-is-absent)), remove the cartridge and START: the different-copy notice instead. Put it back and START: the message again. |
 
 Then, from the state of case 4:
 
