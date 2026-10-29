@@ -163,7 +163,7 @@ Only while the official service runs. Needs the console's Nintendo Network ID; b
 | --- | --- |
 | START with an offline Bank on the card. | `0000D0AD 00000002`; nothing is contacted. |
 | Wireless off, no offline Bank: START. | The original's connection message, then its title; nothing written. |
-| No offline Bank: START, once with a game and once without any. | The original connects and loads, without menu, game selection or HOME question, then `0000D0AD 00000001`. |
+| No offline Bank: START, once with a game and once without any; once on a console where Bank was never started. | The original connects and loads, without language screen, the "Precaution for Use" notice, menu, game selection or HOME question, then `0000D0AD 00000001`. |
 | Install the normal Bank and open it. | The boxes, transport box and Miles from the server. |
 | Install the unpatched Bank and use it online. | It opens as always: the server is not locked and its boxes are unchanged. This is the check that matters most. |
 | Compare the game saves with the backup. | Unchanged, byte for byte. |

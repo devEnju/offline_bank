@@ -1,7 +1,7 @@
 //! The two hooks of the migration patch, on Bank's main thread.
 //!
-//! The scan task runs the conversion before any game is checked and then
-//! shows the preparation screen while the worker runs the conversion. Every
+//! The scan task runs the conversion before any game is checked and shows
+//! the preparation screen while the worker runs it. Every
 //! result, including success, stays under the original's line about the HOME
 //! Menu with the version and two numbers. Reopening Bank and pressing START
 //! runs it again, which is safe, and finds a converted Bank.
@@ -26,7 +26,6 @@ use patch_common::{
     native::{write_word, Ended},
     numbers::VERSION,
     program::Program,
-    spinner::{self, Spinner},
     worker::{Polled, Requests, Service, Shared},
 };
 
@@ -108,8 +107,6 @@ struct Runtime {
     requests: Requests<Converter, usize>,
     /// What the run ended with, from then on.
     numbers: Option<[u32; 2]>,
-    /// When the loading panel went up.
-    spinner: Spinner,
     notice: Notice,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
@@ -118,34 +115,20 @@ static STATE: Exclusive<Runtime> = unsafe {
     Exclusive::new(Runtime {
         requests: Requests::new(),
         numbers: None,
-        spinner: Spinner::new(),
         notice: Notice::new(PACKAGE),
     })
 };
 
-/// The original's clock in ms (`spinner::now`).
-fn now() -> u32 {
-    spinner::now::<Bank15>()
-}
-
 impl Runtime {
     /// One frame of the utility task. `Ok(None)` while the conversion runs,
-    /// which begins once the loading panel has stood for 0.5 s.
+    /// which begins with the loading panel.
     unsafe fn open(
         &mut self,
         task: Task,
     ) -> Result<Option<<Converter as Service>::Reply>, [u32; 2]> {
         if !self.requests.is_out() {
-            let now = now();
-            if self.spinner.elapsed(now).is_none() {
-                let panel = task.ui().map_err(|_| NATIVE)?;
-                unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
-                self.spinner.up(now);
-                return Ok(None);
-            }
-            if self.spinner.idle(now) {
-                return Ok(None);
-            }
+            let panel = task.ui().map_err(|_| NATIVE)?;
+            unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
             // The task's +1c continuation is patched to this same poller
             // before enabling busy protection. No FS call occurs here.
             task.begin_busy();
@@ -190,25 +173,14 @@ pub unsafe extern "aapcs" fn bank_migrate_next(manager: *mut u8, current: u32) -
         return navigation::CLEANUP;
     };
     let destination = navigation::destination(current, outcome, next, cancelled);
-    // Refuse HOME and sleep from the scan to the end of the conversion.
+    // Refuse HOME and sleep from the scan to the end of the conversion; its
+    // result screen lets them through (`Notice::done`).
     if navigation::loads(destination) {
         refuse_home(true);
     } else if !state.requests.is_out() {
         refuse_home(false);
     }
     destination
-}
-
-// The original's "show a message" function, as in the offline patch
-// (`message_stub!`): r3 = whether the message waits for an answer.
-patch_common::message_stub!(bank_message_stub, "r3", "0x001d6654", message_waits);
-/// A message that waits for an answer lets HOME and sleep through, unless a
-/// job is still out; a hook that holds the state shows one only while no job
-/// is out.
-extern "aapcs" fn message_waits() {
-    if STATE.take().is_none_or(|state| !state.requests.is_out()) {
-        refuse_home(false);
-    }
 }
 
 /// Replaces the update and busy-poll virtuals of task 3; its constructor,
@@ -238,11 +210,6 @@ pub unsafe extern "aapcs" fn bank_migrate_scan(raw: *mut u8) -> u32 {
         }
     }
     let [first, second] = state.numbers.unwrap_or(NATIVE);
-    // A conversion that is done shows its result once the loading panel has
-    // stood for 1.5 s; an error at once.
-    if first == migrate::DONE && state.spinner.held(now()) {
-        return 0;
-    }
     // Every result is numbers under the original's line about the HOME
     // Menu. That screen does not end: nothing can go on in this patch. Bank
     // is closed from the HOME Menu.

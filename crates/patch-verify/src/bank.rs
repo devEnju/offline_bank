@@ -54,17 +54,18 @@ pub fn expectation(kind: &'static str) -> Expectation {
         (0x002a5a2c, 0xebfffed3, Bl(Sym(router))),
         (0x002b49c4, 0xebfcb5ff, Bl(Sym("bank_version_shown"))),
     ];
-    // Every patch but the download, which runs the original online (there
-    // the first start keeps its prompts, and the original refuses HOME and
-    // sleep for its whole session itself): the "show a message" function
-    // lets HOME and sleep through for a message that waits, and the
-    // manager's set-up does not ask for a language (nop; mov r5, #1).
-    if kind != "download" {
-        edits.extend([
-            (0x001d6650, 0xe92d41f0, B(Sym("bank_message_stub"))),
-            (0x002a4898, 0xebfeddfb, Raw(0xe320f000)),
-            (0x002a4940, 0xe1a05007, Raw(0xe3a05001)),
-        ]);
+    // Every patch: the manager's set-up does not ask for a language (nop;
+    // mov r5, #1).
+    edits.extend([
+        (0x002a4898, 0xebfeddfb, Raw(0xe320f000)),
+        (0x002a4940, 0xe1a05007, Raw(0xe3a05001)),
+    ]);
+    // The offline patch and the test build: the "show a message" function
+    // lets HOME and sleep through for a message that waits. The migration
+    // shows none while HOME is refused, and the original refuses HOME and
+    // sleep for the download's whole online session itself.
+    if offline {
+        edits.push((0x001d6650, 0xe92d41f0, B(Sym("bank_message_stub"))));
     }
     match kind {
         // Task 3's update and busy poll run the conversion.
@@ -74,8 +75,10 @@ pub fn expectation(kind: &'static str) -> Expectation {
         ]),
         // Task 9 and task 3 each have an entry for their update and their
         // busy poll; the reward step's update writes the files and ends as
-        // cancelled.
+        // cancelled. The first start's notice is skipped to where accepting
+        // it continues; a saved language stays.
         "download" => edits.extend([
+            (0x002ac5b0, 0xe5945040, B(At(0x002ac8c8))),
             (0x00361cfc, 0x002ae568, Ptr(Sym("bank_download_open"))),
             (0x00361d0c, 0x002b4a20, Ptr(Sym("bank_download_open_busy"))),
             (0x00361ac4, 0x002abe08, Ptr(Sym("bank_download_scan"))),
@@ -237,7 +240,7 @@ pub fn expectation(kind: &'static str) -> Expectation {
         router,
         entries: match kind {
             "bank" => 9,
-            "migration" => 4,
+            "migration" => 3,
             "test" => 11,
             _ => 7,
         },

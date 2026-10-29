@@ -138,7 +138,7 @@ cargo +stable xtask build --kind download
 
 This builds it into `build/download/` and verifies it. Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
 
-After START, download checks local extdata before contacting anything. If no offline Bank is present, it keeps the original archive and first-start preparation, then connects without detecting a cartridge or installed game. A missing archive is absence; unreadable or previous-format data stops the download instead of allowing an overwrite.
+After START, download checks local extdata before contacting anything. If no offline Bank is present, it keeps the original archive and first-start preparation without the language screen or the notice, then connects without detecting a cartridge or installed game. A missing archive is absence; unreadable or previous-format data stops the download instead of allowing an overwrite.
 
 What it checks in the original's code is listed in [internals.md](internals.md#the-download-patch); the console checks are in [testing.md](testing.md#the-download).
 

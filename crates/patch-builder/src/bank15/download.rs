@@ -1,15 +1,19 @@
 //! The download patch: has the original load the Bank from its server and
 //! writes it as the offline patch's files. Everything online stays the
-//! original's; task 3 checks local data before native preparation and never
+//! original's; task 3 checks local data before native preparation, asks
+//! neither for a language nor for the first start's notice, and never
 //! detects games. Task 9 and the reward step load and store the Bank.
 
-use super::{router, Profile, KEEP_ARCHIVE, OPEN_TASK, SCAN_TASK, STARTUP, VERSION};
+use super::{
+    router, Profile, FIRST_START_NOTICE, KEEP_ARCHIVE, LANGUAGE_EDITS, OPEN_TASK, SCAN_TASK,
+    STARTUP, VERSION,
+};
 use crate::profile::{Edit, Word::*};
 
 pub const PROFILE: Profile = Profile {
     name: "download",
     program: &super::BANK,
-    edits: &[&EDITS],
+    edits: &[&EDITS, &LANGUAGE_EDITS],
     relies: &[],
     menu_edits: &[],
 };
@@ -20,12 +24,14 @@ pub const REWARD_UPDATE_SLOT: u32 = 0x0036_1be4;
 pub const REWARD_UPDATE: u32 = 0x002a_d1bc;
 
 /// The original's "show a message" is not edited: the original refuses
-/// HOME for its whole online session itself.
-const EDITS: [Edit; 9] = [
+/// HOME for its whole online session itself. Of the first start's edits in
+/// task 3 only the notice's: a language the save holds stays in it.
+const EDITS: [Edit; 10] = [
     STARTUP,
     KEEP_ARCHIVE,
     router("bank_download_next"),
     VERSION,
+    FIRST_START_NOTICE,
     // Task 9 keeps its native constructor, init and end. Its update and its
     // busy poll each go to an entry of their own, which calls the function
     // the slot held while the session is online.
@@ -52,20 +58,23 @@ const EDITS: [Edit; 9] = [
 
 #[cfg(test)]
 mod tests {
-    use super::super::{offline, LANGUAGE_EDITS, MENU_LOCATIONS, MESSAGE, SCAN_FIRST_START_EDITS};
+    use super::super::{offline, MENU_LOCATIONS, MESSAGE, SCAN_FIRST_START_EDITS};
     use super::*;
     use crate::profile::sample::{at, edits};
 
     #[test]
-    fn the_download_edits_the_router_task_nine_the_reward_step_and_the_scan_only() {
-        assert_eq!(PROFILE.regions(), 10);
+    fn the_download_edits_the_router_task_nine_the_reward_step_the_scan_and_the_first_start_only() {
+        assert_eq!(PROFILE.regions(), 13);
+        // The first start asks for no language and shows no notice.
+        for (address, _, _) in LANGUAGE_EDITS.into_iter().chain([FIRST_START_NOTICE]) {
+            assert!(at(&PROFILE, address).is_some(), "{address:#010x}");
+        }
         // The original stays as it is where the offline patch replaces the
-        // server: the first start's prompts, the load, the save, the reward
-        // claim, the clock, the show-message function, and the main menu.
-        for address in LANGUAGE_EDITS
-            .into_iter()
-            .chain(SCAN_FIRST_START_EDITS)
-            .map(|(address, _, _)| address)
+        // server: the saved language, the load, the save, the reward claim,
+        // the clock, the show-message function, and the main menu.
+        for address in SCAN_FIRST_START_EDITS[1..]
+            .iter()
+            .map(|(address, _, _)| *address)
             .chain(MENU_LOCATIONS.map(|(address, _)| address))
             .chain([
                 MESSAGE.0,

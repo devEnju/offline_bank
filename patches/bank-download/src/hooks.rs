@@ -27,7 +27,6 @@ use patch_common::{
     exclusive::Exclusive,
     native::{follow, read_word, write_word, Ended},
     program::Program,
-    spinner::{self, Spinner},
     worker::{Polled, Requests, Service, Shared, Worker},
 };
 
@@ -117,8 +116,6 @@ struct Runtime {
     /// puts up, and the one the task 9 that shows the result brings up as
     /// the look did.
     panel: bool,
-    /// When the patch's loading panel went up.
-    spinner: Spinner,
     notice: Notice,
 }
 // SAFETY: the original calls the hooks, the only ones to take it, on its
@@ -129,20 +126,9 @@ static STATE: Exclusive<Runtime> = unsafe {
         stage: Stage::Looking,
         numbers: None,
         panel: false,
-        spinner: Spinner::new(),
         notice: Notice::new(PACKAGE),
     })
 };
-
-/// The original's clock in ms (`spinner::now`).
-fn now() -> u32 {
-    spinner::now::<Bank15>()
-}
-/// Whether a result waits before it is shown: one that is no error comes
-/// once the loading panel has stood for 1.5 s.
-fn held(first: u32, spinner: &Spinner) -> bool {
-    first == DONE && spinner.held(now())
-}
 
 impl Runtime {
     fn worker(&mut self) -> Result<&mut Worker<Files>, [u32; 2]> {
@@ -173,20 +159,13 @@ impl Runtime {
             Polled::Foreign => Err(NATIVE),
         }
     }
-    /// Task 3 before anything is contacted: the loading panel, and once it
-    /// has stood for 0.5 s the worker looks at the card.
+    /// Task 3 before anything is contacted: the loading panel, and with it
+    /// the worker looks at the card.
     unsafe fn look(&mut self, task: Task) -> Result<Option<Reply>, [u32; 2]> {
-        if !self.requests.is_out() {
-            if !self.panel {
-                let panel = task.ui().map_err(|_| NATIVE)?;
-                unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
-                self.spinner.up(now());
-                self.panel = true;
-                return Ok(None);
-            }
-            if self.spinner.idle(now()) {
-                return Ok(None);
-            }
+        if !self.requests.is_out() && !self.panel {
+            let panel = task.ui().map_err(|_| NATIVE)?;
+            unsafe { ui::loading(panel, ui::CREATING_MESSAGE) }.map_err(|_| NATIVE)?;
+            self.panel = true;
         }
         unsafe {
             self.job(task, |_| {
@@ -279,9 +258,6 @@ unsafe fn scan(raw: *mut u8, original: usize) -> u32 {
         }
     }
     if let Some([first, second]) = state.numbers {
-        if held(first, &state.spinner) {
-            return 0;
-        }
         let shown = state.notice.done(task, first, second);
         if shown != 0 {
             state.stage = Stage::Looking;
@@ -336,12 +312,8 @@ unsafe fn open(raw: *mut u8, original: usize, update: bool) -> u32 {
             if let Ok(panel) = task.ui() {
                 let _ = unsafe { ui::loading(panel, ui::CREATING_MESSAGE) };
             }
-            state.spinner.up(now());
             task.begin_busy();
             unsafe { write_word(raw, 0x10, 1) };
-            return 0;
-        }
-        if held(first, &state.spinner) {
             return 0;
         }
         // The numbers are the result, under the original's line about the
