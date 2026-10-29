@@ -28,8 +28,9 @@
 //!    removed, and then the temporary files.
 
 use crate::{source::Source, target};
-use bank_common::{bank_files::UnitFile, numbers::Label};
+use bank_common::bank_files::UnitFile;
 use offline_core::{native_blob::BLOB_SIZE, Storage};
+use patch_common::numbers::Label;
 
 /// First number of the result screen when nothing went wrong; the second
 /// number is the `Done`.

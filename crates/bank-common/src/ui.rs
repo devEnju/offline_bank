@@ -3,16 +3,19 @@
 //! Every text is the original's own, in the language of the screens. The
 //! error dialog is the first sentence of the original's message for a failed
 //! save, and as its next page the start screen's line about the HOME Menu
-//! with two code numbers on the dialog's third line. A save that did not
-//! start for lack of its Game Card shows that message's other part, the
-//! advice to check the card. Nothing else is written here.
+//! with two code numbers on the dialog's third line. A session that ends at
+//! a message and goes back to the start screen shows the original's own:
+//! that message's other part, the advice to check the card and try again;
+//! the scan's message for a card without room; the first line of the
+//! server messages' "The SD card is full."; or Transporter's "The saved data
+//! in your Pokémon game is corrupted." Nothing else is written here.
 
-use crate::numbers;
 use core::mem::transmute;
 use patch_common::native::pointer as native_pointer;
 use patch_common::{
     message,
     native::read_word as word,
+    numbers,
     ui::{self as shared, StringError, Text},
 };
 
@@ -79,11 +82,6 @@ pub const FAILURE_NOTICE: u32 = 0xb;
 /// to the HOME Menu". One line in every language of the original.
 pub const HOME_NOTICE: u32 = 0x4d;
 
-/// The longest line about the HOME Menu with its label and its numbers
-/// that is carried from one message to the other. The line has 11 to 42
-/// units in the ten languages of the original.
-const HOME_ROOM: usize = 128;
-
 /// The dialog's own text, in the UI's string object at `ui + 0x94`
 /// (`patch_common::ui::text`). `None` if it is not a text that can be
 /// changed in place. The caller uses it before the dialog's string changes
@@ -118,11 +116,12 @@ unsafe fn begin(context: *mut u8, text: *mut u8, room: &mut [u16], len: usize) {
 /// numbers on its third.
 ///
 /// Both texts are the original's, loaded by 001d6650 into the UI's own
-/// string object: first the line, which is copied out, then the reason. The
-/// string is changed in place and handed to the dialog again (001d643c, the
-/// call 001d6650 ends its text set-up with). Without room for the label
-/// the numbers go alone, without room for the numbers the line stays as it
-/// is; without room for the page the reason stays alone.
+/// string object: first the line, from which the page is made
+/// (`numbers::home_page`), then the reason. The string is changed in place
+/// and handed to the dialog again (001d643c, the call 001d6650 ends its
+/// text set-up with). Where the page or the reason with it does not fit,
+/// the line about the HOME Menu is shown alone, as the original has it:
+/// never a part of the screen.
 /// # Safety
 /// `ui` is the live initialized native task UI at task+3c (tasks9/7) or +38
 /// (task10). Its context and allocated string object must remain live while
@@ -134,45 +133,29 @@ pub unsafe fn stop(
     first: u32,
     second: u32,
 ) -> Result<(), Error> {
-    let label = label.units();
     let context = unsafe { context(ui) }?;
-    let mut home = [0u16; HOME_ROOM];
-    let mut home_len = 0;
     unsafe { display(ui, HOME_NOTICE, false)? };
-    if let Some(Text {
-        object: text,
-        room,
-        len,
-    }) = unsafe { text(ui)? }
-    {
-        let Some(_) = reason else {
-            let len = numbers::put(room, len, label, first, second).unwrap_or(len);
-            unsafe { begin(context, text, room, len) };
-            return Ok(());
-        };
-        if len < HOME_ROOM {
-            home[..len].copy_from_slice(&room[..len]);
-            home_len = numbers::put(&mut home, len, label, first, second).unwrap_or(len);
+    let Ok(Some(Text { object, room, len })) = (unsafe { text(ui) }) else {
+        return Ok(());
+    };
+    let Some(home) = numbers::home_page(&room[..len], label, first, second) else {
+        return Ok(());
+    };
+    let Some(reason) = reason else {
+        if let Some(len) = numbers::put_home(room, &home) {
+            unsafe { begin(context, object, room, len) };
+        }
+        return Ok(());
+    };
+    if unsafe { display(ui, reason, false) }.is_ok() {
+        if let Ok(Some(Text { object, room, len })) = unsafe { text(ui) } {
+            if let Some(len) = numbers::error_pages(room, len, &home) {
+                unsafe { begin(context, object, room, len) };
+                return Ok(());
+            }
         }
     }
-    let Some(reason) = reason else {
-        return Ok(());
-    };
-    unsafe { display(ui, reason, false)? };
-    let Some(Text {
-        object: text,
-        room,
-        len,
-    }) = (unsafe { text(ui)? })
-    else {
-        return Ok(());
-    };
-    let mut len = message::cut(&room[..len]);
-    if home_len != 0 {
-        len = numbers::append_page(room, len, &home[..home_len]).unwrap_or(len);
-    }
-    unsafe { begin(context, text, room, len) };
-    Ok(())
+    unsafe { display(ui, HOME_NOTICE, false) }
 }
 
 /// One frame of a dialog (001d6600). True once a waiting dialog was
@@ -343,6 +326,103 @@ pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
     let len = message::keep_rest(room, len).ok_or(Error::InvalidMessage)?;
     unsafe { begin(context, text, room, len) };
     Ok(())
+}
+
+/// Shows an original message whole and waits for A, as the original shows
+/// its notices.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn notice(ui: *mut u8, message: u32) -> Result<(), Error> {
+    unsafe { display(ui, message, true) }
+}
+
+/// Native message 0x26, the game scan's when Bank's extdata cannot be
+/// created: "Pokémon Bank could not be started due to a lack of space on
+/// your SD card."
+pub const NO_ROOM_TO_START: u32 = 0x26;
+
+/// The advice of the original's failure message: "Please confirm that your
+/// Game Card is properly inserted, and then try again." (`notice_rest`).
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn try_again(ui: *mut u8) -> Result<(), Error> {
+    unsafe { notice_rest(ui, FAILURE_NOTICE) }
+}
+
+/// The text file of the original's common server messages, and its message
+/// 0: "The SD card is full." and, on a line of its own, "You can't download
+/// data." Its first line is a sentence of its own in all ten languages.
+const SERVER_MESSAGES: u32 = 26;
+const SD_FULL: u32 = 0;
+/// Poké Transporter's text file, which Bank's text archive holds as well,
+/// and its message 2: "The saved data in your Pokémon game is corrupted."
+/// One page in all ten languages; Transporter's reader shows it for a
+/// damaged save.
+const TRANSPORTER_MESSAGES: u32 = 23;
+const SAVE_CORRUPTED: u32 = 2;
+/// Where a screen's context keeps its own message file, from which
+/// `001d6650` takes a message of kind 0 (`001d6728`).
+const CONTEXT_MESSAGES: usize = 0x28;
+
+/// Shows message `message` of text file `file`, which is none of the UI's
+/// own, and waits for A; with `first_line`, only its first line
+/// (`message::first_line`). `001d6650` shows it as it shows every message:
+/// for this one call the context's own message file is `file`, opened as the
+/// original opens a screen's (`patch_common::ui::with_messages`), and then
+/// it is the context's own again. A cut text is handed to the dialog as
+/// `notice_rest` hands its text.
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+unsafe fn foreign_notice(
+    ui: *mut u8,
+    file: u32,
+    message: u32,
+    first_line: bool,
+) -> Result<(), Error> {
+    let context = unsafe { ready(ui) }?;
+    let heap = unsafe { shared::heap(ui) }.ok_or(Error::InvalidPointer)?;
+    let own = unsafe { context.add(CONTEXT_MESSAGES).cast::<*mut u8>() };
+    let shown = unsafe {
+        shared::with_messages::<crate::program::Bank15, _>(heap, file, |messages| {
+            let before = own.read();
+            own.write(messages);
+            let shown = display(ui, message, true);
+            own.write(before);
+            shown
+        })
+    };
+    shown.ok_or(Error::InvalidPointer)??;
+    if !first_line {
+        return Ok(());
+    }
+    let Some(Text {
+        object: text,
+        room,
+        len,
+    }) = (unsafe { text(ui)? })
+    else {
+        return Err(Error::MissingBuffer);
+    };
+    let len = message::first_line(&room[..len]);
+    unsafe { begin(context, text, room, len) };
+    Ok(())
+}
+
+/// "The SD card is full.": the first line of message 0 of text file 26; the
+/// second line is about the server's download.
+/// # Safety
+/// As `foreign_notice`.
+pub unsafe fn sd_full(ui: *mut u8) -> Result<(), Error> {
+    unsafe { foreign_notice(ui, SERVER_MESSAGES, SD_FULL, true) }
+}
+
+/// "The saved data in your Pokémon game is corrupted.": message 2 of
+/// Transporter's text file 23, whole. For a game's save that Bank's own
+/// write left neither before nor after.
+/// # Safety
+/// As `foreign_notice`.
+pub unsafe fn save_corrupted(ui: *mut u8) -> Result<(), Error> {
+    unsafe { foreign_notice(ui, TRANSPORTER_MESSAGES, SAVE_CORRUPTED, false) }
 }
 
 /// Shows the original's message for another copy of a game, filled the way

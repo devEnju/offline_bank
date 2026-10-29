@@ -288,11 +288,7 @@ impl<S: Storage> Journal<S> {
         if !may_deliver(&head.metadata) {
             return Err(StoreError::DeliveryRefused);
         }
-        let metadata = Metadata {
-            sequence: next_sequence(head)?,
-            delivery: Some(crc),
-            ..head.metadata
-        };
+        let metadata = announcing(head, crc)?;
         let bytes = metadata.encode().map_err(StoreError::Format)?;
         let first = selected.other();
         put_replica(&mut self.storage, first, &bytes)?;
@@ -302,6 +298,37 @@ impl<S: Storage> Journal<S> {
             preferred: first,
         })
     }
+
+    /// After `announce` with `head` and `crc` failed: whether the delivery
+    /// is there all the same, by the record in force now, as Bank will read
+    /// it. `true`: it announces the delivery. `false`: it is still `head`'s
+    /// own, and nothing was announced. Any other record, or records that do
+    /// not read, are an error: whether Bank holds the delivery cannot be told.
+    /// Both records must read: with one unreadable the other is in force
+    /// now, but the unreadable one may hold the announcement and be in force
+    /// once it reads again.
+    pub fn announced(&mut self, head: &Head, crc: u32) -> Result<bool, StoreError<S::Error>> {
+        if !self.readable() {
+            return Err(StoreError::NoValidMetadata);
+        }
+        let now = self.load()?.ok_or(StoreError::StaleHead)?.metadata;
+        if now == head.metadata {
+            Ok(false)
+        } else if now == announcing(head, crc)? {
+            Ok(true)
+        } else {
+            Err(StoreError::StaleHead)
+        }
+    }
+}
+
+/// The record that announces a delivery with checksum `crc` after `head`.
+fn announcing<E>(head: &Head, crc: u32) -> Result<Metadata, StoreError<E>> {
+    Ok(Metadata {
+        sequence: next_sequence(head)?,
+        delivery: Some(crc),
+        ..head.metadata
+    })
 }
 
 /// Transporter's rule: no save is in progress, the transport box is empty,

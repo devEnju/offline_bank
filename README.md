@@ -91,7 +91,7 @@ Since v0.5.0 the files take no more space on the SD card than needed. A Bank of 
 **Something does not work or behaves oddly?** Please [open an issue](../../issues) in this repository. Include:
 
 - what you did, step by step, and what happened instead of what you expected,
-- the two numbers of any error shown in Bank, or a photo of that screen,
+- the two numbers of any error shown in Bank or Transporter, or a photo of that screen,
 - which games were involved, and whether cartridge, digital, or a save on the SD card,
 - the release you used, your console model, and your Luma3DS version.
 

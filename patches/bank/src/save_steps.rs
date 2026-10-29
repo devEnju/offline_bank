@@ -3,7 +3,7 @@
 //! be in progress in the Bank's journal. The worker's side is
 //! `storage_worker`.
 
-use crate::storage_worker::Reply;
+use crate::storage_worker::{Ending, Reply};
 use bank_common::fault::Fault;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,37 +31,41 @@ pub enum Step {
     Prepare,
     /// The original writes the game.
     Write,
-    /// `Job::Finalize` is out: the game is read back and the save resolved.
+    /// `Job::Finalize` is out: the original's writer has ended, and the save
+    /// is settled from what the game holds.
     Finalize,
-    /// The save is resolved: its message waits until the loading screen has
-    /// stood for 1.5 s (`patch_common::spinner`). A save that ends without
-    /// one shows its message at once.
+    /// The save is current: its message waits until the loading screen has
+    /// stood for 1.5 s (`patch_common::spinner`).
     Saved,
-    /// Save and Quit has ended, saved or not, and the original's message for
-    /// that ending is up.
-    Ended { saved: bool },
+    /// Save and Quit has saved, and the original's message for it is up.
+    Ended,
+    /// Save and Quit has ended without saving, and the original's message
+    /// for what it leaves is up (`Ending`). It shows at once.
+    Stopped(Ending),
 }
 
 impl Step {
     /// The step that `reply` leads to. Only `Detect`, `Prepare` and
-    /// `Finalize` wait for the worker. A missing Game Card is answered
-    /// before anything is written, and only a cartridge can be missing; any
-    /// other reply is not the one the step waits for.
+    /// `Finalize` wait for the worker. A missing Game Card at `Detect` is
+    /// one only for a cartridge; any other reply is not the one the step
+    /// waits for.
     pub fn after(self, reply: Reply, cartridge: bool) -> Result<Self, Fault> {
         match (self, reply) {
-            (Self::Detect | Self::Prepare, Reply::CardRemoved) if cartridge => {
-                Ok(Self::Ended { saved: false })
-            }
-            (Self::Detect | Self::Prepare, Reply::CardRemoved) => Err(Fault::GameRead),
             (Self::Detect, Reply::Detected) => Ok(Self::CountGame),
+            (Self::Detect, Reply::Ended(Ending::Retry)) if cartridge => {
+                Ok(Self::Stopped(Ending::Retry))
+            }
+            // An installed copy has no card to take out.
+            (Self::Detect, Reply::Ended(_)) => Err(Fault::GameRead),
             (Self::Prepare, Reply::ReadyToWrite) => Ok(Self::Write),
+            (Self::Prepare | Self::Finalize, Reply::Ended(ending)) => Ok(Self::Stopped(ending)),
             (Self::Finalize, Reply::Saved) => Ok(Self::Saved),
             _ => Err(Fault::JournalRecovery),
         }
     }
     /// Whether a save may be in progress in the journal: from the moment
     /// `Job::Prepare` is handed over, since a failed preparation may already
-    /// have published one, until the worker has resolved it. A step that
+    /// have published one, until the worker has settled it. A step that
     /// stops with an error keeps what it says; the next opening settles it.
     pub fn pending(self) -> bool {
         matches!(self, Self::Prepare | Self::Write | Self::Finalize)
@@ -76,21 +80,26 @@ mod tests {
     use offline_core::{Part, Phase, Save, Slot};
     use std::vec::Vec;
 
-    const STEPS: [Step; 13] = [
-        Step::Detect,
-        Step::CountGame,
-        Step::CountBank { game: None },
-        Step::CountBank { game: Some(31) },
-        Step::StageGame,
-        Step::StageDex,
-        Step::StageBank,
-        Step::Prepare,
-        Step::Write,
-        Step::Finalize,
-        Step::Saved,
-        Step::Ended { saved: false },
-        Step::Ended { saved: true },
-    ];
+    const ENDINGS: [Ending; 2] = [Ending::Retry, Ending::NoSpace];
+
+    fn steps() -> Vec<Step> {
+        let mut steps = std::vec![
+            Step::Detect,
+            Step::CountGame,
+            Step::CountBank { game: None },
+            Step::CountBank { game: Some(31) },
+            Step::StageGame,
+            Step::StageDex,
+            Step::StageBank,
+            Step::Prepare,
+            Step::Write,
+            Step::Finalize,
+            Step::Saved,
+            Step::Ended,
+        ];
+        steps.extend(ENDINGS.map(Step::Stopped));
+        steps
+    }
 
     /// One of every reply the worker gives.
     fn replies() -> Vec<Reply> {
@@ -113,7 +122,7 @@ mod tests {
             mover: part,
             held: 0,
         };
-        std::vec![
+        let mut replies = std::vec![
             Reply::Missing,
             Reply::Opened {
                 phase: Phase::Clean(save),
@@ -123,7 +132,6 @@ mod tests {
             Reply::Saved,
             Reply::Inspected(evidence),
             Reply::Detected,
-            Reply::CardRemoved,
             Reply::ReadyToWrite,
             Reply::Waiting {
                 title: 1,
@@ -132,7 +140,9 @@ mod tests {
                     id: 0,
                 },
             },
-        ]
+        ];
+        replies.extend(ENDINGS.map(Reply::Ended));
+        replies
     }
 
     #[test]
@@ -152,36 +162,48 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_game_card_ends_the_save_only_before_anything_is_written() {
-        for step in [Step::Detect, Step::Prepare] {
-            assert_eq!(
-                step.after(Reply::CardRemoved, true),
-                Ok(Step::Ended { saved: false })
-            );
-            // An installed copy has no card to take out.
-            assert_eq!(step.after(Reply::CardRemoved, false), Err(Fault::GameRead));
-        }
-        // Once the game is written, a missing card is an error of the save.
+    fn a_save_that_cannot_finish_ends_at_the_message_of_what_it_leaves() {
+        // A Game Card that is gone at the first question: only a cartridge
+        // has one to take out.
         assert_eq!(
-            Step::Finalize.after(Reply::CardRemoved, true),
-            Err(Fault::JournalRecovery)
+            Step::Detect.after(Reply::Ended(Ending::Retry), true),
+            Ok(Step::Stopped(Ending::Retry))
         );
+        for cartridge in [false, true] {
+            for ending in ENDINGS {
+                if (ending, cartridge) != (Ending::Retry, true) {
+                    assert_eq!(
+                        Step::Detect.after(Reply::Ended(ending), cartridge),
+                        Err(Fault::GameRead)
+                    );
+                }
+                // The preparation and the settling after the write say what
+                // they leave, for every kind of copy.
+                for step in [Step::Prepare, Step::Finalize] {
+                    assert_eq!(
+                        step.after(Reply::Ended(ending), cartridge),
+                        Ok(Step::Stopped(ending))
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn every_other_reply_is_one_no_step_waits_for() {
-        let expected = [
-            (Step::Detect, Reply::Detected),
-            (Step::Detect, Reply::CardRemoved),
-            (Step::Prepare, Reply::ReadyToWrite),
-            (Step::Prepare, Reply::CardRemoved),
-            (Step::Finalize, Reply::Saved),
-        ];
-        for step in STEPS {
+        let expected = |step: Step, reply: Reply| {
+            matches!(
+                (step, reply),
+                (Step::Detect, Reply::Detected | Reply::Ended(_))
+                    | (Step::Prepare, Reply::ReadyToWrite | Reply::Ended(_))
+                    | (Step::Finalize, Reply::Saved | Reply::Ended(_))
+            )
+        };
+        for step in steps() {
             for reply in replies() {
                 for cartridge in [false, true] {
                     let after = step.after(reply, cartridge);
-                    if expected.contains(&(step, reply)) {
+                    if expected(step, reply) {
                         assert_ne!(after, Err(Fault::JournalRecovery), "{step:?} {reply:?}");
                     } else {
                         assert_eq!(after, Err(Fault::JournalRecovery), "{step:?} {reply:?}");
@@ -192,19 +214,21 @@ mod tests {
     }
 
     #[test]
-    fn a_save_is_in_progress_from_its_preparation_until_it_is_resolved() {
-        for step in STEPS {
+    fn a_save_is_in_progress_from_its_preparation_until_it_is_settled() {
+        for step in steps() {
             assert_eq!(
                 step.pending(),
                 matches!(step, Step::Prepare | Step::Write | Step::Finalize),
                 "{step:?}"
             );
         }
-        // Both endings leave none: nothing was written, or it was resolved.
-        assert!(!Step::Prepare
-            .after(Reply::CardRemoved, true)
-            .unwrap()
-            .pending());
+        // Every ending leaves none the session still waits for: what the
+        // journal holds then is the next opening's to settle.
+        for ending in ENDINGS {
+            for step in [Step::Prepare, Step::Finalize] {
+                assert!(!step.after(Reply::Ended(ending), true).unwrap().pending());
+            }
+        }
         assert!(!Step::Finalize.after(Reply::Saved, true).unwrap().pending());
     }
 }

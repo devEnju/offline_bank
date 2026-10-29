@@ -96,7 +96,7 @@ pub(crate) const SDK_PRIORITY_CODE: [(u32, u32); 9] = [
 /// edits; the others name their original words. Bank data comes from
 /// constructor 0010D8EC: it installs BANK_VTABLE and startup stores its
 /// result at +0xCC.
-pub(crate) const NATIVE_OBJECTS: [(u32, u32); 22] = [
+pub(crate) const NATIVE_OBJECTS: [(u32, u32); 21] = [
     (0x0019_cee8, 0xe351_0000 | TASK_COUNT),
     (0x0019_cf04, 0x0019_cf8c),
     (0x0019_cf18, 0x0019_d1a4),
@@ -114,7 +114,6 @@ pub(crate) const NATIVE_OBJECTS: [(u32, u32); 22] = [
     (0x0019_d650, TASK_QUESTION),
     (TASK_LANGUAGE + 0xc, 0x0024_538c),
     (TASK_LIST + 0xc, 0x0024_45a4),
-    (TASK_BANK + 0xc, 0x0024_8c68),
     (0x0010_da38, BANK_VTABLE),
     (0x0010_d8fc, 0xe584_0000),
     (0x0010_624c, 0xe584_00cc),

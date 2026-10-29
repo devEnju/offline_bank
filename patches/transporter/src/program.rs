@@ -14,6 +14,9 @@ use patch_common::program::Program;
 ///   (`001044D0`);
 /// - the start screen's call for its version line, message 0x29
 ///   (`0024BAE8`), and the two calls it hands the line to the pane with;
+/// - how a screen's context opens its message file (`0022EF30`):
+///   `001E6360` allocates, `001E2540` names the text archive, `001DFB00`
+///   makes the file object (`001DFB98`), the same code as Bank's;
 /// - its router `get_next_state` `00242BA0` and its factory's bound
 ///   (`task::TASK_COUNT`), and the vtable `002E6DD0` the Bank data object's
 ///   constructor `0010D8EC` installs (`task::BANK_VTABLE`);
@@ -42,6 +45,9 @@ impl Program for Transporter15 {
     const PANE_MESSAGE: usize = 0x001d_33cc;
     const FIND_PANE: usize = 0x0019_f834;
     const PANE_TEXT: usize = 0x0023_75d0;
+    const ALLOCATE: usize = 0x001e_6360;
+    const TEXT_ARCHIVE: usize = 0x001e_2540;
+    const OPEN_MESSAGES: usize = 0x001d_fb00;
     const STOP_SOUND: usize = 0x0019_b6b0;
     const PANE_SHOWN: usize = 0x0019_c884;
     const UNBIND_ANIMATION: usize = 0x0019_b604;
