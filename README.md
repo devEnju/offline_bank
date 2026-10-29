@@ -58,6 +58,7 @@ The two files of a title only work as a pair; never mix files from different rel
 ## Documentation
 
 - [docs/bank.md](docs/bank.md) and [docs/transporter.md](docs/transporter.md): using each patch. What changes, install, troubleshooting, limits.
+- [docs/errors.md](docs/errors.md): every error case of both patches as a flow, with each message and both error numbers.
 - [docs/internals.md](docs/internals.md): how they work, in three parts: Bank, storage, Transporter.
 - [docs/building.md](docs/building.md): building from source, verifying, and packing a release.
 - [docs/testing.md](docs/testing.md): the checks that need a console, as steps and what is expected to be seen.

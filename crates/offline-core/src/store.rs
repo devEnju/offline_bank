@@ -214,6 +214,44 @@ fn put_replica<S: Storage>(
     Ok(())
 }
 
+/// Transporter's write of `metadata`: the replica that was not selected
+/// first, and the record is in force once that one is durable and read
+/// back; the other is then written too. If that one cannot be written, the
+/// journal is as after a power cut between the two, and Bank's next write
+/// of the journal writes it. An error means that the first replica was not
+/// written and read back; only if its read-back alone failed can the record
+/// be in force all the same.
+fn hand_over<S: Storage>(
+    storage: &mut S,
+    selected: Slot,
+    metadata: Metadata,
+) -> Result<Head, StoreError<S::Error>> {
+    let bytes = metadata.encode().map_err(StoreError::Format)?;
+    let first = selected.other();
+    put_replica(storage, first, &bytes)?;
+    let _ = put_replica(storage, selected, &bytes);
+    Ok(Head {
+        metadata,
+        preferred: first,
+    })
+}
+
+/// Whether both replicas hold `metadata`: each reads, and is that record.
+/// A replica that is missing reads as zeros to Bank and holds nothing.
+fn both_hold<S: Storage>(storage: &mut S, metadata: &Metadata) -> bool {
+    [Slot::A, Slot::B].into_iter().all(
+        |slot| matches!(read_record(storage, slot), Ok(Record::Valid(found)) if found == *metadata),
+    )
+}
+
+/// Whether both replicas can be read, valid or not.
+fn both_readable<S: Storage>(storage: &mut S) -> bool {
+    let mut bytes = [0; METADATA_SIZE];
+    [Slot::A, Slot::B]
+        .into_iter()
+        .all(|slot| storage.read(record_offset(slot), &mut bytes).is_ok())
+}
+
 fn put_record<S: Storage>(
     storage: &mut S,
     offset: u64,
@@ -265,20 +303,15 @@ impl<S: Storage> Journal<S> {
     /// interrupted write left unreadable cannot be written either until it
     /// is replaced, which only Bank does, with its next save.
     pub fn readable(&mut self) -> bool {
-        let mut bytes = [0; METADATA_SIZE];
-        [Slot::A, Slot::B]
-            .into_iter()
-            .all(|slot| self.storage.read(record_offset(slot), &mut bytes).is_ok())
+        both_readable(&mut self.storage)
     }
 
     /// Publishes a delivery whose bytes, with the checksum `crc`, are durable
     /// in the transport file's copy that is not in use. The delivery exists
     /// from the moment the first replica is durable, and that is what this
-    /// answers for. If the second replica cannot be written, the journal is
-    /// as after a power cut between the two, and Bank's next save writes
-    /// it. An error means that the first replica was not written and read
-    /// back; only if its read-back alone fails can a delivery be there
-    /// all the same, which leaves the Pokémon in the game as well.
+    /// answers for (`hand_over`). Only if the first replica's read-back alone
+    /// fails can a delivery be there after an error, which leaves the
+    /// Pokémon in the game as well.
     pub fn announce(&mut self, head: &Head, crc: u32) -> Result<Head, StoreError<S::Error>> {
         // The record in force, and the replica that holds it.
         let selected = match self.load()? {
@@ -289,14 +322,7 @@ impl<S: Storage> Journal<S> {
             return Err(StoreError::DeliveryRefused);
         }
         let metadata = announcing(head, crc)?;
-        let bytes = metadata.encode().map_err(StoreError::Format)?;
-        let first = selected.other();
-        put_replica(&mut self.storage, first, &bytes)?;
-        let _ = put_replica(&mut self.storage, selected, &bytes);
-        Ok(Head {
-            metadata,
-            preferred: first,
-        })
+        hand_over(&mut self.storage, selected, metadata)
     }
 
     /// After `announce` with `head` and `crc` failed: whether the delivery
@@ -320,6 +346,49 @@ impl<S: Storage> Journal<S> {
             Err(StoreError::StaleHead)
         }
     }
+
+    /// Settles the save in progress that `head` left to Transporter's
+    /// question (`Metadata::ask`), to the snapshot of `decision`, as Bank's
+    /// reconciliation settles one (`settled`). Only the journal is written,
+    /// and the answer holds from the moment the first replica is durable
+    /// (`hand_over`): only if that one's read-back alone fails can it hold
+    /// after an error.
+    pub fn settle(
+        &mut self,
+        head: &Head,
+        decision: RecoveryDecision,
+    ) -> Result<Head, StoreError<S::Error>> {
+        let selected = match self.load()? {
+            Some(now) if now.metadata == head.metadata => now.preferred,
+            _ => return Err(StoreError::StaleHead),
+        };
+        if !head.metadata.ask {
+            return Err(StoreError::NoPendingTransfer);
+        }
+        let metadata = settled(head, decision)?;
+        hand_over(&mut self.storage, selected, metadata)
+    }
+}
+
+/// The record that settles the save in progress of `head` to the snapshot of
+/// `decision`, for Bank's reconciliation and Transporter's question alike. A
+/// save that becomes current has taken the delivery that waited, and the
+/// same record says so: the delivery cannot be taken twice. A save that is
+/// undone leaves it waiting.
+fn settled<E>(head: &Head, decision: RecoveryDecision) -> Result<Metadata, StoreError<E>> {
+    let Phase::Prepared(pending) = head.phase() else {
+        return Err(StoreError::NoPendingTransfer);
+    };
+    let (selected, delivery) = match decision {
+        RecoveryDecision::KeepBefore => (pending.before, head.metadata.delivery),
+        RecoveryDecision::CommitAfter => (pending.after, None),
+    };
+    Ok(Metadata {
+        sequence: next_sequence(head)?,
+        phase: Phase::Clean(selected),
+        delivery,
+        ask: false,
+    })
 }
 
 /// The record that announces a delivery with checksum `crc` after `head`.
@@ -400,6 +469,7 @@ impl<S: Storage> BankStore<S> {
                     held: sides.held,
                 }),
                 delivery: None,
+                ask: false,
             },
         )
     }
@@ -486,10 +556,8 @@ impl<S: Storage> BankStore<S> {
     }
 
     /// Resolves a prepared transfer by the fingerprint of the game's actual
-    /// save, which is one of its two images or is refused without writes.
-    /// A save that becomes current has taken the delivery that waited, and the
-    /// same record says so: the delivery cannot be taken twice. A save that is
-    /// undone leaves it waiting.
+    /// save, which is one of its two images or is refused without writes
+    /// (`settled`).
     pub fn reconcile(
         &mut self,
         head: &Head,
@@ -501,21 +569,37 @@ impl<S: Storage> BankStore<S> {
             Phase::Clean(_) => return Err(StoreError::NoPendingTransfer),
         };
         let decision = decide_recovery(&pending, fingerprint).ok_or(StoreError::NeitherImage)?;
-        let (selected, delivery) = match decision {
-            RecoveryDecision::KeepBefore => (pending.before, head.metadata.delivery),
-            RecoveryDecision::CommitAfter => (pending.after, None),
-        };
+        let metadata = settled(&head, decision)?;
+        let head = publish(&mut self.storage, head.preferred, metadata)?;
+        Ok(Reconciled { head, decision })
+    }
+
+    /// Leaves the save in progress to Transporter's question, or takes it
+    /// back (`Metadata::ask`): the same record with the next sequence number
+    /// and `ask`. Nothing is written when the record says so already, unless
+    /// it leaves the save to the question while one replica does not hold
+    /// it: one that does not read, is missing, or holds another record.
+    /// Transporter reads the question only from a journal whose replicas
+    /// both read, and replaces or creates none, so the record is written
+    /// again, which replaces or creates that replica (`put_replica`).
+    pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        if !matches!(head.phase(), Phase::Prepared(_)) {
+            return Err(StoreError::NoPendingTransfer);
+        }
+        if head.metadata.ask == ask && (!ask || both_hold(&mut self.storage, &head.metadata)) {
+            return Ok(head);
+        }
         let sequence = next_sequence(&head)?;
-        let head = publish(
+        publish(
             &mut self.storage,
             head.preferred,
             Metadata {
                 sequence,
-                phase: Phase::Clean(selected),
-                delivery,
+                ask,
+                ..head.metadata
             },
-        )?;
-        Ok(Reconciled { head, decision })
+        )
     }
 
     /// Test builds only (docs/building.md): publishes the clean record again,

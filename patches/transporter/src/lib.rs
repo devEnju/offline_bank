@@ -20,6 +20,9 @@
 //! The original language screen chooses which language's games are listed
 //! (`language`); it no longer changes the language of the screens. Its list
 //! ends in a Back button that `lytpatch` makes of an unused entry.
+//!
+//! A save in progress Bank left to Transporter's question is settled by the
+//! answer to the original's restore question (`restore`).
 
 pub mod bootstrap;
 pub mod gen5;
@@ -29,6 +32,7 @@ pub mod lytpatch;
 pub mod navigation;
 pub mod panel;
 pub mod program;
+pub mod restore;
 #[cfg(test)]
 mod router;
 pub mod sdcard;

@@ -229,6 +229,7 @@ mod kind_tests {
                     after_fingerprint: [2; 32],
                 }),
                 delivery: None,
+                ask: false,
             };
             assert_eq!(record.encode().unwrap()[8] >> 4, id);
         }

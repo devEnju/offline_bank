@@ -29,19 +29,7 @@ Gen 5 games produce Gen 6 Pokémon; Gen 1 and Gen 2 Virtual Console games produc
 
 **Order of the two writes.** The delivery is written, flushed, read back and noted in Bank's record first. Only then does the original remove the Pokémon from the source game. A power cut in between leaves the Pokémon in both places, never in neither.
 
-| When | Bank | Source game | Message |
-| --- | --- | --- | --- |
-| The cartridge's Game Card is gone at "Yes", checked before anything is written | unchanged | unchanged | "Please confirm that your Game Card is properly inserted, and then try again." |
-| Bank's record no longer allows a delivery, though it did at START | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
-| The delivery cannot be written: the SD card has no room | unchanged | unchanged | "The SD card is full." |
-| The delivery cannot be written: the SD card refuses it otherwise | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
-| Whether Bank received the delivery cannot be read, even when Bank's record is read again | may have the Pokémon | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
-| The game cannot be saved after the delivery, with the cartridge in, a save on the SD card, or a Virtual Console title | has the Pokémon | may still have them, and its save may be damaged | the error screen with two numbers ([below](#troubleshooting)) |
-| The cartridge is taken out after the delivery, before the game is saved | has the Pokémon | still has them | "No compatible Pokémon Game Card detected…" |
-| Everything is written | has the Pokémon | without them | the original's success message |
-| The patch itself cannot go on, for instance its background thread cannot start, or Bank's data cannot be opened at all | unchanged | unchanged | the error screen with two numbers ([below](#troubleshooting)) |
-
-"Try again" comes only where nothing changed, and Bank's messages only at START. The failure message's first sentence, "The server did not receive the data.", is shown only on the error screen: there is no server.
+Where a transfer stops, what Bank and the source game hold then, and the message for it are in [errors.md](errors.md#6-transporter-delivery-and-the-saves-after-delivery). In short: before the delivery nothing changes, and a card that is gone gets "Please confirm that your Game Card is properly inserted, and then try again."; a full SD card gets "The SD card is full."; once the delivery is in Bank, a card taken out gets "No compatible Pokémon Game Card detected…", and every other failure the error screen with two numbers, after which Bank may hold the Pokémon while the game still does. "Try again" comes only where nothing changed, and Bank's messages only at START. The failure message's first sentence, "The server did not receive the data.", is shown only on the error screen: there is no server.
 
 **One save before the question.** Right after the chosen game is read, and before any notice or question, the original saves that game once. It stores a small note of its own there, which the server used to sort out an interrupted transfer; offline the note is empty and nothing reads it. No Pokémon data changes in that save, and it happens also if you then answer "No".
 
@@ -57,6 +45,19 @@ The second message is the original's for a session the server asked to clean up;
 Transporter never creates or deletes any of Bank's files (on the SD card it creates only the backups of Black/White saves, [below](#blackwhite-saves-on-the-sd-card)). Of Bank's files it touches four: it writes the file of the transport box that Bank is not using, and then the two files of Bank's record, to say that a delivery waits. Until the record says so, Bank sees no delivery, so a transfer that is cut off leaves none or the whole one. If one of the files it would write is missing or unreadable, for example after a power cut, Transporter refuses at START; open Bank and Save and Quit once, which writes it anew.
 
 **Bank and Transporter belong together.** A Bank that was last used with an earlier release may keep its transport box in another form. This Transporter then refuses, and the Transporter of that release refuses with a converted Bank. Update both, after converting the Bank with the migration that ships with the release that changed the files.
+
+### A save left to Transporter
+
+When Bank says "Your communication with Poké Transporter did not complete correctly during your last session. Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.", a Save and Quit was interrupted in a way only you can settle ([bank.md](bank.md#a-save-left-to-transporter)). Press START in Transporter. After the checking screen it asks, with the original's Yes and No:
+
+> You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?
+
+| Answer | Bank afterwards |
+| --- | --- |
+| Yes | Its boxes from before the interrupted session |
+| No | Its boxes from after it |
+
+Look in your game before you answer; [bank.md](bank.md#a-save-left-to-transporter) says what to look for, and when to back up first. After the answer "Communication in your last session did not complete correctly. Performing cleanup process now..." stands with its spinner, then Transporter's closing screen, then its start screen; Bank opens normally again. Nothing is changed until you answer: press HOME and close Transporter to decide later.
 
 ## Choosing the language of the games
 
@@ -131,6 +132,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | --- | --- |
 | Transporter does not start, or stops while loading. | `code.ips` and `exheader.bin` are not from the same release or build, or Transporter is not version 1.5. |
 | START always answers "Pokémon remains in the Transport Box". | Open Bank, empty the transport box, and Save and Quit. |
+| START asks "You can try restoring your data, but you may lose the Pokémon currently being transported…". | Bank left an interrupted Save and Quit to you ([above](#a-save-left-to-transporter)). Look in your game before you answer. |
 | START always answers "did not complete correctly… open Pokémon Bank". | Open Bank and Save and Quit once. If Bank shows an error instead, that error is the cause ([bank.md](bank.md#troubleshooting)). If Bank opens and saves and the refusal stays, check that Bank and Transporter are from the same release, and otherwise please report it. Where Transporter cannot open Bank's data at all, it shows the error screen instead. |
 | "Please confirm that your Game Card is properly inserted" after confirming a transfer. | The cartridge's card was not inserted. The source game and Bank are unchanged; transfer again. |
 | "No compatible Pokémon Game Card detected" after confirming a transfer. | The cartridge was taken out after the delivery. The Pokémon are in Bank's transport box and still in the game: look in Bank before you transfer them again. |
@@ -138,7 +140,7 @@ Do not insert or remove a cartridge while a session is running; what is offered 
 | The error screen with `00000014 00000004` after confirming a transfer. | Whether Bank received the delivery could not be read. The Pokémon are still in the game and may be in Bank's transport box as well: open Bank and look before you transfer them again. |
 | "The SD card is full." after choosing a Black/White save on the SD card. | The card has no room for the save's backup (512 KiB). Nothing was written. Free space and start again. |
 | The error screen with `0000000D` after choosing a game. | The save before the question could not be written: the SD card refused a Black/White save or its backup, or a Virtual Console title's save failed. Nothing is in Bank. The game's save may be damaged: if choosing it again says "The saved data in your Pokémon game is corrupted.", restore it, for a save on the SD card from `<name>.sav.bak`. |
-| "Press HOME to return to the HOME Menu" with two numbers under it. | The patch itself cannot go on, for instance its background thread cannot start, or something of Transporter it needs is not what it expects, or Bank's data cannot be opened at all or its record is damaged (`3`, `5`), which Bank could not repair either. It is Bank's error screen, with Bank's numbers ([bank.md](bank.md#troubleshooting)). Nothing was written to Bank; for `0000000D` and `00000014 00000004` see the rows above. Close Transporter from the HOME Menu and start it again; if it stays, please report the numbers. |
+| "Press HOME to return to the HOME Menu" with two numbers under it. | The patch itself cannot go on, for instance its background thread cannot start, or something of Transporter it needs is not what it expects, or Bank's data cannot be opened at all or its record is damaged (`3`, `5`), which Bank could not repair either. It is Bank's error screen, with Bank's numbers ([errors.md](errors.md#every-active-first-error-number)). Nothing was written to Bank; for `0000000D` and `00000014 00000004` see the rows above. After answering the restore question, `00000010` normally means the answer was not applied and Transporter asks again at the next START; if it does not, the answer was applied, and Bank opens with the boxes you chose. Close Transporter from the HOME Menu and start it again; if it stays, please report the numbers. |
 | A game is not listed: cartridge, save on the SD card or Virtual Console title. | It is in another language than the one whose games are listed. Choose its language on the language screen. |
 | A save on the SD card is not listed. | Its language is not the chosen one; a cartridge of the same game in that language is inserted; the name or folder differs from the pattern above; the save is of another game or language than its name says; or the file is not 524,288 bytes. |
 | The language screen does not change the language of the screens. | Intended: it chooses the games. The screens follow the console's language. |

@@ -487,6 +487,19 @@ impl transport::Files for Visit {
         Visitor::of(&self.0, FileName::Transport)
     }
 }
+/// Whether the record in force leaves its save in progress to
+/// Transporter's question (`offline_core::Metadata::ask`).
+pub fn asked(disk: &Shared) -> bool {
+    let journal = transport::Files::journal(&mut Visit(disk.clone())).expect("no journal");
+    offline_core::Journal::new(journal)
+        .load()
+        .expect("journal")
+        .is_some_and(|head| head.metadata().ask)
+}
+/// Transporter's check before a session, as it answers it.
+pub fn transport_check(disk: &Shared) -> Result<(), transport::Refusal> {
+    transport::check(&mut Visit(disk.clone()))
+}
 /// Transporter's check before a session: whether it may deliver now.
 pub fn transport_ok(disk: &Shared) -> bool {
     transport::check(&mut Visit(disk.clone())).is_ok()

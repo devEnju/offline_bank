@@ -149,7 +149,7 @@ Local inspection and file writing use the original preparation message and power
 | `0000D0AD 00000001` | the Bank was downloaded and written successfully |
 | `0000D0AD 00000002` | an offline Bank was on the card already; nothing was contacted or changed |
 | `00000BAD 00000001` | the server holds no Bank for this console; nothing was created or changed |
-| any other pair | the files could not be read or written; the numbers are the offline Bank's ([bank.md](bank.md#troubleshooting)) |
+| any other pair | the files could not be read or written; the numbers are the offline Bank's ([errors.md](errors.md#every-active-first-error-number)) |
 
 A message of the original on the way (no connection, maintenance, the server locked for a while) leads back to its start screen as it always did; nothing is written then.
 

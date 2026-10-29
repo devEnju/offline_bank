@@ -60,31 +60,21 @@ pub fn moved(before: &mut [Identity], after: &mut [Identity]) -> Moved {
     out
 }
 
-/// The snapshot Bank goes on with when a game of the title is there and its
-/// save cannot say.
+/// The snapshot Bank goes on with when the game no longer shows which save
+/// it holds: it is not there, or it was saved on since.
 ///
 /// One-way sessions take the side that cannot lose a Pokémon. A session
 /// that moved none takes the old snapshot, which cannot lose the Miles of a
-/// claim. A session that moved Pokémon both ways commits: whoever went on
-/// with that game, or began a new one on it, is taken to have found it as
-/// expected, and neither answer is free of risk there.
-pub fn choose(moved: Moved) -> RecoveryDecision {
-    if moved.deposited != 0 {
-        RecoveryDecision::CommitAfter
-    } else {
-        RecoveryDecision::KeepBefore
-    }
-}
-
-/// The snapshot Bank goes on with when no game of the title is there to be
-/// asked. Its save may be either image or a later one, so only the answer
-/// that cannot lose is taken: `None` for a session that moved Pokémon both
-/// ways, which waits for its game.
-pub fn choose_unseen(moved: Moved) -> Option<RecoveryDecision> {
+/// claim. A session that moved Pokémon both ways has no such side: `None`.
+/// Its game decides once it is there with one of the two images, or the
+/// user does, through Transporter's question.
+pub fn choose(moved: Moved) -> Option<RecoveryDecision> {
     if moved.deposited != 0 && moved.withdrawn != 0 {
         None
+    } else if moved.deposited != 0 {
+        Some(RecoveryDecision::CommitAfter)
     } else {
-        Some(choose(moved))
+        Some(RecoveryDecision::KeepBefore)
     }
 }
 
@@ -140,33 +130,16 @@ mod tests {
             })
         };
         // Deposits only: they stay in Bank.
-        assert_eq!(choice(1, 0), RecoveryDecision::CommitAfter);
-        assert_eq!(choice(900, 0), RecoveryDecision::CommitAfter);
-        // Withdrawals or releases only: they stay in Bank.
-        assert_eq!(choice(0, 1), RecoveryDecision::KeepBefore);
-        assert_eq!(choice(0, 30), RecoveryDecision::KeepBefore);
-        // Nothing moved: the old Miles record stays.
-        assert_eq!(choice(0, 0), RecoveryDecision::KeepBefore);
-        // Both ways: the save is taken to have gone through.
-        assert_eq!(choice(3, 2), RecoveryDecision::CommitAfter);
-        assert_eq!(choice(1, 500), RecoveryDecision::CommitAfter);
-    }
-
-    #[test]
-    fn without_the_game_only_a_one_way_session_is_settled() {
-        let choice = |deposited, withdrawn| {
-            choose_unseen(Moved {
-                deposited,
-                withdrawn,
-            })
-        };
         assert_eq!(choice(1, 0), Some(RecoveryDecision::CommitAfter));
         assert_eq!(choice(900, 0), Some(RecoveryDecision::CommitAfter));
+        // Withdrawals or releases only: they stay in Bank.
         assert_eq!(choice(0, 1), Some(RecoveryDecision::KeepBefore));
         assert_eq!(choice(0, 30), Some(RecoveryDecision::KeepBefore));
+        // Nothing moved: the old Miles record stays.
         assert_eq!(choice(0, 0), Some(RecoveryDecision::KeepBefore));
-        // Both ways: either answer could lose a Pokémon; the game decides.
+        // Both ways: either answer could lose a Pokémon; the game or the
+        // user decides.
         assert_eq!(choice(3, 2), None);
-        assert_eq!(choice(1, 1), None);
+        assert_eq!(choice(1, 500), None);
     }
 }

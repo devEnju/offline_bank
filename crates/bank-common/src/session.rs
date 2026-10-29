@@ -208,6 +208,16 @@ impl<S: Storage> BankSession<S> {
         Ok(reconciled.decision)
     }
 
+    /// Leaves the save in progress to Transporter's question, or takes it
+    /// back (`BankStore::ask`). Nothing is written when the record says so
+    /// already.
+    pub fn ask(&mut self, ask: bool) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        let result = self.store.ask(&self.head, ask);
+        self.head = self.storage_result(result)?;
+        Ok(())
+    }
+
     pub fn into_storage(self) -> S {
         self.store.into_inner()
     }

@@ -5,9 +5,10 @@
 //! 8 game list, 9 reading the chosen game, 0xb the original's Bank task,
 //! 0xc the question, 6 the transfer, 0x10 disconnect, which leads back to
 //! the start screen, and 0x11, which reloads the screens after the language
-//! screen with disconnect's code. 3 is the original's connect task; with 4, 5, 0xa, 0xd,
-//! 0xe and 0xf it belongs to the server and is never a destination. Neither
-//! is 0x12, the failure task.
+//! screen with disconnect's code. 3 is the original's connect task; with 4, 5, 0xa, 0xd
+//! and 0xf it belongs to the server and is never a destination. Neither is
+//! 0x12, the failure task. 0xe, the original's offer to restore a session,
+//! follows the search for a save in progress Bank left to its question.
 
 /// The language screen, from the start screen.
 pub const LANGUAGE: u32 = 1;
@@ -23,9 +24,9 @@ pub const DISCONNECT: u32 = 0x10;
 pub const RELOAD: u32 = 0x11;
 /// The server task that cancels a transfer that was begun (`00248360`),
 /// after the Bank task or the question ended without one (outcome `0x10`):
-/// it asks the server and keeps its panel ("Datenübertragung über den
-/// Server…") up for at least 1.5 s. Offline nothing was begun; nothing is
-/// read or written there.
+/// it asks the server and keeps its panel ("Communicating with the Pokémon
+/// Bank server...", 23:0x0F) up for at least 1.5 s. Offline nothing was
+/// begun; nothing is read or written there.
 pub const CANCEL: u32 = 0xf;
 /// The failure task (`002444BC`), after the Bank task or the transfer ended
 /// with outcome `0xF`: it shows the original's message `0x0B`. Offline each
@@ -35,6 +36,16 @@ pub const CANCEL: u32 = 0xf;
 pub const FAILURE: u32 = 0x12;
 /// What the original answers when the application is to end.
 pub const EXIT: u32 = 0x13;
+/// The original's offer to restore a session the server could not finish
+/// (`00243AF4`): its question "You can try restoring your data, but you may
+/// lose the Pokémon currently being transported. Would you still like to
+/// try restoring your data?" (23:0x1A). Offline it settles a save in
+/// progress Bank left to it, and the disconnect task follows.
+pub const RESTORE: u32 = 0xe;
+/// The search's outcome for a save in progress Bank left to Transporter's
+/// question (`hooks::transporter_search`); the original search never ends
+/// with it.
+pub const ASKED: u8 = 8;
 
 /// The original router's answers the offline flow takes as they are. Every
 /// other answer, a server task, the cancel task or the failure task among
@@ -73,6 +84,7 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
     match (current, outcome) {
         (LIST, 4) => READ,
         (READ, _) => BANK_TASK,
+        (SEARCH, ASKED) => RESTORE,
         _ if TAKEN.contains(&native) => native,
         _ => DISCONNECT,
     }
@@ -122,12 +134,16 @@ mod tests {
             (READ, _) => BANK_TASK,
             (BANK_TASK | QUESTION, 0x10) => DISCONNECT,
             (TRANSFER | BANK_TASK | 0xd, 0xf) => DISCONNECT,
+            // The search's own outcome for Transporter's question, and the
+            // restore task, which ends in disconnect.
+            (SEARCH, ASKED) => RESTORE,
+            (RESTORE, _) => DISCONNECT,
             _ => router::next(current, outcome),
         }
     }
 
     /// The tasks of the server, which the offline flow never enters.
-    const SERVER: [u32; 8] = [CONNECT, 4, 5, 0xa, 0xd, 0xe, CANCEL, FAILURE];
+    const SERVER: [u32; 7] = [CONNECT, 4, 5, 0xa, 0xd, CANCEL, FAILURE];
 
     #[test]
     fn the_routing_is_the_one_the_two_edits_inside_the_router_gave() {
@@ -225,6 +241,23 @@ mod tests {
             assert!(!loads(next));
         }
         assert!(!loads(START_SCREEN) && !loads(DISCONNECT) && !loads(EXIT));
+    }
+
+    #[test]
+    fn a_save_left_to_the_question_goes_from_the_search_to_it_and_back() {
+        let mut task = START_SCREEN;
+        let mut seen = [0; 3];
+        for (index, outcome) in [3, ASKED, 3].into_iter().enumerate() {
+            task = destination(task, outcome, router::next(task, outcome), false);
+            seen[index] = task;
+        }
+        assert_eq!(seen, [SEARCH, RESTORE, DISCONNECT]);
+        // The question waits for the user; the answer's work refuses HOME
+        // itself (`hooks::transporter_restore`).
+        assert!(!loads(RESTORE));
+        assert!(!spins(RESTORE));
+        // The original search never ends with that outcome.
+        assert_eq!(router::next(SEARCH, ASKED), DISCONNECT);
     }
 
     #[test]

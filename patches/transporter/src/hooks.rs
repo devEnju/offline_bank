@@ -9,10 +9,11 @@ use crate::{
     cart, navigation,
     panel::{self, Panel},
     program::Transporter15,
+    restore::{self, Frame, Restore},
     sdcard::WriteFault,
     storage_worker::{
-        checked, delivered, Checked, Delivered, Job, Reply, TransporterRequests, TransporterWorker,
-        DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING,
+        checked, delivered, settled, Checked, Delivered, Job, Reply, Settled, TransporterRequests,
+        TransporterWorker, DELIVER_DONE, DELIVER_FAILED, DELIVER_PENDING,
     },
     task::*,
     ui::{self, loading, stop_loading, Chosen, Shown, MESSAGE_FAILURE, MESSAGE_NO_CARD},
@@ -62,6 +63,14 @@ const TRANSFER_UPDATE: usize = 0x0024_a0c4;
 const SEARCH_START: u32 = 0;
 const SEARCH_MESSAGE: u32 = 5;
 const SEARCH_NONE: u8 = 2;
+/// The restore task's update (`00243AF4`). The question's number in the
+/// table at `0028E00C` (`+0x8F`), the answer (`+0x90`) and the flag of its
+/// different-copy notice (`+0x8E`); the constructor clears neither of the
+/// last two (`0019D45C`).
+const RESTORE_UPDATE: usize = 0x0024_3af4;
+const RESTORE_PAGE: usize = 0x8f;
+const RESTORE_ANSWER: usize = 0x90;
+const RESTORE_NOTICE: usize = 0x8e;
 
 /// The panel the search started (`panel`). It is kept apart from `STATE`,
 /// unlike Bank's scan panel, which only its own hook uses: the entries that
@@ -77,6 +86,8 @@ struct Runtime {
     requests: TransporterRequests,
     spinner: Spinner,
     failure: Option<Failure>,
+    /// Where the restore task stands (`transporter_restore`).
+    restore: Restore,
 }
 /// An error the session stopped with: its two numbers, and whether its
 /// screen is up.
@@ -92,6 +103,7 @@ static STATE: Exclusive<Runtime> = unsafe {
         requests: Requests::new(),
         spinner: Spinner::new(),
         failure: None,
+        restore: Restore::Asking(None),
     })
 };
 /// An object the job needs is not what the hook expects, or the job's reply
@@ -438,6 +450,12 @@ pub unsafe extern "aapcs" fn transporter_search(raw: *mut u8) -> u32 {
                 task.set_outcome(SEARCH_NONE);
                 return 1;
             }
+            // The router entry answers it with the restore task, and ends
+            // the search's panel (`navigation::destination`).
+            Check::Ask => {
+                task.set_outcome(navigation::ASKED);
+                return 1;
+            }
         }
     }
     unsafe { original(SEARCH_UPDATE, raw) }
@@ -450,6 +468,8 @@ enum Check {
     Go,
     Shown,
     End,
+    /// Bank left its save in progress to the restore question.
+    Ask,
 }
 /// The check in the search's first state.
 /// # Safety
@@ -486,6 +506,7 @@ unsafe fn check(task: Task) -> Check {
     let message = match checked(answer) {
         Checked::Pending => return Check::Pending,
         Checked::Go => return Check::Go,
+        Checked::Ask => return Check::Ask,
         Checked::Refused(message) => message,
         Checked::Failed(error) => {
             state.fail(error);
@@ -597,6 +618,86 @@ unsafe fn saving(task: Task, ui: usize, update: usize, note: bool) -> u32 {
         Some(true) => 0,
         // No screen to show it on: the task ends as without one.
         _ => finished,
+    }
+}
+
+/// Replaces the restore task's update in its vtable (`002E6578`, was
+/// `00243AF4`). The original asked the server first; offline the search
+/// enters it only for a save in progress Bank left to its question
+/// (`navigation::ASKED`). On its first frame the entry goes straight to
+/// the question, the first of its table: "You can try restoring your data,
+/// but you may lose the Pokémon currently being transported. Would you
+/// still like to try restoring your data?" (23:0x1A). The original update
+/// shows it with its Yes and No buttons and waits for the answer; once the
+/// buttons are gone the entry takes over, where the original would ask its
+/// second question or end. The loading panel with "Communication in your
+/// last session did not complete correctly. Performing cleanup process
+/// now..." (23:0x04) goes up, HOME and sleep are refused, and after 0.5 s
+/// the worker settles the save as the answer chose (`restore::answered`): Yes
+/// the save before, No the save after. The task ends once the panel has
+/// stood for 1.5 s, and the disconnect task follows. A failure ends on the
+/// error screen. What each frame does is `restore::Restore::frame`.
+/// # Safety
+/// The original's task driver supplies the live restore task, on the main
+/// thread.
+#[no_mangle]
+pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_RESTORE]) }) else {
+        return 1;
+    };
+    let Some(mut state) = STATE.take() else {
+        // Its state is a hook's: this frame waits, as Bank's hooks do.
+        return 0;
+    };
+    if let Some(held) = unsafe { state.stopped(task.pointer(RESTORE_UI)) } {
+        return u32::from(!held);
+    }
+    let raw = task.raw();
+    let at = unsafe { read_word(raw, TASK_STATE) };
+    let answer = unsafe { raw.add(RESTORE_ANSWER).read() };
+    match state.restore.frame(at, answer) {
+        Frame::Begin => {
+            unsafe {
+                write_word(raw, TASK_STATE, restore::ASK);
+                raw.add(RESTORE_PAGE).write(0);
+                raw.add(RESTORE_ANSWER).write(0);
+                raw.add(RESTORE_NOTICE).write(0);
+            }
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
+        Frame::Original => {
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
+        Frame::Answered => {
+            let Ok(ui) = task.pointer(RESTORE_UI) else {
+                state.fail(NOT_NATIVE);
+                return 0;
+            };
+            unsafe { ui::cleanup(ui) };
+            state.spinner.up(now());
+            refuse_home(true);
+            0
+        }
+        Frame::Work(decision) => {
+            if !state.requests.is_out() && state.spinner.idle(now()) {
+                return 0;
+            }
+            match settled(unsafe { state.job(Job::Settle(decision), |_| Some(())) }) {
+                Settled::Pending => 0,
+                Settled::Failed(error) => {
+                    state.fail(error);
+                    0
+                }
+                Settled::Done => {
+                    state.restore = Restore::Settled;
+                    u32::from(!state.spinner.held(now()))
+                }
+            }
+        }
+        // The job is done; only the panel's time is left.
+        Frame::Done => u32::from(!state.spinner.held(now())),
     }
 }
 
