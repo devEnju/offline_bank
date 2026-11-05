@@ -15,7 +15,9 @@
 //!
 //! Here the first answer chooses (Yes the save before, No the save after),
 //! the second question follows either answer, and only its Yes settles the
-//! save as the first chose. A No to it writes nothing: the original's end.
+//! save as the first chose. A No to it writes nothing: the original's end,
+//! with the disconnect task's loading panel put up as the buttons are gone,
+//! as after a Yes, so that the closing screen follows without a gap.
 //!
 //! The buttons are the shared UI's (its key handler `0024AF20`): `ui +
 //! 0x84` is the one selected, A presses it, B presses No (button ID 3)
@@ -77,6 +79,10 @@ pub enum Frame {
     Work(RecoveryDecision),
     /// Settled: the task ends once the panel has stood its time.
     Done,
+    /// Not confirmed and the buttons are gone: the loading panel goes up
+    /// with the disconnect task's text, which that task keeps, then the
+    /// original update, which ends the task.
+    Closing,
     /// The first question's buttons come in: the original update, and once
     /// it has gone on to `ANSWERING`, Yes selected.
     Buttons,
@@ -114,7 +120,7 @@ impl Restore {
             }
             Self::Second(_, Some(false)) if at != ANSWERING => {
                 *self = Self::Declined;
-                Frame::Original
+                Frame::Closing
             }
             Self::Second(decision, given) if at == ANSWERING => {
                 *self = Self::Second(decision, given.or(confirmed(answer)));
@@ -212,8 +218,9 @@ mod tests {
                     restore = Restore::Settled;
                     assert_eq!(restore.frame(ASK, 0), Frame::Done);
                 } else {
-                    // Its end, state 0x10, is the original's.
-                    assert_eq!(restore.frame(0x10, 0), Frame::Original);
+                    // The closing panel, once; its end, state 0x10, is the
+                    // original's.
+                    assert_eq!(restore.frame(0x10, 0), Frame::Closing);
                     assert_eq!(restore, Restore::Declined);
                     assert_eq!(restore.frame(0x10, 0), Frame::Original);
                 }

@@ -633,7 +633,9 @@ unsafe fn saving(task: Task, ui: usize, update: usize, note: bool) -> u32 {
 /// After either the original asks its second question, "This is your final
 /// warning. The Pokémon you are trying to send could be lost forever. Are you
 /// sure you want to try to restore your data?" (23:0x1B). After its No the
-/// original ends the task and nothing is written. After its Yes, once the
+/// original ends the task and nothing is written; once the buttons are gone
+/// the entry puts up the panel with "The program is now closing. Please
+/// wait..." (23:0x21), which the disconnect task keeps. After its Yes, once the
 /// buttons are gone, the entry takes over: the loading panel with
 /// "Communication in your last session did not complete correctly.
 /// Performing cleanup process now..." (23:0x04) goes up, HOME and sleep are
@@ -704,7 +706,7 @@ pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
                 state.fail(NOT_NATIVE);
                 return 0;
             };
-            unsafe { ui::cleanup(ui) };
+            unsafe { ui::panel(ui, ui::MESSAGE_CLEANUP) };
             state.spinner.up(now());
             refuse_home(true);
             0
@@ -727,6 +729,13 @@ pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
         }
         // The job is done; only the panel's time is left.
         Frame::Done => u32::from(!state.spinner.held(now())),
+        Frame::Closing => {
+            if let Ok(ui) = task.pointer(RESTORE_UI) {
+                unsafe { ui::panel(ui, ui::MESSAGE_CLOSING) };
+            }
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
     }
 }
 

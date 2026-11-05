@@ -128,6 +128,9 @@ pub fn refusal_message(refusal: Refusal) -> u32 {
 /// in your last session did not complete correctly. Performing cleanup
 /// process now..."
 pub const MESSAGE_CLEANUP: u32 = 4;
+/// The original's message 0x21, the loading text of its disconnect task:
+/// "The program is now closing. Please wait..."
+pub const MESSAGE_CLOSING: u32 = 0x21;
 
 /// An object of the original a screen needs is not there, or not made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,22 +365,19 @@ mod native {
     /// restore task does for its own panel (`00243FCC`).
     const PANEL_TEXT: usize = 0x0019_c700;
 
-    /// Starts the general loading panel on `ui` with the restore's text,
-    /// "Communication in your last session did not complete correctly.
-    /// Performing cleanup process now..." (`MESSAGE_CLEANUP`), as the
-    /// original's restore task starts it after its last Yes
-    /// (`00243FBC`..`00243FCC`).
+    /// Starts the general loading panel on `ui` with `message` of text file
+    /// 23, as the original's restore task starts it after its last Yes
+    /// (`00243FBC`..`00243FCC`) and the disconnect task in its set-up
+    /// (`00247268`, `002472C8`). A panel already up stays and only gets the
+    /// text: `0019B340` starts none then.
     /// # Safety
     /// `ui` is the live shared UI, on the main thread.
-    pub unsafe fn cleanup(ui: *mut u8) {
-        unsafe { cleanup_panel(ui) }
-    }
-    unsafe fn cleanup_panel(ui: *mut u8) {
+    pub unsafe fn panel(ui: *mut u8, message: u32) {
         unsafe {
             let start: unsafe extern "aapcs" fn(*mut u8) = transmute(PANEL_START);
             start(ui);
             let text: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(PANEL_TEXT);
-            text(ui, super::MESSAGE_CLEANUP);
+            text(ui, message);
         }
     }
 
