@@ -20,12 +20,14 @@
 //! its trainer, the game played on.
 //!
 //! The 32 bytes of the binding also say whose game it is: the trainer's name
-//! (24 bytes, 12 characters), the trainer ID as the original shows it (4
-//! bytes), and the first 4 bytes of a hash over the title, both images, the
-//! kind of copy, the name and the ID. Name and ID name the game in the
-//! original's message for one that is waited for, and tell the game played
-//! on from another trainer's game (`Trainer`). The ID is the part the
-//! original shows, so two trainers of one name and that ID count as one.
+//! (24 bytes, 12 characters), the game's 32-bit ID (4 bytes), which holds
+//! the Trainer ID and the secret ID, and the first 4 bytes of a hash over the
+//! title, both images, the kind of copy, the name and the ID. Name and ID
+//! tell the game played on from another trainer's game (`Trainer::same`);
+//! the original's message for a game that is waited for names it with the
+//! Trainer ID alone (`Trainer::shown`). A record of an earlier release holds
+//! only the Trainer ID as the original shows it, which the whole ID of a
+//! secret ID 0 is as well: such a record is matched by that part.
 
 use offline_core::{Fingerprint, GameIdentity, PendingTransfer, Sha256};
 
@@ -43,15 +45,14 @@ const HASH_AT: usize = NAME_BYTES + ID_BYTES;
 pub struct Trainer {
     /// Unused places are zero.
     pub name: [u16; NAME],
-    /// The trainer ID as the original shows it.
+    /// The game's whole 32-bit ID, Trainer ID and secret ID; in a record of
+    /// an earlier release the Trainer ID as the original shows it.
     pub id: u32,
 }
 impl Trainer {
     /// `name` and `id` are what the original reads from the game: the name
-    /// with its end mark and the game's whole 32-bit ID. The original
-    /// (001e20d0) shows the low 16 bits of it for X, Y, Omega Ruby and Alpha
-    /// Sapphire, and its last six decimal digits for the later games.
-    pub fn of_game(name: &[u16; NAME + 1], id: u32, gen7: bool) -> Self {
+    /// with its end mark and the game's whole 32-bit ID.
+    pub fn of_game(name: &[u16; NAME + 1], id: u32) -> Self {
         let mut out = [0; NAME];
         for (unit, &read) in out.iter_mut().zip(name) {
             if read == 0 {
@@ -59,10 +60,27 @@ impl Trainer {
             }
             *unit = read;
         }
-        Self {
-            name: out,
-            id: if gen7 { id % 1_000_000 } else { id & 0xffff },
+        Self { name: out, id }
+    }
+    /// The Trainer ID as the original shows it (001e20d0): the low 16 bits
+    /// of the ID for X, Y, Omega Ruby and Alpha Sapphire, its last six
+    /// decimal digits for the later games. The rest of the ID is the secret
+    /// ID, which no message shows.
+    pub const fn shown(self, gen7: bool) -> u32 {
+        if gen7 {
+            self.id % 1_000_000
+        } else {
+            self.id & 0xffff
         }
+    }
+    /// Whether `inserted`, the trainer of a game as it is read now, is the
+    /// trainer of this record: the same name and the same whole ID. A record
+    /// whose ID is only the part the original shows, as every record of an
+    /// earlier release, is matched by that part.
+    pub fn same(self, inserted: Trainer, gen7: bool) -> bool {
+        let shown_only = self.id == self.shown(gen7);
+        self.name == inserted.name
+            && (self.id == inserted.id || shown_only && self.id == inserted.shown(gen7))
     }
     /// The digits the original shows the ID with.
     pub const fn digits(gen7: bool) -> u32 {
@@ -230,7 +248,7 @@ mod tests {
         for (unit, read) in units.iter_mut().zip(name.encode_utf16()) {
             *unit = read;
         }
-        Trainer::of_game(&units, id, false)
+        Trainer::of_game(&units, id)
     }
     fn trainer() -> Trainer {
         named("Serena", 12345)
@@ -385,23 +403,53 @@ mod tests {
         }
     }
     #[test]
-    fn the_id_is_the_one_the_original_shows() {
+    fn the_whole_id_is_kept_and_the_message_shows_the_part_the_original_shows() {
         let mut name = [0x41; NAME + 1];
         name[NAME] = 0;
+        let read = Trainer::of_game(&name, 0xabcd_3039);
+        assert_eq!(read.id, 0xabcd_3039);
         // X, Y, Omega Ruby, Alpha Sapphire: the low half, five digits.
-        let gen6 = Trainer::of_game(&name, 0xabcd_3039, false);
-        assert_eq!((gen6.id, Trainer::digits(false)), (12345, 5));
+        assert_eq!((read.shown(false), Trainer::digits(false)), (12345, 5));
         // The later games: the last six decimal digits of the whole ID.
-        let gen7 = Trainer::of_game(&name, 0xabcd_3039, true);
         assert_eq!(0xabcd_3039u32, 2_882_351_161);
-        assert_eq!((gen7.id, Trainer::digits(true)), (351_161, 6));
-        assert_eq!(Trainer::of_game(&name, 999_999, true).id, 999_999);
-        assert_eq!(Trainer::of_game(&name, 1_000_000, true).id, 0);
+        assert_eq!((read.shown(true), Trainer::digits(true)), (351_161, 6));
+        assert_eq!(named("A", 999_999).shown(true), 999_999);
+        assert_eq!(named("A", 1_000_000).shown(true), 0);
         // A name ends at its end mark; what follows it is not part of it.
         let mut short = [0; NAME + 1];
         short[..3].copy_from_slice(&[0x41, 0, 0x42]);
-        assert_eq!(Trainer::of_game(&short, 1, false).name[..2], [0x41, 0]);
-        assert_eq!(gen6.name, [0x41; NAME]);
+        assert_eq!(Trainer::of_game(&short, 1).name[..2], [0x41, 0]);
+        assert_eq!(read.name, [0x41; NAME]);
+    }
+
+    #[test]
+    fn only_the_same_name_and_whole_id_are_the_same_trainer() {
+        for gen7 in [false, true] {
+            // Trainer ID 12345 with secret ID 7, in each generation's form.
+            let whole = if gen7 {
+                7 * 1_000_000 + 12345
+            } else {
+                7 << 16 | 12345
+            };
+            let recorded = named("Serena", whole);
+            assert!(recorded.same(named("Serena", whole), gen7));
+            // Another secret ID, another Trainer ID, another name.
+            let other_secret = if gen7 {
+                8 * 1_000_000 + 12345
+            } else {
+                8 << 16 | 12345
+            };
+            assert_eq!(named("x", other_secret).shown(gen7), 12345);
+            assert!(!recorded.same(named("Serena", other_secret), gen7));
+            assert!(!recorded.same(named("Serena", whole + 1), gen7));
+            assert!(!recorded.same(named("Calem", whole), gen7));
+            // A record of an earlier release holds the shown part only: it
+            // matches by that part, whatever the secret ID.
+            let earlier = named("Serena", 12345);
+            assert!(earlier.same(named("Serena", whole), gen7));
+            assert!(earlier.same(named("Serena", other_secret), gen7));
+            assert!(!earlier.same(named("Serena", whole + 1), gen7));
+        }
     }
 
     /// A save in progress as v0.5.0 recorded it (offline-core's

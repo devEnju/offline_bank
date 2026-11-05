@@ -194,7 +194,7 @@ The message only comes for a Save and Quit that was cut off. A cartridge pulled 
 
 ### A save left to Transporter
 
-When the interrupted session moved Pokémon both ways and its game is there, on the same kind of copy and with the same trainer (name and Trainer ID), but was saved on since, neither choice is safe for Bank to make: keeping the old boxes loses the deposited Pokémon if step 2 had finished, keeping the new ones loses the withdrawn Pokémon if it had not. Bank changes nothing and sends you to Poké Transporter, with the original's message for it:
+When the interrupted session moved Pokémon both ways and its game is there, on the same kind of copy and with the same trainer (name, Trainer ID and the secret ID the games keep with it), but was saved on since, neither choice is safe for Bank to make: keeping the old boxes loses the deposited Pokémon if step 2 had finished, keeping the new ones loses the withdrawn Pokémon if it had not. Bank changes nothing and sends you to Poké Transporter, with the original's message for it:
 
 > Your communication with Poké Transporter did not complete correctly during your last session.
 > (A)

@@ -107,7 +107,7 @@ flowchart TD
     MEDIUM -->|"Yes"| PRESENT{"What moved?"}
     PRESENT -->|"Deposits only"| COMMIT
     PRESENT -->|"Withdrawals/releases only, or no moves"| KEEP
-    PRESENT -->|"Deposits and withdrawals"| TRAINER{"The save's trainer:<br/>name and shown ID?"}
+    PRESENT -->|"Deposits and withdrawals"| TRAINER{"The save's trainer:<br/>name, Trainer ID and secret ID?"}
     TRAINER -->|"Yes"| ASK{"Leave pending save to<br/>Transporter's restore question"}
     TRAINER -->|"Another trainer"| TAKEBACK
     ASK -->|"Journal update fails"| F10["HOME error: 10"]
@@ -149,7 +149,7 @@ flowchart TD
 | Cartridge disappears during recovery | Leave pending | Retry → A → START |
 | Game read, transaction binding, secure-value operation, recovery write, or Bank readback fails otherwise | Stop the run | HOME error |
 
-Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title, kind of copy and trainer (name and the ID as the original shows it) present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
+Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title, kind of copy and trainer (name, Trainer ID and secret ID) present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
 
 **The unlock screen** is the original's, without its server: "Please enter the unlock key: [eight digits]" (39:0x22) and the number keyboard.
 

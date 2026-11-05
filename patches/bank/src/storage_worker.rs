@@ -14,7 +14,7 @@
 //! Bank's files that the SD card refused among them.
 
 use crate::{
-    native_game::{GameIoDescriptor, PlatformSecureValue, PreparedImage, SecureValues},
+    native_game::{GameIoDescriptor, GameKind, PlatformSecureValue, PreparedImage, SecureValues},
     transaction::{self, Found, Match, Medium, Trainer},
 };
 use bank_common::{
@@ -419,9 +419,12 @@ where
         // secure value is not this save's to judge; a load of that game
         // does.
         Match::Other(found) => {
+            let gen7 = GameKind::of_title(pending.game.title_id).is_some_and(GameKind::gen7);
             let seen = rule == Rule::Start
                 && found == Found::SameKind
-                && game.trainer() == Some(Trainer::of(&pending.game));
+                && game
+                    .trainer()
+                    .is_some_and(|inserted| Trainer::of(&pending.game).same(inserted, gen7));
             by_moves(files, staging, seen, held)
         }
     }
@@ -1196,10 +1199,11 @@ mod tests {
         }
     }
 
+    /// Trainer ID 12345 and secret ID 7, of X.
     fn trainer() -> Trainer {
         Trainer {
             name: [0x53; crate::transaction::NAME],
-            id: 12345,
+            id: 7 << 16 | 12345,
         }
     }
     fn stored(disk: &Shared) -> BTreeMap<u8, Vec<u8>> {
@@ -1686,16 +1690,19 @@ mod tests {
                 drop(files);
                 assert!(stored(&disk) == before, "{case}");
                 // Without its game, with only the other kind of copy, or with
-                // another trainer's game of the same kind: it waits for its
-                // game again, and Transporter's question is taken back.
-                let another = Simulated {
-                    trainer: Trainer {
-                        id: trainer().id + 1,
-                        ..trainer()
-                    },
+                // another trainer's game of the same kind, also one that
+                // differs in its secret ID alone: it waits for its game
+                // again, and Transporter's question is taken back.
+                let with_id = |id| Simulated {
+                    trainer: Trainer { id, ..trainer() },
                     ..Simulated::loaded(cartridge)
                 };
-                for other in [None, Some(Simulated::loaded(!cartridge)), Some(another)] {
+                for other in [
+                    None,
+                    Some(Simulated::loaded(!cartridge)),
+                    Some(with_id(trainer().id + 1)),
+                    Some(with_id(trainer().id ^ 1 << 16)),
+                ] {
                     let mut other = other.map(|mut game| {
                         game.save = Some((OTHER, LOADED));
                         game

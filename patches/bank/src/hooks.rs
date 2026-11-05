@@ -514,7 +514,7 @@ impl Runtime {
                         ui,
                         heap,
                         &trainer.name,
-                        trainer.id,
+                        trainer.shown(gen7),
                         Trainer::digits(gen7),
                     )
                 })
@@ -987,7 +987,7 @@ impl Runtime {
                     Ok(game) => {
                         let (name, id) = unsafe { crate::native_game::trainer(manager, kind) }
                             .map_err(|_| Fault::GameRead)?;
-                        Some((game, Trainer::of_game(&name, id, kind.gen7())))
+                        Some((game, Trainer::of_game(&name, id)))
                     }
                     Err(NativeGameError::NotLoaded) => None,
                     Err(_) => return Err(Fault::GameRead),
@@ -1048,13 +1048,13 @@ impl Runtime {
                 // opening and here writes it. Whose game it is, kept with
                 // its fingerprint: a save in progress is bound to both. The
                 // original's reader reloads the Pokédex views from that body.
-                let (_, gen7) = selected_game(task)?;
+                selected_game(task)?;
                 let (name, id) =
                     unsafe { crate::dex::trainer(task.pointer(8)?, task.bank_pointer()?) }
                         .map_err(|_| Fault::NativeObject)?;
                 self.baseline = Some(Baseline {
                     evidence,
-                    trainer: Trainer::of_game(&name, id, gen7),
+                    trainer: Trainer::of_game(&name, id),
                 });
                 self.pending = false;
                 // The counts follow on the next frame.
