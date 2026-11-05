@@ -533,6 +533,11 @@ impl<F: Files> BankFiles<F> {
         self.bank()?.unlock().map_err(Error::Bank)
     }
 
+    /// Whether the save in progress was unlocked.
+    pub fn unlocked(&mut self) -> Outcome<bool, F> {
+        Ok(self.bank()?.unlocked())
+    }
+
     /// Resolves a prepared save toward the side `decision` names, for a
     /// game whose save is neither of its two images (`moved::choose`). The
     /// journal's own rule is not loosened: this names the image the game is

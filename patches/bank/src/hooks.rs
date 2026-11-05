@@ -11,6 +11,7 @@ use crate::{
     save_steps,
     storage_worker::{BankRequests, BankWorker, Ending, GameEvidence, Job, Reply},
     transaction::Trainer,
+    unlock,
 };
 use bank_common::{
     bank_files::Loaded,
@@ -19,7 +20,7 @@ use bank_common::{
     program::Bank15,
     task::{
         refuse_home, BankTask, Notice, Task, LOCAL_DATE, TASK_LOAD, TASK_OPEN, TASK_REWARDS,
-        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN,
+        TASK_REWARD_GUARD, TASK_SAVE, TASK_SCAN, TASK_UNLOCK,
     },
     worker::WorkerError,
 };
@@ -48,6 +49,8 @@ const SCAN_UPDATE: usize = 0x002a_be08;
 /// The original's update of task 9, `002ae568`: its welcome and the request
 /// for a new Bank.
 const OPEN_UPDATE: usize = 0x002a_e568;
+/// The original's update of the unlock screen, task 0x17, `002ad7bc`.
+const UNLOCK_UPDATE: usize = 0x002a_d7bc;
 /// `002ae8b0(task)`: the defaults and translated names of a new Bank.
 const NEW_BANK_DEFAULTS: usize = 0x002a_e8b0;
 /// The updates of the reward guard (task 0xc, `002ad1bc`) and of the claim
@@ -103,6 +106,22 @@ enum Step {
     Done,
     /// Save and Quit (`save_steps`).
     Save(save_steps::Step),
+    /// The unlock screen took the key: its loading screen stands before the
+    /// unlock is written.
+    Unlock,
+    /// The unlock is being written; once it is, the task ends when its
+    /// loading screen has stood for 1.5 s.
+    Unlocking,
+    /// The unlock is written; the task ends once its loading screen has
+    /// stood for 1.5 s.
+    Unlocked,
+}
+/// The message a save in progress that waits, or is left to Transporter's
+/// question, ends the opening with; kept for Cancel on the unlock screen.
+#[derive(Clone, Copy)]
+enum Back {
+    Waiting { title: u64, trainer: Trainer },
+    Transporter,
 }
 struct Runtime {
     game: Option<NativeGameSession>,
@@ -125,6 +144,14 @@ struct Runtime {
     panel: Panel,
     /// When the loading screen that is up went up.
     spinner: Spinner,
+    /// L, A and START were held on START's loading screen, after its first
+    /// 0.5 s (`unlock::keys_held`).
+    keys: bool,
+    /// The opening ended toward the unlock screen, with this message for
+    /// Cancel there.
+    back: Option<Back>,
+    /// The outcome the opening ends with instead of done or failed.
+    outcome: Option<u8>,
 }
 /// The game the Bank was loaded with, as it was then: a save in progress is
 /// bound to both.
@@ -191,6 +218,9 @@ static STATE: Exclusive<Runtime> = unsafe {
         blank: None,
         panel: Panel::new(),
         spinner: Spinner::new(),
+        keys: false,
+        back: None,
+        outcome: None,
     })
 };
 
@@ -446,6 +476,133 @@ impl Runtime {
         task.end_busy();
         show(ui).map_err(|_| Fault::NativeObject)?;
         Ok(None)
+    }
+    /// Notes L, A and START held now (`unlock::keys_held`).
+    fn note_keys(&mut self) {
+        if unsafe { unlock::keys_held() } {
+            self.keys = true;
+        }
+    }
+    /// A save in progress that waits for its game, or is left to
+    /// Transporter's question, ends the opening at its message, or, with
+    /// the keys held and the save not unlocked yet, leads to the unlock
+    /// screen (`unlock::offered`), which ends the loading panel itself.
+    fn turn_back_or_unlock(
+        &mut self,
+        task: Task,
+        back: Back,
+        unlocked: bool,
+    ) -> Result<Option<bool>, Fault> {
+        let keys = core::mem::take(&mut self.keys);
+        if unlock::offered(keys, unlocked) {
+            self.back = Some(back);
+            self.outcome = Some(unlock::KEYS);
+            return Ok(Some(self.complete(task)));
+        }
+        self.show_back(task, back)
+    }
+    /// The message of `back`, and the start screen follows (`turn_back`).
+    fn show_back(&mut self, task: Task, back: Back) -> Result<Option<bool>, Fault> {
+        match back {
+            Back::Waiting { title, trainer } => {
+                let gen7 = GameKind::of_title(title)
+                    .ok_or(Fault::StorageInvalid)?
+                    .gen7();
+                let heap = task.pointer(0xc)?;
+                self.turn_back(task, |ui| unsafe {
+                    bank_common::ui::other_copy(
+                        ui,
+                        heap,
+                        &trainer.name,
+                        trainer.id,
+                        Trainer::digits(gen7),
+                    )
+                })
+            }
+            Back::Transporter => self.turn_back(task, |ui| unsafe {
+                bank_common::ui::notice(ui, bank_common::ui::OPEN_TRANSPORTER)
+            }),
+        }
+    }
+    /// One frame of the unlock screen, task 0x17 (`unlock::frame`): the
+    /// update's answer.
+    unsafe fn unlock(&mut self, task: Task) -> Result<u32, Fault> {
+        let raw = task.raw();
+        if self.step != Step::Idle && self.owner != raw as usize {
+            return Err(Fault::NativeObject);
+        }
+        match self.step {
+            // Cancel's message is up: once it is answered the session ends.
+            Step::TurnBack => {
+                return match unsafe { bank_common::ui::acknowledged(task.ui()?) } {
+                    Ok(false) => Ok(0),
+                    Ok(true) => {
+                        self.complete(task);
+                        Ok(task.finish(false))
+                    }
+                    Err(_) => Err(Fault::NativeObject),
+                };
+            }
+            // Nothing is written in the loading screen's first 0.5 s.
+            Step::Unlock => {
+                if !self.spinner.idle(now()) {
+                    self.submit(task, Step::Unlocking, Job::Unlock)?;
+                }
+                return Ok(0);
+            }
+            Step::Unlocking => {
+                return match self.poll(task)? {
+                    None => Ok(0),
+                    Some(Reply::Unlocked) => {
+                        self.step = Step::Unlocked;
+                        Ok(0)
+                    }
+                    Some(_) => Err(Fault::JournalRecovery),
+                };
+            }
+            // Written: the session ends, through cleanup's own loading
+            // screen, once this one has stood its time.
+            Step::Unlocked => {
+                if self.spinner.held(now()) {
+                    return Ok(0);
+                }
+                let ui = task.ui()?;
+                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+                self.complete(task);
+                return Ok(task.finish(true));
+            }
+            Step::Idle => {}
+            _ => return Err(Fault::NativeObject),
+        }
+        let state = unsafe { read_word(raw, 0x10) };
+        let (typed, code) = unsafe { (read_word(raw, 0x40), read_word(raw, 0x3c)) };
+        match unlock::frame(state, typed, code) {
+            unlock::Frame::Skip => unsafe { write_word(raw, 0x10, unlock::SHOW_CODE) },
+            unlock::Frame::Original => {}
+            unlock::Frame::Unlock => {
+                // The original's loading text of its cleanup; nothing is
+                // read or written before it has stood 0.5 s.
+                refuse_home(true);
+                unsafe { bank_common::ui::loading(task.ui()?, bank_common::ui::CLEANUP_MESSAGE) }
+                    .map_err(|_| Fault::NativeObject)?;
+                self.spinner.up(now());
+                task.begin_busy();
+                self.owner = raw as usize;
+                self.step = Step::Unlock;
+                return Ok(0);
+            }
+            unlock::Frame::Back => {
+                // No loading screen: the message the opening would have
+                // shown, at once, and nothing written.
+                let back = self.back.take().ok_or(Fault::NativeObject)?;
+                self.owner = raw as usize;
+                self.show_back(task, back)?;
+                return Ok(0);
+            }
+        }
+        let original: unsafe extern "aapcs" fn(*mut u8) -> u32 =
+            unsafe { transmute(UNLOCK_UPDATE) };
+        Ok(unsafe { original(raw) })
     }
     /// After `restore_bank`, with staging still the body it restored: the
     /// Pokédex views are reloaded from the live object and checked.
@@ -838,31 +995,19 @@ impl Runtime {
                 self.submit(task, Step::Recover, Job::Recover { game })?;
                 Ok(None)
             }
+            // The save in progress waits for its game, and nothing was
+            // written. The original's message for another copy of a game
+            // names it; the start screen follows, where the game can be put
+            // in and START pressed again.
             (Step::Recover, Reply::Waiting { title, trainer }) => {
-                // The save in progress waits for its game, and nothing was
-                // written. The original's message for another copy of a
-                // game names it; the start screen follows, where the game
-                // can be put in and START pressed again.
-                let gen7 = GameKind::of_title(title)
-                    .ok_or(Fault::StorageInvalid)?
-                    .gen7();
-                let heap = task.pointer(0xc)?;
-                self.turn_back(task, |ui| unsafe {
-                    bank_common::ui::other_copy(
-                        ui,
-                        heap,
-                        &trainer.name,
-                        trainer.id,
-                        Trainer::digits(gen7),
-                    )
-                })
+                self.turn_back_or_unlock(task, Back::Waiting { title, trainer }, false)
             }
             // The save in progress is left to Transporter's question: the
             // original's message that sends the user to Transporter for the
             // cleanup, then the start screen.
-            (Step::Recover, Reply::AskTransporter) => self.turn_back(task, |ui| unsafe {
-                bank_common::ui::notice(ui, bank_common::ui::OPEN_TRANSPORTER)
-            }),
+            (Step::Recover, Reply::AskTransporter { unlocked }) => {
+                self.turn_back_or_unlock(task, Back::Transporter, unlocked)
+            }
             // The Game Card is gone: nothing of the session was saved, and
             // what the journal holds is the next START's to settle
             // (docs/internals.md, "When a job cannot finish").
@@ -1220,9 +1365,46 @@ pub unsafe extern "aapcs" fn bank_offline_load(raw: *mut u8) -> u32 {
     if state.fault != Fault::None {
         return state.report_failure(task);
     }
+    // L, A and START, from START's loading screen's first 0.5 s until the
+    // opening decides.
+    if unsafe { read_word(raw, 0) } == TASK_OPEN && !state.spinner.idle(now()) {
+        state.note_keys();
+    }
     match unsafe { state.load(task) } {
         Ok(None) => 0,
-        Ok(Some(success)) => task.finish(success),
+        Ok(Some(success)) => match state.outcome.take() {
+            Some(outcome) => {
+                task.set_outcome(outcome);
+                1
+            }
+            None => task.finish(success),
+        },
+        Err(fault) => {
+            state.fault = fault;
+            state.report_failure(task)
+        }
+    }
+}
+
+/// Replaces task 0x17's update (`00361c20`), the original's unlock screen,
+/// which the opening leads to with L, A and START (`unlock`). Its set-up
+/// and end stay native.
+/// # Safety
+/// The trusted Bank task driver supplies the live unlock task on the main
+/// thread, after native init.
+#[no_mangle]
+pub unsafe extern "aapcs" fn bank_offline_unlock(raw: *mut u8) -> u32 {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[TASK_UNLOCK]) }) else {
+        return 1;
+    };
+    let Some(mut state) = STATE.take() else {
+        return 0;
+    };
+    if state.fault != Fault::None {
+        return state.report_failure(task);
+    }
+    match unsafe { state.unlock(task) } {
+        Ok(answer) => answer,
         Err(fault) => {
             state.fault = fault;
             state.report_failure(task)
@@ -1250,6 +1432,8 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
         let idle = state.spinner.idle(now());
         match state.panel.frame(before, idle) {
             panel::Frame::Show => {
+                state.keys = false;
+                state.back = None;
                 let shown = task.ui().map_err(Fault::from).and_then(|ui| unsafe {
                     bank_common::ui::loading(ui, panel::MESSAGE).map_err(|_| Fault::NativeObject)
                 });
@@ -1265,6 +1449,9 @@ pub unsafe extern "aapcs" fn bank_offline_scan(raw: *mut u8) -> u32 {
             // The panel stands for 0.5 s before the first state.
             panel::Frame::Wait => return 0,
             panel::Frame::Original => {}
+        }
+        if !idle {
+            state.note_keys();
         }
     }
     // The state is free while the original runs: its no-game notice

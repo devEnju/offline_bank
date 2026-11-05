@@ -214,6 +214,16 @@ Until you answer nothing is changed: press HOME and close Poké Transporter to d
 
 **After updating the patch.** A Save and Quit that was interrupted is finished by any later release that stores the Bank the same way. A Bank that a release stored in an earlier way needs the migration, which finishes no save in progress itself: it says so (`00000BAD 00000007`), and the last release of that way finishes it, v0.2.1 for a Bank from v0.2.1 or before and v0.4.0 for one from v0.4.0 or before. A save in progress that v0.3.0 began is recorded in a form v0.4.0 does not read; the migration writes it in v0.4.0's form first, so that v0.4.0 finishes it too. If the game is not inserted then, v0.4.0's message names no trainer, because v0.3.0 did not record one.
 
+### Without the game: the unlock key
+
+If the game a session waits for is gone for good, the original's unlock screen hands the decision to Poké Transporter anyway. **Hold L, A and START** after pressing START, while the loading screen is up, until it ends. Instead of the message, Bank shows:
+
+> Please enter the unlock key: (eight digits)
+
+with the number keyboard. Type the eight digits shown and confirm. Bank shows "Communication in your last session did not complete correctly. Performing cleanup process now..." while it notes the unlock, then returns to its start screen. From then on every START shows the message to open Poké Transporter ([above](#a-save-left-to-transporter)), whatever game is inserted, until Poké Transporter has settled the save. Another number shows "The unlock key is incorrect." and the code again; **Cancel** shows the message you would have got and changes nothing.
+
+Without the game Bank cannot tell which boxes are safe: one of the two answers in Poké Transporter loses the Pokémon of that session. Unlock only when the game will not come back.
+
 ## A pulled Game Card or a full SD card
 
 Bank shows one of the original's messages for these, and after A it is back on its start screen. Bank does not have to be closed: put the cartridge back, or close Bank and free space, and press START. Nothing is lost by the message itself.

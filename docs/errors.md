@@ -120,7 +120,12 @@ flowchart TD
     ABSENT -->|"Withdrawals/releases only, or no moves"| KEEP
     ABSENT -->|"Deposits and withdrawals"| TAKEBACK{"Leave pending; take back any<br/>Transporter restore question"}
     TAKEBACK -->|"Journal update fails"| F10
-    TAKEBACK -->|"Recorded, or already recorded"| WAIT["You previously used a different copy of this game.<br/>Please try again using [name]’s game<br/>(Trainer ID No. [number]).<br/>1 page"]
+    TAKEBACK -->|"Recorded, or already recorded"| UNLOCKED{"Unlocked?"}
+    UNLOCKED -->|"Yes"| TRANSPORTER
+    UNLOCKED -->|"No"| KEYS{"L, A and START held<br/>on the loading screen?"}
+    ASK -->|"Recorded, or already recorded; not unlocked, keys held"| UNLOCK(["Unlock screen — below"])
+    KEYS -->|"Yes"| UNLOCK
+    KEYS -->|"No"| WAIT["You previously used a different copy of this game.<br/>Please try again using [name]’s game<br/>(Trainer ID No. [number]).<br/>1 page"]
     WAIT -->|"A; supply expected game and press START"| TITLE
     KEEP --> WRITE{"Finish recovery and load Bank"}
     COMMIT --> WRITE
@@ -139,10 +144,23 @@ flowchart TD
 | Game missing or different medium with a different image; deposits only | Commit new Bank | Game selection |
 | Game missing or different medium with a different image; withdrawals/releases only, or no moves | Keep old Bank | Game selection |
 | Game missing, different medium with a different image, or another trainer's game; deposits and withdrawals | Leave pending; take back any Transporter question | Waiting for game → A → START |
+| Any of the two rows that leave it pending, with L, A and START held on the loading screen and the save not unlocked | Leave pending | Unlock screen (below) |
+| Any of the two rows that leave it pending, unlocked | Leave pending | Two-page instruction → A → Bank start screen |
 | Cartridge disappears during recovery | Leave pending | Retry → A → START |
 | Game read, transaction binding, secure-value operation, recovery write, or Bank readback fails otherwise | Stop the run | HOME error |
 
 Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title, kind of copy and trainer (name and the ID as the original shows it) present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
+
+**The unlock screen** is the original's, without its server: "Please enter the unlock key: [eight digits]" (39:0x22) and the number keyboard.
+
+| Typed | Shown | Journal |
+| --- | --- | --- |
+| The eight digits shown | "Communication in your last session did not complete correctly. Performing cleanup process now..." (39:0x06) with the loading screen for 1.5 s, the closing screen, the start screen | bit 3 set: from then on every START with an unsettled save shows the two-page instruction to open Transporter, whatever game is there |
+| Another number | "The unlock key is incorrect." (39:0x23), then the code again | — |
+| Cancel | The message the opening found, at once (the different copy, or the two-page instruction), then the start screen | — |
+| Bank closed from the HOME Menu in the keyboard | — | — |
+
+A failed write of bit 3 is the HOME error screen with `10`.
 
 Repeated Bank START with the same nonmatching game repeats the message to open Transporter. If an exact before/after image becomes available, Bank can settle it itself. If the game is absent, only a nonmatching copy on the other medium is available, or the game is another trainer's, Bank waits instead. Taking out one cartridge may expose an installed copy of the same title; Bank then treats that other medium as unavailable for the pending save.
 

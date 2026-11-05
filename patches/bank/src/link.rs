@@ -19,6 +19,7 @@ mod linked {
         bank_offline_rewards,
         bank_offline_load,
         bank_offline_save,
+        bank_offline_unlock,
     );
     #[cfg(feature = "test-build")]
     mod test_build {

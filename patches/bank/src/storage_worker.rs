@@ -72,6 +72,10 @@ pub enum Job {
         /// Whose game it is, read when the game was loaded.
         trainer: Trainer,
     },
+    /// The save in progress was unlocked on the original's unlock screen:
+    /// Transporter's question settles it whatever game is found from then on
+    /// (`BankFiles::unlock`).
+    Unlock,
     /// Save and Quit once the original's writer has ended, whether it
     /// wrote the game or failed: the save is settled from what the game
     /// holds (`finalize`). `status` is the writer's result, 0 when it
@@ -132,8 +136,13 @@ pub enum Reply {
     },
     /// The save in progress moved Pokémon both ways and its game, there and
     /// saved on since, no longer tells which snapshot loses none: it is left
-    /// to Transporter's question (`Settled::Asks`).
-    AskTransporter,
+    /// to Transporter's question (`Settled::Asks`); `unlocked` when it was
+    /// unlocked, so whatever game was found.
+    AskTransporter {
+        unlocked: bool,
+    },
+    /// The unlock is written.
+    Unlocked,
     /// The job could not finish, and this is what it leaves.
     Ended(Ending),
 }
@@ -817,9 +826,23 @@ mod arm {
                             title: pending.game.title_id,
                             trainer: Trainer::of(&pending.game),
                         }),
-                        Settled::Asks => Ok(Reply::AskTransporter),
+                        Settled::Asks => Ok(Reply::AskTransporter {
+                            unlocked: self
+                                .files
+                                .unlocked()
+                                .map_err(|e| Fault::JournalRecovery.files(e))?,
+                        }),
                         Settled::Open => Ok(Reply::Ended(Ending::Retry)),
                     }
+                }
+                Job::Unlock => {
+                    let Phase::Prepared(_) = self.phase()? else {
+                        return Err(Fault::JournalRecovery.with(0));
+                    };
+                    self.files
+                        .unlock()
+                        .map_err(|e| Fault::JournalRecovery.files(e))?;
+                    Ok(Reply::Unlocked)
                 }
                 Job::Finalize { game, status } => {
                     let Phase::Prepared(pending) = self.phase()? else {

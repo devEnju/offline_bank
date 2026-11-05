@@ -115,6 +115,7 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x00362034, 0x002b1cf8, Ptr(Sym("bank_offline_save"))),
             (0x00362044, 0x002b4a20, Ptr(Sym("bank_offline_save"))),
             (0x00361e84, 0x002af034, Raw(0x002af124)),
+            (0x00361c20, 0x002ad7bc, Ptr(Sym("bank_offline_unlock"))),
         ]),
     }
     // Only the test build: the main menu's update (its table slot) and its
@@ -187,6 +188,28 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x002ac924, 0xe3a00003),
             (0x002aca90, 0xe3a00020),
         ]);
+        // The unlock screen (task 0x17) as its entry reads and writes it,
+        // and the check of another copy's key test and outcome, which the
+        // opening makes and ends with.
+        relies.extend([
+            (0x002a5af4, 0x002a62bc),
+            (0x002a6584, 0x00361c14),
+            (0x002ad7e4, 0x002ad8c4),
+            (0x002adc00, 0xe584003c),
+            (0x002ad904, 0xe594203c),
+            (0x002adb48, 0xe5840040),
+            (0x002d15dc, 0xe5942040),
+            (0x002d160c, 0xe3a00005),
+            (0x002d1634, 0xe3a00007),
+            (0x002adbe8, 0xe5840048),
+            (0x002a8bb4, 0xe3a00016),
+            (0x002a8b68, 0xe3a01c01),
+            (0x002a8b80, 0xe3a01010),
+            (0x002a8b9c, 0xe3a01a01),
+            (0x002a8b50, 0xebfe3267),
+            (0x002a8b5c, 0xebfe3230),
+            (0x002a8b6c, 0xebfcfa76),
+        ]);
     }
 
     // What must stay the original's: the main menu's locations but the test
@@ -228,6 +251,11 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x002d0fc8, 0xbc),
             (0x002b0098, 0x1d8),
             (0x002ae310, 0x230),
+            // The unlock screen's vtable head, its original update and its
+            // keyboard's listener, which its entry calls or relies on.
+            (0x00361c14, 0xc),
+            (0x002ad7bc, 0x28c),
+            (0x002d1550, 0xf8),
         ]);
     }
 
@@ -239,9 +267,9 @@ pub fn expectation(kind: &'static str) -> Expectation {
         protected,
         router,
         entries: match kind {
-            "bank" => 9,
+            "bank" => 10,
             "migration" => 3,
-            "test" => 11,
+            "test" => 12,
             _ => 7,
         },
         menu_edits: if kind == "test" { 2 } else { 0 },

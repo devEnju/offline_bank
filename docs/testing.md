@@ -109,6 +109,16 @@ Choose **(before)** with a cartridge game that is not also installed. Keep anoth
 | 5 | Deposit one | Remove the cartridge and reopen. | Bank opens with the deposited Pokémon; it also remains on the cartridge. |
 | 6 | Deposit one, withdraw one | Remove the cartridge and reopen. | Native different-copy notice names the cartridge's trainer and ID; A returns to the title. Reinsert it and START again: Bank and game are as before the session. |
 
+Then, from the state of case 6 before the cartridge goes back:
+
+| Case | Step | Expected |
+| --- | --- | --- |
+| 6a | START, holding L, A and START from the moment the loading screen is up until it ends. | "Please enter the unlock key:" with eight digits, and the number keyboard. Holding them only in the loading screen's first half second, or not at all, gives the different-copy notice. |
+| 6b | Type another number. | "The unlock key is incorrect.", then the code again. HOME opens the HOME Menu from the keyboard. |
+| 6c | Cancel. | The different-copy notice at once, with no loading screen, then the title. START without the keys: the notice again. |
+| 6d | Repeat 6a and type the code shown. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for about 1.5 s, the closing screen, the title. START: "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank." START with the keys held: the same message, no unlock screen. |
+| 6e | Insert another trainer's cartridge of the game and START. | The same message to open Transporter. Transporter then asks its questions (case 4a). |
+
 ### The same game is cartridge and installed
 
 Choose **(before)**. Both copies must have readable saves of their own.

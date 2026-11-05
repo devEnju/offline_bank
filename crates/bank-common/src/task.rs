@@ -19,6 +19,9 @@ pub const TASK_LOAD: u32 = 0x0036_1ec8;
 pub const TASK_SAVE: u32 = 0x0036_2028;
 pub const TASK_REWARDS: u32 = 0x0036_19fc;
 pub const TASK_REWARD_GUARD: u32 = 0x0036_1bd8;
+/// Task 0x17, the original's unlock screen (factory case `002a62bc`), whose
+/// update the offline patch replaces.
+pub const TASK_UNLOCK: u32 = 0x0036_1c14;
 /// `00233a6c(save manager)`: the game object of the selected game.
 pub const SELECTED_GAME: usize = 0x0023_3a6c;
 /// `0023a754(words)`: the console's date and time as the original's packed
@@ -61,6 +64,8 @@ impl BankTask for Task {
         let offset = match unsafe { read_word(self.raw(), 0) } {
             TASK_LOAD | TASK_REWARD_GUARD => 0x38,
             TASK_SCAN | TASK_REWARDS => 0x40,
+            // Its set-up keeps the shared UI there (`002adbe8`).
+            TASK_UNLOCK => 0x48,
             _ => 0x3c,
         };
         self.pointer(offset)

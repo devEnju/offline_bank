@@ -63,9 +63,9 @@ The migration and the download ([below](#the-download-patch)) are kept minimal: 
 | Task 3, busy poll (`00361ad4`) | original | `bank_migrate_scan` | `bank_download_scan_busy` |
 | Scan state 0 starts no panel (`002ac00c`, `002ac018`) | yes | no: task 3's update is replaced | no |
 | Task `0xC`, update (`00361be4`) | `bank_offline_rewards` | original | `bank_download_save` |
-| Tasks `0x10`, 7, `0xD`, `0xB`, the timestamp helper | yes | no | no |
+| Tasks `0x10`, 7, `0xD`, `0xB`, `0x17`, the timestamp helper | yes | no | no |
 | No-game notice without the HOME question (`002ac7a4`, `002ac7a8`) | `bank_offline_no_game_stub` | no | no |
-| Regions / entry functions | 29 / 9 | 9 / 3 | 13 / 7 |
+| Regions / entry functions | 30 / 10 | 9 / 3 | 13 / 7 |
 
 Every entry function is a patch's own. `bank_message_stub` is the offline patch's: it lets HOME and sleep through for a message that waits, only when the patch has no job out ([HOME button and sleep](#home-button-and-sleep)). The migration shows no such message while HOME is refused, and its result screen lets HOME through itself; the original refuses HOME for the download's whole online session itself. `bank_version_shown` is each patch's own under one name: the start screen writes "Ver. 1.5" by putting two numbers into its message `0x4E` and calling `001e21c8(context, 0, 0x24, 0x4E)`, which loads the message into the first of the context's two work strings (`[context + 4]`), fills in the values into the second and hands that to the pane (`001e264c` finds it, `0029a628` sets its text). The entry makes that call, adds the patch's name to the second string in place and gives it to the pane again with the same two calls (`patch-common`'s `ui::version`, the same in Transporter). The line then reads "Ver. 1.5-offline", "Ver. 1.5-migration", "Ver. 1.5-download", or "Ver. 1.5-test" in a test build.
 
@@ -125,7 +125,7 @@ What the code cannot show: how the original behaves online with about 0.8 MB les
 
 ### Edits to the original
 
-The offline patch: 29 regions (28 words and the start-up hook) and nine entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
+The offline patch: 30 regions (29 words and the start-up hook) and ten entry functions. The builder checks every original word before patching and refuses to build if the five main-menu locations (`001d6554`, `002b33a4`, `002b33d4`, `003617bc`, `003617dc`) are not original. The console test build ([below](#the-console-test-build)) is a profile of its own, `test`: these edits and two of those five locations, which only it may edit.
 
 | Address | Original | Replacement |
 | --- | --- | --- |
@@ -140,6 +140,7 @@ The offline patch: 29 regions (28 words and the start-up hook) and nine entry fu
 | `00361cfc`, `00361d0c` | Task 9 update `002ae568` and busy poll `002b4a20` | `bank_offline_load` |
 | `00361ed4`, `00361ee4` | Task `0x10` update `002af460` and busy poll | `bank_offline_load` |
 | `00362034`, `00362044` | Task 7 update `002b1cf8` and busy poll | `bank_offline_save` |
+| `00361c20` | Task `0x17` update `002ad7bc`, the unlock screen | `bank_offline_unlock` ([The unlock screen](#an-interrupted-save)) |
 | `00361be4` | Task `0xC` update `002ad1bc`, reward guard | `bank_offline_rewards` |
 | `00361a08` | Task `0xD` update `002a9750`, reward claim | `bank_offline_rewards` |
 | `00361ac4` | Task 3 update `002abe08`, the game scan | `bank_offline_scan`: the scan's loading panel one frame before its first state, then the original ([Screens](#screens)) |
@@ -170,9 +171,9 @@ Task object: vtable `+8` init, `+c` update, `+14` end, `+1c` busy poll; state at
 | 4 | Main menu (never created) | 7 | Save |
 | 9 | Open Bank | `0x14` | Cleanup, then task 2 |
 | `0xA` | Game selection | `0x10` | Load Bank |
-| `0xB` | Scene set-up | | |
+| `0xB` | Scene set-up | `0x17` | Unlock screen |
 
-`navigation::destination` rewrites the original router's answer: `3 → 9`, `9 → 0xA` (original: 4), `0xA` outcome `0x13` → `0x14` (original: 4), `0xA` outcome 5 → `0xB` (as the original), `0xB → 0x10`, `0x10 → 0xC`, box-screen cancel → `0x14`, a cancelled task (the manager's flag `+0x1a`) → `0x14`, as the original answers it, and anything outside a small allow-list → `0x14`. HOME and sleep and the loading screen's time follow from that answer as from any other. A host test covers every input, with the original router's own answers: [router.rs](../crates/bank-common/src/router.rs) transcribes `002a5580` case by case from its jump table at `002a55ac`, for the tests of all three patches for Bank.
+`navigation::destination` rewrites the original router's answer: `3 → 9`, `9` outcome `0x16` → `0x17` (the unlock screen, [below](#an-interrupted-save)), `0x17` → `0x14` but for outcome `0xE`, Bank closed meanwhile, which goes to `0x18` as in the original, `9 → 0xA` (original: 4), `0xA` outcome `0x13` → `0x14` (original: 4), `0xA` outcome 5 → `0xB` (as the original), `0xB → 0x10`, `0x10 → 0xC`, box-screen cancel → `0x14`, a cancelled task (the manager's flag `+0x1a`) → `0x14`, as the original answers it, and anything outside a small allow-list → `0x14`. HOME and sleep and the loading screen's time follow from that answer as from any other. A host test covers every input, with the original router's own answers: [router.rs](../crates/bank-common/src/router.rs) transcribes `002a5580` case by case from its jump table at `002a55ac`, for the tests of all three patches for Bank.
 
 ### The console test build
 
@@ -546,6 +547,21 @@ A save in progress (`Phase::Prepared`) is settled by the next start, in `Job::Re
 | Not among the games the scan loaded (`NativeGameError::NotLoaded`, `Job::Recover { game: None }`) | By what the save moved if that was one way or none; otherwise the save waits: bit 2 is cleared if it was set, nothing else is written, and the reply is `Reply::Waiting` with the title and the trainer | `by_moves(.., false)`, `moved::choose` |
 
 **An unlocked save** (bit 3 of byte 8) is left to Transporter's question where it would wait: bit 2 is still set or cleared by what was found, and `BankFiles::ask` answers whether Transporter's question settles the save then, bit 2 or bit 3 (`Metadata::asks`), so the reply is `Reply::AskTransporter`. Bit 3 is written once (`BankFiles::unlock`, the same record with the next sequence number, written again while one replica does not hold it, as for bit 2) and ends with the record that settles the save.
+
+**The unlock screen.** A save in progress that waits for its game, or is left to Transporter's question and not unlocked yet, leads to the original's unlock screen instead of its message when L, A and START were held on START's loading screen on any frame after its first 0.5 s, until the opening decides (the scan's and the opening's hooks note it, `unlock::keys_held`, with the original's calls of its check of another copy: `002354f4`, `00235424(pads, 0)`, `001e754c(pad, mask, 0)` for the masks `0x100`, `0x10`, `0x1000` at `002a8b4c`..`002a8bb0`). The original reached it from that check (task `0x12`), which ends with outcome `0x16` for the keys (`002a8bb4`) when no save holds the server's session; the opening ends with the same outcome, the loading panel still up, and the router answers task `0x17`.
+
+The task's set-up (`002adbd4`) keeps the shared UI at `+0x48`, registers its keyboard's listener and draws the code it shows (`001e2e24(100000000)`, `+0x3c`). Its update (`002ad7bc`) is `bank_offline_unlock`, with what each frame does decided in [unlock.rs](../patches/bank/src/unlock.rs) (`unlock::frame`):
+
+| State of the original | What it does | The entry |
+| --- | --- | --- |
+| 0–2 | sends the code to the server (`002a27c8`) and waits for the keys that unlock it (`+0x54`..`+0x58`) | goes on at 3: nothing is sent, and there are no keys |
+| 3, 4 | ends the loading panel, shows "Please enter the unlock key: [code]" (39:0x22) and opens the number keyboard; its listener (`002d1550`) keeps the number typed (`+0x40`) | the original |
+| 5 | a key of the server's was typed: sends the unlock (`001d5c28(request, reply, 1)`) | as for the code |
+| 7 | another number: "The unlock key is incorrect." (39:0x23), then 3 | the code shown, typed: takes over (below); any other number: the original |
+| `0xB` | Bank was closed from the HOME Menu in the keyboard: outcome `0xE` | the original |
+| `0xC` | Cancel: outcome 9, the check of another copy again | the opening's message, at once, without a loading screen, and nothing written; then cleanup |
+
+For the code it puts up the loading panel with "Communication in your last session did not complete correctly. Performing cleanup process now..." (39:0x06, the loading text of the original's check of another copy, `002a90cc`), refuses HOME and sleep, and after 0.5 s has the worker write bit 3 (`Job::Unlock`, `BankFiles::unlock`). Once the panel has stood 1.5 s it ends, with no message, and the task ends; cleanup's loading screen and the start screen follow. A write that fails is the error screen with its numbers (fault `10`). HOME and sleep go through on the code, the keyboard and the messages.
 
 **A save that waits** is not an error. The hook shows the original's message `0xA` with the trainer's name and ID ([Tasks and routing](#tasks-and-routing)) and ends task 9 through cleanup, where the files are closed, then the start screen. The worker keeps no failed state for it, so the next START opens the files again and settles the save if its game is there. Three related checks have numbers of their own: a record whose title is none of the eight games is fault `5`; a game object of that title that is not what the patch expects is fault `A`, as when a game is loaded; a game loaded while a save is still in progress is fault `10`. An opening settles a save in progress or ends there, so the last cannot be reached.
 

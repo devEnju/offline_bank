@@ -219,6 +219,11 @@ impl<S: Storage> BankSession<S> {
         Ok(self.head.metadata().asks())
     }
 
+    /// Whether the save in progress was unlocked (`Metadata::unlocked`).
+    pub fn unlocked(&self) -> bool {
+        self.head.metadata().unlocked
+    }
+
     /// Unlocks the save in progress for Transporter's question
     /// (`BankStore::unlock`).
     pub fn unlock(&mut self) -> Result<(), Error<S::Error>> {
