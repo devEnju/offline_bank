@@ -15,6 +15,7 @@ pub const PROFILE: Profile = Profile {
         &NATIVE_FINISHED_BODY,
         &COUNT_UNAVAILABLE_BODY,
         &UNLOCK_TASK,
+        &TRAINER_BLOCK,
     ],
     menu_edits: &[],
 };
@@ -116,6 +117,19 @@ const UNLOCK_TASK: [(u32, u32); 17] = [
     (0x002a_8b50, 0xebfe_3267),
     (0x002a_8b5c, 0xebfe_3230),
     (0x002a_8b6c, 0xebfc_fa76),
+];
+/// Where the records screen's collection (`0026de9c`) finds the trainer
+/// block in a game object, which the opening reads the same way
+/// (`native_game::trainer`): `0x12800 + 0x1ac` for X to Alpha Sapphire,
+/// `0x74000 + 0x304` for Sun to Ultra Moon, and the block's virtuals it
+/// calls, `+0x24` the name and `+0x1c` the ID.
+const TRAINER_BLOCK: [(u32, u32); 6] = [
+    (0x0026_dee8, 0x0284_0b4a),
+    (0x0026_deec, 0x0280_0f6b),
+    (0x0026_def4, 0xe284_091d),
+    (0x0026_def8, 0xe280_0fc1),
+    (0x0026_e0a0, 0xe591_2024),
+    (0x0026_e0b4, 0xe591_101c),
 ];
 /// The original's "finished", `mov r0, #1; bx lr`.
 const NATIVE_FINISHED_BODY: [(u32, u32); 2] = [

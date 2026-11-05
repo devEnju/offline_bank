@@ -98,6 +98,7 @@ Then, from the state of case 4:
 | 4b | Answer Yes, then No on the next question; START again, answer No, then No. | Each time "This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?" with Yes and No, then the closing screen and the title without a spinner. Bank still shows the message to open Transporter. HOME works on the second question too. |
 | 4c | Answer Yes, then Yes. Open Bank and the game. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for about 1.5 s, the closing screen, the title. Bank opens: the withdrawn Pokémon is in Bank, the deposited one in the game; nothing lost. |
 | 4d | Repeat case 4 from the backup, answer No, then Yes. Open Bank. | The same screens. Bank opens with the deposited Pokémon, which is also in the game; the withdrawn Pokémon is lost. |
+| 4e | From case 4: answer Yes, then on the second question press HOME and close Transporter; open it and START. | The first question again; nothing was written. |
 
 **Case 4 leaves a save that only an answer can settle. Use disposable Pokémon.**
 
@@ -120,6 +121,16 @@ Then, from the state of case 6 before the cartridge goes back:
 | 6d | Repeat 6a and type the code shown. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for about 1.5 s, the closing screen, the title. START: "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank." START with the keys held: the same message, no unlock screen. |
 | 6e | Insert another trainer's cartridge of the game and START. | The same message to open Transporter. Transporter then asks its questions (case 4a). |
 
+From a fresh state of case 6, and of case 4 for 6i and 6j:
+
+| Case | Step | Expected |
+| --- | --- | --- |
+| 6f | START; hold L, A and START briefly while the game is still being checked, and let go before it ends. | The unlock screen. |
+| 6g | START; hold them briefly only in the last moment before the message would come. | The unlock screen. |
+| 6h | Open the unlock screen; in the keyboard press HOME and close Bank. Open Bank and START. | Bank closes; the next START shows the different-copy notice; nothing was written. |
+| 6i | From case 4 (the game played on): START holding the keys; Cancel. | The unlock screen; after Cancel "Your communication with Poké Transporter did not complete correctly…" at once, then the title. |
+| 6j | From case 4: START holding the keys; type the code shown; then remove the cartridge and START. | The cleanup screen, the title; then the message to open Transporter, not the different-copy notice. |
+
 ### The same game is cartridge and installed
 
 Choose **(before)**. Both copies must have readable saves of their own.
@@ -130,6 +141,7 @@ Choose **(before)**. Both copies must have readable saves of their own.
 | 8 | Cartridge: deposit one, withdraw one | Remove it and reopen with the installed copy present. | Different-copy notice names the cartridge's trainer and ID. Reinsert it and START: state from before the session. |
 | 9 | Installed copy, cartridge out: deposit one, withdraw one | Insert the cartridge and reopen. | Different-copy notice names the installed copy's trainer and ID. Remove the cartridge and START: state from before the session. |
 | 9a | Cartridge: deposit one, withdraw one | Reopen with another trainer's cartridge of the same game, then with the session's cartridge played and saved. | First the different-copy notice with the session's trainer and ID, then "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank." |
+| 9b | Cartridge: deposit one, withdraw one | As 9a, once with a Gen 6 game and once with a Gen 7 game; then with a copy of the session's save edited to another secret ID (same name and Trainer ID, for example with Checkpoint and PKHeX), played and saved. | Each as 9a; the edited save gets the different-copy notice, not the message to open Transporter. |
 
 The trainer ID has five digits for Gen 6 and six for Gen 7. The other copy must not satisfy recovery for the original.
 

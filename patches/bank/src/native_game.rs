@@ -360,12 +360,13 @@ mod arm {
         Ok((game.as_ptr(), kind))
     }
 
-    /// Where a game object keeps its trainer's block: X to Alpha Sapphire,
-    /// and Sun to Ultra Moon, as the records screen's collection
-    /// (`0026de9c`) finds it in the selected game. Its virtual `+0x24`
-    /// copies the name with its end mark into 13 units, `+0x1c` answers the
-    /// 32-bit trainer ID.
-    const TRAINER_GEN6: usize = 0x0001_2bac;
+    /// Where a game object keeps its trainer's block: X to Alpha Sapphire
+    /// (`0x12800 + 0x1ac`, `0026dee8`), and Sun to Ultra Moon (`0x74000 +
+    /// 0x304`, `0026def4`), as the records screen's collection (`0026de9c`)
+    /// finds it in the selected game. Its virtual `+0x24` copies the name
+    /// with its end mark into 13 units (`0026e0a0`), `+0x1c` answers the
+    /// 32-bit trainer ID (`0026e0b4`).
+    const TRAINER_GEN6: usize = 0x0001_29ac;
     const TRAINER_GEN7: usize = 0x0007_4304;
     const TRAINER_NAME: usize = 0x24;
     const TRAINER_ID: usize = 0x1c;

@@ -220,7 +220,7 @@ If the game a session waits for is gone for good, the original's unlock screen h
 
 > Please enter the unlock key: (eight digits)
 
-with the number keyboard. Type the eight digits shown and confirm. Bank shows "Communication in your last session did not complete correctly. Performing cleanup process now..." while it notes the unlock, then returns to its start screen. From then on every START shows the message to open Poké Transporter ([above](#a-save-left-to-transporter)), whatever game is inserted, until Poké Transporter has settled the save. Another number shows "The unlock key is incorrect." and the code again; **Cancel** shows the message you would have got and changes nothing.
+with the number keyboard. Type the eight digits shown and confirm. Bank shows "Communication in your last session did not complete correctly. Performing cleanup process now..." while it notes the unlock, then returns to its start screen. From then on every START shows the message to open Poké Transporter ([above](#a-save-left-to-transporter)), whatever game is inserted, until Poké Transporter has settled the save; only if the game comes back with a save that is one of the two (unchanged, or the one Bank wrote) does Bank settle it by itself, as in the first table. Another number shows "The unlock key is incorrect." and the code again; **Cancel** shows the message you would have got and changes nothing.
 
 Without the game Bank cannot tell which boxes are safe: one of the two answers in Poké Transporter loses the Pokémon of that session. Unlock only when the game will not come back.
 

@@ -210,6 +210,17 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x002a8b5c, 0xebfe3230),
             (0x002a8b6c, 0xebfcfa76),
         ]);
+        // Where the trainer block of a game object lies and which of its
+        // virtuals give the name and the ID, as the records screen's
+        // collection (0026de9c) has them and the opening reads them.
+        relies.extend([
+            (0x0026dee8, 0x02840b4a),
+            (0x0026deec, 0x02800f6b),
+            (0x0026def4, 0xe284091d),
+            (0x0026def8, 0xe2800fc1),
+            (0x0026e0a0, 0xe5912024),
+            (0x0026e0b4, 0xe591101c),
+        ]);
     }
 
     // What must stay the original's: the main menu's locations but the test
