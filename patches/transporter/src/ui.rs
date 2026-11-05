@@ -370,11 +370,44 @@ mod native {
     /// # Safety
     /// `ui` is the live shared UI, on the main thread.
     pub unsafe fn cleanup(ui: *mut u8) {
+        unsafe { cleanup_panel(ui) }
+    }
+    unsafe fn cleanup_panel(ui: *mut u8) {
         unsafe {
             let start: unsafe extern "aapcs" fn(*mut u8) = transmute(PANEL_START);
             start(ui);
             let text: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(PANEL_TEXT);
             text(ui, super::MESSAGE_CLEANUP);
+        }
+    }
+
+    /// The buttons of a dialog with two (Yes and No), as the shared UI's
+    /// constructor registers them (`0024B6BC`): a record of seven words
+    /// each, its first word the button's ID, its second the pane the cursor
+    /// goes to. `0019c800(ui, 1)` is the layout they lie in, `0019c7e4(cursor,
+    /// layout, pane)` moves the cursor (`ui + 0x80`) to a pane, and `ui +
+    /// 0x84` is the button selected.
+    const BUTTON_RECORDS: usize = 0x002a_fce0;
+    const BUTTON_LAYOUT: usize = 0x0019_c800;
+    const MOVE_CURSOR: usize = 0x0019_c7e4;
+    const CURSOR: usize = 0x80;
+    const SELECTED: usize = 0x84;
+
+    /// Selects the first button, Yes, with the cursor on it, as the shared
+    /// UI's own callback does when it is touched (`0025BF64`..`0025BF8C`).
+    /// # Safety
+    /// `ui` is the live shared UI with its two buttons in, on the main
+    /// thread.
+    pub unsafe fn select_yes(ui: *mut u8) {
+        unsafe {
+            let layout: unsafe extern "aapcs" fn(*mut u8, u32) -> *mut u8 =
+                transmute(BUTTON_LAYOUT);
+            let move_cursor: unsafe extern "aapcs" fn(*mut u8, *mut u8, u32) =
+                transmute(MOVE_CURSOR);
+            let pane = (BUTTON_RECORDS as *const u32).add(1).read();
+            let cursor = ui.add(CURSOR).cast::<*mut u8>().read();
+            move_cursor(cursor, layout(ui, 1), pane);
+            ui.add(SELECTED).cast::<u32>().write(0);
         }
     }
 

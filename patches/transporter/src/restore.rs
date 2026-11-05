@@ -16,6 +16,12 @@
 //! Here the first answer chooses (Yes the save before, No the save after),
 //! the second question follows either answer, and only its Yes settles the
 //! save as the first chose. A No to it writes nothing: the original's end.
+//!
+//! The buttons are the shared UI's (its key handler `0024AF20`): `ui +
+//! 0x84` is the one selected, A presses it, B presses No (button ID 3)
+//! whatever is selected, and state 0xD selects No as they come in. On the
+//! first question Yes is selected instead and B presses nothing, since that
+//! answer only chooses; the second keeps the original's No and B.
 
 use offline_core::RecoveryDecision;
 
@@ -24,6 +30,9 @@ use offline_core::RecoveryDecision;
 /// the buttons out (`00243F68`).
 pub const START: u32 = 0;
 pub const ASK: u32 = 0xb;
+/// The state that brings the buttons in (`00243EE4`); in its last frame it
+/// selects No and goes on to `ANSWERING`.
+pub const BUTTONS: u32 = 0xd;
 pub const ANSWERING: u32 = 0xe;
 /// The question `+0x8F` selects: 0x1A first, 0x1B second.
 pub const FIRST: u8 = 0;
@@ -68,9 +77,18 @@ pub enum Frame {
     Work(RecoveryDecision),
     /// Settled: the task ends once the panel has stood its time.
     Done,
+    /// The first question's buttons come in: the original update, and once
+    /// it has gone on to `ANSWERING`, Yes selected.
+    Buttons,
 }
 
 impl Restore {
+    /// Whether B presses No, as the original has it: on every question but
+    /// the first, whose answer only chooses.
+    pub fn b_presses_no(&self) -> bool {
+        !matches!(self, Self::First(_))
+    }
+
     /// One frame in the task's state `at`, with `answer`, the byte its
     /// buttons' listener writes.
     pub fn frame(&mut self, at: u32, answer: u8) -> Frame {
@@ -83,6 +101,7 @@ impl Restore {
                 *self = Self::Second(decision, None);
                 Frame::Again
             }
+            Self::First(_) if at == BUTTONS => Frame::Buttons,
             Self::First(chosen) => {
                 if at == ANSWERING {
                     *self = Self::First(chosen.or(answered(answer)));
@@ -146,11 +165,20 @@ mod tests {
 
     /// One question from its state `ASK`: its buttons, the wait, the
     /// answer, the buttons taken out; `wait` is what each frame of the wait
-    /// does.
+    /// does. The first question's buttons come in with Yes selected.
     fn ask(restore: &mut Restore, answer: u8, wait: Frame) {
-        for at in [ASK, 0xc, 0xd] {
-            assert_eq!(restore.frame(at, 0), Frame::Original);
-        }
+        let first = matches!(restore, Restore::First(_));
+        assert_eq!(restore.frame(ASK, 0), Frame::Original);
+        assert_eq!(restore.frame(0xc, 0), Frame::Original);
+        let buttons = if first {
+            Frame::Buttons
+        } else {
+            Frame::Original
+        };
+        assert_eq!(restore.frame(BUTTONS, 0), buttons);
+        assert_eq!(restore.frame(BUTTONS, 0), buttons);
+        // B presses No on every question but the first.
+        assert_eq!(restore.b_presses_no(), !first);
         assert_eq!(restore.frame(ANSWERING, 0), wait);
         // Answered: the original takes the buttons out, over frames; the
         // listener's byte cleared meanwhile, the answer stays.
@@ -194,11 +222,26 @@ mod tests {
     }
 
     #[test]
+    fn b_presses_no_but_on_the_first_question() {
+        assert!(!Restore::First(None).b_presses_no());
+        assert!(!Restore::First(Some(RecoveryDecision::KeepBefore)).b_presses_no());
+        for other in [
+            Restore::Second(RecoveryDecision::CommitAfter, None),
+            Restore::Settling(RecoveryDecision::KeepBefore),
+            Restore::Settled,
+            Restore::Declined,
+        ] {
+            assert!(other.b_presses_no(), "{other:?}");
+        }
+    }
+
+    #[test]
     fn nothing_but_an_answer_in_the_wait_for_it_counts() {
         let mut restore = Restore::First(None);
-        for at in [ASK, 0xc, 0xd] {
+        for at in [ASK, 0xc] {
             assert_eq!(restore.frame(at, 1), Frame::Original);
         }
+        assert_eq!(restore.frame(BUTTONS, 1), Frame::Buttons);
         assert_eq!(restore.frame(ANSWERING, 7), Frame::Original);
         assert_eq!(restore, Restore::First(None));
         let mut restore = Restore::Second(RecoveryDecision::KeepBefore, None);

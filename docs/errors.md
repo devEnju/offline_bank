@@ -282,11 +282,11 @@ These notices filter the transfer rather than producing a numbered error. Each i
 
 ```mermaid
 flowchart TD
-    START(["Transporter START finds a pending save<br/>Bank left to its restore question"]) --> QUESTION{"You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?<br/>1 page; Yes and No buttons"}
+    START(["Transporter START finds a pending save<br/>Bank left to its restore question"]) --> QUESTION{"You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?<br/>1 page; Yes and No buttons, Yes selected, B does nothing"}
     QUESTION -->|"HOME; close Transporter before answering"| LATER(["No choice applied;<br/>decide later"])
     QUESTION -->|"Yes"| BEFORE["Noted: Bank's boxes<br/>from before the interrupted session"]
     QUESTION -->|"No"| AFTER["Noted: Bank's boxes<br/>from after the interrupted session"]
-    BEFORE --> FINAL{"This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?<br/>1 page; Yes and No buttons"}
+    BEFORE --> FINAL{"This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?<br/>1 page; Yes and No buttons, No selected, B chooses No"}
     AFTER --> FINAL
     FINAL -->|"HOME; close Transporter before answering"| LATER
     FINAL -->|"No"| DECLINED["Nothing written;<br/>Transporter's closing screen"]

@@ -25,7 +25,7 @@ pub static PROGRAM: Program = Program {
     startup_call: 0x00103D9C,
 };
 
-const EDITS: [Edit; 59] = [
+const EDITS: [Edit; 60] = [
     (0x00103D9C, 0xEB000228, Bl(Sym("patch_bootstrap_startup"))),
     (0x00242EF8, 0xEBFFFF28, Bl(Sym("transporter_next"))),
     (
@@ -54,6 +54,11 @@ const EDITS: [Edit; 59] = [
     (0x002E67D0, 0x00247304, Ptr(Sym("transporter_question"))),
     (0x002E6A9C, 0x0024A0C4, Ptr(Sym("transporter_transfer"))),
     (0x002E6578, 0x00243AF4, Ptr(Sym("transporter_restore"))),
+    (
+        0x0024AFB4,
+        0xEBFD5CD6,
+        Bl(Sym("transporter_cancel_key_stub")),
+    ),
     (0x00244470, 0xEBFD5BB2, Raw(0xE320F000)),
     (0x0024447C, 0xEBFD609F, Raw(0xE320F000)),
     (0x00246208, 0xEBFD5552, Raw(0xE3A00001)),
@@ -147,7 +152,7 @@ const EDITS: [Edit; 59] = [
 /// before SVC 08. Checked native objects: the factory's bound and case
 /// targets, constructor vtable literals, the update slots that are no edits,
 /// and the Bank object's construction at +0xCC.
-const RELIES: [(u32, u32); 32] = [
+const RELIES: [(u32, u32); 48] = [
     (0x001E3FC8, 0xE3550020),
     (0x001E3FD0, 0x92850020),
     (0x001E3FD8, 0x9A000008),
@@ -180,6 +185,26 @@ const RELIES: [(u32, u32); 32] = [
     (0x0010D8FC, 0xE5840000),
     (0x0010624C, 0xE58400CC),
     (0x00106388, 0x000BB530),
+    // The restore task's buttons: the key handler's B with the UI in r4,
+    // the two buttons' records (Yes ID 0, pane 2; No ID 3, pane 5), state
+    // 0xD selecting No, the UI's own selection of Yes, the listener at
+    // ui + 0x7c, and the restore states 0xD and 0xE.
+    (0x0024AF20, 0xE2400074),
+    (0x0024AF2C, 0xE1A04000),
+    (0x0024AFAC, 0xE3A01020),
+    (0x0024AFCC, 0xE3A01003),
+    (0x002AFCE0, 0x00000000),
+    (0x002AFCE4, 0x00000002),
+    (0x002AFCFC, 0x00000003),
+    (0x002AFD00, 0x00000005),
+    (0x00243F38, 0xE5850084),
+    (0x0025BF6C, 0xEBFD0223),
+    (0x0025BF80, 0xE5922004),
+    (0x0025BF88, 0xEBFD0215),
+    (0x0025BF8C, 0xE5845084),
+    (0x00244468, 0xE580107C),
+    (0x00243B5C, 0x00243EE4),
+    (0x00243B60, 0x00243F68),
 ];
 
 /// What must stay the original's: the router, which the router entry calls
@@ -216,7 +241,7 @@ pub fn expectation() -> Expectation {
         relies: RELIES.to_vec(),
         protected: PROTECTED.to_vec(),
         router: "transporter_next",
-        entries: 33,
+        entries: 34,
         menu_edits: 0,
         extra,
         checks: &[

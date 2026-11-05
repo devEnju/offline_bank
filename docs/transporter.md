@@ -57,7 +57,7 @@ When Bank says "Your communication with Poké Transporter did not complete corre
 | Yes | Its boxes from before the interrupted session |
 | No | Its boxes from after it |
 
-Then, after either answer, it asks again:
+Yes is selected, and B does nothing here: choose with the D-pad and A, or by touch. Then, after either answer, it asks again, with No selected and B choosing No, as in the original:
 
 > This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?
 

@@ -688,6 +688,17 @@ pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
             drop(state);
             unsafe { original(RESTORE_UPDATE, raw) }
         }
+        Frame::Buttons => {
+            drop(state);
+            let finished = unsafe { original(RESTORE_UPDATE, raw) };
+            // In: the original has selected No; on the first question Yes.
+            if unsafe { read_word(raw, TASK_STATE) } == restore::ANSWERING {
+                if let Ok(ui) = task.pointer(RESTORE_UI) {
+                    unsafe { ui::select_yes(ui) };
+                }
+            }
+            finished
+        }
         Frame::Answered => {
             let Ok(ui) = task.pointer(RESTORE_UI) else {
                 state.fail(NOT_NATIVE);
@@ -717,6 +728,39 @@ pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
         // The job is done; only the panel's time is left.
         Frame::Done => u32::from(!state.spinner.held(now())),
     }
+}
+
+// The shared UI's key handler (0024AF20), its test of B (0024AFB4, was:
+// bl 001A2314 with r0 the pad, r1 0x20, r2 0), with the UI in r4: the stub
+// hands it on in r3.
+patch_common::stub!(
+    transporter_cancel_key_stub,
+    ["mov r3, r4", "b {cancel_key}"],
+    cancel_key = sym cancel_key,
+);
+/// `001A2314(pad, mask, mode)`: whether `mask` was pressed.
+const KEY_PRESSED: usize = 0x001a_2314;
+/// Where the shared UI keeps the listener of its buttons, which the restore
+/// task registers as its own at `+0x34` (`00244468`).
+const UI_LISTENER: usize = 0x7c;
+const RESTORE_LISTENER: usize = 0x34;
+/// B is not pressed while the restore task asks its first question
+/// (`restore::Restore::b_presses_no`); for every other dialog, and when
+/// the state is taken, it is the original's test.
+unsafe extern "aapcs" fn cancel_key(pad: *mut u8, mask: u32, mode: u32, ui: *mut u8) -> u32 {
+    let restore = unsafe { follow(ui, UI_LISTENER) }
+        .map(|listener| listener.wrapping_sub(RESTORE_LISTENER))
+        .is_some_and(|task| unsafe { Task::from_raw(task, &[TASK_RESTORE]) }.is_ok());
+    if restore
+        && STATE
+            .take()
+            .is_some_and(|state| !state.restore.b_presses_no())
+    {
+        return 0;
+    }
+    let pressed: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 =
+        unsafe { transmute(KEY_PRESSED) };
+    unsafe { pressed(pad, mask, mode) }
 }
 
 /// The original update at `address`.

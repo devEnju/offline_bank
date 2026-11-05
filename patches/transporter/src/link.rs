@@ -24,6 +24,7 @@ mod linked {
         transporter_question,
         transporter_transfer,
         transporter_restore,
+        transporter_cancel_key_stub,
         transporter_slot_stub,
         transporter_cart_id_stub,
         transporter_cart_read,

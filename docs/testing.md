@@ -95,6 +95,7 @@ Then, from the state of case 4:
 | Case | Step | Expected |
 | --- | --- | --- |
 | 4a | Open Transporter and START. On the question press HOME and close Transporter; open it and START again. | The checking screen, then "You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?" with Yes and No. HOME works on it; the second START asks again. |
+| 4f | From case 4: on the first question look at the selection, press B, then press right. | Yes is selected; B does nothing; right selects No. On the second question No is selected, and B chooses No: the closing screen without a spinner. |
 | 4b | Answer Yes, then No on the next question; START again, answer No, then No. | Each time "This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?" with Yes and No, then the closing screen and the title without a spinner. Bank still shows the message to open Transporter. HOME works on the second question too. |
 | 4c | Answer Yes, then Yes. Open Bank and the game. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for about 1.5 s, the closing screen, the title. Bank opens: the withdrawn Pokémon is in Bank, the deposited one in the game; nothing lost. |
 | 4d | Repeat case 4 from the backup, answer No, then Yes. Open Bank. | The same screens. Bank opens with the deposited Pokémon, which is also in the game; the withdrawn Pokémon is lost. |
