@@ -1738,7 +1738,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unlocked_save_that_moved_both_ways_is_transporters_whatever_game_is_there() {
+    fn an_unlocked_save_is_transporters_whatever_game_is_there_until_one_of_its_images_is() {
         let (old, sessions) = sessions();
         let (moved, new) = &sessions[3];
         assert_eq!(*moved, "both ways");
@@ -1746,7 +1746,7 @@ mod tests {
         let (disk, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
         files.unlock().unwrap();
         drop(files);
-        let another = Simulated {
+        let mut another = Simulated {
             trainer: Trainer {
                 id: trainer().id + 1,
                 ..trainer()
@@ -1755,22 +1755,15 @@ mod tests {
             ..Simulated::loaded(true)
         };
         game.save = Some((OTHER, LOADED));
-        let other_kind = Simulated {
+        let mut other_kind = Simulated {
             save: Some((OTHER, LOADED)),
             ..Simulated::loaded(false)
         };
-        // Absent, another trainer's, the other kind of copy, its own:
-        // Transporter's question each time; bit 2 still by what was seen.
-        for (mut found, seen) in [
-            (None, false),
-            (Some(another), false),
-            (Some(other_kind), false),
-            (Some(game), true),
-        ] {
+        let start = |found: Option<&mut Simulated>| {
             let mut files = opened(&disk);
             let settled = settle(
                 &mut files,
-                found.as_mut(),
+                found,
                 &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
                 &in_progress,
                 Rule::Start,
@@ -1778,13 +1771,30 @@ mod tests {
                 &mut held(),
             )
             .unwrap();
-            assert_eq!(settled, Settled::Asks);
-            assert_eq!(pending(&mut files), Some(in_progress));
-            drop(files);
+            (settled, pending(&mut files))
+        };
+        // Absent, another trainer's, the other kind of copy, its own:
+        // Transporter's question each time; bit 2 still by what was seen.
+        for (found, seen) in [
+            (None, false),
+            (Some(&mut another), false),
+            (Some(&mut other_kind), false),
+            (Some(&mut game), true),
+        ] {
+            assert_eq!(start(found), (Settled::Asks, Some(in_progress)));
             assert!(transport_check(&disk) == Err(offline_core::transport::Refusal::Asked));
             assert!(unlocked(&disk));
             assert_eq!(asked(&disk), seen);
         }
+        // The game back with the image it was saved from: Bank settles the
+        // save itself, unlocked or not.
+        game.save = Some((BEFORE, LOADED));
+        assert_eq!(
+            start(Some(&mut game)),
+            (Settled::Exact(RecoveryDecision::KeepBefore), None)
+        );
+        assert!(settled_bank(&disk) == old);
+        assert!(!unlocked(&disk));
     }
 
     #[test]

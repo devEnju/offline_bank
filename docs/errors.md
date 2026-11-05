@@ -155,10 +155,10 @@ Recovery from one-way moves is a deliberate policy: deposits can be duplicated w
 
 | Typed | Shown | Journal |
 | --- | --- | --- |
-| The eight digits shown | "Communication in your last session did not complete correctly. Performing cleanup process now..." (39:0x06) with the loading screen for 1.5 s, the closing screen, the start screen | bit 3 set: from then on every START with an unsettled save shows the two-page instruction to open Transporter, whatever game is there |
+| The eight digits shown | "Communication in your last session did not complete correctly. Performing cleanup process now..." (39:0x06) with the loading screen for 1.5 s, then in the same panel "The program is now closing. Please wait..." (39:0x1E), the start screen | bit 3 set: from then on every START with an unsettled save shows the two-page instruction to open Transporter, whatever game is there |
 | Another number | "The unlock key is incorrect." (39:0x23), then the code again | — |
 | Cancel | The message the opening found, at once (the different copy, or the two-page instruction), then the start screen | — |
-| Bank closed from the HOME Menu in the keyboard | — | — |
+| Bank closed while the keyboard is up | — | — |
 
 A failed write of bit 3 is the HOME error screen with `10`.
 

@@ -560,14 +560,13 @@ impl Runtime {
                     Some(_) => Err(Fault::JournalRecovery),
                 };
             }
-            // Written: the session ends, through cleanup's own loading
-            // screen, once this one has stood its time.
+            // Written: the session ends once this loading screen has stood
+            // its time. The panel stays up: cleanup's set-up finds it up,
+            // starts none (`001d5b44`) and only changes its text.
             Step::Unlocked => {
                 if self.spinner.held(now()) {
                     return Ok(0);
                 }
-                let ui = task.ui()?;
-                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
                 self.complete(task);
                 return Ok(task.finish(true));
             }

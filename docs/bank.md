@@ -14,7 +14,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Loading screens, messages, sounds. | The originals. |
 | First start: asks for a language, which cannot be changed later. | Never asks. Bank is always in the console's language ([below](#first-start)). |
 | First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
-| HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included. |
+| HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included; the unlock screen's number keyboard takes no HOME press, as in the original. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original welcome gift and redemption are kept. Server gifts and distributions are skipped. |
 
