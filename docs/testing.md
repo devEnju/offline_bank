@@ -127,7 +127,7 @@ From a fresh state of case 6, and of case 4 for 6i and 6j:
 | Case | Step | Expected |
 | --- | --- | --- |
 | 6f | START; hold L, A and START briefly while the game is still being checked, and let go before it ends. | The unlock screen. |
-| 6g | START; hold them briefly only in the last moment before the message would come. | The unlock screen. |
+| 6g | START; hold them briefly only just before the loading screen ends. | The unlock screen replaces the loading screen at once, with no pause after the game check. |
 | 6h | Open the unlock screen; in the keyboard press HOME and close Bank. Open Bank and START. | Bank closes; the next START shows the different-copy notice; nothing was written. |
 | 6i | From case 4 (the game played on): START holding the keys; Cancel. | The unlock screen; after Cancel "Your communication with Poké Transporter did not complete correctly…" at once, then the title. |
 | 6j | From case 4: START holding the keys; type the code shown; then remove the cartridge and START. | The cleanup screen, the title; then the message to open Transporter, not the different-copy notice. |
