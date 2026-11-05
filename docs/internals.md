@@ -478,7 +478,7 @@ Checksums use CRC-32/ISO-HDLC: reflected polynomial `0xEDB88320`, initial state 
 | --- | --- | --- |
 | 0..4 | `BKJ`, version 1 | both |
 | 4..8 | Sequence, from 1 | both |
-| 8 | Bit 0: a save is in progress. Bit 1: a delivery waits. Bit 2: Transporter's question settles the save in progress ([An interrupted save](#an-interrupted-save)). Bits 4..8: the game of the save in progress, 1 to 8 (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon) | Bank; Transporter sets bit 1 and settles a save of bit 2 |
+| 8 | Bit 0: a save is in progress. Bit 1: a delivery waits. Bit 2: Transporter's question settles the save in progress ([An interrupted save](#an-interrupted-save)). Bit 3: the save in progress was unlocked, so Transporter's question settles it whatever game Bank finds (`Metadata::unlocked`, `BankFiles::unlock`). Bits 4..8: the game of the save in progress, 1 to 8 (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon) | Bank; Transporter sets bit 1 and settles a save of bit 2 or 3 |
 | 9 | Copies, one bit each, 0 for A: bits 0..3 the Bank file, the main file and the transport box of the current save; bits 3..6 the same for the save in progress | Bank |
 | 10, 11 | Pokémon in the transport box: current save, save in progress | Bank |
 | 12..24 | CRC-32 of the Bank file, the main file and the transport box: current save | Bank |
@@ -489,7 +489,7 @@ Checksums use CRC-32/ISO-HDLC: reflected polynomial `0xEDB88320`, initial state 
 | 104..136 | Fingerprint of the game's save after | Bank |
 | 136..140 | CRC-32 of bytes 0..136 | both |
 
-No byte is unused. Without a save in progress everything that belongs to one is zero, bit 2 of byte 8 among it, and so is the delivery's checksum while none waits; the spare bits (bit 3 of byte 8, bits 6 and 7 of byte 9) are zero. A record that breaks this, or one of the rules below, is refused whoever wrote it (`format::validate`).
+No byte is unused. Without a save in progress everything that belongs to one is zero, bits 2 and 3 of byte 8 among it, and so is the delivery's checksum while none waits; the spare bits (bits 6 and 7 of byte 9) are zero. Bit 3 had no meaning before; every record an earlier release wrote reads as before (`tests/journal.rs`), and a release before it refuses a record that has it. A record that breaks this, or one of the rules below, is refused whoever wrote it (`format::validate`).
 
 - **Two replicas.** A new record is written to the replica that was not selected, synced and read back, then to the other. Both carry the same sequence; the higher valid sequence counts, and two valid records of one sequence that differ are an error. A record that does not read or fails its checksum counts as damaged, and the other decides. A record with a valid checksum and another version is an error, never a reason to fall back.
 - **A save never writes a copy in use.** The Bank file and the main file of a save in progress are the copies the current save does not name. So is its transport box, except while a delivery waits: the delivery lies in the copy that is not in use and has to outlast a save that is undone, so the new box goes over the box in use, which is empty then (`Save::next_mover`).
@@ -544,6 +544,8 @@ A save in progress (`Phase::Prepared`) is settled by the next start, in `Job::Re
 | Its file is neither, on that kind of copy, of another trainer | As for a game that is not there, last row | `by_moves(.., false)`, `moved::choose` |
 | Its file is neither, on the other kind of copy (`Found::StandIn`) | As for a game that is not there, next row | `by_moves(.., false)`, `moved::choose` |
 | Not among the games the scan loaded (`NativeGameError::NotLoaded`, `Job::Recover { game: None }`) | By what the save moved if that was one way or none; otherwise the save waits: bit 2 is cleared if it was set, nothing else is written, and the reply is `Reply::Waiting` with the title and the trainer | `by_moves(.., false)`, `moved::choose` |
+
+**An unlocked save** (bit 3 of byte 8) is left to Transporter's question where it would wait: bit 2 is still set or cleared by what was found, and `BankFiles::ask` answers whether Transporter's question settles the save then, bit 2 or bit 3 (`Metadata::asks`), so the reply is `Reply::AskTransporter`. Bit 3 is written once (`BankFiles::unlock`, the same record with the next sequence number, written again while one replica does not hold it, as for bit 2) and ends with the record that settles the save.
 
 **A save that waits** is not an error. The hook shows the original's message `0xA` with the trainer's name and ID ([Tasks and routing](#tasks-and-routing)) and ends task 9 through cleanup, where the files are closed, then the start screen. The worker keeps no failed state for it, so the next START opens the files again and settles the save if its game is there. Three related checks have numbers of their own: a record whose title is none of the eight games is fault `5`; a game object of that title that is not what the patch expects is fault `A`, as when a game is loaded; a game loaded while a save is still in progress is fault `10`. An opening settles a save in progress or ends there, so the last cannot be reached.
 

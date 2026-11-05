@@ -348,7 +348,7 @@ impl<S: Storage> Journal<S> {
     }
 
     /// Settles the save in progress that `head` left to Transporter's
-    /// question (`Metadata::ask`), to the snapshot of `decision`, as Bank's
+    /// question (`Metadata::asks`), to the snapshot of `decision`, as Bank's
     /// reconciliation settles one (`settled`). Only the journal is written,
     /// and the answer holds from the moment the first replica is durable
     /// (`hand_over`): only if that one's read-back alone fails can it hold
@@ -362,7 +362,7 @@ impl<S: Storage> Journal<S> {
             Some(now) if now.metadata == head.metadata => now.preferred,
             _ => return Err(StoreError::StaleHead),
         };
-        if !head.metadata.ask {
+        if !head.metadata.asks() {
             return Err(StoreError::NoPendingTransfer);
         }
         let metadata = settled(head, decision)?;
@@ -388,6 +388,7 @@ fn settled<E>(head: &Head, decision: RecoveryDecision) -> Result<Metadata, Store
         phase: Phase::Clean(selected),
         delivery,
         ask: false,
+        unlocked: false,
     })
 }
 
@@ -470,6 +471,7 @@ impl<S: Storage> BankStore<S> {
                 }),
                 delivery: None,
                 ask: false,
+                unlocked: false,
             },
         )
     }
@@ -575,7 +577,7 @@ impl<S: Storage> BankStore<S> {
     }
 
     /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`Metadata::ask`): the same record with the next sequence number
+    /// back (`Metadata::ask`), and keeps `Metadata::unlocked`: the same record with the next sequence number
     /// and `ask`. Nothing is written when the record says so already, unless
     /// it leaves the save to the question while one replica does not hold
     /// it: one that does not read, is missing, or holds another record.
@@ -584,20 +586,45 @@ impl<S: Storage> BankStore<S> {
     /// again, which replaces or creates that replica (`put_replica`).
     pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
         let head = self.check_head(head)?;
+        self.mark(head, ask, head.metadata.unlocked)
+    }
+
+    /// Unlocks the save in progress for Transporter's question
+    /// (`Metadata::unlocked`), whatever game Bank finds from then on, in the
+    /// same way: the same record with the next sequence number.
+    pub fn unlock(&mut self, head: &Head) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        self.mark(head, head.metadata.ask, true)
+    }
+
+    /// The record of `head` with `ask` and `unlocked`, written only if it
+    /// differs, or if Transporter's question then settles the save while
+    /// one replica does not hold the record.
+    fn mark(
+        &mut self,
+        head: Head,
+        ask: bool,
+        unlocked: bool,
+    ) -> Result<Head, StoreError<S::Error>> {
         if !matches!(head.phase(), Phase::Prepared(_)) {
             return Err(StoreError::NoPendingTransfer);
         }
-        if head.metadata.ask == ask && (!ask || both_hold(&mut self.storage, &head.metadata)) {
+        let marked = Metadata {
+            ask,
+            unlocked,
+            ..head.metadata
+        };
+        if marked == head.metadata
+            && (!marked.asks() || both_hold(&mut self.storage, &head.metadata))
+        {
             return Ok(head);
         }
-        let sequence = next_sequence(&head)?;
         publish(
             &mut self.storage,
             head.preferred,
             Metadata {
-                sequence,
-                ask,
-                ..head.metadata
+                sequence: next_sequence(&head)?,
+                ..marked
             },
         )
     }

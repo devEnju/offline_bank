@@ -490,11 +490,19 @@ impl transport::Files for Visit {
 /// Whether the record in force leaves its save in progress to
 /// Transporter's question (`offline_core::Metadata::ask`).
 pub fn asked(disk: &Shared) -> bool {
+    in_force(disk).is_some_and(|record| record.ask)
+}
+/// Whether the record in force has its save in progress unlocked
+/// (`offline_core::Metadata::unlocked`).
+pub fn unlocked(disk: &Shared) -> bool {
+    in_force(disk).is_some_and(|record| record.unlocked)
+}
+fn in_force(disk: &Shared) -> Option<offline_core::Metadata> {
     let journal = transport::Files::journal(&mut Visit(disk.clone())).expect("no journal");
     offline_core::Journal::new(journal)
         .load()
         .expect("journal")
-        .is_some_and(|head| head.metadata().ask)
+        .map(|head| *head.metadata())
 }
 /// Transporter's check before a session, as it answers it.
 pub fn transport_check(disk: &Shared) -> Result<(), transport::Refusal> {

@@ -437,10 +437,11 @@ where
         .pending_moves(staging, before, after)
         .map_err(files_failed(Fault::JournalRecovery))?;
     let Some(decision) = moved::choose(moved) else {
-        files
+        // Bit 2 by what was seen; an unlocked save is Transporter's too.
+        let asks = files
             .ask(seen)
             .map_err(files_failed(Fault::JournalRecovery))?;
-        return Ok(if seen { Settled::Asks } else { Settled::Waits });
+        return Ok(if asks { Settled::Asks } else { Settled::Waits });
     };
     files
         .reconcile_as(decision)
@@ -1055,7 +1056,8 @@ mod tests {
     use bank_common::{
         bank_files::FileName,
         testing::{
-            asked, body, fresh, load, opened, pokemon, transport_check, with_boxes, Refused, Shared,
+            asked, body, fresh, load, opened, pokemon, transport_check, unlocked, with_boxes,
+            Refused, Shared,
         },
     };
     use offline_core::sections::RECORD_SIZE;
@@ -1702,6 +1704,56 @@ mod tests {
                 assert!(settled_bank(&disk) == old, "{case}");
                 assert!(!asked(&disk), "{case}");
             }
+        }
+    }
+
+    #[test]
+    fn an_unlocked_save_that_moved_both_ways_is_transporters_whatever_game_is_there() {
+        let (old, sessions) = sessions();
+        let (moved, new) = &sessions[3];
+        assert_eq!(*moved, "both ways");
+        let mut game = Simulated::loaded(true);
+        let (disk, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
+        files.unlock().unwrap();
+        drop(files);
+        let another = Simulated {
+            trainer: Trainer {
+                id: trainer().id + 1,
+                ..trainer()
+            },
+            save: Some((OTHER, LOADED)),
+            ..Simulated::loaded(true)
+        };
+        game.save = Some((OTHER, LOADED));
+        let other_kind = Simulated {
+            save: Some((OTHER, LOADED)),
+            ..Simulated::loaded(false)
+        };
+        // Absent, another trainer's, the other kind of copy, its own:
+        // Transporter's question each time; bit 2 still by what was seen.
+        for (mut found, seen) in [
+            (None, false),
+            (Some(another), false),
+            (Some(other_kind), false),
+            (Some(game), true),
+        ] {
+            let mut files = opened(&disk);
+            let settled = settle(
+                &mut files,
+                found.as_mut(),
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                &in_progress,
+                Rule::Start,
+                None,
+                &mut held(),
+            )
+            .unwrap();
+            assert_eq!(settled, Settled::Asks);
+            assert_eq!(pending(&mut files), Some(in_progress));
+            drop(files);
+            assert!(transport_check(&disk) == Err(offline_core::transport::Refusal::Asked));
+            assert!(unlocked(&disk));
+            assert_eq!(asked(&disk), seen);
         }
     }
 

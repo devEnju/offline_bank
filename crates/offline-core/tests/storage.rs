@@ -238,6 +238,7 @@ fn the_journal_record_is_explicit_little_endian_and_checks_every_byte() {
         }),
         delivery: Some(0x6162_6364),
         ask: false,
+        unlocked: false,
     };
     let encoded = record.encode().unwrap();
     assert_eq!(encoded.len(), 140);
@@ -261,6 +262,7 @@ fn the_journal_record_is_explicit_little_endian_and_checks_every_byte() {
     // nothing else of the record changes.
     let asked = Metadata {
         ask: true,
+        unlocked: false,
         ..record
     };
     let asking = asked.encode().unwrap();
@@ -268,6 +270,19 @@ fn the_journal_record_is_explicit_little_endian_and_checks_every_byte() {
     assert_eq!(&asking[..8], &encoded[..8]);
     assert_eq!(&asking[9..136], &encoded[9..136]);
     assert_eq!(Metadata::decode(&asking), Ok(asked));
+    // Unlocked: bit 3 of byte 8, with or without bit 2.
+    for ask in [false, true] {
+        let unlocked = Metadata {
+            ask,
+            unlocked: true,
+            ..record
+        };
+        let unlocking = unlocked.encode().unwrap();
+        assert_eq!(unlocking[8], 0x3b | u8::from(ask) << 2);
+        assert_eq!(&unlocking[9..136], &encoded[9..136]);
+        assert_eq!(Metadata::decode(&unlocking), Ok(unlocked));
+        assert!(unlocked.asks());
+    }
     for at in 0..encoded.len() {
         let mut corrupt = encoded;
         corrupt[at] ^= 1;
@@ -285,12 +300,29 @@ fn the_journal_record_is_explicit_little_endian_and_checks_every_byte() {
         phase: Phase::Clean(before),
         delivery: None,
         ask: false,
+        unlocked: false,
     };
     let encoded = clean.encode().unwrap();
     assert_eq!((encoded[8], encoded[9]), (0, 0b010));
     // Only a save in progress is left to Transporter's question.
     assert_eq!(
         Metadata { ask: true, ..clean }.encode(),
+        Err(FormatError::InvalidReference)
+    );
+    assert_eq!(
+        Metadata {
+            unlocked: true,
+            ..clean
+        }
+        .encode(),
+        Err(FormatError::InvalidReference)
+    );
+    let mut unlocked_at_rest = encoded;
+    unlocked_at_rest[8] |= 8;
+    let checksum = offline_core::crc32(&unlocked_at_rest[..136]);
+    unlocked_at_rest[136..140].copy_from_slice(&checksum.to_le_bytes());
+    assert_eq!(
+        Metadata::decode(&unlocked_at_rest),
         Err(FormatError::InvalidReference)
     );
     assert!(encoded[24..136].iter().all(|byte| *byte == 0));
@@ -326,6 +358,7 @@ fn a_record_that_breaks_the_rules_of_a_save_is_refused_whoever_wrote_it() {
         phase,
         delivery,
         ask: false,
+        unlocked: false,
     };
     assert!(record(pending(next), None).encode().is_ok());
     let invalid = Err(FormatError::InvalidReference);
@@ -562,6 +595,7 @@ fn equal_sequence_disagreement_is_rejected() {
         phase: Phase::Clean(pending.before),
         delivery: None,
         ask: false,
+        unlocked: false,
     };
     let start = layout.metadata_offset(Slot::B) as usize;
     memory.bytes[start..start + METADATA_SIZE].copy_from_slice(&conflicting.encode().unwrap());
@@ -599,6 +633,53 @@ fn a_save_in_progress_left_to_transporters_question_keeps_everything_else() {
     let mut store = BankStore::new(baseline(), Layout::new(CAPACITY));
     let head = inspect_all(&mut store).unwrap();
     assert_eq!(store.ask(&head, true), Err(StoreError::NoPendingTransfer));
+}
+
+#[test]
+fn an_unlocked_save_in_progress_is_left_to_transporter_whatever_bank_finds_later() {
+    let (mut store, prepared) = prepare(baseline());
+    let head = store.unlock(&prepared).unwrap();
+    assert!(head.metadata().unlocked && !head.metadata().ask);
+    assert!(head.metadata().asks());
+    assert_eq!(head.phase(), prepared.phase());
+    assert_eq!(head.metadata().sequence, prepared.metadata().sequence + 1);
+    let mut store = BankStore::new(store.into_inner().reboot(), Layout::new(CAPACITY));
+    assert_eq!(inspect_all(&mut store).unwrap().metadata(), head.metadata());
+    // Unlocked again: nothing is written. Bit 2 set and taken back by what
+    // Bank finds: the save stays unlocked.
+    let before = store.storage_mut().bytes.clone();
+    assert_eq!(store.unlock(&head), Ok(head));
+    assert_eq!(store.storage_mut().bytes, before);
+    let asked = store.ask(&head, true).unwrap();
+    assert!(asked.metadata().ask && asked.metadata().unlocked);
+    let back = store.ask(&asked, false).unwrap();
+    assert!(!back.metadata().ask && back.metadata().unlocked);
+    // Transporter's answer settles it, and the record after holds neither.
+    let mut journal = Journal::new(store.into_inner());
+    let settled = journal.settle(&back, RecoveryDecision::KeepBefore).unwrap();
+    assert!(!settled.metadata().ask && !settled.metadata().unlocked);
+    // A Bank at rest has nothing to unlock.
+    let mut store = BankStore::new(baseline(), Layout::new(CAPACITY));
+    let head = inspect_all(&mut store).unwrap();
+    assert_eq!(store.unlock(&head), Err(StoreError::NoPendingTransfer));
+}
+
+#[test]
+fn a_cut_while_unlocking_leaves_the_record_before_or_after() {
+    let (store, prepared) = prepare(baseline());
+    let base = store.into_inner().reboot();
+    let mut complete = BankStore::new(base.clone(), Layout::new(CAPACITY));
+    complete.unlock(&prepared).unwrap();
+    let total = complete.into_inner().operations;
+    for cut in 0..=total {
+        let mut store = BankStore::new(base.clone().cut_after(cut), Layout::new(CAPACITY));
+        let _ = store.unlock(&prepared);
+        let mut store = BankStore::new(store.into_inner().reboot(), Layout::new(CAPACITY));
+        let head =
+            inspect_all(&mut store).unwrap_or_else(|err| panic!("unlock cut {cut}: {err:?}"));
+        assert_eq!(head.phase(), prepared.phase(), "unlock cut {cut}");
+        assert!(!head.metadata().ask, "unlock cut {cut}");
+    }
 }
 
 #[test]

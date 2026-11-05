@@ -230,6 +230,7 @@ mod kind_tests {
                 }),
                 delivery: None,
                 ask: false,
+                unlocked: false,
             };
             assert_eq!(record.encode().unwrap()[8] >> 4, id);
         }

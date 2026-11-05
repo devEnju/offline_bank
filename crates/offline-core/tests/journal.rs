@@ -63,10 +63,10 @@ fn every_record_a_release_of_this_version_wrote_is_read_as_it_was_meant() {
         assert_eq!(pending.before_fingerprint, [1; 32], "{release}");
         assert_eq!(pending.after_fingerprint, [2; 32], "{release}");
         assert_eq!(pending.before, delivery.phase.current(), "{release}");
-        // Bit 2 of byte 8 was unused before Transporter's question: no
-        // earlier record leaves a save in progress to it.
+        // Bits 2 and 3 of byte 8 were unused before Transporter's question
+        // and the unlock: no earlier record leaves a save in progress to it.
         for read in [at_rest, delivery, in_progress] {
-            assert!(!read.ask, "{release}");
+            assert!(!read.ask && !read.unlocked, "{release}");
         }
     }
 }
