@@ -88,6 +88,9 @@ struct Runtime {
     failure: Option<Failure>,
     /// Where the restore task stands (`transporter_restore`).
     restore: Restore,
+    /// The check at START left the save to the restore question, which
+    /// follows once the search's panel has stood its 1.5 s.
+    asked: bool,
 }
 /// An error the session stopped with: its two numbers, and whether its
 /// screen is up.
@@ -104,6 +107,7 @@ static STATE: Exclusive<Runtime> = unsafe {
         spinner: Spinner::new(),
         failure: None,
         restore: Restore::First(None),
+        asked: false,
     })
 };
 /// An object the job needs is not what the hook expects, or the job's reply
@@ -494,6 +498,7 @@ unsafe fn check(task: Task) -> Check {
         if unsafe { loading(ui) }.is_ok() {
             PANEL.start(ui as usize);
             state.spinner.up(now());
+            state.asked = false;
             return Check::Pending;
         }
         state.fail(NOT_NATIVE);
@@ -502,11 +507,23 @@ unsafe fn check(task: Task) -> Check {
     if !state.requests.is_out() && state.spinner.idle(now()) {
         return Check::Pending;
     }
+    // The restore question is the screen that follows, as the game list
+    // follows otherwise: it comes once the panel has stood 1.5 s.
+    if state.asked {
+        if state.spinner.held(now()) {
+            return Check::Pending;
+        }
+        state.asked = false;
+        return Check::Ask;
+    }
     let answer = unsafe { state.job(Job::Check, |_| Some(())) };
     let message = match checked(answer) {
         Checked::Pending => return Check::Pending,
         Checked::Go => return Check::Go,
-        Checked::Ask => return Check::Ask,
+        Checked::Ask => {
+            state.asked = true;
+            return Check::Pending;
+        }
         Checked::Refused(message) => message,
         Checked::Failed(error) => {
             state.fail(error);
