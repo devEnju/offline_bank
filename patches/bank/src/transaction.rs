@@ -452,16 +452,30 @@ mod tests {
         }
     }
 
-    /// A save in progress as v0.5.0 recorded it (offline-core's
-    /// `tests/journal.rs`, where every release of this journal version adds
-    /// its own). The binding of each is one of this form.
+    /// A save in progress as each release of this journal version recorded
+    /// it (offline-core's `tests/journal.rs`, where every release adds its
+    /// own), with the trainer it names: the Trainer ID alone before v0.7.0,
+    /// the whole ID from it on. The binding of each is one of this form.
     #[test]
     fn every_save_in_progress_a_release_of_this_journal_version_recorded_binds() {
-        let records = [(
-            "v0.5.0",
-            "424b4a010300000013180002606ec39112c569f89adde7d8d5bea0d0aa861fd28f435e8196be08cd41005300480000000000000000000000000000000000000039300000389bdfc501010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202ef3896b9",
-        )];
-        for (release, hex) in records {
+        let records = [
+            (
+                "v0.5.0",
+                "424b4a010300000013180002606ec39112c569f89adde7d8d5bea0d0aa861fd28f435e8196be08cd41005300480000000000000000000000000000000000000039300000389bdfc501010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202ef3896b9",
+                12345,
+            ),
+            (
+                "v0.6.0",
+                "424b4a0103000000131800019525807c150b78a19adde7d89525807c150b78a1a9933863a993386341005300480000000000000000000000000000000000000039300000389bdfc501010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202a87f7a97",
+                12345,
+            ),
+            (
+                "v0.7.0",
+                "424b4a0103000000131800019525807c150b78a19adde7d89525807c150b78a1a9933863a993386341005300480000000000000000000000000000000000000039300800b650b9e601010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202f0bec264",
+                8 << 16 | 12345,
+            ),
+        ];
+        for (release, hex, id) in records {
             let bytes: std::vec::Vec<u8> = (0..hex.len() / 2)
                 .map(|at| u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16).unwrap())
                 .collect();
@@ -470,7 +484,8 @@ mod tests {
                 panic!("{release}: no save in progress");
             };
             assert_eq!(bound(&pending), Ok(Medium::Cartridge), "{release}");
-            assert_eq!(Trainer::of(&pending.game), named("ASH", 12345), "{release}");
+            assert_eq!(Trainer::of(&pending.game), named("ASH", id), "{release}");
+            assert_eq!(Trainer::of(&pending.game).shown(false), 12345, "{release}");
         }
     }
 }
