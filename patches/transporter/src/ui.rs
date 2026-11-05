@@ -128,6 +128,9 @@ pub fn refusal_message(refusal: Refusal) -> u32 {
 /// in your last session did not complete correctly. Performing cleanup
 /// process now..."
 pub const MESSAGE_CLEANUP: u32 = 4;
+/// The original's message 0x21, the loading text of its disconnect task:
+/// "The program is now closing. Please wait..."
+pub const MESSAGE_CLOSING: u32 = 0x21;
 
 /// An object of the original a screen needs is not there, or not made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,19 +365,49 @@ mod native {
     /// restore task does for its own panel (`00243FCC`).
     const PANEL_TEXT: usize = 0x0019_c700;
 
-    /// Starts the general loading panel on `ui` with the restore's text,
-    /// "Communication in your last session did not complete correctly.
-    /// Performing cleanup process now..." (`MESSAGE_CLEANUP`), as the
-    /// original's restore task starts it after its last Yes
-    /// (`00243FBC`..`00243FCC`).
+    /// Starts the general loading panel on `ui` with `message` of text file
+    /// 23, as the original's restore task starts it after its last Yes
+    /// (`00243FBC`..`00243FCC`) and the disconnect task in its set-up
+    /// (`00247268`, `002472C8`). A panel already up stays and only gets the
+    /// text: `0019B340` starts none then.
     /// # Safety
     /// `ui` is the live shared UI, on the main thread.
-    pub unsafe fn cleanup(ui: *mut u8) {
+    pub unsafe fn panel(ui: *mut u8, message: u32) {
         unsafe {
             let start: unsafe extern "aapcs" fn(*mut u8) = transmute(PANEL_START);
             start(ui);
             let text: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(PANEL_TEXT);
-            text(ui, super::MESSAGE_CLEANUP);
+            text(ui, message);
+        }
+    }
+
+    /// The buttons of a dialog with two (Yes and No), as the shared UI's
+    /// constructor registers them (`0024B6BC`): a record of seven words
+    /// each, its first word the button's ID, its second the pane the cursor
+    /// goes to. `0019c800(ui, 1)` is the layout they lie in, `0019c7e4(cursor,
+    /// layout, pane)` moves the cursor (`ui + 0x80`) to a pane, and `ui +
+    /// 0x84` is the button selected.
+    const BUTTON_RECORDS: usize = 0x002a_fce0;
+    const BUTTON_LAYOUT: usize = 0x0019_c800;
+    const MOVE_CURSOR: usize = 0x0019_c7e4;
+    const CURSOR: usize = 0x80;
+    const SELECTED: usize = 0x84;
+
+    /// Selects the first button, Yes, with the cursor on it, as the shared
+    /// UI's own callback does when it is touched (`0025BF64`..`0025BF8C`).
+    /// # Safety
+    /// `ui` is the live shared UI with its two buttons in, on the main
+    /// thread.
+    pub unsafe fn select_yes(ui: *mut u8) {
+        unsafe {
+            let layout: unsafe extern "aapcs" fn(*mut u8, u32) -> *mut u8 =
+                transmute(BUTTON_LAYOUT);
+            let move_cursor: unsafe extern "aapcs" fn(*mut u8, *mut u8, u32) =
+                transmute(MOVE_CURSOR);
+            let pane = (BUTTON_RECORDS as *const u32).add(1).read();
+            let cursor = ui.add(CURSOR).cast::<*mut u8>().read();
+            move_cursor(cursor, layout(ui, 1), pane);
+            ui.add(SELECTED).cast::<u32>().write(0);
         }
     }
 

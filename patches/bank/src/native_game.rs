@@ -230,6 +230,7 @@ mod kind_tests {
                 }),
                 delivery: None,
                 ask: false,
+                unlocked: false,
             };
             assert_eq!(record.encode().unwrap()[8] >> 4, id);
         }
@@ -357,6 +358,48 @@ mod arm {
         let game = pointer(unsafe { get(manager) } as u32)?;
         let kind = GameKind::try_from(unsafe { game.as_ptr().add(8).read() })?;
         Ok((game.as_ptr(), kind))
+    }
+
+    /// Where a game object keeps its trainer's block: X to Alpha Sapphire
+    /// (`0x12800 + 0x1ac`, `0026dee8`), and Sun to Ultra Moon (`0x74000 +
+    /// 0x304`, `0026def4`), as the records screen's collection (`0026de9c`)
+    /// finds it in the selected game. Its virtual `+0x24` copies the name
+    /// with its end mark into 13 units (`0026e0a0`), `+0x1c` answers the
+    /// 32-bit trainer ID (`0026e0b4`).
+    const TRAINER_GEN6: usize = 0x0001_29ac;
+    const TRAINER_GEN7: usize = 0x0007_4304;
+    const TRAINER_NAME: usize = 0x24;
+    const TRAINER_ID: usize = 0x1c;
+
+    /// The trainer of the loaded game of `kind`, with the two calls the
+    /// records screen makes of the selected game, without changing the
+    /// selection: the name with its end mark and the 32-bit ID.
+    /// # Safety
+    /// `manager` is the live save manager, on the main thread, with no
+    /// worker job using that game.
+    pub unsafe fn trainer(
+        manager: *mut u8,
+        kind: GameKind,
+    ) -> Result<([u16; 13], u32), NativeGameError> {
+        let manager = pointer(manager as u32)?;
+        let (game, _) = unsafe { loaded(manager, kind) }?;
+        let offset = if kind.gen7() {
+            TRAINER_GEN7
+        } else {
+            TRAINER_GEN6
+        };
+        // Inside the game object (`OBJECT_SIZE`), which `loaded` checked.
+        let block = unsafe { game.add(offset) };
+        let vtable = pointer(unsafe { word(block, 0) })?;
+        let name_address = unsafe { word(vtable, TRAINER_NAME) };
+        let copy_name =
+            code::<Bank15>(name_address).ok_or(NativeGameError::InvalidGetter(name_address))?;
+        let copy_name: unsafe extern "aapcs" fn(*mut u8, *mut u16) =
+            unsafe { transmute(copy_name) };
+        let id = getter(unsafe { word(vtable, TRAINER_ID) })?;
+        let mut name = [0u16; 13];
+        unsafe { copy_name(block.as_ptr(), name.as_mut_ptr()) };
+        Ok((name, unsafe { id(block.as_ptr()) }))
     }
 
     /// The game object and writer of `kind` in the save manager, checked as
@@ -881,4 +924,4 @@ mod arm {
 }
 
 #[cfg(target_arch = "arm")]
-pub use arm::{selected, NativeGameSession};
+pub use arm::{selected, trainer, NativeGameSession};

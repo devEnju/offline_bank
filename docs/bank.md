@@ -14,7 +14,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | Loading screens, messages, sounds. | The originals. |
 | First start: asks for a language, which cannot be changed later. | Never asks. Bank is always in the console's language ([below](#first-start)). |
 | First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
-| HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included. |
+| HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included; the unlock screen's number keyboard takes no HOME press, as in the original. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original welcome gift and redemption are kept. Server gifts and distributions are skipped. |
 
@@ -157,7 +157,7 @@ Until step 3 Bank still holds both sets of boxes. If the power fails, the next s
 | --- | --- | --- |
 | Unchanged | The power failed before step 2 was finished. | Goes back to its old boxes. Nothing was moved. |
 | The one Bank wrote | The power failed after step 2. | Keeps its new boxes. Everything was moved. |
-| Something else: the game was played and saved, a new game was started on it, it is another cartridge of the game, or step 2 was cut off midway | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. A save that step 2 left damaged is then refused when that game is chosen ([below](#a-damaged-game-save)). A session that moved Pokémon both ways is left to Poké Transporter ([below](#a-save-left-to-transporter)). |
+| Something else: the game was played and saved, a new game was started on it, it is another cartridge of the game, or step 2 was cut off midway | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. A save that step 2 left damaged is then refused when that game is chosen ([below](#a-damaged-game-save)). A session that moved Pokémon both ways is left to Poké Transporter if the game is the same trainer's ([below](#a-save-left-to-transporter)); another trainer's game counts as not inserted. |
 | The game is not inserted, or only its other copy is there (see below) | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game ([below](#a-save-that-waits-for-its-game)). |
 
 In the first two cases nothing is lost and nothing exists twice. **So after an interrupted Save and Quit, start Bank again with the same game inserted before you play it.**
@@ -186,6 +186,7 @@ Name and number are those of the game the session was made with; the number has 
 | a cartridge | the cartridge is not inserted | the cartridge's game | Insert the cartridge. |
 | the installed copy | a cartridge of the same game is inserted, so Bank reads the cartridge and not the installed copy | the **installed copy's** game, not the cartridge's | Take the cartridge out. |
 | the installed copy | the game is no longer installed | the installed copy's game | Install it again with its save. |
+| either | another trainer's game of the same title is the one Bank finds | the session's game | Make the session's game the one Bank finds. |
 
 The message only comes for a Save and Quit that was cut off. A cartridge pulled out during a session gets one of the original's messages instead, and Bank returns to its start screen ([below](#a-pulled-game-card-or-a-full-sd-card)); put it back and press START, and if a save was left in progress, this section applies.
 
@@ -193,17 +194,17 @@ The message only comes for a Save and Quit that was cut off. A cartridge pulled 
 
 ### A save left to Transporter
 
-When the interrupted session moved Pokémon both ways and its game is there, on the same kind of copy, but was saved on since (or a new game was started on it, or it is another cartridge of the game), neither choice is safe for Bank to make: keeping the old boxes loses the deposited Pokémon if step 2 had finished, keeping the new ones loses the withdrawn Pokémon if it had not. Bank changes nothing and sends you to Poké Transporter, with the original's message for it:
+When the interrupted session moved Pokémon both ways and its game is there, on the same kind of copy and with the same trainer (name, Trainer ID and the secret ID the games keep with it), but was saved on since, neither choice is safe for Bank to make: keeping the old boxes loses the deposited Pokémon if step 2 had finished, keeping the new ones loses the withdrawn Pokémon if it had not. Bank changes nothing and sends you to Poké Transporter, with the original's message for it:
 
 > Your communication with Poké Transporter did not complete correctly during your last session.
 > (A)
 > Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.
 
-After A Bank is back on its start screen, and every START with that game shows the message again. Start Poké Transporter and press START: it asks whether to restore your data ([transporter.md](transporter.md#a-save-left-to-transporter)). **Yes** goes back to the old boxes, **No** keeps the new ones.
+After A Bank is back on its start screen, and every START with that game shows the message again. Start Poké Transporter and press START: it asks whether to restore your data ([transporter.md](transporter.md#a-save-left-to-transporter)). **Yes** goes back to the old boxes, **No** keeps the new ones; a second question then asks you to confirm, and only its Yes applies the choice.
 
 **Before you answer**, look in your game's boxes and party:
 
-| In your game now | Answer | Why |
+| In your game now | First answer | Why |
 | --- | --- | --- |
 | The Pokémon you put **into** Bank in that session | Yes | The game kept its old save: Bank's old boxes hold the ones you took out. |
 | The Pokémon you took **out of** Bank in that session | No | The game has the new save: Bank's new boxes hold the ones you put in. |
@@ -212,6 +213,16 @@ After A Bank is back on its start screen, and every START with that game shows t
 Until you answer nothing is changed: press HOME and close Poké Transporter to decide later. If you put back a save that is one of the two (a backup from before the session), Bank decides by itself at its next START, as in the first table. If you take the game out, Bank takes the question back and waits for that game instead ([above](#a-save-that-waits-for-its-game)); with no compatible game at all it stops at its no-game message before it looks at the save.
 
 **After updating the patch.** A Save and Quit that was interrupted is finished by any later release that stores the Bank the same way. A Bank that a release stored in an earlier way needs the migration, which finishes no save in progress itself: it says so (`00000BAD 00000007`), and the last release of that way finishes it, v0.2.1 for a Bank from v0.2.1 or before and v0.4.0 for one from v0.4.0 or before. A save in progress that v0.3.0 began is recorded in a form v0.4.0 does not read; the migration writes it in v0.4.0's form first, so that v0.4.0 finishes it too. If the game is not inserted then, v0.4.0's message names no trainer, because v0.3.0 did not record one.
+
+### Without the game: the unlock key
+
+If the game a session waits for is gone for good, the original's unlock screen hands the decision to Poké Transporter anyway. **Hold L, A and START** after pressing START, while the loading screen is up, until it ends. Instead of the message, Bank shows:
+
+> Please enter the unlock key: (eight digits)
+
+with the number keyboard. Type the eight digits shown and confirm. Bank shows "Communication in your last session did not complete correctly. Performing cleanup process now..." while it notes the unlock, then returns to its start screen. From then on every START shows the message to open Poké Transporter ([above](#a-save-left-to-transporter)), whatever game is inserted, until Poké Transporter has settled the save; only if the game comes back with a save that is one of the two (unchanged, or the one Bank wrote) does Bank settle it by itself, as in the first table. Another number shows "The unlock key is incorrect." and the code again; **Cancel** shows the message you would have got and changes nothing.
+
+Without the game Bank cannot tell which boxes are safe: one of the two answers in Poké Transporter loses the Pokémon of that session. Unlock only when the game will not come back.
 
 ## A pulled Game Card or a full SD card
 

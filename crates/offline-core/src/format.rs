@@ -161,7 +161,7 @@ impl Phase {
 /// | --- | --- |
 /// | 0..4 | `BKJ` and the version |
 /// | 4..8 | sequence |
-/// | 8 | bit 0 a save is in progress, bit 1 a delivery waits, bit 2 Transporter's question settles the save in progress, bits 4..8 its game (1 to 8) |
+/// | 8 | bit 0 a save is in progress, bit 1 a delivery waits, bit 2 Transporter's question settles the save in progress, bit 3 it does so whatever game Bank finds, bits 4..8 its game (1 to 8) |
 /// | 9 | copies: bits 0..3 the current save's bank, main, mover; bits 3..6 the same for the save in progress |
 /// | 10, 11 | Pokémon in the transport box: current save, save in progress |
 /// | 12..24 | checksums of bank, main, mover: current save |
@@ -187,14 +187,24 @@ pub struct Metadata {
     /// the game no longer tells which snapshot loses none. Only with a save
     /// in progress.
     pub ask: bool,
+    /// The save in progress was unlocked with the key on the original's
+    /// unlock screen: Transporter's question settles it, whatever game Bank
+    /// finds from then on. Only with a save in progress.
+    pub unlocked: bool,
 }
 
 impl Metadata {
+    /// Transporter's question settles the save in progress: Bank left it
+    /// there (`ask`), or it was unlocked (`unlocked`).
+    pub fn asks(&self) -> bool {
+        self.ask || self.unlocked
+    }
+
     pub fn encode(self) -> Result<[u8; METADATA_SIZE], FormatError> {
         if self.sequence == 0 {
             return Err(FormatError::InvalidSequence);
         }
-        validate(&self.phase, self.delivery, self.ask)?;
+        validate(&self.phase, self.delivery, self.asks())?;
         let mut out = [0; METADATA_SIZE];
         out[..3].copy_from_slice(METADATA_MAGIC);
         out[3] = SCHEMA_VERSION;
@@ -209,6 +219,9 @@ impl Metadata {
         }
         if self.ask {
             out[8] |= 4;
+        }
+        if self.unlocked {
+            out[8] |= 8;
         }
         if let Phase::Prepared(pending) = self.phase {
             out[8] |= 1 | game_number(pending.game.title_id)? << 4;
@@ -242,12 +255,13 @@ impl Metadata {
         if sequence == 0 {
             return Err(FormatError::InvalidSequence);
         }
-        if bytes[8] & 0x08 != 0 || bytes[9] & 0xc0 != 0 {
+        if bytes[9] & 0xc0 != 0 {
             return Err(FormatError::NonzeroReserved);
         }
         let current = save(bytes, bytes[9], bytes[10], 12);
         let delivery = (bytes[8] & 2 != 0).then(|| get32(bytes, 36));
         let ask = bytes[8] & 4 != 0;
+        let unlocked = bytes[8] & 8 != 0;
         if delivery.is_none() && !zero(&bytes[36..40]) {
             return Err(FormatError::NonzeroReserved);
         }
@@ -274,12 +288,13 @@ impl Metadata {
                 after_fingerprint: array32(&bytes[104..136]),
             })
         };
-        validate(&phase, delivery, ask)?;
+        validate(&phase, delivery, ask || unlocked)?;
         Ok(Self {
             sequence,
             phase,
             delivery,
             ask,
+            unlocked,
         })
     }
 }
@@ -317,10 +332,10 @@ fn save(bytes: &[u8], copies: u8, held: u8, at: usize) -> Save {
 }
 
 /// What must hold between the saves of a record, whoever wrote it.
-fn validate(phase: &Phase, delivery: Option<u32>, ask: bool) -> Result<(), FormatError> {
+fn validate(phase: &Phase, delivery: Option<u32>, asks: bool) -> Result<(), FormatError> {
     let current = phase.current();
     // Only a save in progress is settled by Transporter's question.
-    if ask && !matches!(phase, Phase::Prepared(_)) {
+    if asks && !matches!(phase, Phase::Prepared(_)) {
         return Err(FormatError::InvalidReference);
     }
     if current.held > MOST_HELD {

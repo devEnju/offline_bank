@@ -14,9 +14,9 @@
 //!   for the copy to write, and holds to what it says, but not the box.
 //! - **Bank** shows the copy the journal names. If a delivery waits, the
 //!   box in use is empty, and the delivery becomes the box (`on_load`).
-//! - A save in progress Bank left to **Transporter's question**
-//!   (`Metadata::ask`) is refused at START (`Refusal::Asked`), and the
-//!   answer settles it (`settle`).
+//! - A save in progress Bank left to **Transporter's question**, or one that
+//!   was unlocked (`Metadata::asks`), is refused at START
+//!   (`Refusal::Asked`), and the answer settles it (`settle`).
 //! - On Save and Quit Bank writes the box into the copy `Save::next_mover`
 //!   gives: the one that is not in use, or, while a delivery waits there,
 //!   over the empty box in use, so that the delivery outlasts a save that is
@@ -105,7 +105,7 @@ fn head<F: Files>(files: &mut F) -> Result<(Head, Slot), Refusal> {
     if !journal.readable() {
         return Err(Refusal::NotReady);
     }
-    if head.metadata().ask {
+    if head.metadata().asks() {
         return Err(Refusal::Asked);
     }
     let Phase::Clean(current) = head.phase() else {
@@ -394,6 +394,7 @@ mod tests {
             phase: Phase::Clean(save(mover, held)),
             delivery,
             ask: false,
+            unlocked: false,
         }
     }
     fn in_progress() -> Metadata {
@@ -417,6 +418,7 @@ mod tests {
             }),
             delivery: None,
             ask: false,
+            unlocked: false,
         }
     }
     /// A card whose journal holds `metadata` in both records, or nothing.
@@ -476,6 +478,7 @@ mod tests {
     fn a_save_left_to_the_question_is_refused_at_start_and_settled_by_the_answer() {
         let asked = Metadata {
             ask: true,
+            unlocked: false,
             ..in_progress()
         };
         let Phase::Prepared(pending) = asked.phase else {

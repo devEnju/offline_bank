@@ -128,16 +128,18 @@ pub(crate) const LANGUAGE_EDITS: [Edit; 2] = [
     // mov r5, r7, zero), so the language screen, task 1, is never entered.
     (0x002a_4940, 0xe1a0_5007, Raw(0xe3a0_5001)),
 ];
+/// Task 3 without a valid save (was: ldr r5, [r4, #0x40], the start of
+/// showing the notice): on to 002ac8c8, where accepting it selects state
+/// 0x14. The save is created and written as after "accept". Accepting first
+/// clears the notice's listener and puts the loading panel back up
+/// (002ac8a8..002ac8c4); without the notice the scan's panel is still up
+/// with its message, and the listener is as on a start with a valid save.
+/// The offline patch and the download, which both run task 3's update.
+pub(crate) const FIRST_START_NOTICE: Edit = (0x002a_c5b0, 0xe594_5040, Branch(0x002a_c8c8));
 /// The first start's edits in task 3's update (002abe08). Only a patch that
 /// runs the original's scan reaches them; the migration replaces that update.
 pub(crate) const SCAN_FIRST_START_EDITS: [Edit; 6] = [
-    // Task 3 without a valid save (was: ldr r5, [r4, #0x40], the start of
-    // showing the notice): on to 002ac8c8, where accepting it selects state
-    // 0x14. The save is created and written as after "accept". Accepting
-    // first clears the notice's listener and puts the loading panel back up
-    // (002ac8a8..002ac8c4); without the notice the scan's panel is still up
-    // with its message, and the listener is as on a start with a valid save.
-    (0x002a_c5b0, 0xe594_5040, Branch(0x002a_c8c8)),
+    FIRST_START_NOTICE,
     // Task 3 stores a language in a new save only if one was picked
     // (002ac6ec, beq 002ac710). That is left as it is: the pick is written
     // by 0025d1d0 alone, whose one caller is the language screen's listener

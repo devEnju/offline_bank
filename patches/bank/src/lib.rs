@@ -14,6 +14,7 @@ pub mod panel;
 pub mod save_steps;
 pub mod storage_worker;
 pub mod transaction;
+pub mod unlock;
 
 #[cfg(target_arch = "arm")]
 pub mod hooks;

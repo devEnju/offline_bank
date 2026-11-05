@@ -51,9 +51,10 @@ mod tests {
         assert_eq!(PROFILE.edits[..4], *offline::PROFILE.edits);
         assert_eq!(PROFILE.regions(), offline::PROFILE.regions() + 2);
         let entries = PROFILE.entries();
-        assert_eq!(entries[..9], offline::PROFILE.entries()[..]);
+        let offline = offline::PROFILE.entries();
+        assert_eq!(entries[..offline.len()], offline[..]);
         assert_eq!(
-            entries[9..],
+            entries[offline.len()..],
             ["bank_test_menu_update", "bank_test_menu_chosen"]
         );
         // Each slot is one of the main menu's known locations, with its

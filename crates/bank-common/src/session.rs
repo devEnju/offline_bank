@@ -210,10 +210,25 @@ impl<S: Storage> BankSession<S> {
 
     /// Leaves the save in progress to Transporter's question, or takes it
     /// back (`BankStore::ask`). Nothing is written when the record says so
-    /// already.
-    pub fn ask(&mut self, ask: bool) -> Result<(), Error<S::Error>> {
+    /// already. The answer is whether Transporter's question settles it now
+    /// (`Metadata::asks`): also when it was unlocked.
+    pub fn ask(&mut self, ask: bool) -> Result<bool, Error<S::Error>> {
         self.ensure_usable()?;
         let result = self.store.ask(&self.head, ask);
+        self.head = self.storage_result(result)?;
+        Ok(self.head.metadata().asks())
+    }
+
+    /// Whether the save in progress was unlocked (`Metadata::unlocked`).
+    pub fn unlocked(&self) -> bool {
+        self.head.metadata().unlocked
+    }
+
+    /// Unlocks the save in progress for Transporter's question
+    /// (`BankStore::unlock`).
+    pub fn unlock(&mut self) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        let result = self.store.unlock(&self.head);
         self.head = self.storage_result(result)?;
         Ok(())
     }

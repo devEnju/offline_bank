@@ -12,9 +12,36 @@ pub const PROFILE: Profile = Profile {
     name: "transporter",
     program: &super::TRANSPORTER,
     edits: &[EDITS],
-    relies: &[],
+    relies: &[&RESTORE_BUTTONS],
     menu_edits: &[],
 };
+
+/// The restore task's buttons as its entry and the B stub use them: the
+/// key handler's B with the UI in r4 (`sub r0, r0, #0x74; mov r4, r0`,
+/// `mov r1, #0x20`, and B presses button ID 3), the records of the two
+/// buttons (Yes ID 0, pane 2; No ID 3, pane 5), state 0xD selecting No
+/// (`str r0, [r5, #0x84]`), the UI's touch callback for Yes whose calls
+/// `ui::select_yes` makes (`bl 0019C800`, `bl 0019C7E4`, `str r5, [r4,
+/// #0x84]`), the listener at `ui + 0x7c` (`str r1, [r0, #0x7c]` of the
+/// restore set-up), and the restore states 0xD and 0xE in its jump table.
+const RESTORE_BUTTONS: [(u32, u32); 16] = [
+    (0x0024_af20, 0xe240_0074),
+    (0x0024_af2c, 0xe1a0_4000),
+    (0x0024_afac, 0xe3a0_1020),
+    (0x0024_afcc, 0xe3a0_1003),
+    (0x002a_fce0, 0x0000_0000),
+    (0x002a_fce4, 0x0000_0002),
+    (0x002a_fcfc, 0x0000_0003),
+    (0x002a_fd00, 0x0000_0005),
+    (0x0024_3f38, 0xe585_0084),
+    (0x0025_bf6c, 0xebfd_0223),
+    (0x0025_bf80, 0xe592_2004),
+    (0x0025_bf88, 0xebfd_0215),
+    (0x0025_bf8c, 0xe584_5084),
+    (0x0024_4468, 0xe580_107c),
+    (0x0024_3b5c, 0x0024_3ee4),
+    (0x0024_3b60, 0x0024_3f68),
+];
 
 /// Every edit but the start-up hook's bytes. Sites that go to the patch
 /// name their entry function; the router comes first, the entry of the ELF.
@@ -98,11 +125,23 @@ const EDITS: &[Edit] = &[
     // first question of the original and settles the save as the answer
     // chose, behind the restore's own loading panel.
     (0x002e_6578, 0x0024_3af4, Entry("transporter_restore")),
+    // The shared UI's key handler (0024AF20), its test of B (was:
+    // bl 001A2314): on the restore task's first question B presses nothing.
+    (
+        0x0024_afb4,
+        0xebfd_5cd6,
+        Call("transporter_cancel_key_stub"),
+    ),
     // The restore task's set-up, the start of its loading panel and of its
     // text (was: bl 0019B340, bl 0019C700): the question comes first, and
     // the entry puts the panel up once it is answered.
     (0x0024_4470, 0xebfd_5bb2, Raw(0xe320_f000)),
     (0x0024_447c, 0xebfd_609f, Raw(0xe320_f000)),
+    // The restore task's end callback (00244380), its call that takes the
+    // buttons out (was: bl 0019B3AC with 002B43B8, 2, 1): they are out on
+    // every way the task ends offline, and the call faded them out again on
+    // every frame, so that its ten calls of the minimum time took 2.8 s.
+    (0x0024_43a0, 0xebfd_5c01, Raw(0xe3a0_0001)),
     // Reading the chosen game, the 1.5 s before each of its errors: a
     // damaged save (state 0xB), no save (0xC), no Game Card (0xD) (was:
     // bl 0019B758 with 1500 ms). An error ends the panel as soon as it is
@@ -282,9 +321,9 @@ mod tests {
     use crate::profile::sample::{at, branch_target};
 
     #[test]
-    fn fifty_nine_words_and_thirty_three_entry_functions() {
-        assert_eq!(PROFILE.regions(), 60);
-        assert_eq!(PROFILE.entries().len(), 33);
+    fn sixty_one_words_and_thirty_four_entry_functions() {
+        assert_eq!(PROFILE.regions(), 62);
+        assert_eq!(PROFILE.entries().len(), 34);
         // Every edit lies in the original text or, for the six updates in
         // their vtables, its read-only data, which ends where its data
         // begins (002EC000).

@@ -138,7 +138,7 @@ cargo +stable xtask build --kind download
 
 This builds it into `build/download/` and verifies it. Its start screen says "Ver. 1.5-download". Everything that talks to the server is the original's own code, so none of that runs on the PC; the PC tests cover its routing against the original's router, and the writing of the files with a cut at every write.
 
-After START, download checks local extdata before contacting anything. If no offline Bank is present, it keeps the original archive and first-start preparation, then connects without detecting a cartridge or installed game. A missing archive is absence; unreadable or previous-format data stops the download instead of allowing an overwrite.
+After START, download checks local extdata before contacting anything. If no offline Bank is present, it keeps the original archive and first-start preparation without the language screen or the notice, then connects without detecting a cartridge or installed game. A missing archive is absence; unreadable or previous-format data stops the download instead of allowing an overwrite.
 
 What it checks in the original's code is listed in [internals.md](internals.md#the-download-patch); the console checks are in [testing.md](testing.md#the-download).
 
@@ -187,7 +187,7 @@ In this order, stopping at the first problem, it:
 5. writes the release notes `build/release/v1.0.0/offline_bank-v1.0.0.md`: a table of which way each Bank goes, the guides of the zips with their numbers, how to install, and the files and hashes;
 6. creates the annotated tag `v1.0.0` on the commit it built from, locally.
 
-**After a release** its journal records join the tests of the stored files' version, so that every later release of that version has to read them: at rest, with a delivery waiting, and with a save in progress, as `offline-core/tests/journal.rs` describes. They are taken from the release's tag with a temporary test in a git worktree of it, and added to `RELEASES` there and, the save in progress, to the test of `transaction.rs` that binds them.
+**Before a release** its journal records join the tests of the stored files' version, so that every later release of that version has to read them: at rest, with a delivery waiting, and with a save in progress, and from v0.7.0 on that save left to Transporter's question and unlocked, as `offline-core/tests/journal.rs` describes. They are written with a temporary test through the functions the patches call (`bank_common::testing`: a new Bank, Transporter's delivery, a save's prepare, `ask` and `unlock`), from the sources the release is made from, and added to `RELEASES` and `QUESTION` there and, the save in progress, to the test of `transaction.rs` that binds them, in the release's pull request.
 
 **What ships beside the patches** is decided by the release, as long as its module is in `xtask/src/release/`:
 

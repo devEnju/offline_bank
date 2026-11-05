@@ -184,6 +184,11 @@ const OTHER_COPY_NOTICE: u32 = 0xa;
 /// Poké Transporter and perform the cleanup process before using Pokémon
 /// Bank." For a save in progress left to Transporter's question.
 pub const OPEN_TRANSPORTER: u32 = 5;
+/// Native message 6: "Communication in your last session did not complete
+/// correctly. Performing cleanup process now...", the loading text of the
+/// original's check of another copy (`002a90cc`). The offline patch shows it
+/// while it writes an unlock.
+pub const CLEANUP_MESSAGE: u32 = 6;
 
 /// Starts the native loading panel, sound, and animation through 001d5b44,
 /// then lets 0025da24 load the original localized message into the UI's own

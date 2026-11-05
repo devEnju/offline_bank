@@ -8,6 +8,12 @@
 //! to the start screen. Only the console test build (docs/building.md) shows
 //! the menu, between opening and game selection, to choose its rehearsal on.
 //!
+//! Task 0x17 is the original's unlock screen. The opening leads to it with
+//! the outcome of the original's check of another copy for L, A and START
+//! (`unlock::KEYS`), for a save in progress that cannot be settled
+//! (`unlock`); whatever it ends with, cleanup follows, but for Bank closed
+//! from the HOME Menu meanwhile, which the original answers itself.
+//!
 //! Task 0xb runs only for its native start-up routine 002af12c, which destroys
 //! the text window, creates the character scene, and creates a new text
 //! window showing the loading panel. That order puts the reward dialogs in
@@ -26,6 +32,11 @@ pub const REWARD_CLAIM: u32 = 0xd;
 pub const BOXES: u32 = 0x19;
 pub const SAVE: u32 = 7;
 pub const CLEANUP: u32 = 0x14;
+pub const UNLOCK: u32 = 0x17;
+/// The ID the factory makes no task for (its default case, `002a645c`):
+/// the original's answer for the unlock screen ended by closing Bank
+/// meanwhile (outcome 0xe, `002a5880`).
+pub const NO_TASK: u32 = 0x18;
 
 /// Whether the main menu is shown: in the console test build only.
 pub const MENU: bool = cfg!(feature = "test-build");
@@ -48,6 +59,9 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
         (SCAN, _) => CLEANUP,
         (OPEN, 4) if MENU => MAIN_MENU,
         (OPEN, 4) => SELECT,
+        (OPEN, crate::unlock::KEYS) => UNLOCK,
+        (UNLOCK, 0xe) => NO_TASK,
+        (UNLOCK, _) => CLEANUP,
         (MAIN_MENU, MENU_USE) if MENU => SELECT,
         (SELECT, 5) => SCENE,
         (SCENE, _) => LOAD,
@@ -186,9 +200,7 @@ mod tests {
     fn no_answer_of_the_original_router_leads_to_its_server() {
         // Connect, sign-in, account and service tasks, the second load and
         // the checks of a game's last session, the release and HOME screens.
-        let never = [
-            5, 6, 8, 0xe, 0xf, 0x11, 0x12, 0x13, 0x17, 0x1a, 0x1b, 0x1c, 0x1d,
-        ];
+        let never = [5, 6, 8, 0xe, 0xf, 0x11, 0x12, 0x13, 0x1a, 0x1b, 0x1c, 0x1d];
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for home in [false, true] {
@@ -198,9 +210,33 @@ mod tests {
                         !never.contains(&next) && (MENU || next != MAIN_MENU),
                         "{current:#x} {outcome:#x} {native:#x} -> {next:#x}"
                     );
+                    // The unlock screen only from the opening, with the keys.
+                    assert_eq!(
+                        next == UNLOCK,
+                        (current, outcome) == (OPEN, crate::unlock::KEYS),
+                        "{current:#x} {outcome:#x}"
+                    );
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_unlock_screen_leads_only_to_cleanup_but_for_bank_closed_meanwhile() {
+        for outcome in 0..=u8::MAX {
+            let native = router::next(UNLOCK, outcome, false);
+            let next = destination(UNLOCK, outcome, native, false);
+            if outcome == 0xe {
+                // As the original answers it.
+                assert_eq!((next, native), (NO_TASK, NO_TASK));
+            } else {
+                assert_eq!(next, CLEANUP, "{outcome:#x}");
+            }
+        }
+        // It is no loading task: HOME and sleep go through on its screens,
+        // and its own loading screen refuses them while it writes.
+        assert!(!loads(UNLOCK) && !spins(UNLOCK));
+        assert_eq!(destination(CLEANUP, 3, START_SCREEN, false), START_SCREEN);
     }
 
     #[test]

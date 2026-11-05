@@ -1,7 +1,7 @@
 //! The migration patch: converts a Bank an earlier release stored and does
 //! nothing else. Task 3 runs the conversion without its native game scan.
 
-use super::{router, Profile, KEEP_ARCHIVE, LANGUAGE_EDITS, MESSAGE, SCAN_TASK, STARTUP, VERSION};
+use super::{router, Profile, KEEP_ARCHIVE, LANGUAGE_EDITS, SCAN_TASK, STARTUP, VERSION};
 use crate::profile::{Edit, Word::*};
 
 pub const PROFILE: Profile = Profile {
@@ -14,13 +14,10 @@ pub const PROFILE: Profile = Profile {
     menu_edits: &[],
 };
 
-const SHARED: [Edit; 5] = [
-    STARTUP,
-    KEEP_ARCHIVE,
-    router("bank_migrate_next"),
-    MESSAGE,
-    VERSION,
-];
+/// The original's "show a message" is not edited: the migration shows no
+/// message that waits while HOME is refused, and its result screen lets
+/// HOME through itself.
+const SHARED: [Edit; 4] = [STARTUP, KEEP_ARCHIVE, router("bank_migrate_next"), VERSION];
 
 /// Task 3 keeps its native constructor, init and end; its update and busy
 /// poll run the conversion.
@@ -31,21 +28,22 @@ const OWN: [Edit; 2] = [
 
 #[cfg(test)]
 mod tests {
-    use super::super::{offline, MENU_LOCATIONS, SCAN_FIRST_START_EDITS};
+    use super::super::{offline, MENU_LOCATIONS, MESSAGE, SCAN_FIRST_START_EDITS};
     use super::*;
     use crate::profile::sample::{at, edits};
 
     #[test]
     fn the_migration_replaces_the_scan_and_leaves_everything_online_original() {
-        assert_eq!(PROFILE.regions(), 10);
+        assert_eq!(PROFILE.regions(), 9);
         // Task 3's update is replaced, so nothing inside it is edited.
-        // Loading, saving, rewards, the timestamp, the scene set-up and the
-        // main menu stay the original's.
+        // Loading, saving, rewards, the timestamp, the scene set-up, the
+        // show-message function and the main menu stay the original's.
         for address in SCAN_FIRST_START_EDITS
             .map(|(address, _, _)| address)
             .into_iter()
             .chain(MENU_LOCATIONS.map(|(address, _)| address))
             .chain([
+                MESSAGE.0,
                 0x0036_1cfc,
                 0x0036_1d0c,
                 0x001d_3bf4,

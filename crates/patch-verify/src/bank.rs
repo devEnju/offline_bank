@@ -54,17 +54,18 @@ pub fn expectation(kind: &'static str) -> Expectation {
         (0x002a5a2c, 0xebfffed3, Bl(Sym(router))),
         (0x002b49c4, 0xebfcb5ff, Bl(Sym("bank_version_shown"))),
     ];
-    // Every patch but the download, which runs the original online (there
-    // the first start keeps its prompts, and the original refuses HOME and
-    // sleep for its whole session itself): the "show a message" function
-    // lets HOME and sleep through for a message that waits, and the
-    // manager's set-up does not ask for a language (nop; mov r5, #1).
-    if kind != "download" {
-        edits.extend([
-            (0x001d6650, 0xe92d41f0, B(Sym("bank_message_stub"))),
-            (0x002a4898, 0xebfeddfb, Raw(0xe320f000)),
-            (0x002a4940, 0xe1a05007, Raw(0xe3a05001)),
-        ]);
+    // Every patch: the manager's set-up does not ask for a language (nop;
+    // mov r5, #1).
+    edits.extend([
+        (0x002a4898, 0xebfeddfb, Raw(0xe320f000)),
+        (0x002a4940, 0xe1a05007, Raw(0xe3a05001)),
+    ]);
+    // The offline patch and the test build: the "show a message" function
+    // lets HOME and sleep through for a message that waits. The migration
+    // shows none while HOME is refused, and the original refuses HOME and
+    // sleep for the download's whole online session itself.
+    if offline {
+        edits.push((0x001d6650, 0xe92d41f0, B(Sym("bank_message_stub"))));
     }
     match kind {
         // Task 3's update and busy poll run the conversion.
@@ -74,8 +75,10 @@ pub fn expectation(kind: &'static str) -> Expectation {
         ]),
         // Task 9 and task 3 each have an entry for their update and their
         // busy poll; the reward step's update writes the files and ends as
-        // cancelled.
+        // cancelled. The first start's notice is skipped to where accepting
+        // it continues; a saved language stays.
         "download" => edits.extend([
+            (0x002ac5b0, 0xe5945040, B(At(0x002ac8c8))),
             (0x00361cfc, 0x002ae568, Ptr(Sym("bank_download_open"))),
             (0x00361d0c, 0x002b4a20, Ptr(Sym("bank_download_open_busy"))),
             (0x00361ac4, 0x002abe08, Ptr(Sym("bank_download_scan"))),
@@ -112,6 +115,7 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x00362034, 0x002b1cf8, Ptr(Sym("bank_offline_save"))),
             (0x00362044, 0x002b4a20, Ptr(Sym("bank_offline_save"))),
             (0x00361e84, 0x002af034, Raw(0x002af124)),
+            (0x00361c20, 0x002ad7bc, Ptr(Sym("bank_offline_unlock"))),
         ]),
     }
     // Only the test build: the main menu's update (its table slot) and its
@@ -184,6 +188,39 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x002ac924, 0xe3a00003),
             (0x002aca90, 0xe3a00020),
         ]);
+        // The unlock screen (task 0x17) as its entry reads and writes it,
+        // and the check of another copy's key test and outcome, which the
+        // opening makes and ends with.
+        relies.extend([
+            (0x002a5af4, 0x002a62bc),
+            (0x002a6584, 0x00361c14),
+            (0x002ad7e4, 0x002ad8c4),
+            (0x002adc00, 0xe584003c),
+            (0x002ad904, 0xe594203c),
+            (0x002adb48, 0xe5840040),
+            (0x002d15dc, 0xe5942040),
+            (0x002d160c, 0xe3a00005),
+            (0x002d1634, 0xe3a00007),
+            (0x002adbe8, 0xe5840048),
+            (0x002a8bb4, 0xe3a00016),
+            (0x002a8b68, 0xe3a01c01),
+            (0x002a8b80, 0xe3a01010),
+            (0x002a8b9c, 0xe3a01a01),
+            (0x002a8b50, 0xebfe3267),
+            (0x002a8b5c, 0xebfe3230),
+            (0x002a8b6c, 0xebfcfa76),
+        ]);
+        // Where the trainer block of a game object lies and which of its
+        // virtuals give the name and the ID, as the records screen's
+        // collection (0026de9c) has them and the opening reads them.
+        relies.extend([
+            (0x0026dee8, 0x02840b4a),
+            (0x0026deec, 0x02800f6b),
+            (0x0026def4, 0xe284091d),
+            (0x0026def8, 0xe2800fc1),
+            (0x0026e0a0, 0xe5912024),
+            (0x0026e0b4, 0xe591101c),
+        ]);
     }
 
     // What must stay the original's: the main menu's locations but the test
@@ -225,6 +262,11 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x002d0fc8, 0xbc),
             (0x002b0098, 0x1d8),
             (0x002ae310, 0x230),
+            // The unlock screen's vtable head, its original update and its
+            // keyboard's listener, which its entry calls or relies on.
+            (0x00361c14, 0xc),
+            (0x002ad7bc, 0x28c),
+            (0x002d1550, 0xf8),
         ]);
     }
 
@@ -236,9 +278,9 @@ pub fn expectation(kind: &'static str) -> Expectation {
         protected,
         router,
         entries: match kind {
-            "bank" => 9,
-            "migration" => 4,
-            "test" => 11,
+            "bank" => 10,
+            "migration" => 3,
+            "test" => 12,
             _ => 7,
         },
         menu_edits: if kind == "test" { 2 } else { 0 },

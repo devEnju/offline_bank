@@ -107,7 +107,9 @@ flowchart TD
     MEDIUM -->|"Yes"| PRESENT{"What moved?"}
     PRESENT -->|"Deposits only"| COMMIT
     PRESENT -->|"Withdrawals/releases only, or no moves"| KEEP
-    PRESENT -->|"Deposits and withdrawals"| ASK{"Leave pending save to<br/>Transporter's restore question"}
+    PRESENT -->|"Deposits and withdrawals"| TRAINER{"The save's trainer:<br/>name, Trainer ID and secret ID?"}
+    TRAINER -->|"Yes"| ASK{"Leave pending save to<br/>Transporter's restore question"}
+    TRAINER -->|"Another trainer"| TAKEBACK
     ASK -->|"Journal update fails"| F10["HOME error: 10"]
     ASK -->|"Recorded, or already recorded"| TRANSPORTER["Your communication with Poké Transporter did not complete correctly during your last session.<br/>↓ A<br/>Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.<br/>2 pages"]
     TRANSPORTER -->|"A"| TITLE
@@ -118,7 +120,12 @@ flowchart TD
     ABSENT -->|"Withdrawals/releases only, or no moves"| KEEP
     ABSENT -->|"Deposits and withdrawals"| TAKEBACK{"Leave pending; take back any<br/>Transporter restore question"}
     TAKEBACK -->|"Journal update fails"| F10
-    TAKEBACK -->|"Recorded, or already recorded"| WAIT["You previously used a different copy of this game.<br/>Please try again using [name]’s game<br/>(Trainer ID No. [number]).<br/>1 page"]
+    TAKEBACK -->|"Recorded, or already recorded"| UNLOCKED{"Unlocked?"}
+    UNLOCKED -->|"Yes"| TRANSPORTER
+    UNLOCKED -->|"No"| KEYS{"L, A and START held<br/>on the loading screen?"}
+    ASK -->|"Recorded, or already recorded; not unlocked, keys held"| UNLOCK(["Unlock screen — below"])
+    KEYS -->|"Yes"| UNLOCK
+    KEYS -->|"No"| WAIT["You previously used a different copy of this game.<br/>Please try again using [name]’s game<br/>(Trainer ID No. [number]).<br/>1 page"]
     WAIT -->|"A; supply expected game and press START"| TITLE
     KEEP --> WRITE{"Finish recovery and load Bank"}
     COMMIT --> WRITE
@@ -133,16 +140,29 @@ flowchart TD
 | Game is exactly the after-image and its secure value can be accepted/finished | Commit new Bank | Game selection |
 | Neither exact image; expected title and medium are present; deposits only | Commit new Bank | Game selection; a damaged game is refused if selected |
 | Neither exact image; expected title and medium are present; only withdrawals/releases, or no moves | Keep old Bank | Game selection; a damaged game is refused if selected |
-| Neither exact image; expected title and medium are present; deposits and withdrawals | Leave pending and record that Transporter must ask | Two-page instruction → A → Bank start screen; then manually close Bank and open Transporter for diagram 5 |
+| Neither exact image; expected title, medium and trainer are present; deposits and withdrawals | Leave pending and record that Transporter must ask | Two-page instruction → A → Bank start screen; then manually close Bank and open Transporter for diagram 5 |
 | Game missing or different medium with a different image; deposits only | Commit new Bank | Game selection |
 | Game missing or different medium with a different image; withdrawals/releases only, or no moves | Keep old Bank | Game selection |
-| Game missing or different medium with a different image; deposits and withdrawals | Leave pending; take back any Transporter question | Waiting for game → A → START |
+| Game missing, different medium with a different image, or another trainer's game; deposits and withdrawals | Leave pending; take back any Transporter question | Waiting for game → A → START |
+| Any of the two rows that leave it pending, with L, A and START held on the loading screen and the save not unlocked | Leave pending | Unlock screen (below) |
+| Any of the two rows that leave it pending, unlocked | Leave pending | Two-page instruction → A → Bank start screen |
 | Cartridge disappears during recovery | Leave pending | Retry → A → START |
 | Game read, transaction binding, secure-value operation, recovery write, or Bank readback fails otherwise | Stop the run | HOME error |
 
-Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title and kind of copy present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
+Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title, kind of copy and trainer (name, Trainer ID and secret ID) present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
 
-Repeated Bank START with the same nonmatching game repeats the message to open Transporter. If an exact before/after image becomes available, Bank can settle it itself. If the game is absent or only a nonmatching copy on the other medium is available, Bank waits instead. Taking out one cartridge may expose an installed copy of the same title; Bank then treats that other medium as unavailable for the pending save.
+**The unlock screen** is the original's, without its server: "Please enter the unlock key: [eight digits]" (39:0x22) and the number keyboard.
+
+| Typed | Shown | Journal |
+| --- | --- | --- |
+| The eight digits shown | "Communication in your last session did not complete correctly. Performing cleanup process now..." (39:0x06) with the loading screen for 1.5 s, then in the same panel "The program is now closing. Please wait..." (39:0x1E), the start screen | bit 3 set: from then on every START with an unsettled save shows the two-page instruction to open Transporter, whatever game is there |
+| Another number | "The unlock key is incorrect." (39:0x23), then the code again | — |
+| Cancel | The message the opening found, at once (the different copy, or the two-page instruction), then the start screen | — |
+| Bank closed while the keyboard is up | — | — |
+
+A failed write of bit 3 is the HOME error screen with `10`.
+
+Repeated Bank START with the same nonmatching game repeats the message to open Transporter. If an exact before/after image becomes available, Bank can settle it itself. If the game is absent, only a nonmatching copy on the other medium is available, or the game is another trainer's, Bank waits instead. Taking out one cartridge may expose an installed copy of the same title; Bank then treats that other medium as unavailable for the pending save.
 
 ## 3. Bank: Save and Quit
 
@@ -262,12 +282,16 @@ These notices filter the transfer rather than producing a numbered error. Each i
 
 ```mermaid
 flowchart TD
-    START(["Transporter START finds a pending save<br/>Bank left to its restore question"]) --> QUESTION{"You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?<br/>1 page; Yes and No buttons"}
+    START(["Transporter START finds a pending save<br/>Bank left to its restore question"]) --> QUESTION{"You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?<br/>1 page; Yes and No buttons, Yes selected, B does nothing"}
     QUESTION -->|"HOME; close Transporter before answering"| LATER(["No choice applied;<br/>decide later"])
-    QUESTION -->|"Yes"| BEFORE["Choose Bank's boxes<br/>from before the interrupted session"]
-    QUESTION -->|"No"| AFTER["Choose Bank's boxes<br/>from after the interrupted session"]
-    BEFORE --> PANEL["Communication in your last session did not complete correctly. Performing cleanup process now...<br/>Loading panel; HOME and sleep refused"]
-    AFTER --> PANEL
+    QUESTION -->|"Yes"| BEFORE["Noted: Bank's boxes<br/>from before the interrupted session"]
+    QUESTION -->|"No"| AFTER["Noted: Bank's boxes<br/>from after the interrupted session"]
+    BEFORE --> FINAL{"This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?<br/>1 page; Yes and No buttons, No selected, B chooses No"}
+    AFTER --> FINAL
+    FINAL -->|"HOME; close Transporter before answering"| LATER
+    FINAL -->|"No"| DECLINED["Nothing written;<br/>Transporter's closing screen"]
+    DECLINED --> TITLE
+    FINAL -->|"Yes"| PANEL["Communication in your last session did not complete correctly. Performing cleanup process now...<br/>Loading panel; HOME and sleep refused"]
     PANEL --> SETTLE{"Settle Bank's journal<br/>to the chosen snapshot"}
     SETTLE -->|"Required Bank file cannot be opened"| F3["HOME error: 03"]
     SETTLE -->|"Damaged or conflicting journal"| F5["HOME error: 05"]
@@ -278,11 +302,11 @@ flowchart TD
     TITLE -.->|"Close Transporter; open Bank and press START"| BANK(["Bank opens the selected snapshot;<br/>normal startup checks apply"])
 ```
 
-Yes and No both settle the pending save. No does not cancel the question. Closing Transporter with HOME before answering leaves it for later. Only the first restore question is shown; there is no second confirmation question. The loading panel follows either answer, then the normal closing screen and start screen; Transporter does not continue to game selection in that session.
+The first answer chooses the snapshot; its No does not cancel. The second question follows either answer, and only its Yes settles the pending save as the first answer chose. Its No writes nothing and leaves the question for the next START, as does closing Transporter with HOME before answering. The loading panel follows only the second Yes; the normal closing screen and start screen follow either way, and Transporter does not continue to game selection in that session.
 
-Only Bank's journal is written. This chooses which existing Bank snapshot is current; it does not restore or write the game save, transfer Pokémon, or create a source backup. The question can be answered without the original game present in Transporter, because Transporter relies on the choice Bank recorded. Until the question is answered, Bank takes it back when it next checks the pending save itself and the game is gone or only on the other kind of copy (diagram 2); an answer, once given, is final.
+Only Bank's journal is written. This chooses which existing Bank snapshot is current; it does not restore or write the game save, transfer Pokémon, or create a source backup. The question can be answered without the original game present in Transporter, because Transporter relies on the choice Bank recorded. Until the question is answered, Bank takes it back when it next checks the pending save itself and the game is gone, only on the other kind of copy, or another trainer's (diagram 2), unless the save was unlocked: then the question stays whatever game Bank finds. An exact before or after image still lets Bank settle the save itself. An answer, once given, is final.
 
-| Pokémon currently in the game from the interrupted session | Answer | Bank afterwards |
+| Pokémon currently in the game from the interrupted session | First answer (then Yes) | Bank afterwards |
 | --- | --- | --- |
 | The Pokémon deposited into Bank in that session | Yes | Old Bank boxes, retaining the Pokémon withdrawn from Bank |
 | The Pokémon withdrawn from Bank in that session | No | New Bank boxes, retaining the Pokémon deposited into Bank |

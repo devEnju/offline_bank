@@ -14,7 +14,7 @@
 //! Bank's files that the SD card refused among them.
 
 use crate::{
-    native_game::{GameIoDescriptor, PlatformSecureValue, PreparedImage, SecureValues},
+    native_game::{GameIoDescriptor, GameKind, PlatformSecureValue, PreparedImage, SecureValues},
     transaction::{self, Found, Match, Medium, Trainer},
 };
 use bank_common::{
@@ -50,9 +50,10 @@ pub enum Job {
         session: u32,
     },
     Initialize,
-    /// `game` is `None` when the game of the save in progress is not there.
+    /// `game` is `None` when the game of the save in progress is not there;
+    /// with it, whose game it is, read on the main thread.
     Recover {
-        game: Option<GameIoDescriptor>,
+        game: Option<(GameIoDescriptor, Trainer)>,
     },
     /// The game a session is loaded with. The Bank is the one opening
     /// restored; it is not read again.
@@ -71,6 +72,10 @@ pub enum Job {
         /// Whose game it is, read when the game was loaded.
         trainer: Trainer,
     },
+    /// The save in progress was unlocked on the original's unlock screen:
+    /// Transporter's question settles it whatever game is found from then on
+    /// (`BankFiles::unlock`).
+    Unlock,
     /// Save and Quit once the original's writer has ended, whether it
     /// wrote the game or failed: the save is settled from what the game
     /// holds (`finalize`). `status` is the writer's result, 0 when it
@@ -131,8 +136,13 @@ pub enum Reply {
     },
     /// The save in progress moved Pokémon both ways and its game, there and
     /// saved on since, no longer tells which snapshot loses none: it is left
-    /// to Transporter's question (`Settled::Asks`).
-    AskTransporter,
+    /// to Transporter's question (`Settled::Asks`); `unlocked` when it was
+    /// unlocked, so whatever game was found.
+    AskTransporter {
+        unlocked: bool,
+    },
+    /// The unlock is written.
+    Unlocked,
     /// The job could not finish, and this is what it leaves.
     Ended(Ending),
 }
@@ -155,6 +165,10 @@ pub trait Game {
     /// Sets the console's secure value of the game (`0012146c`), with the
     /// same errors.
     fn set_secure(&mut self, value: u64) -> Result<(), WorkerError>;
+    /// Whose game it is, as the main thread read it with the original's
+    /// calls before the job (`native_game::trainer`); `None` for a job that
+    /// was given none.
+    fn trainer(&mut self) -> Option<Trainer>;
 }
 
 /// Why a job stopped: a game's or the worker's error, or one of Bank's
@@ -398,16 +412,21 @@ where
         // A save that is neither image, on the kind of copy the save in
         // progress was made with: the game was played on, a new game was
         // started on it, or it is another cartridge. It no longer shows
-        // whether Bank's write went through. The other kind of copy stands
-        // in for one that is gone and says nothing about this save: as for a
-        // game that is not there. Its secure value is not this save's to
-        // judge; a load of that game does.
-        Match::Other(found) => by_moves(
-            files,
-            staging,
-            rule == Rule::Start && found == Found::SameKind,
-            held,
-        ),
+        // whether Bank's write went through. Only the trainer the save was
+        // made with is that game played on; another trainer's, and the
+        // other kind of copy, which stands in for one that is gone, say
+        // nothing about this save: as for a game that is not there. Its
+        // secure value is not this save's to judge; a load of that game
+        // does.
+        Match::Other(found) => {
+            let gen7 = GameKind::of_title(pending.game.title_id).is_some_and(GameKind::gen7);
+            let seen = rule == Rule::Start
+                && found == Found::SameKind
+                && game
+                    .trainer()
+                    .is_some_and(|inserted| Trainer::of(&pending.game).same(inserted, gen7));
+            by_moves(files, staging, seen, held)
+        }
     }
 }
 
@@ -430,10 +449,11 @@ where
         .pending_moves(staging, before, after)
         .map_err(files_failed(Fault::JournalRecovery))?;
     let Some(decision) = moved::choose(moved) else {
-        files
+        // Bit 2 by what was seen; an unlocked save is Transporter's too.
+        let asks = files
             .ask(seen)
             .map_err(files_failed(Fault::JournalRecovery))?;
-        return Ok(if seen { Settled::Asks } else { Settled::Waits });
+        return Ok(if asks { Settled::Asks } else { Settled::Waits });
     };
     files
         .reconcile_as(decision)
@@ -784,7 +804,10 @@ mod arm {
                         // version's, on one kind or the other.
                         transaction::bound(&pending).map_err(|_| Fault::GameChanged.with(0))?;
                     }
-                    let mut game = game.map(Console::of);
+                    let mut game = game.map(|(game, trainer)| Console {
+                        trainer: Some(trainer),
+                        ..Console::of(game)
+                    });
                     let settled = settle(
                         &mut self.files,
                         game.as_mut(),
@@ -806,9 +829,23 @@ mod arm {
                             title: pending.game.title_id,
                             trainer: Trainer::of(&pending.game),
                         }),
-                        Settled::Asks => Ok(Reply::AskTransporter),
+                        Settled::Asks => Ok(Reply::AskTransporter {
+                            unlocked: self
+                                .files
+                                .unlocked()
+                                .map_err(|e| Fault::JournalRecovery.files(e))?,
+                        }),
                         Settled::Open => Ok(Reply::Ended(Ending::Retry)),
                     }
+                }
+                Job::Unlock => {
+                    let Phase::Prepared(_) = self.phase()? else {
+                        return Err(Fault::JournalRecovery.with(0));
+                    };
+                    self.files
+                        .unlock()
+                        .map_err(|e| Fault::JournalRecovery.files(e))?;
+                    Ok(Reply::Unlocked)
                 }
                 Job::Finalize { game, status } => {
                     let Phase::Prepared(pending) = self.phase()? else {
@@ -852,8 +889,8 @@ mod arm {
                     #[cfg(feature = "test-build")]
                     self.files.rehearse(rehearsal::chosen());
                     let mut console = Console {
-                        game,
                         prepared: Some(&prepared),
+                        ..Console::of(game)
                     };
                     let prepared_game =
                         prepare(&mut self.files, &mut console, staging, baseline, trainer)
@@ -886,16 +923,22 @@ mod arm {
         game: GameIoDescriptor,
         /// The image Save and Quit prepared, for `images`.
         prepared: Option<&'a PreparedImage>,
+        /// Whose game it is, for `Job::Recover`.
+        trainer: Option<Trainer>,
     }
     impl Console<'_> {
         fn of(game: GameIoDescriptor) -> Self {
             Self {
                 game,
                 prepared: None,
+                trainer: None,
             }
         }
     }
     impl Game for Console<'_> {
+        fn trainer(&mut self) -> Option<Trainer> {
+            self.trainer
+        }
         fn check(&mut self) -> Result<(), WorkerError> {
             let prepared = self.prepared.ok_or(Fault::GamePrepare.with(0))?;
             // The unsafe submit contract keeps the game frozen and live, and
@@ -1039,7 +1082,8 @@ mod tests {
     use bank_common::{
         bank_files::FileName,
         testing::{
-            asked, body, fresh, load, opened, pokemon, transport_check, with_boxes, Refused, Shared,
+            asked, body, fresh, load, opened, pokemon, transport_check, unlocked, with_boxes,
+            Refused, Shared,
         },
     };
     use offline_core::sections::RECORD_SIZE;
@@ -1074,6 +1118,8 @@ mod tests {
         out_after: Option<usize>,
         /// The prepared game passes the original's check.
         valid: bool,
+        /// Whose game it is.
+        trainer: Trainer,
     }
     impl Simulated {
         fn loaded(cartridge: bool) -> Self {
@@ -1084,6 +1130,7 @@ mod tests {
                 value: LOADED.current,
                 out_after: None,
                 valid: true,
+                trainer: trainer(),
             }
         }
         /// The game as it was loaded, as `LoadGame` saw it.
@@ -1147,12 +1194,16 @@ mod tests {
             self.value = value;
             Ok(())
         }
+        fn trainer(&mut self) -> Option<Trainer> {
+            Some(self.trainer)
+        }
     }
 
+    /// Trainer ID 12345 and secret ID 7, of X.
     fn trainer() -> Trainer {
         Trainer {
             name: [0x53; crate::transaction::NAME],
-            id: 12345,
+            id: 7 << 16 | 12345,
         }
     }
     fn stored(disk: &Shared) -> BTreeMap<u8, Vec<u8>> {
@@ -1638,10 +1689,20 @@ mod tests {
                 assert_eq!(pending(&mut files), Some(in_progress), "{case}");
                 drop(files);
                 assert!(stored(&disk) == before, "{case}");
-                // Without its game, or with only the other kind of copy: it
-                // waits for its game again, and Transporter's question is
-                // taken back.
-                for other in [None, Some(Simulated::loaded(!cartridge))] {
+                // Without its game, with only the other kind of copy, or with
+                // another trainer's game of the same kind, also one that
+                // differs in its secret ID alone: it waits for its game
+                // again, and Transporter's question is taken back.
+                let with_id = |id| Simulated {
+                    trainer: Trainer { id, ..trainer() },
+                    ..Simulated::loaded(cartridge)
+                };
+                for other in [
+                    None,
+                    Some(Simulated::loaded(!cartridge)),
+                    Some(with_id(trainer().id + 1)),
+                    Some(with_id(trainer().id ^ 1 << 16)),
+                ] {
                     let mut other = other.map(|mut game| {
                         game.save = Some((OTHER, LOADED));
                         game
@@ -1674,6 +1735,66 @@ mod tests {
                 assert!(!asked(&disk), "{case}");
             }
         }
+    }
+
+    #[test]
+    fn an_unlocked_save_is_transporters_whatever_game_is_there_until_one_of_its_images_is() {
+        let (old, sessions) = sessions();
+        let (moved, new) = &sessions[3];
+        assert_eq!(*moved, "both ways");
+        let mut game = Simulated::loaded(true);
+        let (disk, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
+        files.unlock().unwrap();
+        drop(files);
+        let mut another = Simulated {
+            trainer: Trainer {
+                id: trainer().id + 1,
+                ..trainer()
+            },
+            save: Some((OTHER, LOADED)),
+            ..Simulated::loaded(true)
+        };
+        game.save = Some((OTHER, LOADED));
+        let mut other_kind = Simulated {
+            save: Some((OTHER, LOADED)),
+            ..Simulated::loaded(false)
+        };
+        let start = |found: Option<&mut Simulated>| {
+            let mut files = opened(&disk);
+            let settled = settle(
+                &mut files,
+                found,
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                &in_progress,
+                Rule::Start,
+                None,
+                &mut held(),
+            )
+            .unwrap();
+            (settled, pending(&mut files))
+        };
+        // Absent, another trainer's, the other kind of copy, its own:
+        // Transporter's question each time; bit 2 still by what was seen.
+        for (found, seen) in [
+            (None, false),
+            (Some(&mut another), false),
+            (Some(&mut other_kind), false),
+            (Some(&mut game), true),
+        ] {
+            assert_eq!(start(found), (Settled::Asks, Some(in_progress)));
+            assert!(transport_check(&disk) == Err(offline_core::transport::Refusal::Asked));
+            assert!(unlocked(&disk));
+            assert_eq!(asked(&disk), seen);
+        }
+        // The game back with the image it was saved from: Bank settles the
+        // save itself, unlocked or not.
+        game.save = Some((BEFORE, LOADED));
+        assert_eq!(
+            start(Some(&mut game)),
+            (Settled::Exact(RecoveryDecision::KeepBefore), None)
+        );
+        assert!(settled_bank(&disk) == old);
+        assert!(!unlocked(&disk));
     }
 
     #[test]

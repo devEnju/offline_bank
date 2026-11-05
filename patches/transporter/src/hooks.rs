@@ -88,6 +88,9 @@ struct Runtime {
     failure: Option<Failure>,
     /// Where the restore task stands (`transporter_restore`).
     restore: Restore,
+    /// The check at START left the save to the restore question, which
+    /// follows once the search's panel has stood its 1.5 s.
+    asked: bool,
 }
 /// An error the session stopped with: its two numbers, and whether its
 /// screen is up.
@@ -103,7 +106,8 @@ static STATE: Exclusive<Runtime> = unsafe {
         requests: Requests::new(),
         spinner: Spinner::new(),
         failure: None,
-        restore: Restore::Asking(None),
+        restore: Restore::First(None),
+        asked: false,
     })
 };
 /// An object the job needs is not what the hook expects, or the job's reply
@@ -494,6 +498,7 @@ unsafe fn check(task: Task) -> Check {
         if unsafe { loading(ui) }.is_ok() {
             PANEL.start(ui as usize);
             state.spinner.up(now());
+            state.asked = false;
             return Check::Pending;
         }
         state.fail(NOT_NATIVE);
@@ -502,11 +507,23 @@ unsafe fn check(task: Task) -> Check {
     if !state.requests.is_out() && state.spinner.idle(now()) {
         return Check::Pending;
     }
+    // The restore question is the screen that follows, as the game list
+    // follows otherwise: it comes once the panel has stood 1.5 s.
+    if state.asked {
+        if state.spinner.held(now()) {
+            return Check::Pending;
+        }
+        state.asked = false;
+        return Check::Ask;
+    }
     let answer = unsafe { state.job(Job::Check, |_| Some(())) };
     let message = match checked(answer) {
         Checked::Pending => return Check::Pending,
         Checked::Go => return Check::Go,
-        Checked::Ask => return Check::Ask,
+        Checked::Ask => {
+            state.asked = true;
+            return Check::Pending;
+        }
         Checked::Refused(message) => message,
         Checked::Failed(error) => {
             state.fail(error);
@@ -628,15 +645,21 @@ unsafe fn saving(task: Task, ui: usize, update: usize, note: bool) -> u32 {
 /// the question, the first of its table: "You can try restoring your data,
 /// but you may lose the Pokémon currently being transported. Would you
 /// still like to try restoring your data?" (23:0x1A). The original update
-/// shows it with its Yes and No buttons and waits for the answer; once the
-/// buttons are gone the entry takes over, where the original would ask its
-/// second question or end. The loading panel with "Communication in your
-/// last session did not complete correctly. Performing cleanup process
-/// now..." (23:0x04) goes up, HOME and sleep are refused, and after 0.5 s
-/// the worker settles the save as the answer chose (`restore::answered`): Yes
-/// the save before, No the save after. The task ends once the panel has
-/// stood for 1.5 s, and the disconnect task follows. A failure ends on the
-/// error screen. What each frame does is `restore::Restore::frame`.
+/// shows it with its Yes and No buttons and waits for the answer, which
+/// chooses (`restore::answered`): Yes the save before, No the save after.
+/// After either the original asks its second question, "This is your final
+/// warning. The Pokémon you are trying to send could be lost forever. Are you
+/// sure you want to try to restore your data?" (23:0x1B). After its No the
+/// original ends the task and nothing is written; once the buttons are gone
+/// the entry puts up the panel with "The program is now closing. Please
+/// wait..." (23:0x21), which the disconnect task keeps. After its Yes, once the
+/// buttons are gone, the entry takes over: the loading panel with
+/// "Communication in your last session did not complete correctly.
+/// Performing cleanup process now..." (23:0x04) goes up, HOME and sleep are
+/// refused, and after 0.5 s the worker settles the save as the first answer
+/// chose. The task ends once the panel has stood for 1.5 s. The disconnect
+/// task follows either way. A failure ends on the error screen. What each
+/// frame does is `restore::Restore::frame`.
 /// # Safety
 /// The original's task driver supplies the live restore task, on the main
 /// thread.
@@ -670,12 +693,37 @@ pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
             drop(state);
             unsafe { original(RESTORE_UPDATE, raw) }
         }
+        Frame::Again => {
+            unsafe {
+                write_word(raw, TASK_STATE, restore::ASK);
+                raw.add(RESTORE_PAGE).write(restore::SECOND);
+                raw.add(RESTORE_ANSWER).write(0);
+            }
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
+        Frame::Hold => {
+            unsafe { raw.add(RESTORE_PAGE).write(restore::FIRST) };
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
+        Frame::Buttons => {
+            drop(state);
+            let finished = unsafe { original(RESTORE_UPDATE, raw) };
+            // In: the original has selected No; on the first question Yes.
+            if unsafe { read_word(raw, TASK_STATE) } == restore::ANSWERING {
+                if let Ok(ui) = task.pointer(RESTORE_UI) {
+                    unsafe { ui::select_yes(ui) };
+                }
+            }
+            finished
+        }
         Frame::Answered => {
             let Ok(ui) = task.pointer(RESTORE_UI) else {
                 state.fail(NOT_NATIVE);
                 return 0;
             };
-            unsafe { ui::cleanup(ui) };
+            unsafe { ui::panel(ui, ui::MESSAGE_CLEANUP) };
             state.spinner.up(now());
             refuse_home(true);
             0
@@ -698,7 +746,47 @@ pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
         }
         // The job is done; only the panel's time is left.
         Frame::Done => u32::from(!state.spinner.held(now())),
+        Frame::Closing => {
+            if let Ok(ui) = task.pointer(RESTORE_UI) {
+                unsafe { ui::panel(ui, ui::MESSAGE_CLOSING) };
+            }
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
     }
+}
+
+// The shared UI's key handler (0024AF20), its test of B (0024AFB4, was:
+// bl 001A2314 with r0 the pad, r1 0x20, r2 0), with the UI in r4: the stub
+// hands it on in r3.
+patch_common::stub!(
+    transporter_cancel_key_stub,
+    ["mov r3, r4", "b {cancel_key}"],
+    cancel_key = sym cancel_key,
+);
+/// `001A2314(pad, mask, mode)`: whether `mask` was pressed.
+const KEY_PRESSED: usize = 0x001a_2314;
+/// Where the shared UI keeps the listener of its buttons, which the restore
+/// task registers as its own at `+0x34` (`00244468`).
+const UI_LISTENER: usize = 0x7c;
+const RESTORE_LISTENER: usize = 0x34;
+/// B is not pressed while the restore task asks its first question
+/// (`restore::Restore::b_presses_no`); for every other dialog, and when
+/// the state is taken, it is the original's test.
+unsafe extern "aapcs" fn cancel_key(pad: *mut u8, mask: u32, mode: u32, ui: *mut u8) -> u32 {
+    let restore = unsafe { follow(ui, UI_LISTENER) }
+        .map(|listener| listener.wrapping_sub(RESTORE_LISTENER))
+        .is_some_and(|task| unsafe { Task::from_raw(task, &[TASK_RESTORE]) }.is_ok());
+    if restore
+        && STATE
+            .take()
+            .is_some_and(|state| !state.restore.b_presses_no())
+    {
+        return 0;
+    }
+    let pressed: unsafe extern "aapcs" fn(*mut u8, u32, u32) -> u32 =
+        unsafe { transmute(KEY_PRESSED) };
+    unsafe { pressed(pad, mask, mode) }
 }
 
 /// The original update at `address`.

@@ -14,6 +14,8 @@ pub const PROFILE: Profile = Profile {
         &NO_GAME_NATIVE,
         &NATIVE_FINISHED_BODY,
         &COUNT_UNAVAILABLE_BODY,
+        &UNLOCK_TASK,
+        &TRAINER_BLOCK,
     ],
     menu_edits: &[],
 };
@@ -41,7 +43,7 @@ const NATIVE_FINISHED: u32 = 0x002a_f124;
 /// caller's `lr` and `sp` for the original's prologue. Vtable slots get the
 /// entry's address; constructors and init callbacks stay the original's.
 /// The main menu (task 4) is never created, so none of its code is edited.
-pub(super) const OWN: [Edit; 15] = [
+pub(super) const OWN: [Edit; 16] = [
     // Scan state 0x18 keeps its native loading-panel shutdown and notice.
     // Only the message call is adapted (was: bl 001d6650); state 0x19 then
     // waits for A and exits through the native unsuccessful-scan route,
@@ -73,6 +75,8 @@ pub(super) const OWN: [Edit; 15] = [
     // Task 7, saving: update and busy poll.
     (0x0036_2034, 0x002b_1cf8, Entry("bank_offline_save")),
     (0x0036_2044, 0x002b_4a20, Entry("bank_offline_save")),
+    // Task 0x17, the unlock screen: its update.
+    (0x0036_1c20, 0x002a_d7bc, Entry("bank_offline_unlock")),
 ];
 
 /// The native task in r4, the no-game branch, the acknowledgment loop and
@@ -85,6 +89,47 @@ const NO_GAME_NATIVE: [(u32, u32); 7] = [
     (0x002a_c7c8, 0x0a00_00b0),
     (0x002a_c924, 0xe3a0_0003),
     (0x002a_ca90, 0xe3a0_0020),
+];
+/// Task 0x17, the unlock screen, as its entry reads and writes it: its
+/// factory case and vtable literal, state 3 in its jump table, the set-up's
+/// store of the code (+0x3c) and its read for message 0x22, the keyboard's
+/// store of the number typed (+0x40), the listener's read of it and its
+/// states 5 and 7, and its set-up's store of the shared UI (+0x48). The
+/// opening reaches it with the outcome of the check of another copy for L,
+/// A and START (`mov r0, #0x16`), whose key test it makes with the
+/// original's calls (`bl 002354f4`, `bl 00235424`, `bl 001e754c`) and masks
+/// (`mov r1, #0x100`, `#0x10`, `#0x1000`).
+const UNLOCK_TASK: [(u32, u32); 17] = [
+    (0x002a_5af4, 0x002a_62bc),
+    (0x002a_6584, 0x0036_1c14),
+    (0x002a_d7e4, 0x002a_d8c4),
+    (0x002a_dc00, 0xe584_003c),
+    (0x002a_d904, 0xe594_203c),
+    (0x002a_db48, 0xe584_0040),
+    (0x002d_15dc, 0xe594_2040),
+    (0x002d_160c, 0xe3a0_0005),
+    (0x002d_1634, 0xe3a0_0007),
+    (0x002a_dbe8, 0xe584_0048),
+    (0x002a_8bb4, 0xe3a0_0016),
+    (0x002a_8b68, 0xe3a0_1c01),
+    (0x002a_8b80, 0xe3a0_1010),
+    (0x002a_8b9c, 0xe3a0_1a01),
+    (0x002a_8b50, 0xebfe_3267),
+    (0x002a_8b5c, 0xebfe_3230),
+    (0x002a_8b6c, 0xebfc_fa76),
+];
+/// Where the records screen's collection (`0026de9c`) finds the trainer
+/// block in a game object, which the opening reads the same way
+/// (`native_game::trainer`): `0x12800 + 0x1ac` for X to Alpha Sapphire,
+/// `0x74000 + 0x304` for Sun to Ultra Moon, and the block's virtuals it
+/// calls, `+0x24` the name and `+0x1c` the ID.
+const TRAINER_BLOCK: [(u32, u32); 6] = [
+    (0x0026_dee8, 0x0284_0b4a),
+    (0x0026_deec, 0x0280_0f6b),
+    (0x0026_def4, 0xe284_091d),
+    (0x0026_def8, 0xe280_0fc1),
+    (0x0026_e0a0, 0xe591_2024),
+    (0x0026_e0b4, 0xe591_101c),
 ];
 /// The original's "finished", `mov r0, #1; bx lr`.
 const NATIVE_FINISHED_BODY: [(u32, u32); 2] = [
@@ -105,8 +150,8 @@ mod tests {
     use crate::profile::sample::{at, branch_target, edits, entry};
 
     #[test]
-    fn twenty_eight_words_and_nine_entry_functions() {
-        assert_eq!(PROFILE.regions(), 29);
+    fn twenty_nine_words_and_ten_entry_functions() {
+        assert_eq!(PROFILE.regions(), 30);
         assert_eq!(
             PROFILE.entries(),
             [
@@ -119,6 +164,7 @@ mod tests {
                 "bank_offline_rewards",
                 "bank_offline_load",
                 "bank_offline_save",
+                "bank_offline_unlock",
             ]
         );
     }

@@ -94,9 +94,12 @@ Then, from the state of case 4:
 
 | Case | Step | Expected |
 | --- | --- | --- |
-| 4a | Open Transporter and START. On the question press HOME and close Transporter; open it and START again. | The checking screen, then "You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?" with Yes and No, without "This is your final warning…". HOME works on it; the second START asks again. |
-| 4b | Answer Yes. Open Bank and the game. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for about 1.5 s, the closing screen, the title. Bank opens: the withdrawn Pokémon is in Bank, the deposited one in the game; nothing lost. |
-| 4c | Repeat case 4 from the backup, answer No. Open Bank. | The same screens. Bank opens with the deposited Pokémon, which is also in the game; the withdrawn Pokémon is lost. |
+| 4a | Open Transporter and START. On the question press HOME and close Transporter; open it and START again. | The checking screen for about 1.5 s, then "You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?" with Yes and No. HOME works on it; the second START asks again. |
+| 4f | From case 4: on the first question look at the selection, press B, then press right. | Yes is selected; B does nothing; right selects No. On the second question No is selected, and B chooses No: "The program is now closing. Please wait..." as soon as the buttons are gone, without the cleanup text before it; the music stops at once, and the start screen follows after about 1.5 s. |
+| 4b | Answer Yes, then No on the next question; START again, answer No, then No. | Each time "This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?" with Yes and No, then, as soon as the buttons are gone, "The program is now closing. Please wait..." without the cleanup text before it; the music stops at once, and the title follows after about 1.5 s. Bank still shows the message to open Transporter. HOME works on the second question too. |
+| 4c | Answer Yes, then Yes. Open Bank and the game. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for about 1.5 s, then at once "The program is now closing. Please wait..." in the same panel, the music stopping, and after about 1.5 s the title. Bank opens: the withdrawn Pokémon is in Bank, the deposited one in the game; nothing lost. |
+| 4d | Repeat case 4 from the backup, answer No, then Yes. Open Bank. | The same screens. Bank opens with the deposited Pokémon, which is also in the game; the withdrawn Pokémon is lost. |
+| 4e | From case 4: answer Yes, then on the second question press HOME and close Transporter; open it and START. | The first question again; nothing was written. |
 
 **Case 4 leaves a save that only an answer can settle. Use disposable Pokémon.**
 
@@ -109,6 +112,26 @@ Choose **(before)** with a cartridge game that is not also installed. Keep anoth
 | 5 | Deposit one | Remove the cartridge and reopen. | Bank opens with the deposited Pokémon; it also remains on the cartridge. |
 | 6 | Deposit one, withdraw one | Remove the cartridge and reopen. | Native different-copy notice names the cartridge's trainer and ID; A returns to the title. Reinsert it and START again: Bank and game are as before the session. |
 
+Then, from the state of case 6 before the cartridge goes back:
+
+| Case | Step | Expected |
+| --- | --- | --- |
+| 6a | START, holding L, A and START from the moment the loading screen is up until it ends. | "Please enter the unlock key:" with eight digits, and the number keyboard. Holding them only in the loading screen's first half second, or not at all, gives the different-copy notice. |
+| 6b | Type another number. | "The unlock key is incorrect.", then the code again. HOME does nothing in the keyboard. |
+| 6c | Cancel. | The different-copy notice at once, with no loading screen, then the title. START without the keys: the notice again. |
+| 6d | Repeat 6a and type the code shown. | "Communication in your last session did not complete correctly. Performing cleanup process now..." with its spinner for at least 1.5 s, then "The program is now closing. Please wait..." in the same panel, which does not slide out and in again, the title. START: "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank." START with the keys held: the same message, no unlock screen. |
+| 6e | Insert another trainer's cartridge of the game and START. | The same message to open Transporter. Transporter then asks its questions (case 4a). |
+
+From a fresh state of case 6, and of case 4 for 6h and 6i:
+
+| Case | Step | Expected |
+| --- | --- | --- |
+| 6f | START; hold L, A and START briefly while the game is still being checked, and let go before it ends. | The unlock screen. |
+| 6g | START; hold them briefly only just before the loading screen ends. | The unlock screen replaces the loading screen at once, with no pause after the game check. |
+| 6h | From case 4 (the game played on): START holding the keys; Cancel. | The unlock screen; after Cancel "Your communication with Poké Transporter did not complete correctly…" at once, then the title. |
+| 6i | From case 4: START holding the keys; type the code shown; then remove the cartridge and START. | The cleanup screen, the title; then the message to open Transporter, not the different-copy notice. |
+| 6j | Unlock as in 6d with the cartridge out; put it back, not played on since case 6, and START. | Bank opens without a message, as before the session: the unlock does not keep Bank from settling the save itself. |
+
 ### The same game is cartridge and installed
 
 Choose **(before)**. Both copies must have readable saves of their own.
@@ -118,6 +141,8 @@ Choose **(before)**. Both copies must have readable saves of their own.
 | 7 | Cartridge: deposit one | Remove it and reopen with the installed copy present. | Bank opens with the deposited Pokémon; it also remains on the cartridge. |
 | 8 | Cartridge: deposit one, withdraw one | Remove it and reopen with the installed copy present. | Different-copy notice names the cartridge's trainer and ID. Reinsert it and START: state from before the session. |
 | 9 | Installed copy, cartridge out: deposit one, withdraw one | Insert the cartridge and reopen. | Different-copy notice names the installed copy's trainer and ID. Remove the cartridge and START: state from before the session. |
+| 9a | Cartridge: deposit one, withdraw one | Reopen with another trainer's cartridge of the same game, then with the session's cartridge played and saved. | First the different-copy notice with the session's trainer and ID, then "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank." |
+| 9b | Cartridge: deposit one, withdraw one | As 9a, once with a Gen 6 game and once with a Gen 7 game; then with a copy of the session's save edited to another secret ID (same name and Trainer ID, for example with Checkpoint and PKHeX), played and saved. | Each as 9a; the edited save gets the different-copy notice, not the message to open Transporter. |
 
 The trainer ID has five digits for Gen 6 and six for Gen 7. The other copy must not satisfy recovery for the original.
 
@@ -163,7 +188,7 @@ Only while the official service runs. Needs the console's Nintendo Network ID; b
 | --- | --- |
 | START with an offline Bank on the card. | `0000D0AD 00000002`; nothing is contacted. |
 | Wireless off, no offline Bank: START. | The original's connection message, then its title; nothing written. |
-| No offline Bank: START, once with a game and once without any. | The original connects and loads, without menu, game selection or HOME question, then `0000D0AD 00000001`. |
+| No offline Bank: START, once with a game and once without any; once on a console where Bank was never started. | The original connects and loads, without language screen, the "Precaution for Use" notice, menu, game selection or HOME question, then `0000D0AD 00000001`. |
 | Install the normal Bank and open it. | The boxes, transport box and Miles from the server. |
 | Install the unpatched Bank and use it online. | It opens as always: the server is not locked and its boxes are unchanged. This is the check that matters most. |
 | Compare the game saves with the backup. | Unchanged, byte for byte. |

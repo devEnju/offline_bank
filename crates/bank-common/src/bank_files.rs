@@ -517,17 +517,31 @@ impl<F: Files> BankFiles<F> {
         ))
     }
 
+    /// Leaves the save in progress to Transporter's question, or takes it
+    /// back (`offline_core::Metadata::ask`). Only the journal is written,
+    /// and only if it does not say so already. The answer is whether
+    /// Transporter's question settles it now, also when it was unlocked
+    /// (`offline_core::Metadata::asks`).
+    pub fn ask(&mut self, ask: bool) -> Outcome<bool, F> {
+        self.bank()?.ask(ask).map_err(Error::Bank)
+    }
+
+    /// Unlocks the save in progress for Transporter's question, whatever
+    /// game Bank finds from then on (`offline_core::Metadata::unlocked`).
+    /// Only the journal is written.
+    pub fn unlock(&mut self) -> Outcome<(), F> {
+        self.bank()?.unlock().map_err(Error::Bank)
+    }
+
+    /// Whether the save in progress was unlocked.
+    pub fn unlocked(&mut self) -> Outcome<bool, F> {
+        Ok(self.bank()?.unlocked())
+    }
+
     /// Resolves a prepared save toward the side `decision` names, for a
     /// game whose save is neither of its two images (`moved::choose`). The
     /// journal's own rule is not loosened: this names the image the game is
     /// taken to have been saved from. Follow it with `read`, as `reconcile`.
-    /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`offline_core::Metadata::ask`). Only the journal is written,
-    /// and only if it does not say so already.
-    pub fn ask(&mut self, ask: bool) -> Outcome<(), F> {
-        self.bank()?.ask(ask).map_err(Error::Bank)
-    }
-
     pub fn reconcile_as(&mut self, decision: RecoveryDecision) -> Outcome<RecoveryDecision, F> {
         let Phase::Prepared(pending) = self.phase()? else {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));

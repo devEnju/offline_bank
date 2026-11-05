@@ -57,7 +57,11 @@ When Bank says "Your communication with Poké Transporter did not complete corre
 | Yes | Its boxes from before the interrupted session |
 | No | Its boxes from after it |
 
-Look in your game before you answer; [bank.md](bank.md#a-save-left-to-transporter) says what to look for, and when to back up first. After the answer "Communication in your last session did not complete correctly. Performing cleanup process now..." stands with its spinner, then Transporter's closing screen, then its start screen; Bank opens normally again. Nothing is changed until you answer: press HOME and close Transporter to decide later.
+Yes is selected, and B does nothing here: choose with the D-pad and A, or by touch. Then, after either answer, it asks again, with No selected and B choosing No, as in the original:
+
+> This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?
+
+**Yes** applies your first answer: "Communication in your last session did not complete correctly. Performing cleanup process now..." stands with its spinner, then Transporter's closing screen, then its start screen; Bank opens normally again. **No** changes nothing: Transporter's closing screen and its start screen follow, and the next START asks again. Look in your game before you answer; [bank.md](bank.md#a-save-left-to-transporter) says what to look for, and when to back up first. Pressing HOME and closing Transporter on either question also changes nothing.
 
 ## Choosing the language of the games
 
