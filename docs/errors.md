@@ -107,7 +107,9 @@ flowchart TD
     MEDIUM -->|"Yes"| PRESENT{"What moved?"}
     PRESENT -->|"Deposits only"| COMMIT
     PRESENT -->|"Withdrawals/releases only, or no moves"| KEEP
-    PRESENT -->|"Deposits and withdrawals"| ASK{"Leave pending save to<br/>Transporter's restore question"}
+    PRESENT -->|"Deposits and withdrawals"| TRAINER{"The save's trainer:<br/>name and shown ID?"}
+    TRAINER -->|"Yes"| ASK{"Leave pending save to<br/>Transporter's restore question"}
+    TRAINER -->|"Another trainer"| TAKEBACK
     ASK -->|"Journal update fails"| F10["HOME error: 10"]
     ASK -->|"Recorded, or already recorded"| TRANSPORTER["Your communication with Poké Transporter did not complete correctly during your last session.<br/>↓ A<br/>Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.<br/>2 pages"]
     TRANSPORTER -->|"A"| TITLE
@@ -133,16 +135,16 @@ flowchart TD
 | Game is exactly the after-image and its secure value can be accepted/finished | Commit new Bank | Game selection |
 | Neither exact image; expected title and medium are present; deposits only | Commit new Bank | Game selection; a damaged game is refused if selected |
 | Neither exact image; expected title and medium are present; only withdrawals/releases, or no moves | Keep old Bank | Game selection; a damaged game is refused if selected |
-| Neither exact image; expected title and medium are present; deposits and withdrawals | Leave pending and record that Transporter must ask | Two-page instruction → A → Bank start screen; then manually close Bank and open Transporter for diagram 5 |
+| Neither exact image; expected title, medium and trainer are present; deposits and withdrawals | Leave pending and record that Transporter must ask | Two-page instruction → A → Bank start screen; then manually close Bank and open Transporter for diagram 5 |
 | Game missing or different medium with a different image; deposits only | Commit new Bank | Game selection |
 | Game missing or different medium with a different image; withdrawals/releases only, or no moves | Keep old Bank | Game selection |
-| Game missing or different medium with a different image; deposits and withdrawals | Leave pending; take back any Transporter question | Waiting for game → A → START |
+| Game missing, different medium with a different image, or another trainer's game; deposits and withdrawals | Leave pending; take back any Transporter question | Waiting for game → A → START |
 | Cartridge disappears during recovery | Leave pending | Retry → A → START |
 | Game read, transaction binding, secure-value operation, recovery write, or Bank readback fails otherwise | Stop the run | HOME error |
 
-Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title and kind of copy present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
+Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title, kind of copy and trainer (name and the ID as the original shows it) present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
 
-Repeated Bank START with the same nonmatching game repeats the message to open Transporter. If an exact before/after image becomes available, Bank can settle it itself. If the game is absent or only a nonmatching copy on the other medium is available, Bank waits instead. Taking out one cartridge may expose an installed copy of the same title; Bank then treats that other medium as unavailable for the pending save.
+Repeated Bank START with the same nonmatching game repeats the message to open Transporter. If an exact before/after image becomes available, Bank can settle it itself. If the game is absent, only a nonmatching copy on the other medium is available, or the game is another trainer's, Bank waits instead. Taking out one cartridge may expose an installed copy of the same title; Bank then treats that other medium as unavailable for the pending save.
 
 ## 3. Bank: Save and Quit
 

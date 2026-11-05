@@ -823,13 +823,18 @@ impl Runtime {
                 // A game that is not there is not waited for when the save
                 // can be settled without it; the worker decides. A game
                 // that is there and is not what a load would read fails as
-                // it would for a load.
-                let game =
-                    match unsafe { GameIoDescriptor::from_loaded_kind(task.pointer(8)?, kind) } {
-                        Ok(game) => Some(game),
-                        Err(NativeGameError::NotLoaded) => None,
-                        Err(_) => return Err(Fault::GameRead),
-                    };
+                // it would for a load. Whose game it is, the worker
+                // compares with the save's trainer.
+                let manager = task.pointer(8)?;
+                let game = match unsafe { GameIoDescriptor::from_loaded_kind(manager, kind) } {
+                    Ok(game) => {
+                        let (name, id) = unsafe { crate::native_game::trainer(manager, kind) }
+                            .map_err(|_| Fault::GameRead)?;
+                        Some((game, Trainer::of_game(&name, id, kind.gen7())))
+                    }
+                    Err(NativeGameError::NotLoaded) => None,
+                    Err(_) => return Err(Fault::GameRead),
+                };
                 self.submit(task, Step::Recover, Job::Recover { game })?;
                 Ok(None)
             }

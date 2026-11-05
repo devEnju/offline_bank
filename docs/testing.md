@@ -118,6 +118,7 @@ Choose **(before)**. Both copies must have readable saves of their own.
 | 7 | Cartridge: deposit one | Remove it and reopen with the installed copy present. | Bank opens with the deposited Pokémon; it also remains on the cartridge. |
 | 8 | Cartridge: deposit one, withdraw one | Remove it and reopen with the installed copy present. | Different-copy notice names the cartridge's trainer and ID. Reinsert it and START: state from before the session. |
 | 9 | Installed copy, cartridge out: deposit one, withdraw one | Insert the cartridge and reopen. | Different-copy notice names the installed copy's trainer and ID. Remove the cartridge and START: state from before the session. |
+| 9a | Cartridge: deposit one, withdraw one | Reopen with another trainer's cartridge of the same game, then with the session's cartridge played and saved. | First the different-copy notice with the session's trainer and ID, then "Your communication with Poké Transporter did not complete correctly during your last session." → A → "Please open Poké Transporter and perform the cleanup process before using Pokémon Bank." |
 
 The trainer ID has five digits for Gen 6 and six for Gen 7. The other copy must not satisfy recovery for the original.
 

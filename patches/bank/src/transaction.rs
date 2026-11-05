@@ -15,15 +15,17 @@
 //!
 //! A save of the same kind of copy that is neither image was written since:
 //! by the game played on, by a new game started on it, or it is another
-//! cartridge. These are not told apart; the worker settles each by what the
-//! transaction moved.
+//! cartridge. The worker settles each by what the transaction moved; one
+//! that moved Pokémon both ways is left to Transporter only for the game of
+//! its trainer, the game played on.
 //!
-//! The 32 bytes of the binding also say whose game it is, for the one case in
-//! which a transaction has to wait for its game and Bank names it with the
-//! original's message: the trainer's name (24 bytes, 12 characters), the
-//! trainer ID as the original shows it (4 bytes), and the first 4 bytes of a
-//! hash over the title, both images, the kind of copy, the name and the ID.
-//! Name and ID are for that message only; nothing is matched by them.
+//! The 32 bytes of the binding also say whose game it is: the trainer's name
+//! (24 bytes, 12 characters), the trainer ID as the original shows it (4
+//! bytes), and the first 4 bytes of a hash over the title, both images, the
+//! kind of copy, the name and the ID. Name and ID name the game in the
+//! original's message for one that is waited for, and tell the game played
+//! on from another trainer's game (`Trainer`). The ID is the part the
+//! original shows, so two trainers of one name and that ID count as one.
 
 use offline_core::{Fingerprint, GameIdentity, PendingTransfer, Sha256};
 

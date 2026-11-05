@@ -50,9 +50,10 @@ pub enum Job {
         session: u32,
     },
     Initialize,
-    /// `game` is `None` when the game of the save in progress is not there.
+    /// `game` is `None` when the game of the save in progress is not there;
+    /// with it, whose game it is, read on the main thread.
     Recover {
-        game: Option<GameIoDescriptor>,
+        game: Option<(GameIoDescriptor, Trainer)>,
     },
     /// The game a session is loaded with. The Bank is the one opening
     /// restored; it is not read again.
@@ -155,6 +156,10 @@ pub trait Game {
     /// Sets the console's secure value of the game (`0012146c`), with the
     /// same errors.
     fn set_secure(&mut self, value: u64) -> Result<(), WorkerError>;
+    /// Whose game it is, as the main thread read it with the original's
+    /// calls before the job (`native_game::trainer`); `None` for a job that
+    /// was given none.
+    fn trainer(&mut self) -> Option<Trainer>;
 }
 
 /// Why a job stopped: a game's or the worker's error, or one of Bank's
@@ -398,16 +403,18 @@ where
         // A save that is neither image, on the kind of copy the save in
         // progress was made with: the game was played on, a new game was
         // started on it, or it is another cartridge. It no longer shows
-        // whether Bank's write went through. The other kind of copy stands
-        // in for one that is gone and says nothing about this save: as for a
-        // game that is not there. Its secure value is not this save's to
-        // judge; a load of that game does.
-        Match::Other(found) => by_moves(
-            files,
-            staging,
-            rule == Rule::Start && found == Found::SameKind,
-            held,
-        ),
+        // whether Bank's write went through. Only the trainer the save was
+        // made with is that game played on; another trainer's, and the
+        // other kind of copy, which stands in for one that is gone, say
+        // nothing about this save: as for a game that is not there. Its
+        // secure value is not this save's to judge; a load of that game
+        // does.
+        Match::Other(found) => {
+            let seen = rule == Rule::Start
+                && found == Found::SameKind
+                && game.trainer() == Some(Trainer::of(&pending.game));
+            by_moves(files, staging, seen, held)
+        }
     }
 }
 
@@ -784,7 +791,10 @@ mod arm {
                         // version's, on one kind or the other.
                         transaction::bound(&pending).map_err(|_| Fault::GameChanged.with(0))?;
                     }
-                    let mut game = game.map(Console::of);
+                    let mut game = game.map(|(game, trainer)| Console {
+                        trainer: Some(trainer),
+                        ..Console::of(game)
+                    });
                     let settled = settle(
                         &mut self.files,
                         game.as_mut(),
@@ -852,8 +862,8 @@ mod arm {
                     #[cfg(feature = "test-build")]
                     self.files.rehearse(rehearsal::chosen());
                     let mut console = Console {
-                        game,
                         prepared: Some(&prepared),
+                        ..Console::of(game)
                     };
                     let prepared_game =
                         prepare(&mut self.files, &mut console, staging, baseline, trainer)
@@ -886,16 +896,22 @@ mod arm {
         game: GameIoDescriptor,
         /// The image Save and Quit prepared, for `images`.
         prepared: Option<&'a PreparedImage>,
+        /// Whose game it is, for `Job::Recover`.
+        trainer: Option<Trainer>,
     }
     impl Console<'_> {
         fn of(game: GameIoDescriptor) -> Self {
             Self {
                 game,
                 prepared: None,
+                trainer: None,
             }
         }
     }
     impl Game for Console<'_> {
+        fn trainer(&mut self) -> Option<Trainer> {
+            self.trainer
+        }
         fn check(&mut self) -> Result<(), WorkerError> {
             let prepared = self.prepared.ok_or(Fault::GamePrepare.with(0))?;
             // The unsafe submit contract keeps the game frozen and live, and
@@ -1074,6 +1090,8 @@ mod tests {
         out_after: Option<usize>,
         /// The prepared game passes the original's check.
         valid: bool,
+        /// Whose game it is.
+        trainer: Trainer,
     }
     impl Simulated {
         fn loaded(cartridge: bool) -> Self {
@@ -1084,6 +1102,7 @@ mod tests {
                 value: LOADED.current,
                 out_after: None,
                 valid: true,
+                trainer: trainer(),
             }
         }
         /// The game as it was loaded, as `LoadGame` saw it.
@@ -1146,6 +1165,9 @@ mod tests {
             self.save()?;
             self.value = value;
             Ok(())
+        }
+        fn trainer(&mut self) -> Option<Trainer> {
+            Some(self.trainer)
         }
     }
 
@@ -1638,10 +1660,17 @@ mod tests {
                 assert_eq!(pending(&mut files), Some(in_progress), "{case}");
                 drop(files);
                 assert!(stored(&disk) == before, "{case}");
-                // Without its game, or with only the other kind of copy: it
-                // waits for its game again, and Transporter's question is
-                // taken back.
-                for other in [None, Some(Simulated::loaded(!cartridge))] {
+                // Without its game, with only the other kind of copy, or with
+                // another trainer's game of the same kind: it waits for its
+                // game again, and Transporter's question is taken back.
+                let another = Simulated {
+                    trainer: Trainer {
+                        id: trainer().id + 1,
+                        ..trainer()
+                    },
+                    ..Simulated::loaded(cartridge)
+                };
+                for other in [None, Some(Simulated::loaded(!cartridge)), Some(another)] {
                     let mut other = other.map(|mut game| {
                         game.save = Some((OTHER, LOADED));
                         game

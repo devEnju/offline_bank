@@ -157,7 +157,7 @@ Until step 3 Bank still holds both sets of boxes. If the power fails, the next s
 | --- | --- | --- |
 | Unchanged | The power failed before step 2 was finished. | Goes back to its old boxes. Nothing was moved. |
 | The one Bank wrote | The power failed after step 2. | Keeps its new boxes. Everything was moved. |
-| Something else: the game was played and saved, a new game was started on it, it is another cartridge of the game, or step 2 was cut off midway | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. A save that step 2 left damaged is then refused when that game is chosen ([below](#a-damaged-game-save)). A session that moved Pokémon both ways is left to Poké Transporter ([below](#a-save-left-to-transporter)). |
+| Something else: the game was played and saved, a new game was started on it, it is another cartridge of the game, or step 2 was cut off midway | The save no longer shows how far it got. | Decides by what the session moved (next table) and opens. A save that step 2 left damaged is then refused when that game is chosen ([below](#a-damaged-game-save)). A session that moved Pokémon both ways is left to Poké Transporter if the game is the same trainer's ([below](#a-save-left-to-transporter)); another trainer's game counts as not inserted. |
 | The game is not inserted, or only its other copy is there (see below) | There is nothing to look at. | Decides the same way if the session moved Pokémon one way only. A session that moved them both ways waits for its game ([below](#a-save-that-waits-for-its-game)). |
 
 In the first two cases nothing is lost and nothing exists twice. **So after an interrupted Save and Quit, start Bank again with the same game inserted before you play it.**
@@ -186,6 +186,7 @@ Name and number are those of the game the session was made with; the number has 
 | a cartridge | the cartridge is not inserted | the cartridge's game | Insert the cartridge. |
 | the installed copy | a cartridge of the same game is inserted, so Bank reads the cartridge and not the installed copy | the **installed copy's** game, not the cartridge's | Take the cartridge out. |
 | the installed copy | the game is no longer installed | the installed copy's game | Install it again with its save. |
+| either | another trainer's game of the same title is the one Bank finds | the session's game | Make the session's game the one Bank finds. |
 
 The message only comes for a Save and Quit that was cut off. A cartridge pulled out during a session gets one of the original's messages instead, and Bank returns to its start screen ([below](#a-pulled-game-card-or-a-full-sd-card)); put it back and press START, and if a save was left in progress, this section applies.
 
@@ -193,7 +194,7 @@ The message only comes for a Save and Quit that was cut off. A cartridge pulled 
 
 ### A save left to Transporter
 
-When the interrupted session moved Pokémon both ways and its game is there, on the same kind of copy, but was saved on since (or a new game was started on it, or it is another cartridge of the game), neither choice is safe for Bank to make: keeping the old boxes loses the deposited Pokémon if step 2 had finished, keeping the new ones loses the withdrawn Pokémon if it had not. Bank changes nothing and sends you to Poké Transporter, with the original's message for it:
+When the interrupted session moved Pokémon both ways and its game is there, on the same kind of copy and with the same trainer (name and Trainer ID), but was saved on since, neither choice is safe for Bank to make: keeping the old boxes loses the deposited Pokémon if step 2 had finished, keeping the new ones loses the withdrawn Pokémon if it had not. Bank changes nothing and sends you to Poké Transporter, with the original's message for it:
 
 > Your communication with Poké Transporter did not complete correctly during your last session.
 > (A)
