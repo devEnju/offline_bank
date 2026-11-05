@@ -103,7 +103,7 @@ static STATE: Exclusive<Runtime> = unsafe {
         requests: Requests::new(),
         spinner: Spinner::new(),
         failure: None,
-        restore: Restore::Asking(None),
+        restore: Restore::First(None),
     })
 };
 /// An object the job needs is not what the hook expects, or the job's reply
@@ -628,15 +628,19 @@ unsafe fn saving(task: Task, ui: usize, update: usize, note: bool) -> u32 {
 /// the question, the first of its table: "You can try restoring your data,
 /// but you may lose the Pokémon currently being transported. Would you
 /// still like to try restoring your data?" (23:0x1A). The original update
-/// shows it with its Yes and No buttons and waits for the answer; once the
-/// buttons are gone the entry takes over, where the original would ask its
-/// second question or end. The loading panel with "Communication in your
-/// last session did not complete correctly. Performing cleanup process
-/// now..." (23:0x04) goes up, HOME and sleep are refused, and after 0.5 s
-/// the worker settles the save as the answer chose (`restore::answered`): Yes
-/// the save before, No the save after. The task ends once the panel has
-/// stood for 1.5 s, and the disconnect task follows. A failure ends on the
-/// error screen. What each frame does is `restore::Restore::frame`.
+/// shows it with its Yes and No buttons and waits for the answer, which
+/// chooses (`restore::answered`): Yes the save before, No the save after.
+/// After either the original asks its second question, "This is your final
+/// warning. The Pokémon you are trying to send could be lost forever. Are you
+/// sure you want to try to restore your data?" (23:0x1B). After its No the
+/// original ends the task and nothing is written. After its Yes, once the
+/// buttons are gone, the entry takes over: the loading panel with
+/// "Communication in your last session did not complete correctly.
+/// Performing cleanup process now..." (23:0x04) goes up, HOME and sleep are
+/// refused, and after 0.5 s the worker settles the save as the first answer
+/// chose. The task ends once the panel has stood for 1.5 s. The disconnect
+/// task follows either way. A failure ends on the error screen. What each
+/// frame does is `restore::Restore::frame`.
 /// # Safety
 /// The original's task driver supplies the live restore task, on the main
 /// thread.
@@ -667,6 +671,20 @@ pub unsafe extern "aapcs" fn transporter_restore(raw: *mut u8) -> u32 {
             unsafe { original(RESTORE_UPDATE, raw) }
         }
         Frame::Original => {
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
+        Frame::Again => {
+            unsafe {
+                write_word(raw, TASK_STATE, restore::ASK);
+                raw.add(RESTORE_PAGE).write(restore::SECOND);
+                raw.add(RESTORE_ANSWER).write(0);
+            }
+            drop(state);
+            unsafe { original(RESTORE_UPDATE, raw) }
+        }
+        Frame::Hold => {
+            unsafe { raw.add(RESTORE_PAGE).write(restore::FIRST) };
             drop(state);
             unsafe { original(RESTORE_UPDATE, raw) }
         }

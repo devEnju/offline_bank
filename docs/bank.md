@@ -200,11 +200,11 @@ When the interrupted session moved Pokémon both ways and its game is there, on 
 > (A)
 > Please open Poké Transporter and perform the cleanup process before using Pokémon Bank.
 
-After A Bank is back on its start screen, and every START with that game shows the message again. Start Poké Transporter and press START: it asks whether to restore your data ([transporter.md](transporter.md#a-save-left-to-transporter)). **Yes** goes back to the old boxes, **No** keeps the new ones.
+After A Bank is back on its start screen, and every START with that game shows the message again. Start Poké Transporter and press START: it asks whether to restore your data ([transporter.md](transporter.md#a-save-left-to-transporter)). **Yes** goes back to the old boxes, **No** keeps the new ones; a second question then asks you to confirm, and only its Yes applies the choice.
 
 **Before you answer**, look in your game's boxes and party:
 
-| In your game now | Answer | Why |
+| In your game now | First answer | Why |
 | --- | --- | --- |
 | The Pokémon you put **into** Bank in that session | Yes | The game kept its old save: Bank's old boxes hold the ones you took out. |
 | The Pokémon you took **out of** Bank in that session | No | The game has the new save: Bank's new boxes hold the ones you put in. |

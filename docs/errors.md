@@ -284,10 +284,14 @@ These notices filter the transfer rather than producing a numbered error. Each i
 flowchart TD
     START(["Transporter START finds a pending save<br/>Bank left to its restore question"]) --> QUESTION{"You can try restoring your data, but you may lose the Pokémon currently being transported. Would you still like to try restoring your data?<br/>1 page; Yes and No buttons"}
     QUESTION -->|"HOME; close Transporter before answering"| LATER(["No choice applied;<br/>decide later"])
-    QUESTION -->|"Yes"| BEFORE["Choose Bank's boxes<br/>from before the interrupted session"]
-    QUESTION -->|"No"| AFTER["Choose Bank's boxes<br/>from after the interrupted session"]
-    BEFORE --> PANEL["Communication in your last session did not complete correctly. Performing cleanup process now...<br/>Loading panel; HOME and sleep refused"]
-    AFTER --> PANEL
+    QUESTION -->|"Yes"| BEFORE["Noted: Bank's boxes<br/>from before the interrupted session"]
+    QUESTION -->|"No"| AFTER["Noted: Bank's boxes<br/>from after the interrupted session"]
+    BEFORE --> FINAL{"This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?<br/>1 page; Yes and No buttons"}
+    AFTER --> FINAL
+    FINAL -->|"HOME; close Transporter before answering"| LATER
+    FINAL -->|"No"| DECLINED["Nothing written;<br/>Transporter's closing screen"]
+    DECLINED --> TITLE
+    FINAL -->|"Yes"| PANEL["Communication in your last session did not complete correctly. Performing cleanup process now...<br/>Loading panel; HOME and sleep refused"]
     PANEL --> SETTLE{"Settle Bank's journal<br/>to the chosen snapshot"}
     SETTLE -->|"Required Bank file cannot be opened"| F3["HOME error: 03"]
     SETTLE -->|"Damaged or conflicting journal"| F5["HOME error: 05"]
@@ -298,11 +302,11 @@ flowchart TD
     TITLE -.->|"Close Transporter; open Bank and press START"| BANK(["Bank opens the selected snapshot;<br/>normal startup checks apply"])
 ```
 
-Yes and No both settle the pending save. No does not cancel the question. Closing Transporter with HOME before answering leaves it for later. Only the first restore question is shown; there is no second confirmation question. The loading panel follows either answer, then the normal closing screen and start screen; Transporter does not continue to game selection in that session.
+The first answer chooses the snapshot; its No does not cancel. The second question follows either answer, and only its Yes settles the pending save as the first answer chose. Its No writes nothing and leaves the question for the next START, as does closing Transporter with HOME before answering. The loading panel follows only the second Yes; the normal closing screen and start screen follow either way, and Transporter does not continue to game selection in that session.
 
 Only Bank's journal is written. This chooses which existing Bank snapshot is current; it does not restore or write the game save, transfer Pokémon, or create a source backup. The question can be answered without the original game present in Transporter, because Transporter relies on the choice Bank recorded. Until the question is answered, Bank takes it back when it next checks the pending save itself and the game is gone or only on the other kind of copy (diagram 2); an answer, once given, is final.
 
-| Pokémon currently in the game from the interrupted session | Answer | Bank afterwards |
+| Pokémon currently in the game from the interrupted session | First answer (then Yes) | Bank afterwards |
 | --- | --- | --- |
 | The Pokémon deposited into Bank in that session | Yes | Old Bank boxes, retaining the Pokémon withdrawn from Bank |
 | The Pokémon withdrawn from Bank in that session | No | New Bank boxes, retaining the Pokémon deposited into Bank |
