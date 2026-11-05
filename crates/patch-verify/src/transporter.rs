@@ -25,7 +25,7 @@ pub static PROGRAM: Program = Program {
     startup_call: 0x00103D9C,
 };
 
-const EDITS: [Edit; 60] = [
+const EDITS: [Edit; 61] = [
     (0x00103D9C, 0xEB000228, Bl(Sym("patch_bootstrap_startup"))),
     (0x00242EF8, 0xEBFFFF28, Bl(Sym("transporter_next"))),
     (
@@ -61,6 +61,7 @@ const EDITS: [Edit; 60] = [
     ),
     (0x00244470, 0xEBFD5BB2, Raw(0xE320F000)),
     (0x0024447C, 0xEBFD609F, Raw(0xE320F000)),
+    (0x002443A0, 0xEBFD5C01, Raw(0xE3A00001)),
     (0x00246208, 0xEBFD5552, Raw(0xE3A00001)),
     (0x00246278, 0xEBFD5536, Raw(0xE3A00001)),
     (0x002462E8, 0xEBFD551A, Raw(0xE3A00001)),

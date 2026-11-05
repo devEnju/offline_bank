@@ -137,6 +137,11 @@ const EDITS: &[Edit] = &[
     // the entry puts the panel up once it is answered.
     (0x0024_4470, 0xebfd_5bb2, Raw(0xe320_f000)),
     (0x0024_447c, 0xebfd_609f, Raw(0xe320_f000)),
+    // The restore task's end callback (00244380), its call that takes the
+    // buttons out (was: bl 0019B3AC with 002B43B8, 2, 1): they are out on
+    // every way the task ends offline, and the call faded them out again on
+    // every frame, so that its ten calls of the minimum time took 2.8 s.
+    (0x0024_43a0, 0xebfd_5c01, Raw(0xe3a0_0001)),
     // Reading the chosen game, the 1.5 s before each of its errors: a
     // damaged save (state 0xB), no save (0xC), no Game Card (0xD) (was:
     // bl 0019B758 with 1500 ms). An error ends the panel as soon as it is
@@ -316,8 +321,8 @@ mod tests {
     use crate::profile::sample::{at, branch_target};
 
     #[test]
-    fn sixty_words_and_thirty_four_entry_functions() {
-        assert_eq!(PROFILE.regions(), 61);
+    fn sixty_one_words_and_thirty_four_entry_functions() {
+        assert_eq!(PROFILE.regions(), 62);
         assert_eq!(PROFILE.entries().len(), 34);
         // Every edit lies in the original text or, for the six updates in
         // their vtables, its read-only data, which ends where its data
