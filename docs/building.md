@@ -130,7 +130,7 @@ During conversion it shows the original preparation message and power-off warnin
 
 ### The download from the official server
 
-While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)). It needs no game: it takes the load the original made for Pokémon HOME, which reads and saves none.
+While the official service runs (it ends on February 25, 2027), a patch of its own, [patches/bank-download](../patches/bank-download/src/), fetches the Bank from the official server into a new offline Bank and does nothing else ([internals.md](internals.md#the-download-patch)). It needs no game: it takes the load the original made for Pokémon Home, which reads and saves none.
 
 ```powershell
 cargo +stable xtask build --kind download

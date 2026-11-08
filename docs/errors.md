@@ -1,6 +1,6 @@
 # Error cases and user flows
 
-Every way a job of the normal offline patches can fail, and what the user sees and does next, with the original's game-selection and save-reading refusals the patches keep and the restore question for an interrupted Bank save. The user guides ([bank.md](bank.md), [transporter.md](transporter.md)) explain the cases; this map shows every screen and number in one place. Dialog text and page counts below describe English; the application uses the console's language. An arrow marked **A** means acknowledging the final page, after any earlier pages. Error numbers are hexadecimal. Every HOME error leads to diagram 7.
+Every way a job of the normal offline patches can fail, and what the user sees and does next, with the original's game-selection and save-reading refusals the patches keep and the restore question for an interrupted Bank save. The user guides ([bank.md](bank.md), [transporter.md](transporter.md)) explain the cases and this map shows every screen and number in one place. Dialog text and page counts below describe English while the application uses the console's language. An arrow marked **A** means acknowledging the final page, after any earlier pages. Error numbers are hexadecimal. Every HOME error leads to diagram 7.
 
 ## How to read the map
 

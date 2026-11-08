@@ -1,8 +1,8 @@
 # Testing on a console
 
-**Every release is tested manually against this baseline.** It covers the current release's normal use and data safety, including the complete interrupted Save and Quit checks below. Add focused checks for the features changed in that release; the detailed behavior belongs in the [Bank](bank.md) and [Transporter](transporter.md) guides.
+**Every release is tested manually against this baseline.** It covers the current release's normal use and data safety, including the complete interrupted Save and Quit checks below.
 
-Record the release/package IDs, console model, language, and results. Mark unavailable or unfinished checks as not run. The [PC tests](building.md#tests) complement this checklist; they do not establish console behavior.
+Record the release/package IDs, console model, language, and results. The [PC tests](building.md#tests) complement this checklist but they do not establish console behavior.
 
 ## Before you start
 
@@ -19,7 +19,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | Start with empty Bank extdata and a usable game. Reopen after creation. | Welcome, preparation, then an empty Bank with correct box/group names. Reopening does not repeat creation or the welcome. No online connection. |
 | Deposit and withdraw Pokémon, rename a box/group, Save and Quit, then reopen. Repeat a save in the same application session. | Pokémon, names, and other saved changes persist in Bank and the game; nothing is lost or duplicated. |
 | Back out of game selection; leave the boxes without saving. | Return to the title. Unsaved changes are discarded. |
-| START without a usable game; then insert one and START again. | Two native explanatory pages, then the title after the second A press. No HOME-transfer question or Bank-file creation. A usable game proceeds normally. |
+| START without a usable game; then insert one and START again. | Two native explanatory pages, then the title after the second A press. No Pokémon Home question or Bank-file creation. A usable game proceeds normally. |
 | Select a save without the required Pokédex progress. | Native notice, then game selection; other eligible saves remain usable. |
 | Press START on the start screen, in Bank and in Transporter. | The "Checking the Game Card… Don't turn off the power or remove the Game Card or SD card." screen with its spinner and sound appears with the press, not after a pause; In Bank the same panel runs on into game selection. In Transporter the same one spinner and sound stay, standing still while the game list loads, until the list is on screen; no second spinner, no restart of the sound, and nothing behind the list's "choose a game" text. The list comes as soon as it is loaded, at least 3 s after START, not 3 s after the search. |
 | Watch each loading screen as it comes in: in Bank START, creating a Bank, loading the chosen game, Save and Quit, and the way back to the start screen; in Transporter START, reading the chosen game, the transfer, and the way back to the start screen. Time a short one, such as Save and Quit with nothing changed, and an error, such as choosing a cartridge game in Transporter and taking the card out before A. | The screen slides in without a stop in its first half second. One that ends in a result or the next screen stays at least 1.5 s (Transporter's game list at least 3 s after START); an error message may come earlier, but not within the first half second. |
@@ -77,7 +77,7 @@ Use the [test package](building.md#test-builds-for-an-interrupted-save) and rest
 | **(record)** | Writes the journal 150 times before saving normally, for a real power-cut test. |
 | **(boxes)** | Writes the inactive boxes file 30 times before saving normally, for a real power-cut test. |
 
-For each case, perform the moves, Save and Quit with the named entry, acknowledge the intentional error, and close Bank. Follow the recovery step, then reopen with plain **Use Pokémon Bank**. After recovery, complete a normal save and reopen again to confirm that saving still works. [Recovery rules](bank.md#if-save-and-quit-is-interrupted).
+For each case, perform the moves, Save and Quit with the named entry, acknowledge the intentional error, and close Bank. Follow the [recovery steps](bank.md#if-save-and-quit-is-interrupted), then reopen with plain **Use Pokémon Bank**. After recovery, complete a normal save and reopen again to confirm that saving still works.
 
 ### Before the game is written
 
@@ -132,7 +132,7 @@ From a fresh state of case 6, and of case 4 for 6h and 6i:
 | 6i | From case 4: START holding the keys; type the code shown; then remove the cartridge and START. | The cleanup screen, the title; then the message to open Transporter, not the different-copy notice. |
 | 6j | Unlock as in 6d with the cartridge out; put it back, not played on since case 6, and START. | Bank opens without a message, as before the session: the unlock does not keep Bank from settling the save itself. |
 
-### The same game is cartridge and installed
+### The same game is a cartridge and installed
 
 Choose **(before)**. Both copies must have readable saves of their own.
 
@@ -188,11 +188,7 @@ Only while the official service runs. Needs the console's Nintendo Network ID; b
 | --- | --- |
 | START with an offline Bank on the card. | `0000D0AD 00000002`; nothing is contacted. |
 | Wireless off, no offline Bank: START. | The original's connection message, then its title; nothing written. |
-| No offline Bank: START, once with a game and once without any; once on a console where Bank was never started. | The original connects and loads, without language screen, the "Precaution for Use" notice, menu, game selection or HOME question, then `0000D0AD 00000001`. |
+| No offline Bank: START, once with a game and once without any; once on a console where Bank was never started. | The original connects and loads, without language screen, the "Precaution for Use" notice, menu, game selection or Pokémon Home question, then `0000D0AD 00000001`. |
 | Install the normal Bank and open it. | The boxes, transport box and Miles from the server. |
 | Install the unpatched Bank and use it online. | It opens as always: the server is not locked and its boxes are unchanged. This is the check that matters most. |
 | Compare the game saves with the backup. | Unchanged, byte for byte. |
-
-## If a check fails
-
-Stop and record the package ID, console/language, steps, and a photo of the complete error/result screen. Preserve the failing data before restoring the backup. After testing, restore the normal packages and any backups needed.
