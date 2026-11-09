@@ -31,9 +31,19 @@ build/binary/transporter/    the same
 
 **The version.** The version of a release is the workspace's, `version` under `[workspace.package]` in `Cargo.toml`; every crate but `offline-core` takes it (`version.workspace = true`). It changes only with a release: the release commit sets the new number there and in `Cargo.lock` (`cargo +stable update --workspace --offline`). `offline-core` has a version of its own, that of the stored files.
 
-**The version on the error screens.** Bank's error and result screens, and Transporter's error screen, say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)). Only a release has a version there: `cargo xtask release` builds the packages as a release, and the payload then compiles the version from `Cargo.toml` in (`numbers::VERSION`, through `OFFLINE_BANK_RELEASE`), as `v1.2.3`. Every other build is a draft: one built with `cargo xtask build`, and the console test build. It says `draft` and the short hash of the commit it is built from, as `draft-a782e1b` or `draft-a782e1b-test` (`OFFLINE_BANK_COMMIT`); a build that xtask did not make, as `cargo test`, says `draft` alone. A draft is built from committed sources only: built from uncommitted changes it names a commit it is not, and `cargo xtask build` warns. A draft is never released; `cargo xtask release` only makes releases. The migration puts the version of the Bank it converted in front, as `v0.2.1-1.2.3` or `v0.2.1-draft-a782e1b`. The version is part of the compiled code, so it is part of the package's name too.
+**The version on the error screens.** Bank's error and result screens, and Transporter's error screen, say which version and package they come from, on the line above the two numbers ([bank.md](bank.md#troubleshooting)):
 
-A folder holds one package, the latest: the next build replaces what it holds, and the folder stays. `PACKAGE.txt` holds the package's name, which the builder writes with it: the first 16 hex digits of the SHA-256 over `code.ips` followed by `exheader.bin`, the two files that go onto the SD card. The same files have the same name, and any change to them gives a new one; a change that leaves them as they are, as a reworded comment, leaves the name. The folder's path goes into the compiled code: a build in another folder has another name. The other packages for Bank are built the same way with `--kind`, each into a folder beside `binary`: `--kind test` into `build/test/`, `--kind migration` into `build/migration/`, `--kind download` into `build/download/` (all below). Each kind's crate, features and folder are listed once, in [packages.rs](../xtask/src/packages.rs). Every payload is linked with the same layout, which the builder writes from its program's addresses and its router ([link.rs](../crates/patch-builder/src/link.rs)) into `build/intermediate/<kind>/`.
+| Built with | Shows |
+| --- | --- |
+| `cargo xtask release` | The version from `Cargo.toml`, compiled in (`numbers::VERSION`, through `OFFLINE_BANK_RELEASE`), as `v1.2.3`. |
+| `cargo xtask build`, also the console test build | A draft: `draft` and the short hash of the commit it is built from, as `draft-a782e1b` or `draft-a782e1b-test` (`OFFLINE_BANK_COMMIT`). |
+| anything else, as `cargo test` | `draft` alone. |
+
+The migration puts the version of the Bank it converted in front, as `v0.2.1-1.2.3` or `v0.2.1-draft-a782e1b`. A draft is built from committed sources only: built from uncommitted changes it names a commit it is not, and `cargo xtask build` warns. A draft is never released; `cargo xtask release` only makes releases. The version is part of the compiled code, so it is part of the package's name too.
+
+**The package's name.** A folder holds one package, the latest: the next build replaces what it holds, and the folder stays. `PACKAGE.txt` holds the package's name, which the builder writes with it: the first 16 hex digits of the SHA-256 over `code.ips` followed by `exheader.bin`, the two files that go onto the SD card. The same files have the same name, and any change to them gives a new one; a change that leaves them as they are, as a reworded comment, leaves the name. The folder's path goes into the compiled code: a build in another folder has another name.
+
+**The other packages** for Bank are built the same way with `--kind`, each into a folder beside `binary`: `--kind test` into `build/test/`, `--kind migration` into `build/migration/`, `--kind download` into `build/download/` (all below). Each kind's crate, features and folder are listed once, in [packages.rs](../xtask/src/packages.rs). Every payload is linked with the same layout, which the builder writes from its program's addresses and its router ([link.rs](../crates/patch-builder/src/link.rs)) into `build/intermediate/<kind>/`.
 
 ## Verify
 
@@ -242,3 +252,5 @@ pictures/               pictures for the README and for release guides
 input/, tools/          yours: the CIAs and ctrtool (git-ignored)
 build/                  generated: unpacked CIAs, intermediate files, packages, releases (git-ignored)
 ```
+
+Each crate's files and their roles are in [internals.md](internals.md): under Code for [Bank](internals.md#code) and for [Transporter](internals.md#code-1).

@@ -2,20 +2,21 @@
 
 > **This project was developed entirely with AI assistance:** analysis, code, tests, and documentation. The released versions are tried on real consoles, without any problems so far. Still, it has not had the review a conventionally developed tool would have. Use it at your own risk and keep backups.
 
-Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5** work without Nintendo's servers. Bank keeps its boxes on the SD card; Transporter moves Pokémon from Gen 1, 2 and 5 games into Bank's transport box, so that they can still reach Gen 6 and 7 games after the official servers go offline.
+Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5** work without Nintendo's servers. Bank keeps its boxes on the SD card, and Transporter moves Pokémon from Gen 1, 2 and 5 games into Bank's transport box, so that they can still reach Gen 6 and 7 games after the official servers go offline.
 
 <p align="center"><img src="pictures/offline-boxes.png" alt="The box screen of the patched Pokémon Bank"></p>
 
-**Status: early release.** As with any tool that touches saves, a backup is a good idea: of your game saves before installing, and of Bank's extra data before an update.
+**Status: early release.** Data storage is considered to be stable, while only one additional feature is planned before v1.0.0.
 
 ## Pokémon Bank
 
 - All 100 boxes, with the original box, search, and group screens, without an online connection.
 - Transfers to and from X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, and Ultra Moon.
-- Starts straight at game selection instead of the main menu.
+- Starts straight at game selection, without the main menu or the first-start questions.
 - National Pokédex and adventure records, taken over in the records screen as in the original.
-- Poké Miles earned locally at the original rate and redeemed through the respective screens, with the welcome gift of 100 Miles.
-- Saves are journaled: an interrupted save leaves either the old or the new state.
+- Poké Miles earned locally at a lossless rate and redeemed through the respective screens, with the welcome gift of 100 Miles ([details](docs/bank.md#poké-miles)).
+- A damaged game save is refused before it is loaded. The original loaded and wrote it back.
+- Saves are journaled: an interrupted Save and Quit leaves either the old or the new boxes ([details](docs/bank.md#if-save-and-quit-is-interrupted)).
 
 Details: [docs/bank.md](docs/bank.md).
 
@@ -55,24 +56,18 @@ You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS) v10.0 or late
 
 1. Back up your game saves. If you are updating, back up Bank's extra data too: the offline Bank keeps its boxes in Bank's *extdata*, not in its save ([how to back them up](docs/bank.md#backing-up-the-bank)).
 2. Extract the zip and copy its `luma` folder to the root of the SD card, merging it with the one that is there.
-3. Hold SELECT while powering on and switch on *Enable game patching*.
+3. Hold SELECT while powering on, switch on *Enable game patching*, and save. Wireless can stay off.
 4. Start Bank once before using Transporter.
 
-The two files of a title only work as a pair; never mix files from different releases. The guides for [Bank](docs/bank.md#install) and [Transporter](docs/transporter.md#install) have the details and troubleshooting.
+The two files of a title only work as a pair and should never mix files from different releases. If something does not work, see the troubleshooting of [Bank](docs/bank.md#troubleshooting) and [Transporter](docs/transporter.md#troubleshooting).
 
 ## FAQ
 
 ### Does the patch improve anything over the original?
 
-Both programs stay as close to the original as possible: the same screens, messages and flow. Still, some improvements made it in:
+Both programs deliberately stay as close to the original as possible: the same screens, messages and flow, all on the console, with no other device needed. The improvements are in the lists [above](#pokémon-bank), each beside what the original did. Most remove limits that only made sense online, like the HOME button and sleep mechanism being blocked while connected. Both now work on every screen that waits for your input.
 
-- Bank starts straight at game selection, without the main menu or the first-start questions.
-- Poké Miles keep the part below a whole Mile, so nothing is lost to rounding, however often you open Bank ([details](docs/bank.md#poké-miles)).
-- Saves are journaled: an interrupted Save and Quit leaves either the old or the new boxes ([details](docs/bank.md#if-save-and-quit-is-interrupted)).
-- A damaged game save is refused before it is loaded. The original loaded it and wrote it back, damage included.
-- HOME and sleep work on every screen that waits for you. The original refused them for the whole session.
-
-The patches still stay small, a few percent of the original programs, because they bring no resources of their own. The original texts and screens already say everything needed, while the patches only put them to better use.
+The patches stay small, a few percent of the original programs, because they bring no resources of their own. The original texts and screens already say everything needed, while the patches reuse them with other available parts for a complete experience.
 
 ### What if my 3DS turns off while saving?
 
@@ -84,7 +79,7 @@ A transfer cut off in Transporter never loses a Pokémon. At worst it is in Bank
 
 ### Why can't I see some of my Virtual Console titles?
 
-Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's start screen to open the language screen and choose Japanese; the game list then shows the Japanese titles. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
+Transporter lists the games of one language at a time, and starts with the console's language. As an example, Pokémon Green exists in Japanese only. Press L on Transporter's start screen to open the language screen and choose Japanese to show Japanese titles on the game list. The same goes for any other game in a language that is not the console's: cartridge, save on the SD card, or Virtual Console title.
 
 The [language choice](docs/transporter.md#choosing-the-language-of-the-games) lasts until Transporter is closed. A save on the SD card is only listed under its [exact name](docs/transporter.md#blackwhite-saves-on-the-sd-card).
 
@@ -102,17 +97,11 @@ The patches are here to keep Bank and Transporter working once their servers are
 
 These distributions only ran for a limited time. Offering them again would not save anything that would otherwise be lost. It would just hand out the same Pokémon again, as often as you like, which is no different from using tools to edit them in.
 
-### Why do I need a migration between two versions?
+### Why do I need a migration between older versions?
 
 The normal patches read only the files of their own version, so that they stay free of code for earlier save formats. Such code would never go away, and it would sit on the path that loads and saves your Pokémon.
 
-A Bank that an earlier release stored differently is converted once by a separate migration patch, which every pre-release will ship. You start Bank with it one time and then put the normal patch in its place. The full release is going to be compatible with the latest pre-releases and won't come with a migration patch anymore.
-
-### Why has the save format been changed?
-
-So that a power cut cannot cost you the Bank. Up to v0.2.1 a cut during Save and Quit could leave the one Bank file unreadable, and with it every box. Since v0.3.0 everything is stored in pairs of files, and a save only writes into the file of a pair that is not in use. A cut can then only damage a file Bank does not need, and the next start goes on with the other one ([details](docs/bank.md#where-the-bank-is-stored)).
-
-Since v0.5.0 the files take no more space on the SD card than needed. A Bank of any version from before is converted once with the migration every pre-release ships.
+A Bank that an earlier release stored differently is converted once by a separate migration patch, which every release below v1.0.0 ships, with the steps in its release notes. You start Bank with it once and then put the normal patch in its place. v1.0.0 will read the Bank of the latest pre-release and ship no more migrations.
 
 ## Documentation
 
@@ -138,7 +127,7 @@ With enough information I will look into it, but this is a hobby project and I c
 
 ### Not included
 
-Pokémon Home ([why](docs/home.md)), purchases, server-side legality checks, event gifts, and import or export tools for save editors.
+Pokémon Home ([why](#will-the-patches-ever-connect-to-the-switch)), purchases, server-side legality checks, and event gifts ([why](#will-there-be-local-gifts-like-the-celebi-distribution)).
 
 ## Credits
 

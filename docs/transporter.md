@@ -2,8 +2,6 @@
 
 A Luma3DS patch for **Poké Transporter 1.5** (title `00040000000C9C00`, TMD version 5200) that works without Nintendo's servers and delivers into the transport box of the [offline Bank](bank.md).
 
-How it is built is in [building.md](building.md); how it works inside is in [internals.md](internals.md#transporter); how it is checked on a console is in [testing.md](testing.md#transporter-feature-by-feature).
-
 ## What changes
 
 | Original Transporter | Patched |
@@ -18,7 +16,7 @@ How it is built is in [building.md](building.md); how it works inside is in [int
 | A transfer interrupted by a power failure is sorted out with the server at the next session, with the same copy of the game: neither lost nor doubled. | Nothing is left pending. The Pokémon are never lost; after a power cut between the two writes they can be in Bank and still in the game ([below](#limits)). |
 | The language screen switches the language of the screens as long as the app is open. | It chooses which language's games are listed ([below](#choosing-the-language-of-the-games)). The screens stay in the console's language. |
 | Shows a notice that nicknames and OT names with prohibited words will be erased; the server erased them. | Not shown. No name is ever changed offline. The other notices are unchanged. |
-| HOME and sleep are refused from connecting until disconnecting. | Refused while files are read or written: from START until the game list is on screen, from choosing a game until the question, and during the transfer. They work on every screen that waits for you: the start screen, the game list, the notices, the question, and every message that waits for a button, the closing message of a transfer included. |
+| HOME and sleep are refused from connecting until disconnecting. | Refused only while files are read or written: from START until the game list, from choosing a game until the question, and during the transfer. They work on every screen that waits for you, messages included. |
 
 Gen 5 games produce Gen 6 Pokémon while Gen 1 and Gen 2 Virtual Console games produce Gen 7 Pokémon, as with the original service.
 
@@ -73,17 +71,12 @@ What happens to the file:
 
 ## Install
 
-1. Install the [Bank patch](bank.md#install) and start Bank once.
-2. Close Transporter, Bank and all games. As a precaution you can back up your games' saves first.
-3. Make sure the installed Poké Transporter is version 1.5, the final update.
-4. Copy both files from the same release or build. They only work as a pair. Use Bank and Transporter from the same release.
+Install both patches as the [README](../README.md#install) says, and start Bank once before Transporter. Transporter's two files go here, both from the same release or build as Bank's:
 
-   ```text
-   SD:/luma/titles/00040000000C9C00/code.ips
-   SD:/luma/titles/00040000000C9C00/exheader.bin
-   ```
-
-5. *Enable game patching* must be on in Luma's configuration, as for Bank. Wireless can stay off.
+```text
+SD:/luma/titles/00040000000C9C00/code.ips
+SD:/luma/titles/00040000000C9C00/exheader.bin
+```
 
 ## When Transporter refuses
 
@@ -148,10 +141,14 @@ The patch's changes cannot cause this. The check and the message are the origina
 | The last entry of the language list shows Chinese text instead of Back. | Transporter is not version 1.5, or its files are modified. The entry still works as Back. |
 | "Press HOME to return to the HOME Menu" with two numbers under it. | Press HOME, close Transporter and start it again. If it comes again, open Bank, which may show the cause, or [report the numbers](../README.md#problems-and-feature-requests). |
 
-The error screen is Bank's, with the same numbers ([bank.md](bank.md#troubleshooting), [errors.md](errors.md#every-active-first-error-number)).
+The error screen is Bank's, with the same numbers ([bank.md](bank.md#troubleshooting)).
 
 ## Limits
 
 - **A duplicate, by design.** If the power fails between the delivery and the game's save, or the game cannot be saved after it, the Pokémon are in Bank and still in the game. The original prevented this with the server. The patch can duplicate a Pokémon but never lose one, as Bank does.
 - **Wording of refusals.** The original has no text for "Bank is not set up" or "Bank's data cannot be read", so its "open Pokémon Bank" message stands for all of them. A refusal comes only at START and shows no numbers. Opening Bank once solves it or shows its own.
 - **Saves on the SD card.** Only the one name per game and language [above](#blackwhite-saves-on-the-sd-card) is looked for.
+
+## For developers
+
+How the patch is built is in [building.md](building.md), how it works inside in [internals.md](internals.md#transporter), and how it is checked on a console in [testing.md](testing.md#transporter-feature-by-feature).

@@ -2,32 +2,24 @@
 
 A Luma3DS patch for **Pokémon Bank 1.5** (title `00040000000C9B00`, TMD version 6272) that keeps your Pokémon on the SD card instead of on Nintendo's servers.
 
-How it is built is in [building.md](building.md); how it works inside is in [internals.md](internals.md#bank); how it is checked on a console is in [testing.md](testing.md#bank-feature-by-feature).
-
 ## What changes
 
 | Original Bank | Patched |
 | --- | --- |
-| Connects, checks the account and pass, then shows the main menu. | No connection. Start screen → game scan → open the local Bank → **game selection**. There is no main menu; Back on game selection returns to the start screen. |
+| Connects, checks the account and pass, then shows the main menu. | No connection. Start screen and after that **game selection**. There is no main menu; Back on game selection returns to the start screen. |
 | Downloads the Bank from the server and uploads it on save. | Reads and writes local files on a background thread while the original loading screen keeps animating. |
 | The server resolves interrupted saves. | A local journal does. An interruption leaves either the old or the new state, never a mix ([below](#if-save-and-quit-is-interrupted)). |
 | First start: asks for a language, which cannot be changed later. | Never asks. Bank is always in the console's language ([below](#first-start)). |
 | First start: shows the "Precaution for Use" notice (with the note for users under 18) and needs it accepted. | Not shown. It counts as accepted, and that is saved as the original saves it. |
-| HOME and sleep are refused for the whole connected session. | Refused on every loading screen: from leaving the start screen until game selection appears, from choosing a game until its Bank is loaded, and during Save and Quit. They work everywhere else, and on every message that waits for a button, an error included; the unlock screen's number keyboard takes no HOME press, as in the original. |
+| HOME and sleep are refused for the whole connected session. | Refused only while files are read or written: from START until game selection, from choosing a game until its boxes open, and during Save and Quit. They work on every screen that waits for you, error messages included, except the unlock screen's number keyboard, as in the original. |
 | Moving Pokémon stamps a server-checked time. | The same stamp from the console clock. |
 | Poké Miles accrue from stored Pokémon; rewards also involve server gifts. | Miles accrue locally ([below](#poké-miles)). The original welcome gift and redemption are kept. Server gifts and distributions are skipped. |
-
-Not included: Pokémon Home, purchases, and event gifts.
-
-For an existing Bank, the original warning about removing the Game Card or SD card stays on the same loading screen from START until game selection. The spinner continues while Bank scans the games and opens its local files.
-
-If no compatible save can be read, Bank shows the original missing-save explanation and Pokédex reminder. A advances to the second page and A again closes the dialog and returns to the start screen. The Pokémon Home question is omitted. No offline Bank is opened or created. Insert a cartridge or make an installed save available, then press START again. A readable save's Pokédex eligibility is checked later, when you select that game, as in the original.
 
 ## First start
 
 The original asks two things when it has no save data of its own yet. Both are gone:
 
-- **Language.** Bank no longer asks and no longer follows an earlier choice: it is in the console's language at every start, as Poké Transporter is. No language is ever stored, and one stored earlier by the original is cleared. A Japanese console gets kana and kanji could only be chosen on the removed screen.
+- **Language.** Bank no longer asks and no longer follows an earlier choice: it is in the console's language at every start, as Poké Transporter is. No language is ever stored, and one stored earlier by the original is cleared. A Japanese console therefore gets kana and kanji could only be chosen on the removed screen.
 - **Precaution for Use.** The notice is not shown. Bank goes on as if you had accepted it and creates its save data in the same step, once.
 
 **If you remove the patch later**, the original finds save data in which the notice is accepted and no language is chosen: it asks for the language and does not show the notice again. That also holds for save data in which the original had stored a language: the patched Bank clears it at its first start, so the original asks again.
@@ -116,16 +108,12 @@ The formats are described in [internals.md](internals.md#storage).
 
 ## Install
 
-1. Close Bank and all games. As a precaution you can back up your games' saves first.
-2. Make sure the installed Pokémon Bank is version 1.5, the final update.
-3. Copy both files from the same release or build. They only work as a pair.
+Install both patches as the [README](../README.md#install) says. Bank's two files go here, both from the same release or build:
 
-   ```text
-   SD:/luma/titles/00040000000C9B00/code.ips
-   SD:/luma/titles/00040000000C9B00/exheader.bin
-   ```
-
-4. Hold SELECT while powering on, switch on *Enable game patching*, and save. Wireless can stay off.
+```text
+SD:/luma/titles/00040000000C9B00/code.ips
+SD:/luma/titles/00040000000C9B00/exheader.bin
+```
 
 The first start creates an empty Bank.
 
@@ -198,6 +186,7 @@ The patch's changes cannot cause this. The game's save is written by the origina
 | What you see | Do this |
 | --- | --- |
 | Bank does not start, or stops while loading. | Use `code.ips` and `exheader.bin` from the same release, with Bank 1.5. |
+| After START: "Could not find saved data for a game that is compatible with Pokémon Bank.", "You must also advance in the game to the point where you have received a Pokédex." | No game's save could be read. Insert a cartridge or make an installed game's save available, then press START again. Nothing was opened or created. Whether a game has its Pokédex is checked when you choose it, as in the original. |
 | A message about an interrupted save, a pulled Game Card, a full SD card or a corrupted save. | See the sections above. |
 | "Press HOME to return to the HOME Menu" with two numbers under it. | Press HOME, close Bank and start it again. If it comes again, [report the numbers](../README.md#problems-and-feature-requests). |
 
@@ -213,7 +202,7 @@ v0.7.0
 XXXXXXXX YYYYYYYY
 ```
 
-The second line is the patch's version, with "-test" or "-download" behind it for those packages, or "draft-" and a commit for a build that is no release. The two numbers say which step failed and why ([errors.md](errors.md#every-active-first-error-number)). Poké Transporter shows the same screen with the same numbers.
+The second line is the patch's version, with "-test" or "-download" behind it for those packages, or "draft-" and a commit for a build that is no release. The two numbers say which step failed and why: give them when you [report a problem](../README.md#problems-and-feature-requests). Poké Transporter shows the same screen with the same numbers. For developers, [errors.md](errors.md#every-active-first-error-number) lists what each number means.
 
 **Starting over with an empty Bank.** This deletes every Pokémon in the offline Bank. Delete Bank's Extra Data in System Settings, or power off, put the SD card in a PC, delete the folder `Nintendo 3DS/<ID0>/<ID1>/extdata/00000000/00000C9B` (its contents are encrypted), and start Bank again.
 
@@ -222,3 +211,7 @@ The second line is the patch's version, with "-test" or "-download" behind it fo
 - **First start.** Two original steps run in the foreground and can cause short pauses: creating the extdata archive and formatting the default box names. If the power fails while the Bank is being created, the next start creates it again, welcome included.
 - **Power cuts.** A cut during Save and Quit only reaches the file being written. Damage to the SD card itself is beyond what Bank can guard against, as for every save on the console.
 - **Clock.** A console date set ahead is paid in Miles as if the time had passed.
+
+## For developers
+
+How the patch is built is in [building.md](building.md), how it works inside in [internals.md](internals.md#bank), and how it is checked on a console in [testing.md](testing.md#bank-feature-by-feature).
