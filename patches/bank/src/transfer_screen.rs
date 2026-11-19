@@ -396,8 +396,18 @@ pub fn cursor_of(place: usize) -> u32 {
 /// slide (its animations are `box_name1`, `box_moving` and `box_change`,
 /// `0033d89c`), so the box only changes; the frames are the box screen's.
 /// With either hand the cursor is set onto the place at the glide's end.
-pub fn turns_back(mode: Mode, put: Put, cursor: Option<usize>) -> bool {
-    mode == Mode::Move && put.to == put.from && cursor != Some(put.from)
+/// The box shown is `shown` (`shown_place`): as the box screen compares the
+/// box it shows with the one they came from (`00287730`), there is no turn
+/// where it shows that box already, also with the cursor on the button row,
+/// where it shows box 100.
+pub fn turns_back(mode: Mode, put: Put, shown: usize) -> bool {
+    mode == Mode::Move && put.to == put.from && shown != put.from
+}
+/// The place the upper screen shows for the cursor `cursor`: its place, or
+/// box 100 for the button row, as the original's preview clamps it to box
+/// index 99 (`00285e78`).
+pub fn shown_place(cursor: u32) -> usize {
+    place_of(cursor).unwrap_or(99)
 }
 /// The frames from the turn back to the glide's set-up.
 pub const TURN_FRAMES: u8 = 10;
@@ -1531,7 +1541,7 @@ mod console {
         let (Some(context), Some(cursor)) = (context(selection), cursor(selection)) else {
             return;
         };
-        let cursor = upper_cursor(session.held, session.back, place_of(cursor).unwrap_or(99));
+        let cursor = upper_cursor(session.held, session.back, shown_place(cursor));
         let shown = upper(session.mode, session.held, cursor);
         let place = shown.place;
         let state = if place < TRANSPORT {
@@ -2712,7 +2722,9 @@ mod console {
                     session.turn = Some(frames.saturating_add(1));
                     turned(frames.saturating_add(1))
                 }
-                None if turns_back(session.mode, put, cursor(selection).and_then(place_of)) => {
+                None if cursor(selection)
+                    .is_some_and(|cursor| turns_back(session.mode, put, shown_place(cursor))) =>
+                {
                     session.turn = Some(0);
                     session.back = true;
                     preview(session, selection);
@@ -2838,7 +2850,7 @@ mod console {
         let selection = SELECTION.load(core::sync::atomic::Ordering::Relaxed) as *mut u8;
         pointer(selection as u32)?;
         let cursor = if boxed == 99 {
-            cursor(selection).and_then(place_of).unwrap_or(99)
+            cursor(selection).map(shown_place).unwrap_or(99)
         } else {
             boxed as usize
         };
@@ -3266,13 +3278,18 @@ mod tests {
             swapped: false,
             refused: false,
         };
-        // Back to their box while the cursor is elsewhere: a turn.
-        assert!(turns_back(Mode::Move, back(3, 3), Some(TRANSPORT)));
-        assert!(turns_back(Mode::Move, back(3, 3), None));
-        // The cursor on their box, a put-down elsewhere, the blue hand: none.
-        assert!(!turns_back(Mode::Move, back(3, 3), Some(3)));
-        assert!(!turns_back(Mode::Move, back(3, 7), Some(7)));
-        assert!(!turns_back(Mode::Swap, back(3, 3), Some(TRANSPORT)));
+        // Back to their box while the upper screen shows another: a turn.
+        assert!(turns_back(Mode::Move, back(3, 3), TRANSPORT));
+        assert!(turns_back(Mode::Move, back(3, 3), shown_place(105)));
+        // It shows their box, a put-down elsewhere, the blue hand: none.
+        assert!(!turns_back(Mode::Move, back(3, 3), 3));
+        assert!(!turns_back(Mode::Move, back(3, 7), 7));
+        assert!(!turns_back(Mode::Swap, back(3, 3), TRANSPORT));
+        // Box 100's Pokémon back from the button row, where the upper screen
+        // shows box 100 already: none, as on the box screen.
+        assert_eq!(shown_place(105), 99);
+        assert!(!turns_back(Mode::Move, back(99, 99), shown_place(105)));
+        assert_eq!(shown_place(113), TRANSPORT);
         // The glide is set up ten frames after the turn began.
         assert!(!turned(0) && !turned(9) && turned(10));
         // Meanwhile the upper screen shows their box, not the cursor's.
