@@ -412,6 +412,14 @@ pub fn turns_back(mode: Mode, put: Put, shown: usize) -> bool {
 pub fn shown_place(cursor: u32, last: usize, green: Option<usize>) -> usize {
     place_of(cursor).unwrap_or(green.unwrap_or(last))
 }
+/// Whether the original's own drawing of the upper screen after RESET and
+/// ALL is right for the cursor `cursor`: on a box of the Bank only. It
+/// draws box 100's check for any other place, while the upper screen shows
+/// a cell, or on the button row the box `shown_place` names, so the patch
+/// draws it again there.
+pub fn original_draws(cursor: u32) -> bool {
+    place_of(cursor).is_some_and(|place| place < TRANSPORT)
+}
 /// The frames from the turn back to the glide's set-up.
 pub const TURN_FRAMES: u8 = 10;
 /// Whether the turn back is over, `frames` after it began.
@@ -2288,6 +2296,10 @@ mod console {
         session.back = false;
         if now.to == now.from {
             cursor_to(selection, now.from);
+            // The place the upper screen keeps should the keys of this same
+            // frame take the cursor on to the buttons.
+            session.last_shown = now.from;
+            LAST_SHOWN.store(now.from, core::sync::atomic::Ordering::Relaxed);
         }
         if now.refused {
             sound(SOUND_REFUSED);
@@ -2497,12 +2509,9 @@ mod console {
                         }
                     });
                     // The original's RESET and ALL show box 100's check on
-                    // the upper screen for any place past it: on a cell the
-                    // upper screen shows the cell again.
-                    if cursor(selection)
-                        .and_then(place_of)
-                        .is_some_and(|place| place >= TRANSPORT)
-                    {
+                    // the upper screen for any place past it: on a cell or
+                    // the button row the upper screen shows its box again.
+                    if !cursor(selection).is_some_and(original_draws) {
                         preview(&session, selection);
                     }
                     show_line(&session, selection);
@@ -3326,6 +3335,11 @@ mod tests {
         // On a place, that place.
         assert_eq!(shown_place(40, 12, Some(37)), 40);
         assert_eq!(shown_place(113, 12, None), TRANSPORT);
+        // The original draws the upper screen right after RESET and ALL
+        // only on a box of the Bank; on a cell and the button row the patch
+        // draws it again.
+        assert!(original_draws(0) && original_draws(99));
+        assert!(!original_draws(105) && !original_draws(113) && !original_draws(116));
         // The glide is set up ten frames after the turn began.
         assert!(!turned(0) && !turned(9) && turned(10));
         // Meanwhile the upper screen shows their box, not the cursor's.
