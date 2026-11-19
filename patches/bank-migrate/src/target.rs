@@ -10,7 +10,9 @@
 
 use crate::migrate::{Card, Cause, Step, Stopped};
 use bank_common::{
-    bank_files::{self, BankFiles, FileName, Files, UnitFile, MAIN, MOVER, RECORD, SNAPSHOT},
+    bank_files::{
+        self, BankFiles, Cleaned, FileName, Files, UnitFile, MAIN, MOVER, RECORD, SNAPSHOT,
+    },
     session,
 };
 use offline_core::{
@@ -153,10 +155,10 @@ pub(crate) fn remove_temporary<C: Card>(card: &mut C) -> Outcome<(), C> {
 /// writing.
 pub(crate) fn write_temporary<C: Card>(card: &mut C, body: &mut [u8]) -> Outcome<u32, C> {
     let write = Step::WriteTemporary;
-    if offline_core::sections::clean(body).is_err() {
+    let Some(cleaned) = Cleaned::new(body) else {
         return Err(Stopped::Failed(write, Cause::Damaged));
-    }
-    let written = crc32(body);
+    };
+    let written = crc32(&cleaned);
     for file in ORDER {
         card.remove(temporary(file)).map_err(io(write))?;
     }
@@ -164,7 +166,7 @@ pub(crate) fn write_temporary<C: Card>(card: &mut C, body: &mut [u8]) -> Outcome
     if bank.open().map_err(unwritten(write))?.is_some() {
         return Err(Stopped::Failed(write, Cause::Damaged));
     }
-    bank.initialize(body).map_err(unwritten(write))?;
+    bank.initialize(cleaned).map_err(unwritten(write))?;
     drop(bank);
     if load(Temporary(card), body, write)? != written {
         return Err(Stopped::Failed(write, Cause::Mismatch));

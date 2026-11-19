@@ -18,7 +18,7 @@ use crate::{
     transaction::{self, Found, Match, Medium, Trainer},
 };
 use bank_common::{
-    bank_files::{self, BankFiles, Files, Loaded},
+    bank_files::{self, BankFiles, Cleaned, Files, Loaded},
     fault::Fault,
     fs::NoRoom,
     interrupted,
@@ -431,12 +431,12 @@ where
     )
     .map_err(|_| Fault::GamePrepare.with(0))?;
     // Clean as the files will take it, so that `finalize` finds it again.
-    offline_core::sections::clean(staging).map_err(|_| Fault::StorageLoad.with(0))?;
-    let staged = crc32(staging);
+    let body = Cleaned::new(staging).ok_or(Fault::StorageLoad.with(0))?;
+    let staged = crc32(&body);
     // Side files first, then the Bank journal. A file is created only
     // before the journal is written, so a card without room for it leaves
     // no save in progress.
-    if let Err(error) = files.prepare(staging, identity, images.before, images.after) {
+    if let Err(error) = files.prepare(body, identity, images.before, images.after) {
         // An undo that cannot be written either leaves the save to the next
         // start with the game, which keeps the save before.
         drop(undo(files));
@@ -1012,7 +1012,8 @@ mod arm {
                     // Refuse an invalid native body before creating any file.
                     NativeBlobView::parse_layout(staging)
                         .map_err(|_| Fault::NativeObject.with(0))?;
-                    if let Some(ending) = created(self.files.initialize(staging))
+                    let body = Cleaned::new(staging).ok_or(Fault::NativeObject.with(0))?;
+                    if let Some(ending) = created(self.files.initialize(body))
                         .map_err(|e| Fault::StorageCreate.files(e))?
                     {
                         return Ok(Reply::Ended(ending));
@@ -2309,7 +2310,7 @@ mod tests {
                     let mut files = opened(&card);
                     let mut body = std::vec![0; offline_core::native_blob::BLOB_SIZE];
                     files.read(&mut body).unwrap();
-                    files.commit(&mut body).unwrap();
+                    files.commit(Cleaned::new(&mut body).unwrap()).unwrap();
                 }
             }
             (card, backup_folder(&in_progress))
@@ -2721,7 +2722,7 @@ mod tests {
         assert_eq!(files.open(), Ok(None));
         let mut staging = new.clone();
         assert_eq!(
-            created(files.initialize(&mut staging)),
+            created(files.initialize(Cleaned::new(&mut staging).unwrap())),
             Ok(Some(Ending::NoSpace))
         );
         drop(files);
@@ -2730,7 +2731,10 @@ mod tests {
         let mut files = BankFiles::new(disk.clone());
         assert_eq!(files.open(), Ok(None));
         let mut staging = new.clone();
-        assert_eq!(created(files.initialize(&mut staging)), Ok(None));
+        assert_eq!(
+            created(files.initialize(Cleaned::new(&mut staging).unwrap())),
+            Ok(None)
+        );
         drop(files);
         assert!(settled_bank(&disk) == new);
         // Any other refusal of the card is an error, with its numbers.
@@ -2791,7 +2795,12 @@ mod tests {
         // `Prepare` takes it before the files take staging apart.
         let staged = crc32(&staging);
         files
-            .prepare(&mut staging, bank_common::testing::GAME, [1; 32], [2; 32])
+            .prepare(
+                Cleaned::new(&mut staging).unwrap(),
+                bank_common::testing::GAME,
+                [1; 32],
+                [2; 32],
+            )
             .unwrap();
         assert_ne!(crc32(&staging), staged);
         // `Finalize` commits and reads the Bank back into the same buffer.

@@ -21,7 +21,7 @@
 //! and the `Sd` and `Files` traits, tested on the simulated card.
 
 use crate::{
-    bank_files::{BankFiles, Files},
+    bank_files::{BankFiles, Cleaned, Files},
     interrupted,
     sdfiles::{self, Date, Error, Failed, Found, Path, Sd, ROOT},
 };
@@ -748,7 +748,7 @@ pub fn commit<F: Files, S: Sd>(
     request: &Commit,
     scratch: &mut [u8; FILE_SIZE],
 ) -> Result<(), Failed<F, S>> {
-    sections::clean(body).map_err(|_| Error::Staging)?;
+    let body = Cleaned::new(body).ok_or(Error::Staging)?;
     for file in &mut offline.files {
         boxfile::clean(file);
     }
@@ -764,7 +764,7 @@ pub fn commit<F: Files, S: Sd>(
     }
     // The states the save goes between, and the folder of the `.bak` files.
     let [before, after] = files
-        .commit_states(body)
+        .commit_states(&body)
         .map_err(Error::Files)?
         .map(|(bank, mover)| interrupted::State { bank, mover });
     let checked = request.checked.iter().any(|checked| *checked);
@@ -777,7 +777,7 @@ pub fn commit<F: Files, S: Sd>(
         let session = sdfiles::create_dated_folder(sd, request.date).map_err(Error::Sd)?;
         for place in (0..PLACES).filter(|place| request.checked[*place]) {
             if place < TRANSPORT {
-                boxfile::encode_body_box(body, place, scratch).map_err(|_| Error::Staging)?;
+                boxfile::encode_body_box(&body, place, scratch).map_err(|_| Error::Staging)?;
             } else if place == TRANSPORT {
                 boxfile::encode_transport(
                     &body[TRANSPORT_RECORDS],
@@ -2819,9 +2819,8 @@ mod tests {
         let mut files = opened(&card.reboot());
         let mut body = load(&mut files).0;
         body.copy_from_slice(&save.body);
-        sections::clean(&mut body).unwrap();
         let [before, after] = files
-            .commit_states(&body)
+            .commit_states(&Cleaned::new(&mut body).unwrap())
             .unwrap()
             .map(|(bank, mover)| interrupted::State { bank, mover });
         interrupted::folder(before, after)
@@ -2917,7 +2916,7 @@ mod tests {
             let mut files = opened(&card);
             let mut body = load(&mut files).0;
             put(&mut body, 50, 0, 77);
-            files.commit(&mut body).unwrap();
+            files.commit(Cleaned::new(&mut body).unwrap()).unwrap();
             on_card(&card);
             let kept = &card.0.borrow().sd[&at(&std::format!("{KEPT}/mover1.bak"))];
             assert_eq!(kept[..], cell_with(9)[..], "cut {cut}");

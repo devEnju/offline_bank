@@ -712,7 +712,7 @@ No byte is unused. Without a save in progress everything that belongs to one is 
 
 ### Cleaned on every write
 
-Every write of the Bank leaves out what the Bank does not need: what the original wrote only for its server, and what a name or a move left behind. Nothing of a Pokémon changes. `sections::clean` does it for a body, `boxfile::clean` for a box file, each changing nothing when made again.
+Every write of the Bank leaves out what the Bank does not need: what the original wrote only for its server, and what a name or a move left behind. Nothing of a Pokémon changes. `sections::clean` does it for a body, `boxfile::clean` for a box file, each changing nothing when made again. Every write of the Bank takes the body as `bank_files::Cleaned`, which cleans it once; a checksum taken of it before the write is of what is written.
 
 | Place | After a write |
 | --- | --- |

@@ -394,8 +394,13 @@ mod tests {
         bank.open().unwrap();
         let mut staging = vec![0; BLOB_SIZE];
         bank.read(&mut staging).unwrap();
-        bank.prepare(&mut staging, bank_common::testing::GAME, [1; 32], [2; 32])
-            .unwrap();
+        bank.prepare(
+            bank_common::bank_files::Cleaned::new(&mut staging).unwrap(),
+            bank_common::testing::GAME,
+            [1; 32],
+            [2; 32],
+        )
+        .unwrap();
         drop(bank);
         assert_eq!(convert(&card), Ok(Done::AlreadyNew));
     }
@@ -696,7 +701,8 @@ mod tests {
         let card = Sd::default();
         let mut bank = BankFiles::new(Final(card.clone()));
         assert!(matches!(bank.open(), Ok(None)));
-        bank.initialize(&mut body(0x31, 0x44, 0)).unwrap();
+        bank.initialize(bank_common::bank_files::Cleaned::new(&mut body(0x31, 0x44, 0)).unwrap())
+            .unwrap();
         drop(bank);
         let files = card.files();
         assert_eq!(convert(&card), Ok(Done::AlreadyNew));

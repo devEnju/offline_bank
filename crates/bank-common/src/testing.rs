@@ -2,7 +2,7 @@
 //! and of the patches built on it (feature `test-support`).
 
 extern crate std;
-use crate::bank_files::{BankFiles, FileName, Files, Loaded, Rest};
+use crate::bank_files::{BankFiles, Cleaned, FileName, Files, Loaded, Rest};
 use offline_core::{
     native_blob::BLOB_SIZE,
     sections::{DEX, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
@@ -478,7 +478,9 @@ pub fn fresh(body: &[u8]) -> Shared {
     let mut files = BankFiles::new(disk.clone());
     assert_eq!(files.open(), Ok(None));
     let mut staging = body.to_vec();
-    files.initialize(&mut staging).unwrap();
+    files
+        .initialize(Cleaned::new(&mut staging).unwrap())
+        .unwrap();
     disk
 }
 pub fn opened(disk: &Shared) -> BankFiles<Shared> {
