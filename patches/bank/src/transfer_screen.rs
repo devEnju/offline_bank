@@ -1083,7 +1083,7 @@ mod console {
         transfer_screen::{self, Places},
     };
     use core::{arch::global_asm, mem::transmute};
-    use patch_common::native::{follow, pointer, read_word, write_word};
+    use patch_common::native::{code, follow, pointer, read_word, write_word};
 
     /// `001e7084(context, group, pane, shown)`.
     const PANE_SHOWN: usize = 0x001e_7084;
@@ -2948,8 +2948,12 @@ mod console {
             let Some(vtable) = follow(pokemon, 0) else {
                 return;
             };
-            let from_record: unsafe extern "aapcs" fn(*mut u8, *const u8) =
-                transmute(read_word(vtable, 0));
+            // A function pointer read from the original's object is called
+            // only if it lies in Bank's code (`native::code`).
+            let Some(address) = code::<bank_common::program::Bank15>(read_word(vtable, 0)) else {
+                return;
+            };
+            let from_record: unsafe extern "aapcs" fn(*mut u8, *const u8) = transmute(address);
             let set_tag: unsafe extern "aapcs" fn(*mut u8, u32) = transmute(SET_TAG);
             from_record(pokemon, record);
             set_tag(pokemon, u32::from(tag));

@@ -99,15 +99,22 @@ pub fn body_box(index: usize) -> Result<BankBox, BoxFileError> {
     if index >= BOX_COUNT {
         return Err(BoxFileError::Index);
     }
+    Ok(native_box(index))
+}
+
+/// Where box `index` lies in a native body, for an index below `BOX_COUNT`
+/// (`body_box` checks it): the one description of a box's bytes in the
+/// body, which the transfer screen moves and the exports copy.
+pub fn native_box(index: usize) -> BankBox {
     let at = BOXES_START + index * BOX_STRIDE;
     let slots = index * BOX_SLOTS;
-    Ok(BankBox {
+    BankBox {
         records: at..at + RECORDS_SIZE,
         label: at + RECORDS_SIZE..at + BOX_STRIDE,
         tags: TAGS_START + slots..TAGS_START + slots + BOX_SLOTS,
         flags: FLAGS_START + slots..FLAGS_START + slots + BOX_SLOTS,
         stamps: STAMPS_START + slots * STAMP_SIZE..STAMPS_START + (slots + BOX_SLOTS) * STAMP_SIZE,
-    })
+    }
 }
 
 /// The Pokémon a box holds, as a change counts them: the transfer screen

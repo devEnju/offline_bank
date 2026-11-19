@@ -28,10 +28,7 @@ use crate::{
 use offline_core::{
     boxfile::{self, BoxFile, CATEGORY, FILE_SIZE, LABEL_SIZE, NAME_SIZE, NAME_TEXT, STAMP_SIZE},
     native_blob::{BLOB_SIZE, BOX_COUNT, GROUP_COUNT, GROUP_NAMES_OFFSET, GROUP_NAME_SIZE},
-    sections::{
-        self, BOXES_START, BOX_SLOTS, BOX_STRIDE, FLAGS_START, RECORD_SIZE, STAMPS_START,
-        TAGS_START, TRANSPORT_RECORDS, TRANSPORT_TAGS,
-    },
+    sections::{self, BOX_SLOTS, RECORD_SIZE, TRANSPORT_RECORDS, TRANSPORT_TAGS},
 };
 
 /// The places of the screen: the boxes, the transport box, the offline
@@ -145,15 +142,14 @@ fn body_slot(place: usize, slot: usize) -> Slot {
             data: None,
         };
     }
-    let at = BOXES_START + place * BOX_STRIDE + slot * RECORD_SIZE;
-    let index = place * BOX_SLOTS + slot;
+    // A box of the Bank: its bytes as `boxfile` describes them.
+    let bank_box = boxfile::native_box(place);
+    let at = bank_box.records.start + slot * RECORD_SIZE;
+    let stamp = bank_box.stamps.start + slot * STAMP_SIZE;
     Slot {
         record: at..at + RECORD_SIZE,
-        tag: TAGS_START + index,
-        data: Some((
-            FLAGS_START + index,
-            STAMPS_START + index * STAMP_SIZE..STAMPS_START + (index + 1) * STAMP_SIZE,
-        )),
+        tag: bank_box.tags.start + slot,
+        data: Some((bank_box.flags.start + slot, stamp..stamp + STAMP_SIZE)),
     }
 }
 
@@ -170,9 +166,10 @@ fn file_slot(slot: usize) -> Slot {
     }
 }
 
+/// The label of box `place` of the Bank: its name, unused byte, category
+/// and the position word behind it (`boxfile::native_box`).
 fn label_range(place: usize) -> core::ops::Range<usize> {
-    let at = BOXES_START + place * BOX_STRIDE + BOX_SLOTS * RECORD_SIZE;
-    at..at + LABEL_SIZE
+    boxfile::native_box(place).label
 }
 
 fn occupied_record(record: &[u8]) -> bool {
@@ -533,8 +530,8 @@ impl Places<'_> {
 /// holds (`fingerprint`: its slots with Pokémon, each with all its bytes,
 /// and which are empty) and what its label shows (`boxfile::shown_label`:
 /// the name's text, the category, the position), each taken before the
-/// first change that can touch it, and both as they are after the last. So
-/// a place changed exactly when either differs: blue swaps back and forth,
+/// first change that can touch it, and after each change whether the place
+/// now differs in either. So a place changed exactly when either differs: blue swaps back and forth,
 /// or round and back, change nothing; empty boxes that ended up at each
 /// other's places change nothing; L round its group back to the start
 /// changes nothing. A move of the green cursor is a change whatever
@@ -542,27 +539,29 @@ impl Places<'_> {
 /// gets the time of the move (`Places::move_all`). L touches only labels,
 /// so it hashes nothing, also in a group of 100 boxes.
 pub struct Changes {
-    /// Each place's fingerprint when the screen opened, and now.
+    /// Each place's fingerprint when the screen opened.
     before: [Fingerprint; PLACES],
-    now: [Fingerprint; PLACES],
     /// `before` is taken.
     seen: [bool; PLACES],
-    /// What each place's label showed when the screen opened, and shows now.
+    /// What each place's label showed when the screen opened.
     labels: [[u8; LABEL_SIZE]; PLACES],
-    labels_now: [[u8; LABEL_SIZE]; PLACES],
     /// `labels` is taken.
     labels_seen: [bool; PLACES],
+    /// After the last change that touched the place: what it holds, and
+    /// what its label shows, differ from when the screen opened.
+    holds_other: [bool; PLACES],
+    shows_other: [bool; PLACES],
 }
 
 impl Changes {
     pub const fn new() -> Self {
         Changes {
             before: [[0; 32]; PLACES],
-            now: [[0; 32]; PLACES],
             seen: [false; PLACES],
             labels: [[0; LABEL_SIZE]; PLACES],
-            labels_now: [[0; LABEL_SIZE]; PLACES],
             labels_seen: [false; PLACES],
+            holds_other: [false; PLACES],
+            shows_other: [false; PLACES],
         }
     }
 
@@ -607,7 +606,7 @@ impl Changes {
         }
         places.insert_position(place, position)?;
         for (other, _) in members.iter().enumerate().filter(|(_, member)| **member) {
-            self.labels_now[other] = places.shown_label(other);
+            self.shows_other[other] = places.shown_label(other) != self.labels[other];
         }
         Ok(())
     }
@@ -619,15 +618,13 @@ impl Changes {
     }
 
     fn changed(&self, place: usize) -> bool {
-        (self.seen[place] && self.now[place] != self.before[place])
-            || (self.labels_seen[place] && self.labels_now[place] != self.labels[place])
+        self.holds_other[place] || self.shows_other[place]
     }
 
     fn see_label(&mut self, places: &Places, place: usize) {
         if !self.labels_seen[place] {
             self.labels_seen[place] = true;
             self.labels[place] = places.shown_label(place);
-            self.labels_now[place] = self.labels[place];
         }
     }
 
@@ -647,14 +644,13 @@ impl Changes {
             if !self.seen[place] {
                 self.seen[place] = true;
                 self.before[place] = places.fingerprint(place);
-                self.now[place] = self.before[place];
             }
             self.see_label(places, place);
         }
         change(places)?;
         for place in [from, to] {
-            self.now[place] = places.fingerprint(place);
-            self.labels_now[place] = places.shown_label(place);
+            self.holds_other[place] = places.fingerprint(place) != self.before[place];
+            self.shows_other[place] = places.shown_label(place) != self.labels[place];
         }
         Ok(())
     }
@@ -916,6 +912,32 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn a_box_s_bytes_are_where_the_body_has_them() {
+        // The ranges `boxfile::native_box` gives, as the native body lays out
+        // a box of the Bank: records and label one after the other, then a
+        // tag, a flag byte and a time per slot in their own tables.
+        use offline_core::sections::{
+            BOXES_START, BOX_STRIDE, FLAGS_START, STAMPS_START, TAGS_START,
+        };
+        for place in 0..TRANSPORT {
+            let label = BOXES_START + place * BOX_STRIDE + BOX_SLOTS * RECORD_SIZE;
+            assert_eq!(label_range(place), label..label + LABEL_SIZE);
+            for slot in 0..BOX_SLOTS {
+                let at = body_slot(place, slot);
+                let record = BOXES_START + place * BOX_STRIDE + slot * RECORD_SIZE;
+                let index = place * BOX_SLOTS + slot;
+                assert_eq!(at.record, record..record + RECORD_SIZE);
+                assert_eq!(at.tag, TAGS_START + index);
+                let stamp = STAMPS_START + index * STAMP_SIZE;
+                assert_eq!(
+                    at.data,
+                    Some((FLAGS_START + index, stamp..stamp + STAMP_SIZE))
+                );
+            }
+        }
     }
 
     #[test]
