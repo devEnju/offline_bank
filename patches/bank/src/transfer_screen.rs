@@ -398,16 +398,19 @@ pub fn cursor_of(place: usize) -> u32 {
 /// With either hand the cursor is set onto the place at the glide's end.
 /// The box shown is `shown` (`shown_place`): as the box screen compares the
 /// box it shows with the one they came from (`00287730`), there is no turn
-/// where it shows that box already, also with the cursor on the button row,
-/// where it shows box 100.
+/// where it shows that box already, as on the button row, where it shows
+/// their box (`shown_place`).
 pub fn turns_back(mode: Mode, put: Put, shown: usize) -> bool {
     mode == Mode::Move && put.to == put.from && shown != put.from
 }
-/// The place the upper screen shows for the cursor `cursor`: its place, or
-/// box 100 for the button row, as the original's preview clamps it to box
-/// index 99 (`00285e78`).
-pub fn shown_place(cursor: u32) -> usize {
-    place_of(cursor).unwrap_or(99)
+/// The place the upper screen shows for the cursor `cursor`: its place;
+/// on the button row, where the original's preview shows box 100 (it clamps
+/// the cursor to box index 99, `00285e78`), the box the green hand's
+/// Pokémon came from while it holds them (`green`), else the last place
+/// shown (`last`): a deliberate difference, so that the upper screen does
+/// not change when the cursor only goes to the buttons.
+pub fn shown_place(cursor: u32, last: usize, green: Option<usize>) -> usize {
+    place_of(cursor).unwrap_or(green.unwrap_or(last))
 }
 /// The frames from the turn back to the glide's set-up.
 pub const TURN_FRAMES: u8 = 10;
@@ -947,6 +950,9 @@ pub struct Session {
     /// any key held (`0025d76c`..`0025d780`), so a frame without it is one
     /// with L let go.
     pub keyed: bool,
+    /// The last place the cursor was on, which the upper screen keeps
+    /// showing while the cursor is on the button row (`shown_place`).
+    pub last_shown: usize,
 }
 
 /// A put-down or put-back waiting for its frame (`GLIDE_STEPS`): from where
@@ -1012,6 +1018,7 @@ impl Session {
             paging: 0,
             turning: false,
             keyed: false,
+            last_shown: 0,
         }
     }
     /// L is in its first three frames or fires, or its page turn runs: no
@@ -1541,7 +1548,9 @@ mod console {
         let (Some(context), Some(cursor)) = (context(selection), cursor(selection)) else {
             return;
         };
-        let cursor = upper_cursor(session.held, session.back, shown_place(cursor));
+        let green = session.held.filter(|_| session.mode == Mode::Move);
+        let shown = shown_place(cursor, session.last_shown, green);
+        let cursor = upper_cursor(session.held, session.back, shown);
         let shown = upper(session.mode, session.held, cursor);
         let place = shown.place;
         let state = if place < TRANSPORT {
@@ -2711,6 +2720,12 @@ mod console {
     /// lift has set it, so they stand where it stands in the same frame.
     fn before_update(session: &mut Session, selection: *mut u8) {
         session.new_frame();
+        // The place the cursor was on until this frame's keys, which the
+        // upper screen keeps showing should they take it to the buttons.
+        if let Some(place) = cursor(selection).and_then(place_of) {
+            session.last_shown = place;
+            LAST_SHOWN.store(place, core::sync::atomic::Ordering::Relaxed);
+        }
         lift_step(session, selection);
         land(session, selection);
         if let Some(put) = session.put {
@@ -2722,8 +2737,10 @@ mod console {
                     session.turn = Some(frames.saturating_add(1));
                     turned(frames.saturating_add(1))
                 }
-                None if cursor(selection)
-                    .is_some_and(|cursor| turns_back(session.mode, put, shown_place(cursor))) =>
+                None if cursor(selection).is_some_and(|cursor| {
+                    let shown = shown_place(cursor, session.last_shown, Some(put.from));
+                    turns_back(session.mode, put, shown)
+                }) =>
                 {
                     session.turn = Some(0);
                     session.back = true;
@@ -2831,6 +2848,8 @@ mod console {
     /// + 1, with bit 31 for green. Set with every preview.
     static HOLDING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     const GREEN: u32 = 1 << 31;
+    /// The session's `last_shown`, for the preview's hooks.
+    static LAST_SHOWN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     /// What is held goes back after a turn (`Session::back`).
     const BACK: u32 = 1 << 30;
     fn set_holding(session: &Session) {
@@ -2849,11 +2868,6 @@ mod console {
     fn upper_shown(boxed: u32) -> Option<Upper> {
         let selection = SELECTION.load(core::sync::atomic::Ordering::Relaxed) as *mut u8;
         pointer(selection as u32)?;
-        let cursor = if boxed == 99 {
-            cursor(selection).map(shown_place).unwrap_or(99)
-        } else {
-            boxed as usize
-        };
         let holding = HOLDING.load(core::sync::atomic::Ordering::Relaxed);
         let back = holding & BACK != 0;
         let place = (holding & !(GREEN | BACK)) as usize;
@@ -2861,6 +2875,15 @@ mod console {
             0 => (Mode::Check, None),
             _ if holding & GREEN != 0 => (Mode::Move, Some(place - 1)),
             _ => (Mode::Swap, Some(place - 1)),
+        };
+        let cursor = if boxed == 99 {
+            let last = LAST_SHOWN.load(core::sync::atomic::Ordering::Relaxed);
+            let green = held.filter(|_| mode == Mode::Move);
+            cursor(selection)
+                .map(|cursor| shown_place(cursor, last, green))
+                .unwrap_or(99)
+        } else {
+            boxed as usize
         };
         Some(upper(mode, held, upper_cursor(held, back, cursor)))
     }
@@ -3280,16 +3303,29 @@ mod tests {
         };
         // Back to their box while the upper screen shows another: a turn.
         assert!(turns_back(Mode::Move, back(3, 3), TRANSPORT));
-        assert!(turns_back(Mode::Move, back(3, 3), shown_place(105)));
+        assert!(turns_back(Mode::Move, back(3, 3), TRANSPORT + 2));
         // It shows their box, a put-down elsewhere, the blue hand: none.
         assert!(!turns_back(Mode::Move, back(3, 3), 3));
         assert!(!turns_back(Mode::Move, back(3, 7), 7));
         assert!(!turns_back(Mode::Swap, back(3, 3), TRANSPORT));
-        // Box 100's Pokémon back from the button row, where the upper screen
-        // shows box 100 already: none, as on the box screen.
-        assert_eq!(shown_place(105), 99);
-        assert!(!turns_back(Mode::Move, back(99, 99), shown_place(105)));
-        assert_eq!(shown_place(113), TRANSPORT);
+        // Back from the button row, where the upper screen shows their box:
+        // none, from any box.
+        for from in [0, 37, 99, TRANSPORT + 1] {
+            assert!(!turns_back(
+                Mode::Move,
+                back(from, from),
+                shown_place(105, 12, Some(from))
+            ));
+        }
+        // On the button row the upper screen keeps the last place shown, with
+        // the red hand, and with the blue or green hand holding nothing; the
+        // green hand's Pokémon show their box.
+        assert_eq!(shown_place(105, 12, None), 12);
+        assert_eq!(shown_place(112, TRANSPORT + 2, None), TRANSPORT + 2);
+        assert_eq!(shown_place(105, 12, Some(37)), 37);
+        // On a place, that place.
+        assert_eq!(shown_place(40, 12, Some(37)), 40);
+        assert_eq!(shown_place(113, 12, None), TRANSPORT);
         // The glide is set up ten frames after the turn began.
         assert!(!turned(0) && !turned(9) && turned(10));
         // Meanwhile the upper screen shows their box, not the cursor's.
