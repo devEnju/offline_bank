@@ -1,21 +1,21 @@
 //! The SD card, where the Black/White saves are (docs/internals.md, "Saves
 //! on the SD card"): what the cartridge hooks (`cart`) do with a save's file
 //! there. A scan reads its identity, a read and a write go to the save, and
-//! the first write of a session copies the save to its backup before
-//! anything else. This is plain code over a file of the card (`Card`,
+//! the first write of a session copies the save to its backup, in the
+//! patches' own folder (`bank_common::sdfiles::ROOT`), before anything
+//! else. This is plain code over a file of the card (`Card`,
 //! `SdFile`), tested on a simulated card; on the console the file is the
 //! SDK's (`native`), as Bank's files are reached through `bank_common::fs`.
 //! Bank's files themselves are reached through bank-common
 //! (`bank_common::fs::Visit`).
 
 use crate::sdsave::{Save, Saves, PATH_CAPACITY, SAVE_SIZE};
+use bank_common::sdfiles::{PARENT, ROOT};
 use offline_core::Crc32;
 use patch_common::fs_result::lack_of_space;
 
-/// The SDK's open flags: read, read and write, write and create.
-pub const OPEN_READ: u32 = 1;
-pub const OPEN_READ_WRITE: u32 = 3;
-pub const OPEN_WRITE_CREATE: u32 = 6;
+/// The SDK's open flags (`patch_common::sd`).
+pub use patch_common::sd::{OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE};
 /// The size of one copy step of a backup; the steps make up the save.
 pub const COPY_CHUNK: usize = 0x8000;
 const _: () = assert!(SAVE_SIZE % COPY_CHUNK as u64 == 0);
@@ -118,8 +118,12 @@ pub trait SdFile {
 /// The SD card's archive.
 pub trait Card {
     type File: SdFile;
-    /// `path` is ASCII with its terminator.
+    /// `path` is one byte per character with its terminator
+    /// (`patch_common::sd`).
     fn open(&mut self, path: &[u8], flags: u32) -> Result<Self::File, Refused>;
+    /// Makes the folders at `paths` in order, on one opening of the
+    /// archive; one that is there counts as made.
+    fn create_dirs(&mut self, paths: &[&[u8]]) -> Result<(), Refused>;
 }
 
 /// For a file of exactly the size of a Gen 5 save that opens for reading and
@@ -159,12 +163,18 @@ fn in_save(offset: u32, length: usize) -> bool {
     u64::from(offset) + length as u64 <= SAVE_SIZE
 }
 
-/// Copies the untouched save to `<name>.sav.bak`, flushed and closed, before
-/// the first change of a session, and reads the copy back: it must hold
-/// what was read from the save, as Bank's own files are read back before
-/// they count. `chunk` is the copy buffer. A card without room for the copy
-/// refuses to make or grow it (`Refused::FULL`).
+/// Copies the untouched save to `<name>.sav.bak` in the patches' folder,
+/// which it makes first, flushed and closed, before the first change of a
+/// session, and reads the copy back: it must hold what was read from the
+/// save, as Bank's own files are read back before they count. `chunk` is
+/// the copy buffer. A card without room for the folder or the copy refuses
+/// to make or grow it (`Refused::FULL`).
 fn back_up<C: Card>(card: &mut C, save: Save, chunk: &mut [u8; COPY_CHUNK]) -> Result<(), Refused> {
+    let mut paths = [[0; PATH_CAPACITY]; 2];
+    for (path, folder) in paths.iter_mut().zip([PARENT, ROOT]) {
+        path[..folder.len()].copy_from_slice(folder);
+    }
+    card.create_dirs(&[&paths[0][..PARENT.len() + 1], &paths[1][..ROOT.len() + 1]])?;
     let source = open_save(card, save, false, OPEN_READ)?;
     let target = open_save(card, save, true, OPEN_WRITE_CREATE)?;
     let mut copied = Crc32::new();
@@ -255,8 +265,7 @@ pub use native::Sd;
 mod native {
     use super::{Card, Refused, SdFile};
     use crate::program::Transporter15;
-    use core::mem::transmute;
-    use patch_common::{file, program::Program};
+    use patch_common::file;
 
     /// How the card refused a call that failed with `code`.
     fn refused(code: file::Code) -> Refused {
@@ -265,57 +274,19 @@ mod native {
         }
     }
 
-    /// The SDK's "open a file in an archive in one call", `(session, &file,
-    /// 0, archive id, path type, path, path size, 3, file path, its size,
-    /// flags, 0)`.
-    const OPEN_FILE_DIRECTLY: usize = 0x001d_f448;
-
-    /// The SD card through Transporter's SDK: archive 9 with an empty path,
-    /// each file opened with its archive in one call. Transporter's file
-    /// system session is set up at start-up.
+    /// The SD card through the shared SD module (`patch_common::sd`):
+    /// archive 9 with an empty path, each file opened with its archive in
+    /// one call. Transporter's file system session is set up at start-up.
     pub struct Sd;
     impl Card for Sd {
         type File = File;
         fn open(&mut self, path: &[u8], flags: u32) -> Result<File, Refused> {
-            type Open = unsafe extern "aapcs" fn(
-                *const u32,
-                *mut u32,
-                u32,
-                u32,
-                u32,
-                *const u8,
-                u32,
-                u32,
-                *const u8,
-                u32,
-                u32,
-                u32,
-            ) -> i32;
-            let open: Open = unsafe { transmute(OPEN_FILE_DIRECTLY) };
-            let empty = [0u8; 4];
-            let mut handle = 0;
-            let code = unsafe {
-                open(
-                    Transporter15::FS_SESSION as *const u32,
-                    &mut handle,
-                    0,
-                    9,
-                    1,
-                    empty.as_ptr(),
-                    1,
-                    3,
-                    path.as_ptr(),
-                    path.len() as u32,
-                    flags,
-                    0,
-                )
-            };
-            if code < 0 {
-                return Err(refused(code));
-            }
-            unsafe { file::Handle::new(handle) }
+            patch_common::sd::open::<Transporter15>(path, flags)
                 .map(File)
-                .ok_or(Refused::OTHER)
+                .map_err(refused)
+        }
+        fn create_dirs(&mut self, paths: &[&[u8]]) -> Result<(), Refused> {
+            patch_common::sd::create_directories::<Transporter15>(paths).map_err(refused)
         }
     }
 
@@ -347,7 +318,13 @@ mod native {
 mod tests {
     extern crate std;
     use super::*;
-    use std::{cell::RefCell, collections::BTreeMap, rc::Rc, vec, vec::Vec};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeMap, BTreeSet},
+        rc::Rc,
+        vec,
+        vec::Vec,
+    };
 
     /// What fails on the simulated card, for files whose path ends so.
     #[derive(Clone, Copy, Default)]
@@ -368,6 +345,8 @@ mod tests {
     #[derive(Default)]
     struct Disk {
         files: BTreeMap<Vec<u8>, Vec<u8>>,
+        /// The folders that were made, with their terminators.
+        folders: BTreeSet<Vec<u8>>,
         faults: Faults,
         /// Writes with a flush: path and offset.
         flushes: Vec<(Vec<u8>, u64)>,
@@ -387,12 +366,29 @@ mod tests {
                 if disk.faults.full {
                     return Err(Refused::FULL);
                 }
+                // A file is made only in a folder that is there.
+                let end = path.iter().rposition(|byte| *byte == b'/').unwrap();
+                let mut folder = path[..end].to_vec();
+                folder.push(0);
+                if !disk.folders.contains(&folder) {
+                    return Err(Refused::OTHER);
+                }
                 disk.files.insert(path.to_vec(), Vec::new());
             }
             disk.files
                 .contains_key(path)
                 .then(|| SimFile(self.0.clone(), path.to_vec()))
                 .ok_or(Refused::OTHER)
+        }
+        fn create_dirs(&mut self, paths: &[&[u8]]) -> Result<(), Refused> {
+            let mut disk = self.0.borrow_mut();
+            for path in paths {
+                if disk.faults.full && !disk.folders.contains(*path) {
+                    return Err(Refused::FULL);
+                }
+                disk.folders.insert(path.to_vec());
+            }
+            Ok(())
         }
     }
     impl SdFile for SimFile {
@@ -500,6 +496,13 @@ mod tests {
         assert!(write(&mut sim, &mut saves, save, 0x100, &[1, 2, 3, 4], &mut chunk).is_ok());
         assert_eq!(file(&sim, BAK), original);
         assert_eq!(file(&sim, SAV)[0x100..0x104], [1, 2, 3, 4]);
+        // The backup lies in the patches' folder, made with the folder it
+        // lies in; nothing is written beside the save.
+        let backup = [ROOT, b"/POKEMON_B_IRBD01_00.sav.bak\0"].concat();
+        assert!(sim.0.borrow().files.contains_key(&backup));
+        assert_eq!(sim.0.borrow().files.len(), 2);
+        let folders: Vec<_> = sim.0.borrow().folders.iter().cloned().collect();
+        assert_eq!(folders, [[PARENT, b"\0"].concat(), [ROOT, b"\0"].concat()]);
         // The backup is flushed with its last chunk, the save with its write.
         let flushes = sim.0.borrow().flushes.clone();
         assert_eq!(flushes.len(), 2);
@@ -638,6 +641,7 @@ mod tests {
                 .borrow_mut()
                 .files
                 .insert(path[..length].to_vec(), vec![0xee; SAVE_SIZE as usize]);
+            sim.0.borrow_mut().folders.insert([ROOT, b"\0"].concat());
             let mut chunk = [0; COPY_CHUNK];
             sim.0.borrow_mut().faults = Faults {
                 torn_write: Some((BAK, at)),

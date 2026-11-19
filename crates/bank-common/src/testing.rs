@@ -45,6 +45,12 @@ pub struct Disk {
     pub visitors: usize,
     /// The card has no room: a file that is not there cannot be made.
     pub full: bool,
+    /// The plain files of the SD card (`sdfiles::Sd`), by path without
+    /// the terminator, and its folders.
+    pub sd: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub sd_dirs: BTreeSet<Vec<u8>>,
+    /// The SD card has no room for a new plain file.
+    pub sd_full: bool,
 }
 
 /// What the simulated card answers an operation it refuses with: whether it
@@ -167,6 +173,9 @@ impl Shared {
             open: 0,
             visitors: 0,
             full: disk.full,
+            sd: disk.sd.clone(),
+            sd_dirs: disk.sd_dirs.clone(),
+            sd_full: disk.sd_full,
         })))
     }
     /// A copy that behaves like the console, or like the simple card.
@@ -396,8 +405,9 @@ pub fn record(species: u16) -> [u8; RECORD_SIZE] {
     }
     out
 }
-/// A full native body. `boxes` and `dex` mark their regions; the transport
-/// box holds `pokemon` occupied slots followed by blank records.
+/// A full native body, clean as every write leaves one (`sections::clean`).
+/// `boxes` and `dex` mark their regions; the transport box holds `pokemon`
+/// occupied slots followed by blank records.
 pub fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
     let mut bytes = vec![boxes; BLOB_SIZE];
     bytes[0x15C..0x15E].copy_from_slice(&2u16.to_le_bytes());
@@ -409,6 +419,7 @@ pub fn body(boxes: u8, dex: u8, pokemon: usize) -> Vec<u8> {
         bytes[at..at + RECORD_SIZE].copy_from_slice(&record(species));
         bytes[TRANSPORT_TAGS.start + slot] = if slot < pokemon { 2 } else { 0 };
     }
+    offline_core::sections::clean(&mut bytes).unwrap();
     bytes
 }
 /// A stored Pokémon of species 133 whose identity is `id`, below 0x1000:
@@ -446,6 +457,7 @@ pub fn with_boxes(
         let at = place(*index, *slot);
         bytes[at..at + RECORD_SIZE].copy_from_slice(record);
     }
+    offline_core::sections::clean(&mut bytes).unwrap();
     bytes
 }
 /// Fills what the main thread fills: defaults for missing regions.
@@ -527,4 +539,132 @@ pub fn try_deliver(disk: &Shared, pokemon: usize) -> Option<Delivery> {
 }
 pub fn deliver(disk: &Shared, pokemon: usize) -> Delivery {
     try_deliver(disk, pokemon).expect("Transporter must be allowed to deliver")
+}
+
+/// The plain files of the SD card. Every call is one operation of the
+/// card's budget, but a write: it deletes, creates and writes, three
+/// operations, as the console's `put` does. A cut at its second leaves no
+/// file, one at its third the file there with the wrong bytes, as a torn
+/// write does. A file goes only into a folder that is there.
+impl crate::sdfiles::Sd for Shared {
+    type Error = Refused;
+    fn create_dir(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
+        self.tick()?;
+        self.0.borrow_mut().sd_dirs.insert(path.text().to_vec());
+        Ok(())
+    }
+    fn put(&mut self, path: &crate::sdfiles::Path, bytes: &[u8]) -> Result<(), Refused> {
+        let key = path.text().to_vec();
+        let folder = key[..key.iter().rposition(|byte| *byte == b'/').unwrap_or(0)].to_vec();
+        assert!(
+            folder.is_empty() || self.0.borrow().sd_dirs.contains(&folder),
+            "no folder for {path:?}"
+        );
+        self.tick()?;
+        self.0.borrow_mut().sd.remove(&key);
+        if self.0.borrow().sd_full {
+            return Err(Refused::FULL);
+        }
+        self.tick()?;
+        if let Err(error) = self.tick() {
+            let mut torn = bytes.to_vec();
+            torn.iter_mut().for_each(|byte| *byte = !*byte);
+            self.0.borrow_mut().sd.insert(key, torn);
+            return Err(error);
+        }
+        self.0.borrow_mut().sd.insert(key, bytes.to_vec());
+        Ok(())
+    }
+    fn get(
+        &mut self,
+        path: &crate::sdfiles::Path,
+        out: &mut [u8],
+    ) -> Result<crate::sdfiles::Found, Refused> {
+        use crate::sdfiles::Found;
+        let disk = self.0.borrow();
+        Ok(match disk.sd.get(path.text()) {
+            None => Found::Absent,
+            Some(bytes) if bytes.len() != out.len() => Found::OtherSize,
+            Some(bytes) => {
+                out.copy_from_slice(bytes);
+                Found::Read
+            }
+        })
+    }
+    fn delete(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
+        self.tick()?;
+        self.0.borrow_mut().sd.remove(path.text());
+        Ok(())
+    }
+    /// One operation: the folder and everything in it, or nothing.
+    fn rename_dir(
+        &mut self,
+        from: &crate::sdfiles::Path,
+        to: &crate::sdfiles::Path,
+    ) -> Result<(), Refused> {
+        self.tick()?;
+        let mut disk = self.0.borrow_mut();
+        let (from, to) = (from.text().to_vec(), to.text().to_vec());
+        assert!(
+            !disk.sd_dirs.contains(&to) && !disk.sd.contains_key(&to),
+            "rename onto {to:?}"
+        );
+        if !disk.sd_dirs.remove(&from) {
+            return Err(Refused::FAILED);
+        }
+        disk.sd_dirs.insert(to.clone());
+        let inside = [&from[..], b"/"].concat();
+        let moved: Vec<Vec<u8>> = disk
+            .sd
+            .keys()
+            .filter(|key| key.starts_with(&inside))
+            .cloned()
+            .collect();
+        for key in moved {
+            let bytes = disk.sd.remove(&key).unwrap();
+            disk.sd
+                .insert([&to[..], &key[from.len()..]].concat(), bytes);
+        }
+        Ok(())
+    }
+    fn list(
+        &mut self,
+        path: &crate::sdfiles::Path,
+        each: &mut dyn FnMut(&[u8], bool),
+    ) -> Result<(), Refused> {
+        let inside = [path.text(), b"/"].concat();
+        let disk = self.0.borrow();
+        let entries = |keys: &mut dyn Iterator<Item = &Vec<u8>>| {
+            keys.filter_map(|key| key.strip_prefix(inside.as_slice()))
+                .filter(|name| !name.contains(&b'/'))
+                .map(|name| name.to_vec())
+                .collect::<Vec<_>>()
+        };
+        let files = entries(&mut disk.sd.keys());
+        let folders = entries(&mut disk.sd_dirs.iter());
+        drop(disk);
+        for name in files {
+            each(&name, false);
+        }
+        for name in folders {
+            each(&name, true);
+        }
+        Ok(())
+    }
+    fn remove_dir(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
+        self.tick()?;
+        let mut disk = self.0.borrow_mut();
+        let inside = [path.text(), b"/"].concat();
+        if disk.sd.keys().any(|key| key.starts_with(&inside)) {
+            return Err(Refused::FAILED);
+        }
+        disk.sd_dirs.remove(path.text());
+        Ok(())
+    }
+    fn no_room(error: &Refused) -> bool {
+        error.full
+    }
+    fn code(_: &Refused) -> u32 {
+        0
+    }
 }

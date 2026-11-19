@@ -71,6 +71,15 @@ impl<'a> NativeBank<'a> {
         NativeBlobView::parse_layout(bytes).map_err(NativeBankError::Blob)
     }
 
+    /// The live body, for the transfer screen's moves (`transfer_screen::Places`), which
+    /// change it as the box screen changes it.
+    pub fn body_mut(&mut self) -> &mut [u8] {
+        // SAFETY: from_raw's exclusive lifetime contract covers this subrange.
+        unsafe {
+            core::slice::from_raw_parts_mut(self.pointer.as_ptr().add(BODY_OFFSET), BLOB_SIZE)
+        }
+    }
+
     /// Equivalent to the body-copy portion of download completion 002D11B0:
     /// retain flags detected by local game scanning before the persisted load.
     pub fn restore_preserving_detected_games(

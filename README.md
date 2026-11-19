@@ -16,7 +16,8 @@ Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5*
 - National Pokédex and adventure records, taken over in the records screen as in the original.
 - Poké Miles earned locally at a lossless rate and redeemed through the respective screens, with the welcome gift of 100 Miles ([details](docs/bank.md#poké-miles)).
 - A damaged game save is refused before it is loaded. The original loaded and wrote it back.
-- Saves are journaled: an interrupted Save and Quit leaves either the old or the new boxes ([details](docs/bank.md#if-save-and-quit-is-interrupted)).
+- Saves are journaled: an interrupted Save and Quit leaves either the old or the new boxes ([details](docs/bank.md#if-save-and-quit-is-interrupted)). Before an interrupted save is left to Transporter's question, the boxes whose Pokémon it changed are copied to the SD card, as they were and as they became.
+- Back on game selection opens the transfer screen as a box manager: swap whole boxes, move a box's Pokémon, three offline boxes as files on the SD card, and backups of checked boxes into a folder per session ([details](docs/bank.md#the-transfer-screen)).
 
 Details: [docs/bank.md](docs/bank.md).
 
@@ -54,7 +55,7 @@ The repository itself holds no patch files. Without a release, [build them yours
 
 You need a 3DS with [Luma3DS](https://github.com/LumaTeam/Luma3DS) v10.0 or later, Pokémon Bank and Poké Transporter installed in version 1.5, their final updates.
 
-1. Back up your game saves. If you are updating, back up Bank's extra data too: the offline Bank keeps its boxes in Bank's *extdata*, not in its save ([how to back them up](docs/bank.md#backing-up-the-bank)).
+1. Back up your game saves. If you are updating from an earlier release, back up Bank's extra data too: the offline Bank keeps its boxes in Bank's *extdata*, not in its save. In [Checkpoint](https://github.com/BernardoGiordano/Checkpoint), switch to **extdata** mode (X button), select Pokémon Bank, and back up. After that, Bank keeps its boxes safe by itself ([Backing up the Bank](docs/bank.md#backing-up-the-bank)).
 2. Extract the zip and copy its `luma` folder to the root of the SD card, merging it with the one that is there.
 3. Hold SELECT while powering on, switch on *Enable game patching*, and save. Wireless can stay off.
 4. Start Bank once before using Transporter.

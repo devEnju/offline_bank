@@ -21,6 +21,9 @@ use bank_common::{
     bank_files::{self, BankFiles, Files, Loaded},
     fault::Fault,
     fs::NoRoom,
+    interrupted,
+    sdfiles::{self, Date, NoSd, Sd},
+    transfer_screen,
     worker::WorkerError,
 };
 use offline_core::{
@@ -46,14 +49,19 @@ pub struct GameEvidence {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 pub enum Job {
+    /// `date` is the console's when the job was handed over, read on the
+    /// main thread with the original's clock (`hooks::date`); it names a
+    /// folder of the SD card, here and in `Recover` and `TransferCommit`.
     Open {
         session: u32,
+        date: Date,
     },
     Initialize,
     /// `game` is `None` when the game of the save in progress is not there;
     /// with it, whose game it is, read on the main thread.
     Recover {
         game: Option<(GameIoDescriptor, Trainer)>,
+        date: Date,
     },
     /// The game a session is loaded with. The Bank is the one opening
     /// restored; it is not read again.
@@ -84,6 +92,113 @@ pub enum Job {
         game: GameIoDescriptor,
         status: u32,
     },
+    /// The transfer screen's offline boxes are read into `ROOM`
+    /// (`transfer_screen::load_offline`).
+    LoadOffline,
+    /// What the transfer screen changed is written (`transfer_screen::commit`): the body
+    /// in staging, the offline boxes in `ROOM`. `date` names the session's
+    /// folder.
+    TransferCommit {
+        checked: [bool; transfer_screen::PLACES],
+        date: Date,
+    },
+}
+
+/// What the transfer screen keeps while it is up: the extended layout the
+/// original builds the screen from (`layout::extend`), which must stay while
+/// that layout lives, first and aligned (`layout::Room`); room for one box
+/// file, aligned too, as the preview hands a record from it to the
+/// original; the offline boxes, as the bytes of their files.
+#[repr(C)]
+pub struct TransferRoom {
+    pub layout: crate::layout::Room,
+    pub scratch: [u8; offline_core::boxfile::FILE_SIZE],
+    pub offline: transfer_screen::Offline,
+}
+
+/// Memory that two phases share, as they never overlap: the lists that
+/// compare a save's two snapshots (the worker, inside `Recover` and
+/// `Finalize`, which need a game) and the transfer screen's room (from
+/// `LoadOffline` until the screen's task ends, with no game). The payload
+/// has to end below the next whole megabyte (`docs/internals.md`,
+/// "Placement"), so the two do not get a block each.
+#[repr(C)]
+union RoomBytes {
+    held: [[Identity; HELD]; 2],
+    transfer: core::mem::ManuallyDrop<TransferRoom>,
+}
+const _: () =
+    assert!(core::mem::size_of::<TransferRoom>() <= core::mem::size_of::<[[Identity; HELD]; 2]>());
+// The opening's settling of the SD card's folders works in two box files.
+const _: () = assert!(core::mem::size_of::<RoomBytes>() >= 2 * offline_core::boxfile::FILE_SIZE);
+const _: () = assert!(
+    core::mem::align_of::<RoomBytes>() >= 128
+        && core::mem::offset_of!(TransferRoom, layout) == 0
+        && core::mem::offset_of!(TransferRoom, scratch) % 8 == 0
+);
+
+pub struct Room(core::cell::UnsafeCell<RoomBytes>);
+// SAFETY: one thread at a time, by the job protocol: the transfer screen's
+// room is the main thread's while the screen is up and the worker's while
+// `LoadOffline` or `TransferCommit` is out, as staging is; the held lists
+// are the worker's inside one job.
+unsafe impl Sync for Room {}
+/// All zero, which is a valid value of either use.
+pub static ROOM: Room = Room(core::cell::UnsafeCell::new(RoomBytes {
+    held: [[[0; 3]; HELD]; 2],
+}));
+impl Room {
+    fn transfer(&self) -> *mut TransferRoom {
+        // A union field's place, without a reference to the whole.
+        unsafe { core::ptr::addr_of_mut!((*self.0.get()).transfer).cast() }
+    }
+    /// The offline boxes and the room for one box file.
+    /// # Safety
+    /// Only by the thread whose turn it is, while the transfer screen's
+    /// phase lasts (see `RoomBytes`).
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn boxes(
+        &self,
+    ) -> (
+        &mut transfer_screen::Offline,
+        &mut [u8; offline_core::boxfile::FILE_SIZE],
+    ) {
+        let room = self.transfer();
+        unsafe {
+            (
+                &mut *core::ptr::addr_of_mut!((*room).offline),
+                &mut *core::ptr::addr_of_mut!((*room).scratch),
+            )
+        }
+    }
+    /// The extended layout: the main thread's, from its build until the
+    /// screen's task ends. The worker never touches it.
+    /// # Safety
+    /// Only by the main thread, while the transfer screen's phase lasts.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn layout(&self) -> &mut [u8; crate::layout::EXTENDED_ROOM] {
+        unsafe { &mut *core::ptr::addr_of_mut!((*self.transfer()).layout.0) }
+    }
+    /// # Safety
+    /// Only by the worker, inside a job that needs a game (see `RoomBytes`).
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn held(&self) -> &mut [[Identity; HELD]; 2] {
+        unsafe { &mut (*self.0.get()).held }
+    }
+    /// The whole room as bytes, for the opening's settling of the SD card's
+    /// folders (`settle_sd`), while staging holds the Bank just read.
+    /// # Safety
+    /// Only by the worker, inside `Open` or `Recover` once the held lists
+    /// are done with; the transfer screen's phase has not begun.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn work(&self) -> &mut [u8] {
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.0.get().cast::<u8>(),
+                core::mem::size_of::<RoomBytes>(),
+            )
+        }
+    }
 }
 
 /// What a job that could not finish leaves, and so which message of the
@@ -143,6 +258,10 @@ pub enum Reply {
     },
     /// The unlock is written.
     Unlocked,
+    /// The offline boxes are in `ROOM`.
+    OfflineLoaded,
+    /// What the transfer screen changed is written.
+    Committed,
     /// The job could not finish, and this is what it leaves.
     Ended(Ending),
 }
@@ -195,6 +314,21 @@ fn no_room<E: NoRoom>(error: &bank_files::Error<E>) -> bool {
     error.card().is_some_and(NoRoom::no_room)
 }
 
+/// A journal record that settles or marks a save in progress, written or
+/// not. At START no room to write it again, where a cut left one of its two
+/// copies unusable, leaves the save as it was, for the next START, as "The
+/// SD card is full." (`Settled::NoSpace`). After Save and Quit's own write
+/// the game has changed, so it is the error screen there.
+fn settled<E: NoRoom>(
+    rule: Rule,
+    result: Result<Settled, bank_files::Error<E>>,
+) -> Result<Settled, Stop<E>> {
+    match result {
+        Err(error) if rule == Rule::Start && no_room(&error) => Ok(Settled::NoSpace),
+        result => result.map_err(files_failed(Fault::JournalRecovery)),
+    }
+}
+
 /// The end of creating a Bank: what `BankFiles::initialize` answered, with a
 /// card without room for the files as an ending. A creation that stopped is
 /// finished in place by the next one, so nothing is lost by it.
@@ -205,6 +339,28 @@ pub fn created<E: NoRoom>(
         Ok(()) => Ok(None),
         Err(error) if no_room(&error) => Ok(Some(Ending::NoSpace)),
         Err(error) => Err(error),
+    }
+}
+
+/// What a failure of the box files of the SD card leaves (`sdfiles::Error`,
+/// docs/errors.md): no room, on the SD card or for Bank's files, is "The SD
+/// card is full." (`Ending::NoSpace`); any other failure of the card is
+/// fault `15` with the console's result, a cell that is not a whole box
+/// file `15` with `7B0000pp`; a failure of
+/// Bank's files is `files` with its numbers.
+pub fn sd_ended<E: NoRoom, S: Sd>(
+    error: sdfiles::Error<E, S::Error>,
+    files: Fault,
+) -> Result<Ending, Stop<E>> {
+    match error {
+        sdfiles::Error::Sd(error) if S::no_room(&error) => Ok(Ending::NoSpace),
+        sdfiles::Error::Files(error) if no_room(&error) => Ok(Ending::NoSpace),
+        sdfiles::Error::Sd(error) => Err(Fault::SdFiles.with(S::code(&error)).into()),
+        sdfiles::Error::Files(error) => Err(Stop::Files(files, error)),
+        sdfiles::Error::BadFile(place) => {
+            Err(Fault::SdFiles.with(0x7b00_0000 | place as u32).into())
+        }
+        sdfiles::Error::Staging => Err(Fault::SdFiles.with(0).into()),
     }
 }
 
@@ -274,6 +430,8 @@ where
         trainer,
     )
     .map_err(|_| Fault::GamePrepare.with(0))?;
+    // Clean as the files will take it, so that `finalize` finds it again.
+    offline_core::sections::clean(staging).map_err(|_| Fault::StorageLoad.with(0))?;
     let staged = crc32(staging);
     // Side files first, then the Bank journal. A file is created only
     // before the journal is written, so a card without room for it leaves
@@ -355,6 +513,10 @@ pub enum Settled {
     /// Not settled: the game cannot be read, as its Game Card is gone. The
     /// journal still holds it, for the next start.
     Open,
+    /// Not settled: it moved Pokémon both ways, and the SD card has no room
+    /// for the backup of the boxes it changed (`backup`). Nothing of the
+    /// journal was written; the next START tries again.
+    NoSpace,
 }
 
 /// Settles the save in progress `pending` from the game of its title, or
@@ -375,8 +537,37 @@ pub fn settle<F: Files, G: Game>(
 where
     <F::Storage as Storage>::Error: NoRoom,
 {
+    settle_backed(
+        files,
+        game,
+        staging,
+        pending,
+        rule,
+        written,
+        held,
+        None::<&mut NoSd>,
+    )
+}
+
+/// `settle`, with the SD card for the backup of a save that moved Pokémon
+/// both ways (`interrupted::back_up`): START's, before the journal
+/// leaves it to Transporter's question or to its game.
+#[allow(clippy::too_many_arguments)]
+pub fn settle_backed<F: Files, G: Game, S: Sd>(
+    files: &mut BankFiles<F>,
+    game: Option<&mut G>,
+    staging: &mut [u8],
+    pending: &PendingTransfer,
+    rule: Rule,
+    written: Option<SecureValues>,
+    held: &mut [[Identity; HELD]; 2],
+    backup: Option<&mut S>,
+) -> Stopped<Settled, F>
+where
+    <F::Storage as Storage>::Error: NoRoom,
+{
     let Some(game) = game else {
-        return by_moves(files, staging, false, held);
+        return by_moves(files, staging, rule, false, held, backup);
     };
     let cartridge = made_on_cartridge(pending)?;
     let evidence = match game.inspect() {
@@ -405,10 +596,10 @@ where
         secured => secured?,
     }
     match matched {
-        Match::Before | Match::After => files
-            .reconcile(evidence.fingerprint)
-            .map(Settled::Exact)
-            .map_err(files_failed(Fault::JournalRecovery)),
+        Match::Before | Match::After => settled(
+            rule,
+            files.reconcile(evidence.fingerprint).map(Settled::Exact),
+        ),
         // A save that is neither image, on the kind of copy the save in
         // progress was made with: the game was played on, a new game was
         // started on it, or it is another cartridge. It no longer shows
@@ -425,7 +616,7 @@ where
                 && game
                     .trainer()
                     .is_some_and(|inserted| Trainer::of(&pending.game).same(inserted, gen7));
-            by_moves(files, staging, seen, held)
+            by_moves(files, staging, rule, seen, held, backup)
         }
     }
 }
@@ -436,11 +627,13 @@ where
 /// game is there on the kind of copy it was made with, at START, with a
 /// save that is neither image: then it is left to Transporter's question
 /// (`Settled::Asks`). Otherwise it waits for its game.
-fn by_moves<F: Files>(
+fn by_moves<F: Files, S: Sd>(
     files: &mut BankFiles<F>,
     staging: &mut [u8],
+    rule: Rule,
     seen: bool,
     [before, after]: &mut [[Identity; HELD]; 2],
+    backup: Option<&mut S>,
 ) -> Stopped<Settled, F>
 where
     <F::Storage as Storage>::Error: NoRoom,
@@ -449,16 +642,24 @@ where
         .pending_moves(staging, before, after)
         .map_err(files_failed(Fault::JournalRecovery))?;
     let Some(decision) = moved::choose(moved) else {
-        // Bit 2 by what was seen; an unlocked save is Transporter's too.
-        let asks = files
-            .ask(seen)
-            .map_err(files_failed(Fault::JournalRecovery))?;
-        return Ok(if asks { Settled::Asks } else { Settled::Waits });
+        // The boxes it changed go to the SD card, both ways, before the
+        // journal says anything about it.
+        if let Some(sd) = backup {
+            if let Err(error) = interrupted::back_up(files, staging, sd) {
+                return sd_ended::<_, S>(error, Fault::JournalRecovery).map(|_| Settled::NoSpace);
+            }
+        }
+        // Bit 2 by what was seen; an unlocked save is Transporter's too. No
+        // room to write the record again leaves the save as it was, waiting
+        // for the next START, as no room for the backup does.
+        return settled(
+            rule,
+            files
+                .ask(seen)
+                .map(|asks| if asks { Settled::Asks } else { Settled::Waits }),
+        );
     };
-    files
-        .reconcile_as(decision)
-        .map(Settled::ByMoves)
-        .map_err(files_failed(Fault::JournalRecovery))
+    settled(rule, files.reconcile_as(decision).map(Settled::ByMoves))
 }
 
 /// How Save and Quit ended once the original's writer had ended.
@@ -522,6 +723,9 @@ where
         }
         // A card that is gone is only ever a cartridge's (`card_gone`).
         Settled::Open => Ok(Finalized::Ended(Ending::Retry)),
+        // No backup is written after a save's own write, and no room for
+        // the journal is the error screen there (`settled`).
+        Settled::NoSpace => Ok(Finalized::Ended(Ending::NoSpace)),
         Settled::Exact(RecoveryDecision::KeepBefore)
         | Settled::ByMoves(_)
         | Settled::Waits
@@ -634,8 +838,9 @@ mod arm {
         bank_files::ExtFiles,
         fs::{self, GameMainReader},
         program::Bank15,
+        sdfiles::ConsoleSd,
     };
-    use core::{cell::UnsafeCell, mem::transmute};
+    use core::mem::transmute;
     use offline_core::{
         game_image::{fingerprint_image, fingerprint_images, Overlay},
         native_blob::{NativeBlobView, BLOB_SIZE},
@@ -651,13 +856,10 @@ mod arm {
 
     /// Working room for comparing the two snapshots of a save in progress:
     /// everything the Bank held before it and after it.
-    struct Held(UnsafeCell<[[Identity; HELD]; 2]>);
-    // SAFETY: only the one storage worker thread uses it, inside one job.
-    unsafe impl Sync for Held {}
-    static HELD_LISTS: Held = Held(UnsafeCell::new([[[0; 3]; HELD]; 2]));
     fn held() -> &'static mut [[Identity; HELD]; 2] {
-        // SAFETY: see `Held`; no other reference exists.
-        unsafe { &mut *HELD_LISTS.0.get() }
+        // SAFETY: the worker, inside `Recover` or `Finalize`; no other
+        // reference exists.
+        unsafe { super::ROOM.held() }
     }
 
     static SHARED: Shared<StorageWorker> = Shared::new([0; BLOB_SIZE]);
@@ -722,6 +924,26 @@ mod arm {
                 .phase()
                 .map_err(|e| Fault::StorageInvalid.files(e))
         }
+        /// Every `interrupted-` folder is settled by the state the journal
+        /// names (`interrupted::settle`) whenever the journal has become
+        /// clean, once the Bank it names was read whole: at an opening, and
+        /// after START settled a save in progress. So every session that
+        /// reaches the transfer screen or a save starts with none, and a
+        /// Bank that cannot be read stops the opening before any file of a
+        /// folder goes. It works in `ROOM`, as staging holds the Bank. No
+        /// room to put a cell back is an ending, "The SD card is full.": the
+        /// folder stays, and the next START settles it.
+        fn settle_sd(&mut self, date: Date) -> Result<Option<Ending>, WorkerError> {
+            let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+            // SAFETY: inside `Open` or `Recover`, the held lists done with.
+            let work = unsafe { ROOM.work() };
+            match interrupted::settle(&mut self.files, &mut sd, work, date) {
+                Ok(()) => Ok(None),
+                Err(error) => sd_ended::<_, ConsoleSd<Bank15>>(error, Fault::JournalPrepare)
+                    .map(Some)
+                    .map_err(stopped),
+            }
+        }
         /// Leaves the assembled native body in staging.
         fn read_bank(&mut self, staging: &mut [u8]) -> Result<bank_files::Loaded, WorkerError> {
             self.files
@@ -730,7 +952,7 @@ mod arm {
         }
         fn execute(&mut self, job: Job, staging: &mut [u8]) -> Result<Reply, WorkerError> {
             match job {
-                Job::Open { session } => {
+                Job::Open { session, date } => {
                     // Every session opens the Bank as a first one does:
                     // what the session before read of it is dropped. None
                     // of its files is open (`rest`).
@@ -752,10 +974,35 @@ mod arm {
                         self.missing = true;
                         return Ok(Reply::Missing);
                     };
+                    // The Bank first, read whole, then the SD card's folders:
+                    // the SD card's archive is never open while it is read.
                     let loaded = match phase {
                         Phase::Clean(_) => Some(self.read_bank(staging)?),
                         Phase::Prepared(_) => None,
                     };
+                    if loaded.is_some() {
+                        if let Some(ending) = self.settle_sd(date)? {
+                            return Ok(Reply::Ended(ending));
+                        }
+                    }
+                    // Test builds: every call of the SD card's box files
+                    // once, on a file of its own (docs/testing.md).
+                    #[cfg(feature = "test-build")]
+                    {
+                        // A card without room for the probe's file is no
+                        // fault of the card's calls: the probe is skipped,
+                        // so the checks of a full card can be made with
+                        // this build too.
+                        let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+                        match bank_common::sdfiles::probe(&mut sd) {
+                            Ok(true) => {}
+                            Ok(false) => return Err(Fault::SdFiles.with(0)),
+                            Err(error) if ConsoleSd::<Bank15>::no_room(&error) => {}
+                            Err(error) => {
+                                return Err(Fault::SdFiles.with(ConsoleSd::<Bank15>::code(&error)))
+                            }
+                        }
+                    }
                     Ok(Reply::Opened { phase, loaded })
                 }
                 Job::Initialize => {
@@ -794,7 +1041,7 @@ mod arm {
                         Err(ending) => Reply::Ended(ending),
                     })
                 }
-                Job::Recover { game } => {
+                Job::Recover { game, date } => {
                     let Phase::Prepared(pending) = self.phase()? else {
                         return Err(Fault::JournalRecovery.with(0));
                     };
@@ -808,7 +1055,10 @@ mod arm {
                         trainer: Some(trainer),
                         ..Console::of(game)
                     });
-                    let settled = settle(
+                    // The worker owns the program's file handles, so it
+                    // reaches the SD card too.
+                    let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+                    let settled = settle_backed(
                         &mut self.files,
                         game.as_mut(),
                         staging,
@@ -816,11 +1066,16 @@ mod arm {
                         Rule::Start,
                         None,
                         held(),
+                        Some(&mut sd),
                     )
                     .map_err(stopped)?;
                     match settled {
                         Settled::Exact(_) | Settled::ByMoves(_) => {
+                            drop(sd);
                             let loaded = self.read_bank(staging)?;
+                            if let Some(ending) = self.settle_sd(date)? {
+                                return Ok(Reply::Ended(ending));
+                            }
                             Ok(Reply::BankReady {
                                 loaded: Some(loaded),
                             })
@@ -836,16 +1091,53 @@ mod arm {
                                 .map_err(|e| Fault::JournalRecovery.files(e))?,
                         }),
                         Settled::Open => Ok(Reply::Ended(Ending::Retry)),
+                        Settled::NoSpace => Ok(Reply::Ended(Ending::NoSpace)),
+                    }
+                }
+                Job::LoadOffline => {
+                    let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+                    let (offline, _) = unsafe { ROOM.boxes() };
+                    match transfer_screen::load_offline(&mut sd, offline) {
+                        Ok(()) => Ok(Reply::OfflineLoaded),
+                        Err(error) => {
+                            sd_ended::<_, ConsoleSd<Bank15>>(error, Fault::JournalPrepare)
+                                .map(Reply::Ended)
+                                .map_err(stopped)
+                        }
+                    }
+                }
+                Job::TransferCommit { checked, date } => {
+                    let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+                    let (offline, scratch) = unsafe { ROOM.boxes() };
+                    let request = transfer_screen::Commit {
+                        checked: &checked,
+                        date,
+                    };
+                    match transfer_screen::commit(
+                        &mut self.files,
+                        &mut sd,
+                        staging,
+                        offline,
+                        &request,
+                        scratch,
+                    ) {
+                        Ok(()) => Ok(Reply::Committed),
+                        Err(error) => {
+                            sd_ended::<_, ConsoleSd<Bank15>>(error, Fault::JournalPrepare)
+                                .map(Reply::Ended)
+                                .map_err(stopped)
+                        }
                     }
                 }
                 Job::Unlock => {
                     let Phase::Prepared(_) = self.phase()? else {
                         return Err(Fault::JournalRecovery.with(0));
                     };
-                    self.files
-                        .unlock()
-                        .map_err(|e| Fault::JournalRecovery.files(e))?;
-                    Ok(Reply::Unlocked)
+                    match self.files.unlock() {
+                        Ok(()) => Ok(Reply::Unlocked),
+                        Err(error) if no_room(&error) => Ok(Reply::Ended(Ending::NoSpace)),
+                        Err(error) => Err(Fault::JournalRecovery.files(error)),
+                    }
                 }
                 Job::Finalize { game, status } => {
                     let Phase::Prepared(pending) = self.phase()? else {
@@ -1287,10 +1579,15 @@ mod tests {
     #[test]
     fn a_save_commits_and_the_bank_read_back_is_the_body_it_staged() {
         for cartridge in [true, false] {
-            let (_, mut files, body) = bank();
+            let (_, mut files, mut body) = bank();
+            // A byte a write clears, as the box screen's moves leave some:
+            // the save cleans before it counts, and the Bank read back is
+            // the cleaned body.
+            body[0x17C + 30 * 0xE8 + 0x22] = 0x77;
+            let mut staging = body.clone();
+            offline_core::sections::clean(&mut body).unwrap();
             let mut game = Simulated::loaded(cartridge);
             let baseline = game.evidence();
-            let mut staging = body.clone();
             let staged = match prepare(&mut files, &mut game, &mut staging, baseline, trainer()) {
                 Ok(Prepared::Ready { staged }) => staged,
                 other => panic!("{other:?}"),
@@ -1733,6 +2030,457 @@ mod tests {
                 drop(files);
                 assert!(settled_bank(&disk) == old, "{case}");
                 assert!(!asked(&disk), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_backup_keeps_a_box_whose_pokemon_changed_and_no_other() {
+        use bank_common::interrupted;
+        // Both ways in box 1. Box 8 is renamed, box 9 only moved to another
+        // category and position, each with the same Pokémon on both sides:
+        // no change. Box 1 is renamed too, and its file carries the name.
+        let one = |id| (0, id as usize, pokemon(id));
+        let old = &mut with_boxes(
+            0x31,
+            &[one(1), one(2), (7, 0, pokemon(4)), (8, 0, pokemon(5))],
+            0,
+        );
+        let new = &mut with_boxes(
+            0x31,
+            &[one(1), one(3), (7, 0, pokemon(4)), (8, 0, pokemon(5))],
+            0,
+        );
+        let label = |index: usize| 0x17C + index * 0x1B56 + 0x1B30;
+        new[label(7)] = b'Z';
+        new[label(0)] = b'Y';
+        new[label(8) + 0x23] ^= 1;
+        new[label(8) + 0x24] ^= 1;
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(old, new, &mut game);
+        drop(files);
+        game.save = Some((OTHER, LOADED));
+        let card = disk.like(true).copy();
+        assert_eq!(
+            start_backed(&card, &mut game, &in_progress).unwrap(),
+            Settled::Asks
+        );
+        let expected = [(0, false), (0, true)];
+        assert!(backup_complete(&card, &in_progress, &expected));
+        // Of the label only the name's text.
+        let folder = backup_folder(&in_progress);
+        let file = card.0.borrow().sd[interrupted::file(&folder, 0, true).text()].clone();
+        let file = offline_core::boxfile::BoxFile::parse(&file).unwrap();
+        assert_eq!(
+            file.name(),
+            &new[label(0)..label(0) + offline_core::boxfile::NAME_TEXT]
+        );
+    }
+
+    /// START with the SD card, for the backup (`settle_backed`).
+    fn start_backed(
+        card: &Shared,
+        game: &mut Simulated,
+        pending: &PendingTransfer,
+    ) -> Result<Settled, Stop<bank_common::testing::Refused>> {
+        let mut files = opened(card);
+        let mut sd = card.clone();
+        settle_backed(
+            &mut files,
+            Some(game),
+            &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+            pending,
+            Rule::Start,
+            None,
+            &mut held(),
+            Some(&mut sd),
+        )
+    }
+
+    /// The records of box `bit` of a native body, bit 100 the transport box.
+    fn records_of(body: &[u8], bit: usize) -> Vec<u8> {
+        if bit == 100 {
+            return body[offline_core::sections::TRANSPORT_RECORDS].to_vec();
+        }
+        let at = 0x17C + bit * 0x1B56;
+        body[at..at + 30 * 0xE8].to_vec()
+    }
+
+    /// The files of the backup of a save from `old` to `new`, as bit and
+    /// half (`true` the save after): both sides of each box that differs.
+    fn backup_files(old: &[u8], new: &[u8]) -> Vec<(usize, bool)> {
+        (0..=100)
+            .filter(|bit| records_of(old, *bit) != records_of(new, *bit))
+            .flat_map(|bit| [(bit, false), (bit, true)])
+            .collect()
+    }
+
+    /// Whether the backup folder of `pending` is whole: it holds a box, and
+    /// exactly `files`, each a box file that reads.
+    fn backup_complete(card: &Shared, pending: &PendingTransfer, files: &[(usize, bool)]) -> bool {
+        use bank_common::interrupted;
+        let folder = backup_folder(pending);
+        let sd = card.0.borrow();
+        let whole = |bit, after| {
+            sd.sd
+                .get(interrupted::file(&folder, bit, after).text())
+                .is_some_and(|file| offline_core::boxfile::BoxFile::parse(file).is_ok())
+        };
+        !files.is_empty()
+            && (0..=100).all(|bit| {
+                [false, true]
+                    .into_iter()
+                    .all(|after| whole(bit, after) == files.contains(&(bit, after)))
+            })
+    }
+
+    #[test]
+    fn the_boxes_a_save_changed_both_ways_are_on_the_sd_card_before_transporter_is_asked() {
+        use bank_common::interrupted;
+        let (_, sessions) = sessions();
+        let (moved, _) = &sessions[3];
+        assert_eq!(*moved, "both ways");
+        // Both ways, and the transport box changed too. The transport box
+        // held no Pokémon before, and box 6 holds none after: each side is
+        // written all the same.
+        let one = |id| (0, id as usize, pokemon(id));
+        let old = &with_boxes(0x31, &[one(1), one(2), (5, 0, pokemon(9))], 0);
+        let new = &with_boxes(0x52, &[one(1), one(3)], 1);
+        let expected = backup_files(old, new);
+        assert_eq!(
+            expected,
+            [
+                (0, false),
+                (0, true),
+                (5, false),
+                (5, true),
+                (100, false),
+                (100, true)
+            ]
+        );
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(old, new, &mut game);
+        drop(files);
+        game.save = Some((OTHER, LOADED));
+        let disk = disk.like(true);
+        // A cut at every write of START: whenever the journal leaves the
+        // save to the question, its backup is whole.
+        for budget in 0.. {
+            let card = disk.cut_after(budget);
+            let result = start_backed(&card, &mut game, &in_progress);
+            let card = card.reboot();
+            if asked(&card) {
+                assert!(
+                    backup_complete(&card, &in_progress, &expected),
+                    "cut after {budget}"
+                );
+            }
+            // And the next START finishes what the cut left.
+            assert_eq!(
+                start_backed(&card, &mut game, &in_progress).unwrap(),
+                Settled::Asks,
+                "cut after {budget}"
+            );
+            assert!(asked(&card) && backup_complete(&card, &in_progress, &expected));
+            if result.is_ok() {
+                break;
+            }
+        }
+        let card = disk.copy();
+        assert_eq!(
+            start_backed(&card, &mut game, &in_progress).unwrap(),
+            Settled::Asks
+        );
+        // Each changed box as it was and as it became: the boxes of the two
+        // bodies.
+        let folder = backup_folder(&in_progress);
+        assert!(backup_complete(&card, &in_progress, &expected));
+        for (bit, after) in &expected {
+            let file = card.0.borrow().sd[interrupted::file(&folder, *bit, *after).text()].clone();
+            let file = offline_core::boxfile::BoxFile::parse(&file).unwrap();
+            let body = if *after { new } else { old };
+            assert!(file.records() == records_of(body, *bit), "box {bit}");
+        }
+        // The transport box (bit 100) carries no name.
+        let file = card.0.borrow().sd[interrupted::file(&folder, 100, true).text()].clone();
+        let file = offline_core::boxfile::BoxFile::parse(&file).unwrap();
+        assert_eq!(file.name(), [0; offline_core::boxfile::NAME_TEXT]);
+        // A second START writes nothing more to the SD card.
+        let before = card.0.borrow().sd.clone();
+        start_backed(&card, &mut game, &in_progress).unwrap();
+        assert!(card.0.borrow().sd == before);
+        // A file of it lost, and another altered under a CRC that fits:
+        // the next START writes both again, and only them.
+        let lost = interrupted::file(&folder, 0, true);
+        let altered = interrupted::file(&folder, 5, false);
+        card.0.borrow_mut().sd.remove(lost.text());
+        {
+            let mut sd = card.0.borrow_mut();
+            let file = sd.sd.get_mut(altered.text()).unwrap();
+            file[0x1B30] ^= 1;
+            let mut bytes: [u8; offline_core::boxfile::FILE_SIZE] = file[..].try_into().unwrap();
+            offline_core::boxfile::seal(&mut bytes);
+            file.copy_from_slice(&bytes);
+        }
+        start_backed(&card, &mut game, &in_progress).unwrap();
+        assert!(card.0.borrow().sd == before);
+    }
+
+    /// The folder of the backup of `pending`.
+    fn backup_folder(pending: &PendingTransfer) -> bank_common::sdfiles::Path {
+        use bank_common::interrupted::{folder, State};
+        folder(State::of(&pending.before), State::of(&pending.after))
+    }
+
+    /// How a save left to the question is settled.
+    #[derive(Clone, Copy, Debug)]
+    enum Settling {
+        /// START finds the game with this image.
+        Bank(Fingerprint),
+        /// Transporter's answer.
+        Transporter(RecoveryDecision),
+        /// Transporter's No, then a delivery.
+        NoThenDelivery,
+        /// Transporter's Yes, then a Bank put there from outside: a save that
+        /// knows nothing of the backup.
+        Outside,
+    }
+
+    #[test]
+    fn a_settled_save_s_backup_keeps_only_the_side_the_bank_does_not_hold() {
+        use bank_common::{interrupted, sdfiles, testing::Visit};
+        use offline_core::transport;
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        let date = [2026, 11, 16, 14, 3, 7];
+        let mut kept = sdfiles::dated_folder(date);
+        kept.push(interrupted::RETIRED);
+        // The opening's step once the journal is clean (`settle_sd`).
+        // As the opening does: the Bank read, then the SD card's folders.
+        let opening = |card: &Shared| {
+            let mut files = opened(card);
+            files
+                .read(&mut std::vec![0; offline_core::native_blob::BLOB_SIZE])
+                .unwrap();
+            interrupted::settle(
+                &mut files,
+                &mut card.clone(),
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                date,
+            )
+        };
+        let names_in = |card: &Shared, folder: &[u8]| -> Vec<Vec<u8>> {
+            card.0
+                .borrow()
+                .sd
+                .keys()
+                .filter_map(|path| Some(path.strip_prefix(folder)?.to_vec()))
+                .collect()
+        };
+        // A save left to the question, its backup written, settled `how`.
+        let settled = |how: Settling, console: bool| {
+            let mut game = Simulated::loaded(true);
+            let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+            drop(files);
+            game.save = Some((OTHER, LOADED));
+            let card = disk.like(console).copy();
+            assert_eq!(
+                start_backed(&card, &mut game, &in_progress).unwrap(),
+                Settled::Asks
+            );
+            let answer = |decision| {
+                transport::settle(&mut Visit(card.clone()), decision).unwrap();
+            };
+            match how {
+                Settling::Bank(image) => {
+                    game.save = Some((image, LOADED));
+                    assert!(matches!(
+                        start_backed(&card, &mut game, &in_progress).unwrap(),
+                        Settled::Exact(_)
+                    ));
+                }
+                Settling::Transporter(decision) => answer(decision),
+                Settling::NoThenDelivery => {
+                    answer(RecoveryDecision::CommitAfter);
+                    assert!(bank_common::testing::try_deliver(&card, 2).is_some());
+                }
+                Settling::Outside => {
+                    answer(RecoveryDecision::KeepBefore);
+                    let mut files = opened(&card);
+                    let mut body = std::vec![0; offline_core::native_blob::BLOB_SIZE];
+                    files.read(&mut body).unwrap();
+                    files.commit(&mut body).unwrap();
+                }
+            }
+            (card, backup_folder(&in_progress))
+        };
+        let (card, folder) = settled(Settling::Transporter(RecoveryDecision::KeepBefore), true);
+        let all = names_in(&card, folder.text());
+        let half = |suffix: &[u8]| -> Vec<Vec<u8>> {
+            all.iter()
+                .filter(|name| name.ends_with(suffix))
+                .cloned()
+                .collect()
+        };
+        let (olds, news) = (half(b".old"), half(b".new"));
+        assert!(!olds.is_empty() && !news.is_empty());
+        for (how, left) in [
+            (Settling::Bank(BEFORE), &news),
+            (Settling::Bank(AFTER), &olds),
+            (Settling::Transporter(RecoveryDecision::KeepBefore), &news),
+            (Settling::Transporter(RecoveryDecision::CommitAfter), &olds),
+            (Settling::NoThenDelivery, &olds),
+            (Settling::Outside, &all),
+        ] {
+            for console in [true, false] {
+                let (card, folder) = settled(how, console);
+                let what = std::format!("{how:?}, console {console}");
+                let before = card.0.borrow().sd.clone();
+                // Whatever a cut leaves, the next opening ends with the side
+                // kept. A cut after the folder was renamed leaves, besides,
+                // files of the side the Bank holds there.
+                let counting = card.cut_after(usize::MAX);
+                opening(&counting).unwrap();
+                let total = counting.0.borrow().operations;
+                assert_eq!(names_in(&counting, kept.text()), **left, "{what}");
+                for cut in 0..=total {
+                    let card = card.cut_after(cut);
+                    let _ = opening(&card);
+                    let card = card.reboot();
+                    opening(&card).unwrap();
+                    let sd = card.0.borrow();
+                    assert!(!sd.sd_dirs.contains(folder.text()), "{what}, cut {cut}");
+                    let names = names_in(&card, kept.text());
+                    assert!(
+                        left.iter().all(|name| names.contains(name)),
+                        "{what}, cut {cut}"
+                    );
+                    // Each file as it was written.
+                    for name in &names {
+                        let path = [kept.text(), name].concat();
+                        let was = [folder.text(), name].concat();
+                        assert!(sd.sd[&path] == before[&was], "{what}, cut {cut}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_full_sd_card_leaves_a_save_that_moved_both_ways_for_the_next_start() {
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+        drop(files);
+        game.save = Some((OTHER, LOADED));
+        disk.0.borrow_mut().sd_full = true;
+        assert_eq!(
+            start_backed(&disk, &mut game, &in_progress).unwrap(),
+            Settled::NoSpace
+        );
+        assert!(!asked(&disk));
+        disk.0.borrow_mut().sd_full = false;
+        assert_eq!(
+            start_backed(&disk, &mut game, &in_progress).unwrap(),
+            Settled::Asks
+        );
+        assert!(backup_complete(
+            &disk,
+            &in_progress,
+            &backup_files(&old, new)
+        ));
+    }
+
+    #[test]
+    fn a_backup_cut_short_leaves_no_file_that_does_not_read() {
+        // START without the game writes the backup of a save that moved
+        // Pokémon both ways, cut at every write; then the game is back with
+        // its save before, START settles the save, and the opening its
+        // folder. Every file left on the card is a box file that reads.
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+        drop(files);
+        let disk = disk.like(true);
+        let without = |card: &Shared| {
+            settle_backed(
+                &mut opened(card),
+                None::<&mut Simulated>,
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                &in_progress,
+                Rule::Start,
+                None,
+                &mut held(),
+                Some(&mut card.clone()),
+            )
+        };
+        let counting = disk.cut_after(usize::MAX);
+        without(&counting).unwrap();
+        for cut in 0..counting.0.borrow().operations {
+            let card = disk.cut_after(cut);
+            let _ = without(&card);
+            let card = card.reboot();
+            let mut game = Simulated::loaded(true);
+            game.save = Some((BEFORE, LOADED));
+            start_backed(&card, &mut game, &in_progress).unwrap();
+            let mut files = opened(&card);
+            files
+                .read(&mut std::vec![0; offline_core::native_blob::BLOB_SIZE])
+                .unwrap();
+            bank_common::interrupted::settle(
+                &mut files,
+                &mut card.clone(),
+                &mut std::vec![0; 2 * offline_core::boxfile::FILE_SIZE],
+                [2026, 11, 16, 14, 3, 7],
+            )
+            .unwrap();
+            for (path, bytes) in card.0.borrow().sd.iter() {
+                assert!(
+                    offline_core::boxfile::BoxFile::parse(bytes).is_ok(),
+                    "cut {cut}: {path:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_card_full_for_the_journal_after_a_cut_start_says_so() {
+        // START cut at every write, then a START on a card with no room for
+        // a unit file of Bank's: "The SD card is full.", never the error
+        // screen, and the save still in progress. For a save that moved
+        // Pokémon both ways, left to Transporter's question (its backup and
+        // the record that marks it), and for one that moved them one way,
+        // settled by the game's own image and by what it moved.
+        let (old, sessions) = sessions();
+        for (session, image) in [(3, OTHER), (0, BEFORE), (0, OTHER)] {
+            let new = &sessions[session].1;
+            let mut game = Simulated::loaded(true);
+            let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+            drop(files);
+            game.save = Some((image, LOADED));
+            let disk = disk.like(true);
+            let counting = disk.cut_after(usize::MAX);
+            start_backed(&counting, &mut game, &in_progress).unwrap();
+            for cut in 0..counting.0.borrow().operations {
+                let card = disk.cut_after(cut);
+                let _ = start_backed(&card, &mut game, &in_progress);
+                let card = card.reboot();
+                // Settled already: the next START opens the Bank.
+                if !matches!(opened(&card).phase().unwrap(), Phase::Prepared(_)) {
+                    continue;
+                }
+                card.0.borrow_mut().full = true;
+                let what = std::format!("session {session}, cut {cut}");
+                let settled = start_backed(&card, &mut game, &in_progress)
+                    .unwrap_or_else(|error| panic!("{what}: the error screen: {error:?}"));
+                if settled == Settled::NoSpace {
+                    assert!(
+                        matches!(opened(&card).phase().unwrap(), Phase::Prepared(_)),
+                        "{what}"
+                    );
+                }
             }
         }
     }

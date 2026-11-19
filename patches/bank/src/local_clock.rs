@@ -50,6 +50,19 @@ pub fn local_moment(words: [u32; 2]) -> Option<offline_core::rewards::Moment> {
     Moment::new(day, ((packed >> 12) & 31) as u8, ((packed >> 6) & 63) as u8).ok()
 }
 
+/// The date and time to the second of a native packed timestamp, which
+/// names a folder of the SD card (`bank_common::sdfiles::Date`). One that
+/// `local_moment` does not accept is all zeros: a date only names a folder,
+/// and nothing waits for it.
+pub fn date(words: [u32; 2]) -> bank_common::sdfiles::Date {
+    if local_moment(words).is_none() {
+        return [0; 6];
+    }
+    let packed = u64::from(words[0]) | (u64::from(words[1]) << 32);
+    [(26, 0x3fff), (22, 15), (17, 31), (12, 31), (6, 63), (0, 63)]
+        .map(|(shift, mask)| ((packed >> shift) & mask) as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +70,16 @@ mod tests {
     fn date(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> [u32; 2] {
         let packed = year << 26 | month << 22 | day << 17 | hour << 12 | minute << 6 | second;
         [packed as u32, (packed >> 32) as u32]
+    }
+
+    #[test]
+    fn a_folder_s_date_is_the_timestamp_to_the_second_and_zero_when_it_is_none() {
+        assert_eq!(
+            super::date(date(2026, 11, 16, 14, 3, 7)),
+            [2026, 11, 16, 14, 3, 7]
+        );
+        assert_eq!(super::date(date(2026, 2, 30, 14, 3, 7)), [0; 6]);
+        assert_eq!(super::date(date(2026, 11, 16, 14, 3, 60)), [0; 6]);
     }
 
     #[test]

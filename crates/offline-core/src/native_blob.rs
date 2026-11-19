@@ -51,6 +51,13 @@ pub const UNUSED: [Range<usize>; 6] = [
     // nothing addresses it.
     0xBB419..BLOB_SIZE,
 ];
+/// The names of the Bank's ten box groups, `GROUP_NAME_SIZE` bytes each,
+/// from `GROUP_NAMES_OFFSET`: the defaults at the first start (002ae9f0),
+/// changed on the renaming screen (002a717c). A box of the Bank holds its
+/// group in its label (`boxfile::CATEGORY`).
+pub const GROUP_NAMES_OFFSET: usize = 0x8;
+pub const GROUP_COUNT: usize = 10;
+pub const GROUP_NAME_SIZE: usize = 0x22;
 const FORMAT_OFFSET: usize = 0x15C;
 const BOX_COUNT_OFFSET: usize = 0x15E;
 

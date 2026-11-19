@@ -683,6 +683,41 @@ fn a_cut_while_unlocking_leaves_the_record_before_or_after() {
 }
 
 #[test]
+fn a_save_without_a_game_is_made_once_its_first_replica_is_durable() {
+    // Cut at every operation, on the simple card and the console's: a
+    // commit that answers that it is made is found by the next start, and
+    // a cut in its second replica, after the first is durable, still
+    // answers that it is made.
+    for console in [false, true] {
+        let mut base = baseline();
+        if console {
+            base = base.console();
+        }
+        let mut store = BankStore::new(base.clone(), Layout::new(CAPACITY));
+        let head = inspect_all(&mut store).unwrap();
+        let mut complete = BankStore::new(base.clone(), Layout::new(CAPACITY));
+        let made = complete.commit(&head, NEW, SIDES).unwrap();
+        let total = complete.into_inner().operations;
+        let mut made_with_the_second_cut = false;
+        for cut in 0..=total {
+            let mut store = BankStore::new(base.clone().cut_after(cut), Layout::new(CAPACITY));
+            let answer = store.commit(&head, NEW, SIDES);
+            let mut store = BankStore::new(store.into_inner().reboot(), Layout::new(CAPACITY));
+            let found = inspect_all(&mut store).unwrap_or_else(|err| panic!("cut {cut}: {err:?}"));
+            let now = found.metadata() == made.metadata();
+            if answer.is_ok() {
+                assert!(now, "cut {cut}: made, but the save before is in force");
+                assert_eq!(payload(&mut store, &found), NEW, "cut {cut}");
+                made_with_the_second_cut |= cut < total;
+            } else {
+                assert!(now || found.metadata() == head.metadata(), "cut {cut}");
+            }
+        }
+        assert!(made_with_the_second_cut, "console {console}");
+    }
+}
+
+#[test]
 fn transporters_answer_settles_the_save_as_banks_reconciliation_does() {
     for (decision, expected) in [
         (RecoveryDecision::KeepBefore, OLD),

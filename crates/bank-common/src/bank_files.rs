@@ -24,11 +24,27 @@ use offline_core::{
     native_blob::BLOB_SIZE,
     pair::{Pair, PairError},
     sections::{
-        self, Identity, BANK_SIZE, HELD, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE, TRANSPORT_RECORDS,
-        TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
+        self, Identity, BANK_RANGES, BANK_SIZE, HELD, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE,
+        TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
-    transport, Fingerprint, GameIdentity, Part, Phase, RecoveryDecision, Sides, Slot, Storage,
+    transport, Crc32, Fingerprint, GameIdentity, Part, Phase, RecoveryDecision, Save, Sides, Slot,
+    Storage,
 };
+
+/// The checksums the journal names for the Bank file of `body`, a full
+/// native body, and for its transport box: CRC-32 over the Bank's ranges in
+/// order, as the compacted Bank file holds them, and over the transport
+/// box's records and tags, as its file holds them.
+pub fn body_crcs(body: &[u8]) -> (u32, u32) {
+    let mut bank = Crc32::new();
+    for range in BANK_RANGES {
+        bank.update(&body[range]);
+    }
+    let mut mover = Crc32::new();
+    mover.update(&body[TRANSPORT_RECORDS]);
+    mover.update(&body[TRANSPORT_TAGS]);
+    (bank.finish(), mover.finish())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -184,8 +200,9 @@ pub struct Loaded {
 pub struct BankFiles<F: Files> {
     files: F,
     bank: Option<BankSession<F::Storage>>,
-    /// The delivery that waits was read at the last load and is the box shown.
-    taken: bool,
+    /// The delivery that waits was read at the last load and is the box
+    /// shown, with this many Pokémon.
+    taken: Option<u8>,
     /// Test builds: what the next save rehearses.
     #[cfg(feature = "test-build")]
     rehearsal: Rehearsal,
@@ -218,7 +235,7 @@ impl<F: Files> BankFiles<F> {
         Self {
             files,
             bank: None,
-            taken: false,
+            taken: None,
             #[cfg(feature = "test-build")]
             rehearsal: Rehearsal::None,
         }
@@ -237,7 +254,7 @@ impl<F: Files> BankFiles<F> {
     }
     /// Releases the Bank file. The other files are never held open.
     pub fn close(&mut self) -> Option<F::Storage> {
-        self.taken = false;
+        self.taken = None;
         self.bank.take().map(BankSession::into_storage)
     }
 
@@ -291,9 +308,14 @@ impl<F: Files> BankFiles<F> {
     /// Writes the main file and the transport box of the next save from the
     /// full body in `staging`, into the copies `main` and `mover`, then
     /// compacts `staging[..BANK_SIZE]` into the Bank payload. Returns what the
-    /// journal records of the two.
+    /// journal records of the two. The body is cleaned first
+    /// (`sections::clean`), so every Bank written is clean; a caller that
+    /// takes a checksum of the body before cleans it before that.
     fn write_sides(&mut self, staging: &mut [u8], main: Slot, mover: Slot) -> Outcome<Sides, F> {
         let layout = Error::Side(FileName::Bank, Problem::Layout);
+        if sections::clean(staging).is_err() {
+            return Err(layout);
+        }
         let Ok(held) = sections::transport_count(staging) else {
             return Err(layout);
         };
@@ -329,7 +351,7 @@ impl<F: Files> BankFiles<F> {
         if self.open()?.is_some() {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         }
-        self.taken = false;
+        self.taken = None;
         let sides = self.write_sides(staging, Slot::A, Slot::A)?;
         let payload = &staging[..BANK_SIZE];
         let session = match self.files.open(FileName::Bank).map_err(Error::Io)? {
@@ -374,7 +396,7 @@ impl<F: Files> BankFiles<F> {
         let record = self.bank()?.record().map_err(Error::Bank)?;
         let current = self.bank()?.read_bank(staging).map_err(Error::Bank)?;
         sections::expand(staging).map_err(|_| Error::Side(FileName::Bank, Problem::Layout))?;
-        self.taken = false;
+        self.taken = None;
 
         // The main file holds what Bank cannot do without: the header with
         // the format, the Miles and the flags, and the Pokédex. Its copy
@@ -409,8 +431,8 @@ impl<F: Files> BankFiles<F> {
             tags.fill(0);
             loaded.transport_missing = true;
         } else if load.delivery {
-            self.taken = true;
             loaded.delivered = sections::occupied(records);
+            self.taken = u8::try_from(loaded.delivered).ok();
         }
         Ok(loaded)
     }
@@ -426,13 +448,7 @@ impl<F: Files> BankFiles<F> {
         before: Fingerprint,
         after: Fingerprint,
     ) -> Outcome<(), F> {
-        let current = self.bank()?.current().map_err(Error::Bank)?;
-        let delivery = self.bank()?.record().map_err(Error::Bank)?.delivery;
-        // The record that makes this save current says that nothing waits
-        // any more, so a delivery that was not shown is not saved over.
-        if delivery.is_some() && !self.taken {
-            return Err(Error::Side(FileName::Transport, Problem::Conflict));
-        }
+        let (current, mover) = self.next_copies()?;
         // Test builds: keep the record being written for a while, so that a
         // real power cut lands inside one of its writes.
         #[cfg(feature = "test-build")]
@@ -441,11 +457,7 @@ impl<F: Files> BankFiles<F> {
                 .tear_record(TEAR_RECORD_PASSES)
                 .map_err(Error::Bank)?;
         }
-        let sides = self.write_sides(
-            staging,
-            current.main.slot.other(),
-            current.next_mover(delivery.is_some()),
-        )?;
+        let sides = self.write_sides(staging, current.main.slot.other(), mover)?;
         // Test builds: the same for the spare copy of the Bank file.
         #[cfg(feature = "test-build")]
         if self.rehearsal == Rehearsal::TearBoxes {
@@ -457,6 +469,56 @@ impl<F: Files> BankFiles<F> {
             .prepare_bytes(&staging[..BANK_SIZE], sides, game, before, after)
             .map_err(Error::Bank)?;
         Ok(())
+    }
+
+    /// Makes the full native body in `staging` the current save, without a
+    /// game: the main file and the transport box first, then the journal
+    /// with the Bank file, in one record (`BankStore::commit`). `staging` is
+    /// compacted. Follow it with `read` before another write.
+    pub fn commit(&mut self, staging: &mut [u8]) -> Outcome<(), F> {
+        let (current, mover) = self.next_copies()?;
+        let sides = self.write_sides(staging, current.main.slot.other(), mover)?;
+        self.bank()?
+            .commit_bytes(&staging[..BANK_SIZE], sides)
+            .map_err(Error::Bank)?;
+        self.taken = None;
+        Ok(())
+    }
+
+    /// The Bank file and the transport box of the current save, and those
+    /// `commit` of `body` would name, each its copy and checksum: the Bank
+    /// file always into its other copy (`BankStore::commit`), the transport
+    /// box where the next save writes it (`next_copies`). `body` is a full
+    /// native body, cleaned (`sections::clean`) as `commit` cleans it.
+    pub fn commit_states(&mut self, body: &[u8]) -> Outcome<[(Part, Part); 2], F> {
+        let (current, mover) = self.next_copies()?;
+        let (bank_crc, mover_crc) = body_crcs(body);
+        Ok([
+            (current.bank, current.mover),
+            (
+                Part {
+                    slot: current.bank.slot.other(),
+                    crc: bank_crc,
+                },
+                Part {
+                    slot: mover,
+                    crc: mover_crc,
+                },
+            ),
+        ])
+    }
+
+    /// The current save, and the copy the next save writes the transport box
+    /// into (`Save::next_mover`), for `prepare` and `commit` alike. The
+    /// record that makes the next save current says that nothing waits any
+    /// more, so a delivery that was not shown is not saved over: refused.
+    fn next_copies(&mut self) -> Outcome<(Save, Slot), F> {
+        let current = self.bank()?.current().map_err(Error::Bank)?;
+        let delivery = self.bank()?.record().map_err(Error::Bank)?.delivery;
+        if delivery.is_some() && self.taken.is_none() {
+            return Err(Error::Side(FileName::Transport, Problem::Conflict));
+        }
+        Ok((current, current.next_mover(delivery.is_some())))
     }
 
     /// Resolves a prepared save from the game actually observed. Follow it
@@ -515,6 +577,42 @@ impl<F: Files> BankFiles<F> {
             &mut before[..counts[0]],
             &mut after[..counts[1]],
         ))
+    }
+
+    /// The Bank file payload of one side of the save in progress into
+    /// `staging[..BANK_SIZE]`, checked. Nothing is written.
+    pub fn pending_payload(&mut self, after: bool, staging: &mut [u8]) -> Outcome<(), F> {
+        self.bank()?
+            .read_pending(after, staging)
+            .map_err(Error::Bank)
+    }
+
+    /// The transport box of one side of the save in progress, as
+    /// `pending_moves` compares them: before, what a load showed (its own
+    /// box, or the delivery it took); after, the box the save wrote. `false`
+    /// for a box that cannot be read and was empty, which is then zeros.
+    pub fn pending_transport(
+        &mut self,
+        after: bool,
+        records: &mut [u8],
+        tags: &mut [u8],
+    ) -> Outcome<bool, F> {
+        let record = self.bank()?.record().map_err(Error::Bank)?;
+        let Phase::Prepared(pending) = record.phase else {
+            return Err(Error::Side(FileName::Bank, Problem::NotReady));
+        };
+        let shown = transport::on_load(&record);
+        let (part, empty) = if after {
+            (pending.after.mover, pending.after.held == 0)
+        } else {
+            (shown.source, !shown.delivery && pending.before.held == 0)
+        };
+        let read = self.read_box(part, empty, records, tags)?;
+        if !read {
+            records.fill(0);
+            tags.fill(0);
+        }
+        Ok(read)
     }
 
     /// Leaves the save in progress to Transporter's question, or takes it
@@ -798,6 +896,54 @@ mod tests {
         }
     }
 
+    /// A save without a game (`commit`), as the transfer screen's moves make
+    /// one: a cut at every write leaves the old save or the new one, whole,
+    /// and the next save goes through. A delivery that waits is taken by it
+    /// or still waits.
+    #[test]
+    fn a_cut_at_every_write_of_a_commit_leaves_the_old_save_or_the_new_one() {
+        for (console, delivered) in [(false, 0), (true, 0), (false, 4), (true, 4)] {
+            let old = body(0x31, 0x44, if delivered == 0 { 2 } else { 0 });
+            let new = body(0x52, 0x66, 1);
+            let disk = fresh(&old);
+            if delivered != 0 {
+                deliver(&disk, delivered);
+            }
+            let base = disk.reboot().like(console);
+            let commit = |disk: &Shared| {
+                let mut files = opened(disk);
+                load(&mut files);
+                files.commit(&mut new.clone())
+            };
+            let counting = base.cut_after(usize::MAX);
+            commit(&counting).unwrap();
+            let total = counting.0.borrow().operations;
+            let old_state = body(0x31, 0x44, if delivered == 0 { 2 } else { delivered });
+            let mut committed = false;
+            for cut in 0..=total {
+                let disk = base.cut_after(cut);
+                let _ = commit(&disk);
+                let mut files = BankFiles::new(disk.reboot());
+                assert!(matches!(files.open().unwrap(), Some(Phase::Clean(_))));
+                let (bytes, loaded) = load(&mut files);
+                if bytes == new {
+                    committed = true;
+                    assert_eq!(loaded.delivered, 0, "cut {cut}");
+                } else {
+                    assert!(!committed, "cut {cut}: the old save came back");
+                    assert!(bytes == old_state, "cut {cut}: neither save");
+                    assert_eq!(loaded.delivered as usize, delivered, "cut {cut}");
+                }
+                let third = body(0x73, 0x21, 1);
+                files
+                    .commit(&mut third.clone())
+                    .unwrap_or_else(|error| panic!("cut {cut}: the next commit: {error:?}"));
+                assert!(load(&mut opened(&files.files_mut().reboot())).0 == third);
+            }
+            assert!(committed);
+        }
+    }
+
     #[test]
     fn pokedex_of_two_games_survives_saves_and_a_rollback() {
         // Y's region marked 0x19, then Ultra Sun adds 0x76 beside it.
@@ -896,6 +1042,38 @@ mod tests {
             opened(&disk).read(&mut vec![0; BLOB_SIZE]),
             Err(Error::Side(FileName::Main, Problem::Layout))
         );
+    }
+
+    #[test]
+    fn commit_states_are_what_the_journal_names_before_and_after_a_commit() {
+        // Without a delivery and with one shown; the Bank as it was, and
+        // changed.
+        for (delivered, change) in [(0, false), (0, true), (12, false), (12, true)] {
+            let disk = fresh(&body(0x31, 0x44, 0));
+            load(&mut opened(&disk));
+            if delivered > 0 {
+                deliver(&disk, delivered);
+            }
+            let mut files = opened(&disk);
+            let (mut shown, _) = load(&mut files);
+            if change {
+                shown[sections::BOXES_START] ^= 1;
+            }
+            sections::clean(&mut shown).unwrap();
+            let [before, after] = files.commit_states(&shown).unwrap();
+            let state = |card: &Shared| {
+                let Phase::Clean(now) = opened(&card.reboot()).phase().unwrap() else {
+                    unreachable!()
+                };
+                (now.bank, now.mover)
+            };
+            assert_eq!(before, state(&disk));
+            files.commit(&mut shown).unwrap();
+            let what = std::format!("delivered {delivered}, changed {change}");
+            assert_eq!(after, state(&disk), "{what}");
+            // The Bank file's copy changes, whatever the Bank holds.
+            assert!(before.0.slot != after.0.slot, "{what}");
+        }
     }
 
     #[test]

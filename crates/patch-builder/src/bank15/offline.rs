@@ -43,7 +43,7 @@ const NATIVE_FINISHED: u32 = 0x002a_f124;
 /// caller's `lr` and `sp` for the original's prologue. Vtable slots get the
 /// entry's address; constructors and init callbacks stay the original's.
 /// The main menu (task 4) is never created, so none of its code is edited.
-pub(super) const OWN: [Edit; 16] = [
+pub(super) const OWN: [Edit; 31] = [
     // Scan state 0x18 keeps its native loading-panel shutdown and notice.
     // Only the message call is adapted (was: bl 001d6650); state 0x19 then
     // waits for A and exits through the native unsuccessful-scan route,
@@ -77,6 +77,41 @@ pub(super) const OWN: [Edit; 16] = [
     (0x0036_2044, 0x002b_4a20, Entry("bank_offline_save")),
     // Task 0x17, the unlock screen: its update.
     (0x0036_1c20, 0x002a_d7bc, Entry("bank_offline_unlock")),
+    // The transfer screen (task 0x1B, docs/internals.md "The transfer screen"):
+    // its update, which asks the original's question before the boxes and
+    // reads the offline boxes behind a loading panel; its set-up's notice,
+    // skipped (was: ldr r0, [r4, #0x2c]); the end of its box selection, scene 1 in its
+    // table (was 002a7f08), without the upload; the selection object's
+    // key and button updates (its vtable slots 13 and 12); the making of
+    // its cursor (was: bl 001e663c); and the layout parser's slot in the
+    // layout vtable, which hands the screen's layout over with the panes
+    // the patch adds, through a check beside the start-up hook: layouts are
+    // built before the payload can run.
+    (0x0036_1820, 0x002a_7bf0, Entry("bank_transfer_update")),
+    // Its count of the Bank's Pokémon (was: bl 001d5ec0), so that it opens
+    // for a Bank without Pokémon too.
+    (0x002a_8308, 0xebfc_b6ec, Call("bank_transfer_count")),
+    (0x002a_8324, 0xe594_002c, Branch(0x002a_8380)),
+    (0x0033_d38c, 0x002a_7f08, Entry("bank_transfer_scene_done")),
+    (0x0036_0750, 0x0028_5ba8, Entry("bank_transfer_input")),
+    (0x0036_074c, 0x0028_672c, Entry("bank_transfer_event")),
+    // The same two in the object's second table, through which the screen
+    // calls them (was: the original's thunks into them).
+    (0x0036_0774, 0x0028_5ba0, Entry("bank_transfer_input_thunk")),
+    (0x0036_0764, 0x0028_6724, Entry("bank_transfer_event_thunk")),
+    (0x0028_6cf4, 0xebfd_7e50, Call("bank_transfer_cursor")),
+    (0x0035_f118, 0x0024_f1f8, Entry("bank_layout_check_stub")),
+    // The upper screen's preview of the box under the cursor: its slots
+    // (was: bl 0022bca4) and its name (was: bl 001db7c0, twice), for the
+    // four cells.
+    (0x0028_644c, 0xebfe_9614, Call("bank_transfer_slot")),
+    (0x0028_5ed8, 0xebfd_5638, Call("bank_transfer_name")),
+    (0x0028_6db0, 0xebfd_5282, Call("bank_transfer_name")),
+    // The upper layout's animation 0, the name label's: box_name2 (was
+    // box_name1, file 0x3a), whose frame the patch sets, blue for the
+    // transport box; and the set-up's play of it (was: bl 001e98ec), gone.
+    (0x0033_d89c, 0x3a, Raw(0x3b)),
+    (0x0028_6094, 0xebfd_8e14, Raw(NOP)),
 ];
 
 /// The native task in r4, the no-game branch, the acknowledgment loop and
@@ -150,8 +185,8 @@ mod tests {
     use crate::profile::sample::{at, branch_target, edits, entry};
 
     #[test]
-    fn twenty_nine_words_and_ten_entry_functions() {
-        assert_eq!(PROFILE.regions(), 30);
+    fn forty_four_words_and_twenty_one_entry_functions() {
+        assert_eq!(PROFILE.regions(), 45);
         assert_eq!(
             PROFILE.entries(),
             [
@@ -165,6 +200,17 @@ mod tests {
                 "bank_offline_load",
                 "bank_offline_save",
                 "bank_offline_unlock",
+                "bank_transfer_update",
+                "bank_transfer_count",
+                "bank_transfer_scene_done",
+                "bank_transfer_input",
+                "bank_transfer_event",
+                "bank_transfer_input_thunk",
+                "bank_transfer_event_thunk",
+                "bank_transfer_cursor",
+                "bank_layout_check_stub",
+                "bank_transfer_slot",
+                "bank_transfer_name",
             ]
         );
     }

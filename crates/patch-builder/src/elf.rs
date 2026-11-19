@@ -55,6 +55,10 @@ pub const KERNEL_WRAPPERS: &[(&str, &[u32])] = &[
         "patch_svc_get_resource_current_values",
         &[0xe92d4010, 0xef00003a, 0xe8bd8010],
     ),
+    (
+        "patch_svc_send_sync_request",
+        &[0xe92d4010, 0xef000032, 0xe8bd8010],
+    ),
 ];
 
 #[derive(Debug)]
@@ -700,9 +704,9 @@ mod tests {
             (3, ".data", 1, 3, 0x3fc000, 0x2000, 4, 0, 4, 0),
             (4, ".bss", 8, 3, 0x3fc004, 0x2004, 0xffc, 0, 4, 0),
             (5, ".ARM.attributes", 0x70000003, 0, 0, 0x2100, 24, 0, 1, 0),
-            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 368, 8, 4, 16),
-            (7, ".shstrtab", 3, 0, 0, 0x2400, 0, 0, 1, 0),
-            (8, ".strtab", 3, 0, 0, 0x2500, 0, 0, 1, 0),
+            (6, ".symtab", 2, 0, 0, SYMOFF as u32, 560, 8, 4, 16),
+            (7, ".shstrtab", 3, 0, 0, 0x2480, 0, 0, 1, 0),
+            (8, ".strtab", 3, 0, 0, 0x2580, 0, 0, 1, 0),
         ] {
             let name = add_name(&mut names, name);
             section(
@@ -714,7 +718,7 @@ mod tests {
             );
         }
         u32_at(&mut elf, SHOFF + 7 * 40 + 20, names.len() as u32);
-        elf[0x2400..0x2400 + names.len()].copy_from_slice(&names);
+        elf[0x2480..0x2480 + names.len()].copy_from_slice(&names);
         let attributes = [
             b'A', 23, 0, 0, 0, b'a', b'e', b'a', b'b', b'i', 0, 1, 13, 0, 0, 0, 6, 6, 8, 1, 9, 1,
             28, 0,
@@ -745,12 +749,24 @@ mod tests {
                 0x12,
                 2,
             ),
+            ("patch_svc_send_sync_request", 0x3fb1a0, 12, 0x12, 2),
             // The entry of `bank-common` that every patch exports.
             ("bank_message_stub", 0x3fb034, 4, 0x12, 2),
             ("bank_version_shown", 0x3fb038, 4, 0x12, 2),
             ("bank_offline_no_game_stub", 0x3fb01c, 4, 0x12, 2),
             ("bank_offline_scan", 0x3fb020, 4, 0x12, 2),
             ("bank_offline_unlock", 0x3fb024, 4, 0x12, 2),
+            ("bank_transfer_update", 0x3fb040, 4, 0x12, 2),
+            ("bank_transfer_scene_done", 0x3fb048, 4, 0x12, 2),
+            ("bank_transfer_input", 0x3fb04c, 4, 0x12, 2),
+            ("bank_transfer_event", 0x3fb050, 4, 0x12, 2),
+            ("bank_transfer_input_thunk", 0x3fb068, 4, 0x12, 2),
+            ("bank_transfer_event_thunk", 0x3fb06c, 4, 0x12, 2),
+            ("bank_transfer_cursor", 0x3fb054, 4, 0x12, 2),
+            ("bank_layout_check_stub", BOOTSTRAP + 4, 4, 0x12, 1),
+            ("bank_transfer_count", 0x3fb05c, 4, 0x12, 2),
+            ("bank_transfer_slot", 0x3fb060, 4, 0x12, 2),
+            ("bank_transfer_name", 0x3fb064, 4, 0x12, 2),
         ]
         .into_iter()
         .enumerate()
@@ -763,7 +779,7 @@ mod tests {
             u16_at(&mut elf, at + 14, section_index);
         }
         u32_at(&mut elf, SHOFF + 8 * 40 + 20, strings.len() as u32);
-        elf[0x2500..0x2500 + strings.len()].copy_from_slice(&strings);
+        elf[0x2580..0x2580 + strings.len()].copy_from_slice(&strings);
         elf
     }
     #[test]
@@ -772,7 +788,7 @@ mod tests {
         let parsed = inspect(&elf).unwrap();
         assert_eq!(parsed.entry, 0x3fb000);
         assert_eq!(parsed.export("bank_offline_timestamp"), Ok(0x3fb018));
-        assert_eq!(parsed.entries.len(), 10);
+        assert_eq!(parsed.entries.len(), 21);
         assert_eq!(parsed.export("bank_offline_unlock"), Ok(0x3fb024));
         assert_eq!(parsed.export("bank_message_stub"), Ok(0x3fb034));
         assert_eq!(parsed.export("bank_version_shown"), Ok(0x3fb038));
@@ -818,8 +834,16 @@ mod tests {
         for (index, (name, words)) in KERNEL_WRAPPERS.iter().enumerate() {
             let body = 0x1100 + index * 0x20;
             for (instruction, replacement) in [
-                (0, 0xe1a00000),               // replacing the preserved frame with NOP
-                (1, 0xef000032),               // an entirely different service
+                (0, 0xe1a00000), // replacing the preserved frame with NOP
+                // an entirely different service
+                (
+                    1,
+                    if words[1] == 0xef000032 {
+                        0xef000033
+                    } else {
+                        0xef000032
+                    },
+                ),
                 (words.len() - 1, 0xe12fff1e), // BX LR leaks the saved stack
             ] {
                 let mut invalid = fixture();

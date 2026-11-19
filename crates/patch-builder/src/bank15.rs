@@ -219,10 +219,38 @@ pub const MENU_LOCATIONS: [(u32, u32); 5] = [
     (0x0036_17dc, 0x002a_6c84),
 ];
 
+/// The layout parser's slot in the layout vtable, and the first instruction
+/// of the check that stands there (`cmp r1, #0`).
+pub const LAYOUT_SLOT: u32 = 0x0035_f118;
+pub const LAYOUT_CHECK_FIRST: u32 = 0xe351_0000;
+
 /// What every patch for Bank relies on beyond its words: a profile edits
-/// exactly the main-menu locations it names.
-fn check(_: &[u8], profile: &Profile, _: &PayloadElf) -> Result<()> {
-    menu_edits_named(profile)
+/// exactly the main-menu locations it names, and a layout hook is entered
+/// only through a check beside the start-up hook.
+fn check(_: &[u8], profile: &Profile, payload: &PayloadElf) -> Result<()> {
+    menu_edits_named(profile)?;
+    layout_check_beside_startup(profile, payload)
+}
+/// Layouts are built before the payload's pages are executable, so the
+/// layout slot names a check in the start-up hook's bytes, which begins
+/// with the instruction it is built from.
+fn layout_check_beside_startup(profile: &Profile, payload: &PayloadElf) -> Result<()> {
+    let Some(name) = profile
+        .all_edits()
+        .find(|(at, _, _)| *at == LAYOUT_SLOT)
+        .and_then(|(_, _, word)| word.entry())
+    else {
+        return Ok(());
+    };
+    let at = payload
+        .export(name)?
+        .checked_sub(BOOTSTRAP_ADDRESS)
+        .filter(|&at| (at as usize) + 4 <= payload.bootstrap_bytes().len())
+        .ok_or_else(|| crate::Error("layout check is not in the start-up hook".into()))?;
+    if crate::le32(payload.bootstrap_bytes(), at as usize)? != LAYOUT_CHECK_FIRST {
+        return fail("layout check does not begin with cmp r1, #0");
+    }
+    Ok(())
 }
 fn menu_edits_named(profile: &Profile) -> Result<()> {
     for (address, _) in MENU_LOCATIONS {

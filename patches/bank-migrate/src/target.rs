@@ -147,10 +147,15 @@ pub(crate) fn remove_temporary<C: Card>(card: &mut C) -> Outcome<(), C> {
 }
 
 /// Writes `body` as a new Bank under the temporary names, anew, and reads it
-/// back: it must load as the same body, whose checksum it answers. `body` is
-/// used as the working room of the writing.
+/// back: it must load as the same body, whose checksum it answers. The body
+/// is cleaned first, as the files take it (`sections::clean`), so that the
+/// checksum is of what is written. `body` is used as the working room of the
+/// writing.
 pub(crate) fn write_temporary<C: Card>(card: &mut C, body: &mut [u8]) -> Outcome<u32, C> {
     let write = Step::WriteTemporary;
+    if offline_core::sections::clean(body).is_err() {
+        return Err(Stopped::Failed(write, Cause::Damaged));
+    }
     let written = crc32(body);
     for file in ORDER {
         card.remove(temporary(file)).map_err(io(write))?;

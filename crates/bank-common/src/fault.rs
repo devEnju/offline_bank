@@ -33,6 +33,10 @@ pub enum Fault {
     /// cannot be told; the second number says which
     /// (`transporter_payload::storage_worker::delivery_reply`).
     Delivery = 20,
+    /// A box file or folder of the SD card (`sdfiles::ROOT`) could not
+    /// be read or written; the second number is the console's result, or 0
+    /// for one that did not read back as written.
+    SdFiles = 21,
     /// Test builds: a Save and Quit stopped on purpose by the chosen
     /// rehearsal (`rehearsal`). Its second number is the stop point: 1
     /// after the journal is prepared and before the game is written, 2
