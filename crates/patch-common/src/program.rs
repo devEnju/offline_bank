@@ -102,6 +102,11 @@ pub trait Program: 'static {
     /// The word that holds the program's `fs:USER` session, which its
     /// start-up sets up.
     const FS_SESSION: usize;
+    /// The SDK's "open a file in an archive in one call", `(session, &file,
+    /// 0, archive id, path type, path, path size, file path type, file
+    /// path, its size, flags, 0)`: the same code in both programs, the one
+    /// way either opens a plain file of the SD card (`sd`).
+    const OPEN_FILE_DIRECTLY: usize;
 
     /// The program's `fs:USER` session (`FS_SESSION`).
     /// # Safety

@@ -43,7 +43,7 @@ pub const MAIN_RANGES: [Range<usize>; 3] = [
 /// per box slot.
 pub const BANK_RANGES: [Range<usize>; 3] = [
     BOXES_START..TRANSPORT_RECORDS.start,
-    TRANSPORT_RECORDS.end..TRANSPORT_TAGS.start,
+    TAGS_START..TRANSPORT_TAGS.start,
     SLOT_DATA_START..TAIL_START,
 ];
 const SLOT_DATA_START: usize = 0xB4AA0;
@@ -181,11 +181,13 @@ pub fn stored_identity(record: &[u8; RECORD_SIZE]) -> Option<Identity> {
 }
 
 /// The boxes (`native_blob::BOX_COUNT`): 30 records each, then the box's
-/// name and index. They begin at `BOXES_START` in a body and at 0 in a Bank
-/// file payload.
+/// label, its name, category and position (`boxfile::LABEL_SIZE`). They
+/// begin at `BOXES_START` in a body and at 0 in a Bank file payload.
 pub const BOX_SLOTS: usize = 30;
-const BOXES_START: usize = 0x17C;
-const BOX_STRIDE: usize = 0x1B56;
+pub const BOXES_START: usize = 0x17C;
+pub const BOX_STRIDE: usize = BOX_SLOTS * RECORD_SIZE + crate::boxfile::LABEL_SIZE;
+/// The format tag of each box slot, in a body.
+pub const TAGS_START: usize = TRANSPORT_RECORDS.end;
 /// Most Pokémon one Bank snapshot holds: its boxes and the transport box.
 pub const HELD: usize = BOX_COUNT * BOX_SLOTS + TRANSPORT_SLOTS;
 
@@ -234,6 +236,52 @@ pub fn transport_count(body: &[u8]) -> Result<u32, SectionError> {
     Ok(occupied(&body[TRANSPORT_RECORDS]))
 }
 
+/// The flag byte of each box slot, then its timestamp, in a body.
+pub const FLAGS_START: usize = SLOT_DATA_START;
+pub const STAMPS_START: usize = FLAGS_START + BOX_COUNT * BOX_SLOTS;
+
+/// Clears what a full body holds besides the Bank, as every write of the Bank
+/// leaves it (docs/internals.md, "Cleaned on every write"): a box slot
+/// without a Pokémon gets flag 0 and time 0, as a new Bank holds; a box's
+/// name and a group's name lose the bytes behind their end, and a box's label
+/// its unused byte. Every byte of a slot with a Pokémon, the empty records
+/// and tags, categories, positions and everything else stay. Making it again
+/// changes nothing.
+pub fn clean(body: &mut [u8]) -> Result<(), SectionError> {
+    use crate::boxfile::{NAME_TEXT, STAMP_SIZE};
+    use crate::native_blob::{GROUP_COUNT, GROUP_NAMES_OFFSET, GROUP_NAME_SIZE};
+    sized(body.len(), BLOB_SIZE)?;
+    for index in 0..BOX_COUNT {
+        let at = BOXES_START + index * BOX_STRIDE;
+        for slot in 0..BOX_SLOTS {
+            let record = at + slot * RECORD_SIZE;
+            let empty = body[record..record + RECORD_SIZE]
+                .try_into()
+                .is_ok_and(|record| stored_species(record) == 0);
+            if empty {
+                let slot = index * BOX_SLOTS + slot;
+                body[FLAGS_START + slot] = 0;
+                body[STAMPS_START + slot * STAMP_SIZE..][..STAMP_SIZE].fill(0);
+            }
+        }
+        let label = at + BOX_SLOTS * RECORD_SIZE;
+        clean_name(&mut body[label..label + NAME_TEXT]);
+        body[label + NAME_TEXT] = 0;
+    }
+    for group in 0..GROUP_COUNT {
+        let at = GROUP_NAMES_OFFSET + group * GROUP_NAME_SIZE;
+        clean_name(&mut body[at..at + GROUP_NAME_SIZE]);
+    }
+    Ok(())
+}
+
+/// Zeroes the UTF-16 units of `name` behind its first zero unit, its end.
+pub fn clean_name(name: &mut [u8]) {
+    if let Some(end) = name.chunks_exact(2).position(|unit| unit == [0, 0]) {
+        name[end * 2..].fill(0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -248,6 +296,96 @@ mod tests {
         bytes[0x15C..0x15E].copy_from_slice(&2u16.to_le_bytes());
         bytes[0x15E..0x160].copy_from_slice(&100u16.to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn cleaning_clears_only_what_holds_no_pokemon_and_no_name() {
+        use crate::boxfile::{NAME_TEXT, STAMP_SIZE};
+        use crate::native_blob::{GROUP_COUNT, GROUP_NAMES_OFFSET, GROUP_NAME_SIZE};
+        let mut original = body();
+        // Two empty slots (a cleared record reads as species 0); every other
+        // record of the varied body reads as a Pokémon.
+        let record_at =
+            |index: usize, slot: usize| BOXES_START + index * BOX_STRIDE + slot * RECORD_SIZE;
+        for (index, slot) in [(0, 1), (99, 29)] {
+            let at = record_at(index, slot);
+            original[at..at + RECORD_SIZE].fill(0);
+        }
+        // Box 3 named "AB" with what an earlier name left behind its end,
+        // group 2 named "G" the same way.
+        let label_at = |index: usize| BOXES_START + index * BOX_STRIDE + BOX_SLOTS * RECORD_SIZE;
+        original[label_at(3)..label_at(3) + 6].copy_from_slice(&[b'A', 0, b'B', 0, 0, 0]);
+        let group = GROUP_NAMES_OFFSET + 2 * GROUP_NAME_SIZE;
+        original[group..group + 4].copy_from_slice(&[b'G', 0, 0, 0]);
+
+        let mut cleaned = original.clone();
+        clean(&mut cleaned).unwrap();
+
+        // What may change: an empty slot's flag and time, a name behind its
+        // end, a label's unused byte; each of them is zero afterwards.
+        let mut may = vec![false; BLOB_SIZE];
+        for index in 0..BOX_COUNT {
+            for slot in 0..BOX_SLOTS {
+                let at = record_at(index, slot);
+                let record: &[u8; RECORD_SIZE] = original[at..at + RECORD_SIZE].try_into().unwrap();
+                if stored_species(record) == 0 {
+                    let slot = index * BOX_SLOTS + slot;
+                    may[FLAGS_START + slot] = true;
+                    may[STAMPS_START + slot * STAMP_SIZE..][..STAMP_SIZE].fill(true);
+                }
+            }
+            let name = label_at(index);
+            if let Some(end) = original[name..name + NAME_TEXT]
+                .chunks_exact(2)
+                .position(|unit| unit == [0, 0])
+            {
+                may[name + end * 2..name + NAME_TEXT].fill(true);
+            }
+            may[name + NAME_TEXT] = true;
+        }
+        for group in 0..GROUP_COUNT {
+            let name = GROUP_NAMES_OFFSET + group * GROUP_NAME_SIZE;
+            if let Some(end) = original[name..name + GROUP_NAME_SIZE]
+                .chunks_exact(2)
+                .position(|unit| unit == [0, 0])
+            {
+                may[name + end * 2..name + GROUP_NAME_SIZE].fill(true);
+            }
+        }
+        for at in 0..BLOB_SIZE {
+            let expected = if may[at] { 0 } else { original[at] };
+            assert_eq!(cleaned[at], expected, "{at:#x}");
+        }
+        // The two empty slots lost their flag and time, a Pokémon kept its.
+        for (index, slot) in [(0, 1), (99, 29)] {
+            let slot = index * BOX_SLOTS + slot;
+            assert_eq!(cleaned[FLAGS_START + slot], 0);
+            assert!(cleaned[STAMPS_START + slot * STAMP_SIZE..][..STAMP_SIZE]
+                .iter()
+                .all(|byte| *byte == 0));
+        }
+        assert_eq!(cleaned[FLAGS_START], original[FLAGS_START]);
+        assert_ne!(original[FLAGS_START + 1], 0);
+        // The names read as before, and nothing follows them.
+        assert_eq!(
+            cleaned[label_at(3)..label_at(3) + NAME_TEXT][..6],
+            [b'A', 0, b'B', 0, 0, 0]
+        );
+        assert!(cleaned[label_at(3) + 4..label_at(3) + NAME_TEXT + 1]
+            .iter()
+            .all(|byte| *byte == 0));
+        assert_eq!(
+            cleaned[label_at(3) + NAME_TEXT + 1..label_at(3) + NAME_TEXT + 4],
+            original[label_at(3) + NAME_TEXT + 1..label_at(3) + NAME_TEXT + 4]
+        );
+        assert!(cleaned[group + 2..group + GROUP_NAME_SIZE]
+            .iter()
+            .all(|byte| *byte == 0));
+        // Once more changes nothing.
+        let mut again = cleaned.clone();
+        clean(&mut again).unwrap();
+        assert!(again == cleaned);
+        assert!(clean(&mut original[1..]).is_err());
     }
 
     #[test]

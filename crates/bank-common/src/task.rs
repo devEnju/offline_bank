@@ -22,6 +22,9 @@ pub const TASK_REWARD_GUARD: u32 = 0x0036_1bd8;
 /// Task 0x17, the original's unlock screen (factory case `002a62bc`), whose
 /// update the offline patch replaces.
 pub const TASK_UNLOCK: u32 = 0x0036_1c14;
+/// Task 0x1B, the original's box selection for Pokémon HOME (factory case
+/// `002a6324`), the offline patch's transfer screen.
+pub const TASK_TRANSFER: u32 = 0x0036_1814;
 /// `00233a6c(save manager)`: the game object of the selected game.
 pub const SELECTED_GAME: usize = 0x0023_3a6c;
 /// `0023a754(words)`: the console's date and time as the original's packed
@@ -61,6 +64,12 @@ pub trait BankTask {
 }
 impl BankTask for Task {
     fn ui(self) -> Result<*mut u8, NotNative> {
+        // Task 0x1B keeps none of its own: the shared UI of its manager.
+        if unsafe { read_word(self.raw(), 0) } == TASK_TRANSFER {
+            let manager = self.pointer(0x2c)?;
+            return patch_common::native::pointer(unsafe { read_word(manager, 0x80) })
+                .ok_or(NotNative);
+        }
         let offset = match unsafe { read_word(self.raw(), 0) } {
             TASK_LOAD | TASK_REWARD_GUARD => 0x38,
             TASK_SCAN | TASK_REWARDS => 0x40,

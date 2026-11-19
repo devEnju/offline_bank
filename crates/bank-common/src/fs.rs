@@ -129,9 +129,7 @@ impl Error {
     /// media, quota, format and I/O failures.
     pub fn reported_absence(self) -> Option<ReportedAbsence> {
         match self {
-            Self::Native { operation, code }
-                if ((code >> 10) & 0xff) == 17 && ((code >> 21) & 0x3f) == 4 =>
-            {
+            Self::Native { operation, code } if patch_common::fs_result::not_found(code) => {
                 match operation {
                     Operation::OpenArchive => Some(ReportedAbsence::Archive),
                     Operation::OpenFile | Operation::DeleteFile => Some(ReportedAbsence::File),

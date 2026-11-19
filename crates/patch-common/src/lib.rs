@@ -21,6 +21,7 @@ pub mod message;
 pub mod native;
 pub mod numbers;
 pub mod program;
+pub mod sd;
 pub mod spinner;
 #[cfg(target_arch = "arm")]
 mod stub;

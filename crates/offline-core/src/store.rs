@@ -214,13 +214,13 @@ fn put_replica<S: Storage>(
     Ok(())
 }
 
-/// Transporter's write of `metadata`: the replica that was not selected
-/// first, and the record is in force once that one is durable and read
-/// back; the other is then written too. If that one cannot be written, the
-/// journal is as after a power cut between the two, and Bank's next write
-/// of the journal writes it. An error means that the first replica was not
-/// written and read back; only if its read-back alone failed can the record
-/// be in force all the same.
+/// The write of a record that is in force once its first replica is: the
+/// replica that was not selected first, durable and read back, then the
+/// other. If that one cannot be written, the journal is as after a power cut
+/// between the two, and the next write of the journal writes it. An error
+/// means that the first replica was not written and read back; only if its
+/// read-back alone failed can the record be in force all the same.
+/// Transporter's delivery and Bank's save without a game write so.
 fn hand_over<S: Storage>(
     storage: &mut S,
     selected: Slot,
@@ -555,6 +555,54 @@ impl<S: Storage> BankStore<S> {
         metadata.encode().map_err(StoreError::Format)?;
         self.write_snapshot(after.bank.slot, payload)?;
         publish(&mut self.storage, head.preferred, metadata)
+    }
+
+    /// Makes a new save current without a game: the Bank file's spare copy
+    /// is written, synced and read back, then the record that names it, with
+    /// the main file and the transport box the caller wrote into the copies
+    /// the current save leaves free (`Save::next_mover`), as for a transfer.
+    /// The record is clean: nothing is left to settle, and a delivery that
+    /// waited is taken by it, as by any save that becomes current. A cut
+    /// before the first replica is durable leaves the save before; once it
+    /// is, the save is made, and a second replica that cannot be written is
+    /// left to the next write of the journal (`hand_over`).
+    pub fn commit(
+        &mut self,
+        head: &Head,
+        payload: &[u8],
+        sides: Sides,
+    ) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        let current = match head.phase() {
+            Phase::Clean(current) => current,
+            Phase::Prepared(_) => return Err(StoreError::PendingRecovery),
+        };
+        let sequence = next_sequence(&head)?;
+        let after = Save {
+            bank: Part {
+                slot: current.bank.slot.other(),
+                crc: crate::crc32(payload),
+            },
+            main: Part {
+                slot: current.main.slot.other(),
+                crc: sides.main,
+            },
+            mover: Part {
+                slot: current.next_mover(head.metadata.delivery.is_some()),
+                crc: sides.mover,
+            },
+            held: sides.held,
+        };
+        let metadata = Metadata {
+            sequence,
+            phase: Phase::Clean(after),
+            delivery: None,
+            ask: false,
+            unlocked: false,
+        };
+        metadata.encode().map_err(StoreError::Format)?;
+        self.write_snapshot(after.bank.slot, payload)?;
+        hand_over(&mut self.storage, head.preferred, metadata)
     }
 
     /// Resolves a prepared transfer by the fingerprint of the game's actual

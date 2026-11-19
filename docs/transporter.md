@@ -65,7 +65,7 @@ Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's 
 What happens to the file:
 
 - The original reads and checks it as it would a cartridge's save.
-- Before the first change in a session, the untouched save is copied to `<name>.sav.bak` beside it (one copy, replaced the next time) and read back. If the copy cannot be written whole, nothing changes.
+- Before the first change in a session, the untouched save is copied to `SD:/3ds/Pokémon Bank/<name>.sav.bak` (one copy, replaced the next time) and read back. If the copy cannot be written whole, nothing changes. A `.sav.bak` beside the save is one of an earlier release: nothing reads it, and it may be deleted.
 - Every write is read back. The Pokémon are removed only after the delivery to Bank is written and checked.
 - The file is never created, resized or renamed.
 
@@ -119,13 +119,15 @@ Look in your game first:
 | --- | --- |
 | The Pokémon you put **into** Bank are still in your boxes | Yes |
 | The Pokémon you took **out of** Bank are in your boxes | No |
-| Neither, or you are not sure | Back up Bank's extdata first ([how](bank.md#backing-up-the-bank)), then answer. A wrong answer can be undone by restoring Bank, and choosing the other option. |
+| Neither, or you are not sure | Either. Bank has copied every box whose Pokémon the session changed to the SD card, as it was before and after ([bank.md](bank.md#a-save-left-to-transporter)). |
+
+Transporter leaves that backup as it is. Bank's next START keeps only the side Bank does not hold, in a folder of the date, `YYYYMMDD-HHMMSS-backup/`: after Yes the `.new` boxes, after No the `.old` ones.
 
 ## A game save that does not load
 
 > The saved data in your Pokémon game is corrupted.
 
-The original's check of the chosen game failed, so nothing is transferred and nothing is written. Start the game itself to see what it makes of its save. For a save on the SD card, `<name>.sav.bak` also holds it as it was before its last session: rename it to `<name>.sav` in place of the old file.
+The original's check of the chosen game failed, so nothing is transferred and nothing is written. Start the game itself to see what it makes of its save. For a save on the SD card, `/3ds/Pokémon Bank/<name>.sav.bak` also holds it as it was before its last session: copy it to `/roms/nds/saves/` as `<name>.sav` in place of the old file.
 
 The patch's changes cannot cause this. The check and the message are the original Transporter's own, and so is every save of a game: the one before the question and the one that removes the transferred Pokémon are written by the original's own code, exactly as without the patch. For a save on the SD card the patch only carries those bytes to the file, after copying it to `<name>.sav.bak`, and reads each write back.
 
