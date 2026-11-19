@@ -853,18 +853,6 @@ pub fn refused(refusal: Refusal) -> Refused {
     }
 }
 
-/// Which of the screen's five buttons take a press (`001e22c4`,
-/// `001e23e8`): DONE, RESET and ALL (0..2) while nothing is lifted, held or
-/// gliding, no refusal's message is up and no question; Yes and No (3, 4)
-/// only while a question is up. So a touch where a button lies under the
-/// question, or hidden, does nothing.
-pub fn button_takes_presses(button: u32, busy: bool, question: bool) -> bool {
-    match button {
-        0..=2 => !busy && !question,
-        _ => question,
-    }
-}
-
 /// What task `0x1B`'s frames do before the boxes. Its notice is skipped;
 /// the question is the one the original asks when Bank opens without a
 /// game (task 3, states `0x18`, `0x21`..`0x25`), with the same calls.
@@ -1033,6 +1021,32 @@ impl Session {
     /// other key and no button does anything.
     pub fn paging_keys(&self) -> bool {
         self.turning || self.shoulder.blocks()
+    }
+    /// A lift runs, or what was put down or back waits for its frame or
+    /// glides into place: no key does anything (`bank_transfer_input`).
+    pub fn moving(&self) -> bool {
+        self.lifting.is_some() || self.put.is_some() || self.landing.is_some()
+    }
+    /// Nothing is lifted, held or moving and no refusal's message is up:
+    /// DONE, RESET and ALL can do something.
+    pub fn free(&self) -> bool {
+        !self.moving() && self.held.is_none() && !self.notice
+    }
+    /// Which of the screen's five buttons take a press (`001e22c4`,
+    /// `001e23e8`), with a question up or not: DONE, RESET and ALL (0..2)
+    /// while the screen is free (`free`) and no question is up; Yes and No
+    /// (3, 4) only while a question is up. So a touch where a button lies
+    /// under the question, or hidden, does nothing.
+    pub fn button_takes_presses(&self, button: u32, question: bool) -> bool {
+        match button {
+            0..=2 => self.free() && !question,
+            _ => question,
+        }
+    }
+    /// Whether the buttons' update (`bank_transfer_event`) goes on: while
+    /// the screen is free (`free`) and L blocks no key (`paging_keys`).
+    pub fn takes_events(&self) -> bool {
+        self.free() && !self.paging_keys()
     }
     /// The start of every frame, also of one without a key, as the box
     /// screen runs its state 4 and its page turn every frame (`002918e4`,
@@ -1409,22 +1423,17 @@ mod console {
     /// stops it (its flag at `+0x35`, which its touch test reads,
     /// `00266218`); neither changes anything for a button that is so
     /// already, and without `animate` neither changes its look. Every frame
-    /// (`button_takes_presses`).
+    /// (`Session::button_takes_presses`).
     const BUTTON_ON: usize = 0x001e_22c4;
     const BUTTON_OFF: usize = 0x001e_23e8;
     fn buttons(session: &Session, selection: *mut u8) {
         let Some(buttons) = (unsafe { follow(selection, 0x10) }) else {
             return;
         };
-        let busy = session.held.is_some()
-            || session.lifting.is_some()
-            || session.put.is_some()
-            || session.landing.is_some()
-            || session.notice;
         let question = unsafe { read_word(selection, 0x530) } != u32::MAX;
         for button in 0..5 {
             let set: unsafe extern "aapcs" fn(*mut u8, u32, u32) = unsafe {
-                transmute(if button_takes_presses(button, busy, question) {
+                transmute(if session.button_takes_presses(button, question) {
                     BUTTON_ON
                 } else {
                     BUTTON_OFF
@@ -2345,7 +2354,7 @@ mod console {
             drop(session);
             return unsafe { original(selection, pad) };
         }
-        if session.landing.is_some() || session.lifting.is_some() || session.put.is_some() {
+        if session.moving() {
             // No key while a lift runs or what was put down glides.
             return 0;
         }
@@ -2481,13 +2490,7 @@ mod console {
         let Some(mut session) = SESSION.take() else {
             return unsafe { original(selection, event) };
         };
-        if session.notice
-            || session.held.is_some()
-            || session.landing.is_some()
-            || session.lifting.is_some()
-            || session.put.is_some()
-            || session.paging_keys()
-        {
+        if !session.takes_events() {
             // The buttons do nothing while a box is lifted, held, or
             // glides into place, while a refusal's message is up, and in L's
             // first three frames, a frame it fires and its page turn.
@@ -3697,19 +3700,113 @@ mod tests {
         }
     }
 
+    /// A session in each state that leaves the screen not free, with
+    /// whether it is one where no key does anything (`moving`).
+    fn busy_sessions() -> [(Session, bool); 5] {
+        let put = Put {
+            from: 3,
+            to: 4,
+            swapped: false,
+            refused: false,
+        };
+        let landing = Landing {
+            frames: 0,
+            from: 3,
+            to: 4,
+            held: Glide::new((0.0, 0.0), (1.0, 1.0)),
+            moved: None,
+            lifted: None,
+            refused: false,
+        };
+        [
+            (
+                Session {
+                    held: Some(3),
+                    ..Session::new()
+                },
+                false,
+            ),
+            (
+                Session {
+                    lifting: Some((0, 3)),
+                    ..Session::new()
+                },
+                true,
+            ),
+            (
+                Session {
+                    put: Some(put),
+                    ..Session::new()
+                },
+                true,
+            ),
+            (
+                Session {
+                    landing: Some(landing),
+                    ..Session::new()
+                },
+                true,
+            ),
+            (
+                Session {
+                    notice: true,
+                    ..Session::new()
+                },
+                false,
+            ),
+        ]
+    }
+
     #[test]
     fn the_buttons_take_presses_only_when_they_can_do_something() {
+        let free = Session::new();
+        assert!(free.free() && !free.moving() && free.takes_events());
         for button in 0..3 {
-            assert!(button_takes_presses(button, false, false));
-            assert!(!button_takes_presses(button, true, false));
+            assert!(free.button_takes_presses(button, false));
             // Not under a question: ALL there would change what Yes takes.
-            assert!(!button_takes_presses(button, false, true));
+            assert!(!free.button_takes_presses(button, true));
         }
         for button in 3..5 {
-            assert!(!button_takes_presses(button, false, false));
-            assert!(!button_takes_presses(button, true, false));
-            assert!(button_takes_presses(button, false, true));
+            assert!(!free.button_takes_presses(button, false));
+            assert!(free.button_takes_presses(button, true));
         }
+        for (index, (session, moving)) in busy_sessions().into_iter().enumerate() {
+            assert!(!session.free(), "{index}");
+            assert_eq!(session.moving(), moving, "{index}");
+            assert!(!session.takes_events(), "{index}");
+            for button in 0..3 {
+                assert!(!session.button_takes_presses(button, false), "{index}");
+            }
+            // Yes and No answer a question whatever else is so.
+            for button in 3..5 {
+                assert!(session.button_takes_presses(button, true), "{index}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_buttons_update_waits_for_l_and_its_page_turn() {
+        // In L's page turn the buttons look as they are, but their update
+        // does nothing; after it, it goes on.
+        let mut session = Session {
+            paging: 1,
+            ..Session::new()
+        };
+        session.new_frame();
+        assert!(session.free() && session.paging_keys() && !session.takes_events());
+        session.new_frame();
+        assert!(session.takes_events());
+        // L held: in its first three frames and when it fires, nothing;
+        // between its fires the buttons' update goes on.
+        let mut session = Session::new();
+        for _ in 0..3 {
+            assert_eq!(session.shoulder.step(true, true), ShoulderKey::Hold);
+            assert!(session.free() && !session.takes_events());
+        }
+        assert_eq!(session.shoulder.step(true, true), ShoulderKey::Fire);
+        assert!(!session.takes_events());
+        assert_eq!(session.shoulder.step(true, false), ShoulderKey::Free);
+        assert!(session.takes_events());
     }
 
     #[test]
