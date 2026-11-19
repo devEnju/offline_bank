@@ -267,6 +267,15 @@ fn put_record<S: Storage>(
     Ok(())
 }
 
+/// A save to make current (`BankStore::next_save`): the journal as checked,
+/// the clean save it follows, and the record's next sequence number.
+struct NextSave {
+    head: Head,
+    before: Save,
+    after: Save,
+    sequence: u32,
+}
+
 fn next_sequence<E>(head: &Head) -> Result<u32, StoreError<E>> {
     head.metadata
         .sequence
@@ -516,45 +525,23 @@ impl<S: Storage> BankStore<S> {
         before_fingerprint: Fingerprint,
         after_fingerprint: Fingerprint,
     ) -> Result<Head, StoreError<S::Error>> {
-        let head = self.check_head(head)?;
-        let current = match head.phase() {
-            Phase::Clean(current) => current,
-            Phase::Prepared(_) => return Err(StoreError::PendingRecovery),
-        };
+        let next = self.next_save(head, payload, sides)?;
         if before_fingerprint == after_fingerprint {
             return Err(StoreError::Format(FormatError::IndistinguishableGameStates));
         }
-        let sequence = next_sequence(&head)?;
-        let after = Save {
-            bank: Part {
-                slot: current.bank.slot.other(),
-                crc: crate::crc32(payload),
-            },
-            main: Part {
-                slot: current.main.slot.other(),
-                crc: sides.main,
-            },
-            mover: Part {
-                slot: current.next_mover(head.metadata.delivery.is_some()),
-                crc: sides.mover,
-            },
-            held: sides.held,
-        };
         let metadata = Metadata {
-            sequence,
+            sequence: next.sequence,
             phase: Phase::Prepared(PendingTransfer {
-                before: current,
-                after,
+                before: next.before,
+                after: next.after,
                 game,
                 before_fingerprint,
                 after_fingerprint,
             }),
-            ..head.metadata
+            ..next.head.metadata
         };
-        // Refuse what cannot be recorded before anything is written.
-        metadata.encode().map_err(StoreError::Format)?;
-        self.write_snapshot(after.bank.slot, payload)?;
-        publish(&mut self.storage, head.preferred, metadata)
+        self.stage(&metadata, next.after, payload)?;
+        publish(&mut self.storage, next.head.preferred, metadata)
     }
 
     /// Makes a new save current without a game: the Bank file's spare copy
@@ -572,37 +559,70 @@ impl<S: Storage> BankStore<S> {
         payload: &[u8],
         sides: Sides,
     ) -> Result<Head, StoreError<S::Error>> {
+        let next = self.next_save(head, payload, sides)?;
+        let metadata = Metadata {
+            sequence: next.sequence,
+            phase: Phase::Clean(next.after),
+            delivery: None,
+            ask: false,
+            unlocked: false,
+        };
+        self.stage(&metadata, next.after, payload)?;
+        hand_over(&mut self.storage, next.head.preferred, metadata)
+    }
+
+    /// The save that follows the clean save `head` names, for a transfer
+    /// and for a commit alike: the Bank file's spare copy holding `payload`,
+    /// and the main file and transport box the caller wrote, with the
+    /// checksums in `sides`, into the copies the current save leaves free.
+    /// A save in progress is refused.
+    fn next_save(
+        &mut self,
+        head: &Head,
+        payload: &[u8],
+        sides: Sides,
+    ) -> Result<NextSave, StoreError<S::Error>> {
         let head = self.check_head(head)?;
-        let current = match head.phase() {
+        let before = match head.phase() {
             Phase::Clean(current) => current,
             Phase::Prepared(_) => return Err(StoreError::PendingRecovery),
         };
         let sequence = next_sequence(&head)?;
         let after = Save {
             bank: Part {
-                slot: current.bank.slot.other(),
+                slot: before.bank.slot.other(),
                 crc: crate::crc32(payload),
             },
             main: Part {
-                slot: current.main.slot.other(),
+                slot: before.main.slot.other(),
                 crc: sides.main,
             },
             mover: Part {
-                slot: current.next_mover(head.metadata.delivery.is_some()),
+                slot: before.next_mover(head.metadata.delivery.is_some()),
                 crc: sides.mover,
             },
             held: sides.held,
         };
-        let metadata = Metadata {
+        Ok(NextSave {
+            head,
+            before,
+            after,
             sequence,
-            phase: Phase::Clean(after),
-            delivery: None,
-            ask: false,
-            unlocked: false,
-        };
+        })
+    }
+
+    /// Writes the Bank file's copy of `after` once `metadata`, the record
+    /// that will name it, is known to encode: what cannot be recorded is
+    /// refused before anything is written.
+    fn stage(
+        &mut self,
+        metadata: &Metadata,
+        after: Save,
+        payload: &[u8],
+    ) -> Result<(), StoreError<S::Error>> {
         metadata.encode().map_err(StoreError::Format)?;
         self.write_snapshot(after.bank.slot, payload)?;
-        hand_over(&mut self.storage, head.preferred, metadata)
+        Ok(())
     }
 
     /// Resolves a prepared transfer by the fingerprint of the game's actual

@@ -1231,23 +1231,31 @@ impl Runtime {
                 self.step = Step::Save(Save::Saved);
                 self.saved(task)
             }
-            Reply::Ended(ending) => {
-                self.step = Step::Save(Save::Stopped(ending));
-                let ui = task.ui()?;
-                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
-                task.end_busy();
-                refuse_home(false);
-                unsafe {
-                    match ending {
-                        Ending::Retry => bank_common::ui::try_again(ui),
-                        Ending::NoSpace => bank_common::ui::sd_full(ui),
-                    }
-                }
-                .map_err(|_| Fault::NativeObject)?;
-                Ok(None)
-            }
+            Reply::Ended(ending) => self.stopped(task, ending),
             _ => Err(Fault::JournalPrepare),
         }
+    }
+    /// Save and Quit, or the transfer screen's write in its task, ends
+    /// without saving, as the original's own failed save (task 7 state
+    /// 0x10): loading ends at once, the message for what it leaves waits,
+    /// outcome 3, cleanup and the start screen. The changes made in memory
+    /// go with the session; the next START settles what the journal holds.
+    fn stopped(&mut self, task: Task, ending: Ending) -> Result<Option<bool>, Fault> {
+        self.step = Step::Save(save_steps::Step::Stopped(ending));
+        let ui = task.ui()?;
+        unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+        task.end_busy();
+        refuse_home(false);
+        unsafe {
+            match ending {
+                // Of the failure message only the advice about the card;
+                // its first part names a server.
+                Ending::Retry => bank_common::ui::try_again(ui),
+                Ending::NoSpace => bank_common::ui::sd_full(ui),
+            }
+        }
+        .map_err(|_| Fault::NativeObject)?;
+        Ok(None)
     }
     unsafe fn save(&mut self, task: Task) -> Result<Option<bool>, Fault> {
         use save_steps::Step as Save;
@@ -1416,26 +1424,7 @@ impl Runtime {
                 let game = self.game.as_mut().ok_or(Fault::GameWrite)?;
                 unsafe { game.start_after_journal() }.map_err(|_| Fault::GameWrite)?;
             }
-            Save::Stopped(ending) => {
-                // Save and Quit ends without saving, as the original's own
-                // failed save (task 7 state 0x10): loading ends at once, the
-                // message for what it leaves waits, outcome 3, cleanup and
-                // the start screen. The changes made in memory go with the
-                // session; the next START settles what the journal holds.
-                let ui = task.ui()?;
-                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
-                task.end_busy();
-                refuse_home(false);
-                unsafe {
-                    match ending {
-                        // Of the failure message only the advice about the
-                        // card; its first part names a server.
-                        Ending::Retry => bank_common::ui::try_again(ui),
-                        Ending::NoSpace => bank_common::ui::sd_full(ui),
-                    }
-                }
-                .map_err(|_| Fault::NativeObject)?;
-            }
+            Save::Stopped(ending) => return self.stopped(task, ending),
             Save::Saved => return self.saved(task),
             Save::Detect
             | Save::CountBank { .. }
