@@ -401,10 +401,14 @@ impl Places<'_> {
         self.body[b.start + NAME_TEXT..b.end].copy_from_slice(&tail);
     }
 
-    /// Seals the offline boxes after a move: their checksums.
-    fn settle_offline(&mut self) {
-        for file in &mut self.offline.files {
-            boxfile::seal(file);
+    /// Seals the offline boxes a move changed, the places at its two ends
+    /// that are offline boxes: their checksums. A move changes no other
+    /// place, so the others keep theirs.
+    fn seal(&mut self, places: [usize; 2]) {
+        for place in places.into_iter().filter(|place| *place >= OFFLINE) {
+            if let Some(file) = self.offline.files.get_mut(place - OFFLINE) {
+                boxfile::seal(file);
+            }
         }
     }
 
@@ -440,7 +444,7 @@ impl Places<'_> {
             self.put_slot(to, slot, &record, tag, 0, &now);
             self.put_slot(from, slot, &empty_record(), 0, flag, &stamp);
         }
-        self.settle_offline();
+        self.seal([from, to]);
         Ok(())
     }
 
@@ -495,7 +499,7 @@ impl Places<'_> {
         self.set_label(to, &brought(0).unwrap_or_else(|| own(1)));
         self.set_label(from, &brought(1).unwrap_or_else(|| own(0)));
         self.keep_categories(from, to);
-        self.settle_offline();
+        self.seal([from, to]);
         Ok(())
     }
 }
@@ -1419,7 +1423,8 @@ mod tests {
             offline: &mut offline,
         };
         places.put_slot(OFFLINE + 1, 4, &pokemon(40), 7, 3, &[9; STAMP_SIZE]);
-        places.settle_offline();
+        places.seal([OFFLINE, OFFLINE + 1]);
+        places.seal([OFFLINE + 2, OFFLINE + 2]);
         (body, offline)
     }
 
@@ -1600,6 +1605,14 @@ mod tests {
             }
             assert_eq!(changes.any(), differs, "step {step}");
             came_back += usize::from(!differs && step > 0);
+            // Every offline box sealed: a move seals those it changed, and
+            // the others keep the checksum they had.
+            for (index, file) in offline.files.iter().enumerate() {
+                assert!(
+                    BoxFile::parse(file).is_ok(),
+                    "offline box {index} at step {step}"
+                );
+            }
         }
         // The moves came back to where they began, so "no change" was
         // tried, not only "changed".
