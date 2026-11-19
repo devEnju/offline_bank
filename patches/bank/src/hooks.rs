@@ -115,6 +115,16 @@ enum Step {
     /// The unlock is written; the task ends once its loading screen has
     /// stood for 1.5 s.
     Unlocked,
+    /// The transfer screen's loading panel stands before its offline boxes
+    /// are read.
+    TransferWait,
+    /// The transfer screen's offline boxes are being read.
+    TransferLoad,
+    /// They are read; the panel stands until its 1.5 s are over.
+    TransferRead,
+    /// What the transfer screen changed is being written, in Save and Quit's
+    /// task.
+    TransferCommit,
 }
 /// The message a save in progress that waits, or is left to Transporter's
 /// question, ends the opening with; kept for Cancel on the unlock screen.
@@ -224,6 +234,113 @@ static STATE: Exclusive<Runtime> = unsafe {
     })
 };
 
+/// What a frame of the transfer screen's loading panel does
+/// (`transfer_screen`).
+pub enum TransferFrame {
+    /// The panel stands.
+    Loading,
+    /// The offline boxes are read and the panel is down: the boxes follow.
+    Ready,
+    /// The error screen: this frame's result.
+    Stopped(u32),
+}
+
+/// A frame of the transfer screen's loading panel, "Communicating with the
+/// Pokémon Bank server..." (39:0x0E), as after a game is chosen: it goes up
+/// on the `first` frame, stands 0.5 s, the offline boxes are read
+/// (`Job::LoadOffline`), and it comes down once it has stood 1.5 s.
+/// # Safety
+/// `raw` is task 0x1B as the original hands it to its update.
+pub unsafe fn transfer_load(raw: *mut u8, first: bool) -> TransferFrame {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[bank_common::task::TASK_TRANSFER]) }) else {
+        return TransferFrame::Stopped(1);
+    };
+    let Some(mut state) = STATE.take() else {
+        return TransferFrame::Loading;
+    };
+    if state.fault != Fault::None {
+        return TransferFrame::Stopped(state.report_failure(task));
+    }
+    let frame = (|| {
+        if first {
+            let ui = task.ui()?;
+            unsafe { bank_common::ui::loading(ui, bank_common::ui::BANK_LOADING_MESSAGE) }
+                .map_err(|_| Fault::NativeObject)?;
+            state.spinner.up(now());
+            state.owner = task.raw() as usize;
+            state.step = Step::TransferWait;
+            // HOME and sleep are refused from the panel's first frame, as on
+            // every other loading screen of Bank, until the boxes appear.
+            refuse_home(true);
+            return Ok(TransferFrame::Loading);
+        }
+        match state.step {
+            Step::TransferWait => {
+                if !state.spinner.idle(now()) {
+                    task.begin_busy();
+                    state.submit(task, Step::TransferLoad, Job::LoadOffline)?;
+                }
+                Ok(TransferFrame::Loading)
+            }
+            Step::TransferLoad => match state.poll(task)? {
+                None => Ok(TransferFrame::Loading),
+                Some(Reply::OfflineLoaded) => {
+                    // The Miles of this session, as a game's load starts
+                    // them: the hours since the last save at the Pokémon the
+                    // Bank holds before any move; the transfer screen's save
+                    // settles them (`settle_rewards`). The opening that came
+                    // just before started none, so no hour is paid twice.
+                    if state.rewards.entry.is_some() {
+                        return Err(Fault::RewardState);
+                    }
+                    state.begin_rewards(task, bank_count(task)?)?;
+                    state.step = Step::TransferRead;
+                    Ok(TransferFrame::Loading)
+                }
+                Some(_) => Err(Fault::SdFiles),
+            },
+            Step::TransferRead => {
+                if state.spinner.held(now()) {
+                    return Ok(TransferFrame::Loading);
+                }
+                // The panel, its text frame and the question under it go,
+                // as the set-up left the UI for the boxes.
+                let ui = task.ui()?;
+                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+                unsafe { bank_common::ui::hide_all(ui) }.map_err(|_| Fault::NativeObject)?;
+                state.complete(task);
+                Ok(TransferFrame::Ready)
+            }
+            _ => Err(Fault::NativeObject),
+        }
+    })();
+    match frame {
+        Ok(frame) => frame,
+        Err(fault) => {
+            state.fault = fault;
+            TransferFrame::Stopped(state.report_failure(task))
+        }
+    }
+}
+
+/// The error screen on a frame of the transfer screen's question, if a
+/// fault is up, or if the question `failed` now: this frame's result.
+/// `None` lets the question go on.
+/// # Safety
+/// `raw` is task 0x1B as the original hands it to its update.
+pub unsafe fn transfer_fault(raw: *mut u8, failed: bool) -> Option<u32> {
+    let Ok(task) = (unsafe { Task::from_raw(raw, &[bank_common::task::TASK_TRANSFER]) }) else {
+        return Some(1);
+    };
+    let Some(mut state) = STATE.take() else {
+        return Some(0);
+    };
+    if failed && state.fault == Fault::None {
+        state.fault = Fault::NativeObject;
+    }
+    (state.fault != Fault::None).then(|| state.report_failure(task))
+}
+
 /// Puts the local date where the task's session keeps the server's.
 fn local_date(task: Task) -> Result<(), Fault> {
     let session = task.pointer(0x28)?;
@@ -276,6 +393,14 @@ fn clock() -> Result<Moment, Fault> {
     let local_date: unsafe extern "aapcs" fn(*mut u32) = unsafe { transmute(LOCAL_DATE) };
     unsafe { local_date(words.as_mut_ptr()) };
     crate::local_clock::local_moment(words).ok_or(Fault::Clock)
+}
+/// The console's date and time to the second, by the same clock, for a
+/// job that names a folder of the SD card (`local_clock::date`).
+fn date() -> bank_common::sdfiles::Date {
+    let mut words = [0u32; 2];
+    let local_date: unsafe extern "aapcs" fn(*mut u32) = unsafe { transmute(LOCAL_DATE) };
+    unsafe { local_date(words.as_mut_ptr()) };
+    crate::local_clock::date(words)
 }
 fn reward_fault(error: RewardError) -> Fault {
     match error {
@@ -555,6 +680,12 @@ impl Runtime {
                     None => Ok(0),
                     Some(Reply::Unlocked) => {
                         self.step = Step::Unlocked;
+                        Ok(0)
+                    }
+                    // No room to write the journal again: nothing is
+                    // unlocked, and the next START offers it again.
+                    Some(Reply::Ended(Ending::NoSpace)) => {
+                        self.turn_back(task, |ui| unsafe { bank_common::ui::sd_full(ui) })?;
                         Ok(0)
                     }
                     Some(_) => Err(Fault::JournalRecovery),
@@ -925,7 +1056,8 @@ impl Runtime {
             if opening {
                 self.capture_blank(task)?;
                 let session = unsafe { Bank15::fs_session() };
-                self.submit(task, Step::Open, Job::Open { session })?;
+                let date = date();
+                self.submit(task, Step::Open, Job::Open { session, date })?;
             } else {
                 let game = unsafe {
                     NativeGameSession::from_raw(task.pointer(8)?, read_word(task.raw(), 0xc))
@@ -991,7 +1123,8 @@ impl Runtime {
                     Err(NativeGameError::NotLoaded) => None,
                     Err(_) => return Err(Fault::GameRead),
                 };
-                self.submit(task, Step::Recover, Job::Recover { game })?;
+                let date = date();
+                self.submit(task, Step::Recover, Job::Recover { game, date })?;
                 Ok(None)
             }
             // The save in progress waits for its game, and nothing was
@@ -1012,6 +1145,14 @@ impl Runtime {
             // (docs/internals.md, "When a job cannot finish").
             (Step::Recover | Step::Load, Reply::Ended(Ending::Retry)) => {
                 self.turn_back(task, |ui| unsafe { bank_common::ui::try_again(ui) })
+            }
+            // No room on the SD card for the backup of the boxes a save in
+            // progress changed (`bank_common::interrupted`): nothing of the
+            // journal was written, and the next START tries again. Or no
+            // room to put back a cell a cut left (`interrupted::settle`):
+            // its `.bak` stays, and the next START puts it back.
+            (Step::Open | Step::Recover, Reply::Ended(Ending::NoSpace)) => {
+                self.turn_back(task, |ui| unsafe { bank_common::ui::sd_full(ui) })
             }
             // No room for the new Bank's files: the scan's own message for
             // a card without room for Bank's extdata. The next START
@@ -1077,13 +1218,62 @@ impl Runtime {
         unsafe { bank_common::ui::saved(task.ui()?) }.map_err(|_| Fault::NativeObject)?;
         Ok(None)
     }
+    /// The transfer screen's write in Save and Quit's task: its loading screen,
+    /// then "Success! Changes saved." as after a save, or what the write
+    /// leaves, then the start screen.
+    fn transfer_committed(&mut self, task: Task) -> Result<Option<bool>, Fault> {
+        use save_steps::Step as Save;
+        let Some(reply) = self.poll(task)? else {
+            return Ok(None);
+        };
+        match reply {
+            Reply::Committed => {
+                self.step = Step::Save(Save::Saved);
+                self.saved(task)
+            }
+            Reply::Ended(ending) => {
+                self.step = Step::Save(Save::Stopped(ending));
+                let ui = task.ui()?;
+                unsafe { bank_common::ui::stop_loading(ui) }.map_err(|_| Fault::NativeObject)?;
+                task.end_busy();
+                refuse_home(false);
+                unsafe {
+                    match ending {
+                        Ending::Retry => bank_common::ui::try_again(ui),
+                        Ending::NoSpace => bank_common::ui::sd_full(ui),
+                    }
+                }
+                .map_err(|_| Fault::NativeObject)?;
+                Ok(None)
+            }
+            _ => Err(Fault::JournalPrepare),
+        }
+    }
     unsafe fn save(&mut self, task: Task) -> Result<Option<bool>, Fault> {
         use save_steps::Step as Save;
         let step = match self.step {
+            Step::TransferCommit => return self.transfer_committed(task),
             Step::Idle => {
                 // The set-up's loading screen stands for 0.5 s before the
                 // work begins.
                 if self.spinner.idle(now()) {
+                    return Ok(None);
+                }
+                // The transfer screen asked for its write: no game is part of
+                // it, and the Bank is the live object's body, with its Miles
+                // settled as Save and Quit settles them.
+                if let Some(checked) = crate::transfer_screen::take_commit() {
+                    task.begin_busy();
+                    self.settle_rewards(task)?;
+                    self.stage_bank(task)?;
+                    self.submit(
+                        task,
+                        Step::TransferCommit,
+                        Job::TransferCommit {
+                            checked,
+                            date: date(),
+                        },
+                    )?;
                     return Ok(None);
                 }
                 // Whether the Game Card is there comes before anything else.
@@ -1294,6 +1484,12 @@ pub unsafe extern "aapcs" fn bank_offline_next(manager: *mut u8, current: u32) -
     // The main menu (task 4) is never created, but in the console test
     // build; see navigation.rs.
     let destination = crate::navigation::destination(current, outcome, next, cancelled);
+    // The transfer screen's task has ended: the next one reads its offline
+    // boxes again, also at the same address, and what its Yes asked to write
+    // goes on only to Save and Quit's task (`Session::ended`).
+    if current == crate::navigation::TRANSFER_SCREEN {
+        crate::transfer_screen::end(destination);
+    }
     // The scan found a game, so the Bank opens: no transfer to Pokémon HOME
     // is under way.
     if (current, destination) == (crate::navigation::SCAN, crate::navigation::OPEN) {

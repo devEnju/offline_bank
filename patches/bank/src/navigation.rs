@@ -33,6 +33,12 @@ pub const BOXES: u32 = 0x19;
 pub const SAVE: u32 = 7;
 pub const CLEANUP: u32 = 0x14;
 pub const UNLOCK: u32 = 0x17;
+/// Task 0x1B, the original's box selection for Pokémon HOME: the offline
+/// patch's transfer screen (`transfer_screen`), after Back on game selection.
+pub const TRANSFER_SCREEN: u32 = 0x1b;
+/// The outcome it ends with when its Yes asked for the write
+/// (`transfer_screen::OUTCOME_WRITE`), for which Save and Quit's task follows.
+pub const TRANSFER_WRITE: u8 = crate::transfer_screen::OUTCOME_WRITE;
 /// The ID the factory makes no task for (its default case, `002a645c`):
 /// the original's answer for the unlock screen ended by closing Bank
 /// meanwhile (outcome 0xe, `002a5880`).
@@ -65,12 +71,11 @@ pub fn destination(current: u32, outcome: u8, native: u32, cancelled: bool) -> u
         (MAIN_MENU, MENU_USE) if MENU => SELECT,
         (SELECT, 5) => SCENE,
         (SCENE, _) => LOAD,
-        // Native Back returns to the menu, and so does the test build's,
-        // where another rehearsal can be chosen. Without a menu, cleanup
-        // destroys the shared UI so the next entry from the start screen
-        // recreates it.
-        (SELECT, 0x13) if MENU => MAIN_MENU,
-        (SELECT, 0x13) => CLEANUP,
+        // Back on game selection: the transfer screen's question, whose No
+        // leads to the start screen and whose Yes to the boxes.
+        (SELECT, 0x13) => TRANSFER_SCREEN,
+        (TRANSFER_SCREEN, TRANSFER_WRITE) => SAVE,
+        (TRANSFER_SCREEN, _) => CLEANUP,
         (LOAD, 4) => REWARD_GUARD,
         (MAIN_MENU, _) => CLEANUP,
         // Cancellation leaves the durable Bank unchanged; task3 reloads the
@@ -123,7 +128,7 @@ mod tests {
     const AFTER_OPEN: u32 = if MENU { MAIN_MENU } else { SELECT };
     /// What follows Back on game selection: the start screen through
     /// cleanup, or in the console test build the main menu again.
-    const AFTER_BACK: u32 = if MENU { MAIN_MENU } else { CLEANUP };
+    const AFTER_BACK: u32 = TRANSFER_SCREEN;
 
     /// One session from the start screen, each task ending with `outcome`,
     /// each answer the original router's (`bank_common::router`) as the
@@ -179,12 +184,35 @@ mod tests {
             START_SCREEN,
         ]);
         assert_eq!(seen, expected);
-        // Back on game selection, without the menu: cleanup, then the
-        // start screen.
-        let back = session(|task| if task == SELECT { 0x13 } else { 4 });
-        if !MENU {
-            assert_eq!(back, [SCAN, OPEN, SELECT, CLEANUP, START_SCREEN]);
-        }
+        // Back on game selection: the transfer screen, also in the test
+        // build.
+        let back = session(|task| match task {
+            SELECT => 0x13,
+            MAIN_MENU => MENU_USE,
+            _ => 4,
+        });
+        let before: &[u32] = if MENU {
+            &[SCAN, OPEN, MAIN_MENU, SELECT]
+        } else {
+            &[SCAN, OPEN, SELECT]
+        };
+        // The transfer screen, its write, cleanup.
+        assert_eq!(back[..before.len()], *before);
+        assert_eq!(
+            back[before.len()..],
+            [TRANSFER_SCREEN, SAVE, CLEANUP, START_SCREEN]
+        );
+        // Its No, or Quit: cleanup.
+        let quit = session(|task| match task {
+            SELECT => 0x13,
+            MAIN_MENU => MENU_USE,
+            TRANSFER_SCREEN => 3,
+            _ => 4,
+        });
+        assert_eq!(
+            quit[before.len()..],
+            [TRANSFER_SCREEN, CLEANUP, START_SCREEN]
+        );
         // A save that failed (outcome 3, as after the original's message
         // 0xB) ends the same way.
         let failed = session(|task| match task {
@@ -199,8 +227,8 @@ mod tests {
     #[test]
     fn no_answer_of_the_original_router_leads_to_its_server() {
         // Connect, sign-in, account and service tasks, the second load and
-        // the checks of a game's last session, the release and HOME screens.
-        let never = [5, 6, 8, 0xe, 0xf, 0x11, 0x12, 0x13, 0x1a, 0x1b, 0x1c, 0x1d];
+        // the checks of a game's last session, the release and transfer screens.
+        let never = [5, 6, 8, 0xe, 0xf, 0x11, 0x12, 0x13, 0x1a, 0x1c, 0x1d];
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for home in [false, true] {
@@ -209,6 +237,12 @@ mod tests {
                     assert!(
                         !never.contains(&next) && (MENU || next != MAIN_MENU),
                         "{current:#x} {outcome:#x} {native:#x} -> {next:#x}"
+                    );
+                    // The transfer screen only from Back on game selection.
+                    assert_eq!(
+                        next == TRANSFER_SCREEN,
+                        (current, outcome) == (SELECT, 0x13),
+                        "{current:#x} {outcome:#x}"
                     );
                     // The unlock screen only from the opening, with the keys.
                     assert_eq!(
@@ -287,9 +321,7 @@ mod tests {
         for current in 0..=0x1d {
             for outcome in 0..=u8::MAX {
                 for native in 0..=0x1d {
-                    let menu = MENU
-                        && ((current, outcome) == (OPEN, 4)
-                            || (current, outcome) == (SELECT, 0x13));
+                    let menu = MENU && (current, outcome) == (OPEN, 4);
                     assert_eq!(
                         destination(current, outcome, native, false) == MAIN_MENU,
                         menu,
@@ -391,6 +423,7 @@ mod tests {
         for native in [
             5, 6, 8, 0xb, 0xe, 0xf, 0x11, 0x12, 0x13, 0x17, 0x1a, 0x1b, 0x1c, 0x1d,
         ] {
+            // The transfer screen's task, as any, only by the patch's own route.
             assert_eq!(destination(1, 0, native, false), CLEANUP);
         }
     }

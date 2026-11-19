@@ -6,7 +6,9 @@
 //! 2dce4796f54807cf8a67f1ce6297bf472d969b30ed7a7e8e25c2a6c2bdc40abf.
 //! The builder must verify the complete input before emitting any patch.
 
+pub mod bootstrap;
 pub mod dex;
+pub mod layout;
 pub mod local_clock;
 pub mod native_game;
 pub mod navigation;
@@ -14,6 +16,7 @@ pub mod panel;
 pub mod save_steps;
 pub mod storage_worker;
 pub mod transaction;
+pub mod transfer_screen;
 pub mod unlock;
 
 #[cfg(target_arch = "arm")]

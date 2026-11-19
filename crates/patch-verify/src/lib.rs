@@ -225,12 +225,13 @@ fn text<'a>(manifest: &'a Json, path: &[&str]) -> Option<&'a str> {
     field(manifest, path).and_then(Json::as_str)
 }
 
-const WRAPPERS: [&str; 5] = [
+const WRAPPERS: [&str; 6] = [
     "patch_svc_close_handle",
     "patch_svc_wait_thread",
     "patch_svc_get_resource_limit",
     "patch_svc_get_resource_limit_values",
     "patch_svc_get_resource_current_values",
+    "patch_svc_send_sync_request",
 ];
 
 const CHECKS: [&str; 11] = [
@@ -564,6 +565,15 @@ fn run(expect: &Expectation, paths: &Paths) -> Result<Json> {
     expected_header[0x38..0x3c].copy_from_slice(&(data_bytes as u32).to_le_bytes());
     expected_header[0x3c..0x40].fill(0);
     check(header == expected_header, "Unexpected paired-exheader edit")?;
+    check(
+        !whole_megabyte_with_code(
+            data_address,
+            rx.address as u64,
+            rx.memory_bytes as u64,
+            image_end,
+        ),
+        "No megabyte with payload code lies wholly in the data segment",
+    )?;
     let pages = u32_at(&header, 0x14)? as u64
         + u32_at(&header, 0x24)? as u64
         + u32_at(&header, 0x34)? as u64;
@@ -640,9 +650,36 @@ fn run(expect: &Expectation, paths: &Paths) -> Result<Json> {
     ]))
 }
 
+/// Whether a megabyte-aligned block that holds payload code lies wholly
+/// in the data segment `[data, end)`. The kernel maps such a block as one
+/// section, and the start-up hook cannot make its pages executable.
+fn whole_megabyte_with_code(data: u64, code: u64, code_bytes: u64, end: u64) -> bool {
+    const MEGABYTE: u64 = 0x10_0000;
+    (code / MEGABYTE..=(code + code_bytes - 1) / MEGABYTE).any(|block| {
+        let start = block * MEGABYTE;
+        data <= start && start + MEGABYTE <= end
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_never_lies_in_a_whole_megabyte_of_data() {
+        assert!(!whole_megabyte_with_code(
+            0x31_4000, 0x3f_b000, 0x2_0000, 0x4f_f000
+        ));
+        assert!(whole_megabyte_with_code(
+            0x31_4000, 0x3f_b000, 0x2_0000, 0x50_0000
+        ));
+        assert!(whole_megabyte_with_code(
+            0x31_4000, 0x3f_b000, 0x2_0000, 0x50_2000
+        ));
+        assert!(!whole_megabyte_with_code(
+            0x31_4000, 0x3f_b000, 0x5000, 0x60_0000
+        ));
+    }
 
     #[test]
     fn branches_are_read_both_ways() {

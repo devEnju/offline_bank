@@ -57,7 +57,7 @@ The build runs it itself, for every kind. The verifier, [patch-verify](../crates
 cargo +stable xtask test-verify
 ```
 
-This tests the verifier on the built packages: every one passes, and a copy of Bank's or Transporter's package with one thing changed is refused for that thing, with the message expected (a byte of the ELF header, the start-up hook, the payload or the exheader, an entry of the manifest, the package name), and a payload changed in its ELF and its `code.ips` alike, so that only a check of one program's own refuses it (Bank's no-game stub, Transporter's layout check and the name of its transport-box file). Where a change touches bytes, the copy's manifest gets the new hashes and its `PACKAGE.txt` the new name, so the refusal comes from the independent comparison. It works on copies in a temporary folder, the original's too (it is found there by its hash under another folder name), and changes nothing under `build/`. `cargo xtask release` runs it after its builds.
+This tests the verifier on the built packages: every one passes, and a copy of Bank's or Transporter's package with one thing changed is refused for that thing, with the message expected (a byte of the ELF header, the start-up hook, the payload or the exheader, an entry of the manifest, the package name), and a payload changed in its ELF and its `code.ips` alike, so that only a check of one program's own refuses it (Bank's no-game stub and layout check, Transporter's layout check and the name of its transport-box file). Where a change touches bytes, the copy's manifest gets the new hashes and its `PACKAGE.txt` the new name, so the refusal comes from the independent comparison. It works on copies in a temporary folder, the original's too (it is found there by its hash under another folder name), and changes nothing under `build/`. `cargo xtask release` runs it after its builds.
 
 ## Tests
 
@@ -74,6 +74,13 @@ One test needs a file from your own copy of Transporter and is ignored in a norm
 ```powershell
 $env:TRANSPORTER_LANGUAGE_LAYOUT = 'path/to/Turtle_lang_select_lower.bclyt'
 cargo +stable test -p transporter-payload --locked --offline the_real_layout -- --ignored
+```
+
+The same for Bank: the transfer screen's lower layout, `Turtle_lower1_3.bclyt` (romfs `a/0/4/7`), to which the patch adds four cells ([internals.md](internals.md#the-transfer-screen)). The test checks the file and the extended layout's length; `BANK_LAYOUT_OUT`, if set, names a file the extended layout is written to:
+
+```powershell
+$env:BANK_LAYOUT = 'path/to/Turtle_lower1_3.bclyt'
+cargo +stable test -p bank-payload --locked --offline the_original_layout -- --ignored
 ```
 
 ### CRC throughput on the host
@@ -96,7 +103,7 @@ cargo +stable xtask build --kind test
 
 This builds and verifies it into `build/test/`. Its start screen says "Ver. 1.5-test". It is the offline patch with three differences:
 
-- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. All five buttons say "Use Pokémon Bank" in the console's language, and the four rehearsals have a word in brackets behind it, the same in every language. Back on the game selection leads to the menu again.
+- After START it shows the original's main menu, which the offline patch skips. The button chosen there opens the Bank and says what the next Save and Quit of that session does. All five buttons say "Use Pokémon Bank" in the console's language, and the four rehearsals have a word in brackets behind it, the same in every language. Back on the game selection opens the transfer screen, as in the offline patch; to choose another button, start Bank again.
 - The reward dialogs never come, and nothing is claimed, so that a run is short.
 - While the menu is on screen Bank's files are open, and HOME works there; closing Bank from the HOME Menu at that point writes nothing.
 

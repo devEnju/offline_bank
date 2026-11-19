@@ -288,7 +288,7 @@ const TEST_NOTE: [&str; 20] = [
     "                             For cutting the power during those writes.",
     "  Back                       the original: asks, then returns to the start screen.",
     "",
-    "Back on the game selection leads to this menu again.",
+    "Back on the game selection opens the transfer screen, as in the normal package.",
     "The reward dialogs are never shown, and nothing is claimed.",
-    "Back up Bank's extdata and the game saves before using it, and put the normal package back afterwards.",
+    "Back up Bank's extdata, the folder /3ds/Pokémon Bank/ and the game saves before using it, restore them only together, and put the normal package back afterwards.",
 ];
