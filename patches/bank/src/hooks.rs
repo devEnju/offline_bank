@@ -270,7 +270,8 @@ pub unsafe fn transfer_load(raw: *mut u8, first: bool) -> TransferFrame {
             state.owner = task.raw() as usize;
             state.step = Step::TransferWait;
             // HOME and sleep are refused from the panel's first frame, as on
-            // every other loading screen of Bank, until the boxes appear.
+            // every other loading screen of Bank, until it comes down; the boxes
+            // then build and fade in, as the box screen does after its panel.
             refuse_home(true);
             return Ok(TransferFrame::Loading);
         }
