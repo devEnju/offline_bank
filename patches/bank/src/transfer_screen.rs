@@ -806,8 +806,9 @@ pub fn landing(frames: u8) -> LandingFrame {
 /// either closes it (`00286994`). With a box checked, 38:0x38 showing "Move
 /// these Pokémon?" (38:0x38 without its words about Pokémon HOME,
 /// `MOVE_QUESTION`); with none, 38:0x38 showing "Would you like to save and
-/// quit?" (38:0x20) when something `changed` (a place's bytes differ from
-/// when the screen opened, `Changes::any`), and 38:0x39 with its own text,
+/// quit?" (38:0x20) when something `changed` (a put-down of the green hand,
+/// or a place's bytes differ from when the screen opened, `Changes::any`),
+/// and 38:0x39 with its own text,
 /// "Quit moving Pokémon?", otherwise.
 pub fn done(checked: bool, changed: bool) -> (u32, u32) {
     match (checked, changed) {
@@ -2041,8 +2042,10 @@ mod console {
                         checked(session, selection, from),
                         checked(session, selection, place),
                     );
+                    // Green put down on its own box is a move too: its
+                    // Pokémon get the time (`Changes::move_all`).
                     let moved = match (from == place, mode) {
-                        (true, _) => Ok(()),
+                        (true, Mode::Swap) => Ok(()),
                         (false, Mode::Swap) => {
                             let defaults = [
                                 default_of(session.task, places, from),
@@ -2050,7 +2053,7 @@ mod console {
                             ];
                             session.changes.swap(places, from, place, defaults)
                         }
-                        (false, _) => session.changes.move_all(places, from, place, now()),
+                        (_, _) => session.changes.move_all(places, from, place, now()),
                     };
                     match moved {
                         Ok(()) => {

@@ -420,20 +420,23 @@ impl Places<'_> {
     /// it last moved here (nothing of the program reads them). Each slot it
     /// leaves gets an empty record and tag 0 and keeps its flag and time,
     /// which a write clears (`sections::clean`); a slot without a Pokémon
-    /// is not touched on either side. Names stay. Refused into the transport
-    /// box, and if `to` holds any Pokémon, even where they would fit. The
-    /// screen moves through `Changes`.
+    /// is not touched on either side. Put down on `from` itself, they stay
+    /// in their slots and get flag 0 and the time `now` all the same; the
+    /// transport box, put down on itself, keeps what it holds, as it keeps
+    /// no times. Names stay. Refused into the transport box from elsewhere,
+    /// and if another `to` holds any Pokémon, even where they would fit.
+    /// The screen moves through `Changes`.
     fn move_all(&mut self, from: usize, to: usize, now: [u8; STAMP_SIZE]) -> Result<(), Refusal> {
-        if !self.valid(from) || !self.valid(to) || from == to {
+        if !self.valid(from) || !self.valid(to) {
             return Err(Refusal::Place);
         }
-        if to == TRANSPORT {
+        if to == TRANSPORT && from != TRANSPORT {
             return Err(Refusal::IntoTransport);
         }
         if self.count(from) == 0 {
             return Err(Refusal::Empty);
         }
-        if self.count(to) != 0 {
+        if from != to && self.count(to) != 0 {
             return Err(Refusal::Occupied);
         }
         for slot in 0..BOX_SLOTS {
@@ -441,8 +444,10 @@ impl Places<'_> {
                 continue;
             }
             let (record, tag, flag, stamp) = self.get_slot(from, slot);
+            if from != to {
+                self.put_slot(from, slot, &empty_record(), 0, flag, &stamp);
+            }
             self.put_slot(to, slot, &record, tag, 0, &now);
-            self.put_slot(from, slot, &empty_record(), 0, flag, &stamp);
         }
         self.seal([from, to]);
         Ok(())
@@ -538,10 +543,13 @@ impl Places<'_> {
 /// now differs in either. So a place changed exactly when either differs: blue swaps back and forth,
 /// or round and back, change nothing; empty boxes that ended up at each
 /// other's places change nothing; L round its group back to the start
-/// changes nothing. A move of the green cursor is a change whatever
-/// follows, also when its Pokémon are moved back, as each Pokémon it moves
-/// gets the time of the move (`Places::move_all`). L touches only labels,
-/// so it hashes nothing, also in a group of 100 boxes.
+/// changes nothing. A put-down of the green cursor is a change whatever
+/// follows (`moved`), also on its own box and when its Pokémon are moved
+/// back, as each Pokémon it puts down gets the time of the move
+/// (`Places::move_all`), even where the clock gives a time a Pokémon
+/// already held; only the transport box put down on itself changes
+/// nothing, as it keeps no times. L touches only labels, so it hashes
+/// nothing, also in a group of 100 boxes.
 pub struct Changes {
     /// Each place's fingerprint when the screen opened.
     before: [Fingerprint; PLACES],
@@ -555,6 +563,8 @@ pub struct Changes {
     /// what its label shows, differ from when the screen opened.
     holds_other: [bool; PLACES],
     shows_other: [bool; PLACES],
+    /// The green cursor put Pokémon down with the time of the move.
+    moved: bool,
 }
 
 impl Changes {
@@ -566,6 +576,7 @@ impl Changes {
             labels_seen: [false; PLACES],
             holds_other: [false; PLACES],
             shows_other: [false; PLACES],
+            moved: false,
         }
     }
 
@@ -588,7 +599,10 @@ impl Changes {
         to: usize,
         now: [u8; STAMP_SIZE],
     ) -> Result<(), Refusal> {
-        self.around(places, from, to, |places| places.move_all(from, to, now))
+        self.around(places, from, to, |places| places.move_all(from, to, now))?;
+        // Only into the transport box, from itself, is nothing stamped.
+        self.moved |= to != TRANSPORT;
+        Ok(())
     }
 
     /// L with the blue cursor: the box of Bank at `place` goes to `position`
@@ -615,10 +629,10 @@ impl Changes {
         Ok(())
     }
 
-    /// Something changed: some place holds or shows something else than when
-    /// the screen opened.
+    /// Something changed: the green cursor put Pokémon down, or some place
+    /// holds or shows something else than when the screen opened.
     pub fn any(&self) -> bool {
-        (0..PLACES).any(|place| self.changed(place))
+        self.moved || (0..PLACES).any(|place| self.changed(place))
     }
 
     fn changed(&self, place: usize) -> bool {
@@ -1759,6 +1773,33 @@ mod tests {
             ]),
             (true, false)
         );
+        // Green put down on its own box: a change, its Pokémon hold the time
+        // of the put-down. The transport box on itself keeps no times: none.
+        assert_eq!(run(&[(false, 1, 1)]), (true, false));
+        assert_eq!(run(&[(false, OFFLINE + 1, OFFLINE + 1)]), (true, false));
+        assert_eq!(run(&[(false, TRANSPORT, TRANSPORT)]), (false, true));
+        // Green, and back, with a clock set back to the second the Pokémon
+        // already held, with flag 0: every byte as before, still a change.
+        let mut body = bank_body(&[]);
+        let at = body_slot(1, 0);
+        body[at.record.clone()].copy_from_slice(&pokemon(3));
+        let (flag, stamp) = at.data.unwrap();
+        body[flag] = 0;
+        body[stamp].copy_from_slice(&NOW);
+        let start = body.clone();
+        let mut offline = Offline::empty();
+        let mut changes = Changes::new();
+        let mut places = Places {
+            body: &mut body,
+            offline: &mut offline,
+        };
+        changes.move_all(&mut places, 1, 4, NOW).unwrap();
+        changes.move_all(&mut places, 4, 1, NOW).unwrap();
+        assert!(
+            places.body[body_slot(1, 0).record.start..label_range(1).start]
+                == start[body_slot(1, 0).record.start..label_range(1).start]
+        );
+        assert!(changes.any());
     }
 
     #[test]
@@ -1861,6 +1902,28 @@ mod tests {
             Err(Refusal::IntoTransport)
         );
         assert_eq!(places.move_all(1, 5, NOW), Err(Refusal::Empty));
+        assert_eq!(places.move_all(1, 1, NOW), Err(Refusal::Empty));
+        // Put down on their own box: they stay in their slots with flag 0
+        // and the time of this put-down; its other slots are not touched.
+        let later = [0xea, 0x07, 11, 9, 12, 31, 0, 0];
+        let before = places.body.to_vec();
+        places.move_all(4, 4, later).unwrap();
+        assert_eq!(places.count(4), 2);
+        for slot in 0..BOX_SLOTS {
+            let at = body_slot(4, slot);
+            let (flag, stamp) = at.data.clone().unwrap();
+            assert_eq!(
+                places.body[at.record.clone()],
+                before[at.record],
+                "slot {slot}"
+            );
+            assert_eq!(places.body[flag], 0, "slot {slot}");
+            assert_eq!(
+                places.body[stamp],
+                if slot < 2 { later } else { [0; 8] },
+                "slot {slot}"
+            );
+        }
     }
 
     #[test]
@@ -1878,6 +1941,10 @@ mod tests {
         assert_eq!(places.swap(TRANSPORT, 10, UNKNOWN), Err(Refusal::Place));
         assert_eq!(places.move_all(TRANSPORT, 9, NOW), Err(Refusal::Occupied));
         let untouched = places.body[body_slot(TRANSPORT, 5).record].to_vec();
+        // On itself it keeps what it holds, as it keeps no times.
+        let before = places.body.to_vec();
+        places.move_all(TRANSPORT, TRANSPORT, NOW).unwrap();
+        assert!(places.body[..] == before[..]);
         places.move_all(TRANSPORT, 10, NOW).unwrap();
         assert_eq!((places.count(TRANSPORT), places.count(10)), (0, 3));
         // Only the slots that held a Pokémon are emptied.

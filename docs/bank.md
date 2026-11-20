@@ -139,7 +139,7 @@ B puts a lifted box back, and the cursor goes back to its place with it. On a pl
 | Changed boxes, none checked | "Would you like to save and quit?" | Writes everything | Back to the boxes |
 | Changed nothing | "Quit moving Pokémon?" | Start screen | Back to the boxes |
 
-Nothing counts as changed when every box shows what it showed when the screen opened: its Pokémon in their slots, its name, its category and its position. So boxes swapped with the blue hand and back, and empty boxes that ended up at each other's places, count as unchanged. A move with the green hand always counts, also when its Pokémon are moved back. After a write comes "Success! Changes saved." and the start screen.
+Nothing counts as changed when every box shows what it showed when the screen opened: its Pokémon in their slots, its name, its category and its position. So boxes swapped with the blue hand and back, and empty boxes that ended up at each other's places, count as unchanged. Putting Pokémon down with the green hand always counts, also when they are moved back or put down with A on their own box (except the Transport Box's); B puts them back without a change. After a write comes "Success! Changes saved." and the start screen.
 
 **On the SD card**:
 
