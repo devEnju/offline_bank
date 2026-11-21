@@ -38,15 +38,7 @@ pub fn next_second(date: Date) -> Date {
     }
 }
 
-/// `name` without `prefix` at its start, compared as the SD card's FAT
-/// compares names: without regard to case. A name that fits 8.3, such as
-/// `mover1.bak`, may be listed in capitals.
-pub fn strip_prefix_ignoring_case<'a>(name: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
-    let (start, rest) = name.split_at_checked(prefix.len())?;
-    start.eq_ignore_ascii_case(prefix).then_some(rest)
-}
-
-/// `name` without `suffix` at its end, without regard to case.
+/// `name` without `suffix` at its end, compared without regard to case.
 pub fn strip_suffix_ignoring_case<'a>(name: &'a [u8], suffix: &[u8]) -> Option<&'a [u8]> {
     let (rest, end) = name.split_at_checked(name.len().checked_sub(suffix.len())?)?;
     end.eq_ignore_ascii_case(suffix).then_some(rest)
@@ -381,20 +373,9 @@ pub fn probe_extdata<X: Extdata>(ext: &mut X) -> Result<bool, X::Error> {
     Ok(same && past == Piece::Missing && listed && inside && !left)
 }
 
-/// No SD card: every call fails. For a settle that writes no backup.
-pub struct NoSd;
-impl Sd for NoSd {
-    fn put(&mut self, _: &Path, _: &[u8]) -> Result<(), ()> {
-        Err(())
-    }
-    fn get(&mut self, _: &Path, _: &mut [u8]) -> Result<Found, ()> {
-        Err(())
-    }
-    fn rename_dir(&mut self, _: &Path, _: &Path) -> Result<(), ()> {
-        Err(())
-    }
-}
-impl Extdata for NoSd {
+/// No extdata folders: every call fails. For a settle that writes no backup.
+pub struct NoBackup;
+impl Extdata for NoBackup {
     fn create(&mut self, _: &Path, _: u32) -> Result<(), ()> {
         Err(())
     }
@@ -406,7 +387,7 @@ impl Extdata for NoSd {
     }
     fn rest(&mut self) {}
 }
-impl Store for NoSd {
+impl Store for NoBackup {
     type Error = ();
     fn create_dir(&mut self, _: &Path) -> Result<(), ()> {
         Err(())
@@ -775,11 +756,6 @@ mod tests {
 
     #[test]
     fn names_compare_without_regard_to_case() {
-        assert_eq!(
-            strip_prefix_ignoring_case(b"INTERRUPTED-12", b"interrupted-"),
-            Some(&b"12"[..])
-        );
-        assert_eq!(strip_prefix_ignoring_case(b"inter", b"interrupted-"), None);
         assert_eq!(
             strip_suffix_ignoring_case(b"MOVER1.BAK", b".bak"),
             Some(&b"MOVER1"[..])

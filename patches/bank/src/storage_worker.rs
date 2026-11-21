@@ -22,7 +22,7 @@ use bank_common::{
     fault::Fault,
     fs::NoRoom,
     interrupted,
-    sdfiles::{self, Date, Extdata, NoSd, Store},
+    sdfiles::{self, Date, Extdata, NoBackup, Store},
     transfer_screen,
     worker::WorkerError,
 };
@@ -547,7 +547,7 @@ where
         rule,
         written,
         held,
-        None::<&mut NoSd>,
+        None::<&mut NoBackup>,
     )
 }
 

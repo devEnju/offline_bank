@@ -35,7 +35,7 @@
 
 use crate::{
     bank_files::{BankFiles, Files},
-    sdfiles::{self, Date, Error, Extdata, Failed, Found, Path, Piece, Sd, ROOT},
+    sdfiles::{self, Date, Error, Extdata, Failed, Found, Path, Piece, Sd, Store, ROOT},
 };
 use offline_core::{
     boxfile::{self, BoxFile, FILE_SIZE, NAME_TEXT},
@@ -58,8 +58,6 @@ const MOVER_GROUP: usize = BANK_GROUPS;
 const GROUPS: usize = BANK_GROUPS + 1;
 /// The characters of a folder's name: two halves of eight.
 const NAME: usize = 16;
-/// The folders Bank's extdata has room for.
-const MOST_FOLDERS: usize = 10;
 
 /// A state of the Bank as the journal names it: the copy of the Bank file
 /// and of the transport box in use, each with its checksum. Every save
@@ -269,8 +267,8 @@ type Fill<'a, E, S> = &'a mut dyn FnMut(usize, &mut [u8; FILE_SIZE]) -> Result<(
 
 /// Makes the file `path` hold the positions `included`, each from `fill`,
 /// with zeros at a position before the last that is not included. It is
-/// made anew, written whole and read back against what was meant, by a
-/// digest of each position, so that it needs room for one box alone.
+/// made anew, written whole and read back against what was meant
+/// (`group_is`).
 pub(crate) fn write_group<X: Extdata, E>(
     ext: &mut X,
     path: &Path,
@@ -281,55 +279,57 @@ pub(crate) fn write_group<X: Extdata, E>(
     let length = group_length(included);
     ext.create(path, length).map_err(Error::Sd)?;
     let count = length as usize / FILE_SIZE;
-    let mut sums = [[0u8; 32]; GROUP];
-    for (position, sum) in sums.iter_mut().enumerate().take(count) {
-        if included[position] {
-            fill(position, scratch)?;
-        } else {
-            scratch.fill(0);
-        }
-        *sum = digest(&scratch[..]);
+    for (position, is_included) in included.iter().enumerate().take(count) {
+        place_bytes(*is_included, position, fill, scratch)?;
         ext.write_at(path, (position * FILE_SIZE) as u32, &scratch[..])
             .map_err(Error::Sd)?;
     }
-    for (position, sum) in sums.iter().enumerate().take(count) {
-        let found = ext
-            .read_at(path, (position * FILE_SIZE) as u32, &mut scratch[..])
-            .map_err(Error::Sd)?;
-        if found != Piece::Read || digest(&scratch[..]) != *sum {
-            return Err(Error::NotAsWritten);
-        }
+    if group_is(ext, path, included, fill, scratch)? {
+        Ok(())
+    } else {
+        Err(Error::NotAsWritten)
     }
-    Ok(())
 }
 
-/// Whether the file `path` holds exactly what `write_group` would write.
+/// What a file holds at `position`: its box, or zeros.
+fn place_bytes<E, S>(
+    is_included: bool,
+    position: usize,
+    fill: Fill<'_, E, S>,
+    out: &mut [u8; FILE_SIZE],
+) -> Result<(), Error<E, S>> {
+    if is_included {
+        fill(position, out)
+    } else {
+        out.fill(0);
+        Ok(())
+    }
+}
+
+/// Whether the file `path` holds exactly what `write_group` writes, and ends
+/// there. Each position is compared by its digest, so that this needs room
+/// for one box alone.
 fn group_is<X: Extdata, E>(
     ext: &mut X,
     path: &Path,
     included: &[bool; GROUP],
     fill: Fill<'_, E, X::Error>,
-    meant: &mut [u8; FILE_SIZE],
-    found: &mut [u8],
+    scratch: &mut [u8; FILE_SIZE],
 ) -> Result<bool, Error<E, X::Error>> {
     let length = group_length(included);
     let count = length as usize / FILE_SIZE;
     for (position, is_included) in included.iter().enumerate().take(count) {
-        if *is_included {
-            fill(position, meant)?;
-        } else {
-            meant.fill(0);
-        }
+        place_bytes(*is_included, position, fill, scratch)?;
+        let meant = digest(&scratch[..]);
         let piece = ext
-            .read_at(path, (position * FILE_SIZE) as u32, &mut found[..FILE_SIZE])
+            .read_at(path, (position * FILE_SIZE) as u32, &mut scratch[..])
             .map_err(Error::Sd)?;
-        if piece != Piece::Read || found[..FILE_SIZE] != meant[..] {
+        if piece != Piece::Read || digest(&scratch[..]) != meant {
             return Ok(false);
         }
     }
-    // And it ends there.
     let behind = ext
-        .read_at(path, length, &mut found[..1])
+        .read_at(path, length, &mut scratch[..1])
         .map_err(Error::Sd)?;
     Ok(behind == Piece::Missing)
 }
@@ -348,14 +348,13 @@ pub fn back_up<F: Files, X: Extdata>(
         return Ok(());
     };
     let side = RECORD_SIZE * TRANSPORT_SLOTS + TRANSPORT_SLOTS;
-    if staging.len() < BANK_SIZE + 2 * FILE_SIZE + 2 * side + BOX_COUNT * PRINT {
+    if staging.len() < BANK_SIZE + FILE_SIZE + 2 * side + BOX_COUNT * PRINT {
         return Err(Error::Staging);
     }
     let folder = folder(State::of(&pending.before), State::of(&pending.after));
     let (payload, rest) = staging.split_at_mut(BANK_SIZE);
     let (out, rest) = rest.split_at_mut(FILE_SIZE);
     let out: &mut [u8; FILE_SIZE] = out.try_into().map_err(|_| Error::Staging)?;
-    let (found, rest) = rest.split_at_mut(FILE_SIZE);
     let (old, rest) = rest.split_at_mut(side);
     let (new, rest) = rest.split_at_mut(side);
     let prints = &mut rest[..BOX_COUNT * PRINT];
@@ -415,7 +414,7 @@ pub fn back_up<F: Files, X: Extdata>(
                     boxfile::encode_bank_box(payload, place_at(group, position), to)
                         .map_err(|_| Error::Staging)
                 };
-                if !group_is(ext, &path, &included, &mut fill, out, found)? {
+                if !group_is(ext, &path, &included, &mut fill, out)? {
                     write_group(ext, &path, &included, &mut fill, out)?;
                 }
             }
@@ -432,7 +431,7 @@ pub fn back_up<F: Files, X: Extdata>(
                 boxfile::encode_transport(records, tags, &[0; NAME_TEXT], to)
                     .map_err(|_| Error::Staging)
             };
-            if !group_is(ext, &path, &included, &mut fill, out, found)? {
+            if !group_is(ext, &path, &included, &mut fill, out)? {
                 write_group(ext, &path, &included, &mut fill, out)?;
             }
         }
@@ -492,59 +491,68 @@ pub fn settle<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
         .split_at_mut(FILE_SIZE);
     let first: &mut [u8; FILE_SIZE] = first.try_into().map_err(|_| Error::Staging)?;
     let second: &mut [u8; FILE_SIZE] = second.try_into().map_err(|_| Error::Staging)?;
-    let mut names = [[0u8; NAME]; MOST_FOLDERS];
-    let mut count = 0;
-    ext.list(&Path::new(b"/"), &mut |name, is_folder| {
-        if is_folder && halves(name).is_some() && count < MOST_FOLDERS {
-            names[count].copy_from_slice(name);
-            count += 1;
-        }
-    })
-    .map_err(Error::Sd)?;
-    for name in &names[..count] {
-        settle_folder(sd, ext, name, side(name, now), first, second)?;
+    while let Some(folder) = next(ext, &Path::new(b"/"), &of_a_write).map_err(Error::Sd)? {
+        let side = side(&folder.text()[1..], now);
+        settle_folder(sd, ext, &folder, side, first, second)?;
     }
     retire(sd, date).map_err(Error::Sd)
 }
 
-/// Settles the folder `name` as `side`: the cells back for the state before,
+/// Whether an entry of a root folder is a folder named by two states.
+fn of_a_write(name: &[u8], is_folder: bool) -> bool {
+    is_folder && halves(name).is_some()
+}
+
+/// The first entry of `folder` that is `wanted`. Each step that settles a
+/// folder removes what it found, so the list is read again for the next.
+fn next<S: Store>(
+    store: &mut S,
+    folder: &Path,
+    wanted: &dyn Fn(&[u8], bool) -> bool,
+) -> Result<Option<Path>, S::Error> {
+    let mut found = None;
+    store.list(folder, &mut |name, is_folder| {
+        if found.is_none() && wanted(name, is_folder) {
+            let mut path = *folder;
+            if !folder.text().ends_with(b"/") {
+                path.push(b"/");
+            }
+            path.push(name);
+            found = Some(path);
+        }
+    })?;
+    Ok(found)
+}
+
+/// Settles `folder` as `side`: the cells back for the state before,
 /// what is kept on the SD card in a folder of the same name, proven, and
-/// then the folder gone. A file of it that no patch wrote stays, with the
-/// folder. Nothing goes before all that is kept is on the card.
+/// then the folder gone, with every file in it. Nothing goes before all
+/// that is kept is on the card.
 fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
     sd: &mut S,
     ext: &mut X,
-    name: &[u8],
+    folder: &Path,
     side: Side,
     first: &mut [u8; FILE_SIZE],
     second: &mut [u8; FILE_SIZE],
 ) -> Result<(), Error<E, S::Error>> {
-    let mut folder = Path::new(b"/");
-    folder.push(name);
     if side == Side::Before {
-        put_back(sd, ext, &folder, first, second).map_err(Error::Sd)?;
+        put_back(sd, ext, folder, first, second).map_err(Error::Sd)?;
     }
     let kept = match side {
         Side::Before => NEW,
         Side::After => OLD,
         Side::Unknown => OLD | NEW | BAK,
     };
-    let found = entries(ext, &folder).map_err(Error::Sd)?;
-    let card = on_card(name);
+    let found = entries(ext, folder).map_err(Error::Sd)?;
+    let card = on_card(&folder.text()[1..]);
     for proving in [false, true] {
-        keep(
-            sd, ext, &folder, &card, &found, kept, proving, first, second,
-        )?;
+        keep(sd, ext, folder, &card, &found, kept, proving, first, second)?;
     }
-    for (group, kinds) in found.iter().enumerate() {
-        for (kind, _) in KINDS.iter().filter(|(kind, _)| kinds & kind != 0) {
-            ext.delete(&group_file(&folder, group, *kind))
-                .map_err(Error::Sd)?;
-        }
+    while let Some(file) = next(ext, folder, &|_, is_folder| !is_folder).map_err(Error::Sd)? {
+        ext.delete(&file).map_err(Error::Sd)?;
     }
-    // A folder that still holds a file of no patch stays.
-    let _ = ext.remove_dir(&folder);
-    Ok(())
+    ext.remove_dir(folder).map_err(Error::Sd)
 }
 
 /// Every whole box of the kinds `kept` in `folder` as a file of `card`:
@@ -599,22 +607,13 @@ fn keep<S: Sd, X: Extdata<Error = S::Error>, E>(
 /// settled write keeps, whole: an empty one goes, any other is renamed, in
 /// one step, to a new folder of `date` (`sdfiles::free_dated_folder`).
 fn retire<S: Sd>(sd: &mut S, date: Date) -> Result<(), S::Error> {
-    loop {
-        let mut next = None;
-        sd.list(&Path::new(ROOT), &mut |name, is_folder| {
-            if is_folder && halves(name).is_some() && next.is_none() {
-                next = Some(on_card(name));
-            }
-        })?;
-        let Some(folder) = next else {
-            return Ok(());
-        };
-        if sd.remove_dir(&folder).is_ok() {
-            continue;
+    while let Some(folder) = next(sd, &Path::new(ROOT), &of_a_write)? {
+        if sd.remove_dir(&folder).is_err() {
+            let kept = sdfiles::free_dated_folder(sd, date, RETIRED)?;
+            sd.rename_dir(&folder, &kept)?;
         }
-        let kept = sdfiles::free_dated_folder(sd, date, RETIRED)?;
-        sd.rename_dir(&folder, &kept)?;
     }
+    Ok(())
 }
 
 /// Puts each whole cell of `folder`'s `.bak` back, unless the cell holds it
@@ -655,10 +654,7 @@ fn put_back<S: Sd, X: Extdata<Error = S::Error>>(
 mod tests {
     use super::*;
     extern crate std;
-    use crate::{
-        sdfiles::Store,
-        testing::{ExtCard, Refused, Shared},
-    };
+    use crate::testing::{ExtCard, Refused, Shared};
     use offline_core::Slot;
     use std::{vec, vec::Vec};
 
@@ -900,7 +896,7 @@ mod tests {
         settle_folder(
             &mut disk.clone(),
             &mut ExtCard(disk.clone()),
-            &folder.text()[1..],
+            folder,
             side,
             &mut first,
             &mut second,
@@ -1043,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_of_no_patch_stays_with_its_folder_and_blocks_nothing() {
+    fn a_file_of_no_patch_goes_with_its_folder() {
         let (disk, folder) = card();
         let mut foreign = folder;
         foreign.push(b"/notes.txt");
@@ -1052,9 +1048,8 @@ mod tests {
         settled(&disk, &folder, Side::After).unwrap();
         assert_eq!(kept_names(&disk), expected(Side::After));
         let state = disk.0.borrow();
-        assert_eq!(state.ext.len(), 1);
-        assert!(state.ext.contains_key(foreign.text()));
-        assert!(state.ext_dirs.contains(folder.text()));
+        assert!(state.ext.is_empty());
+        assert!(state.ext_dirs.is_empty());
     }
 
     #[test]
