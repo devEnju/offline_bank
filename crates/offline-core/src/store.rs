@@ -644,52 +644,38 @@ impl<S: Storage> BankStore<S> {
         Ok(Reconciled { head, decision })
     }
 
-    /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`Metadata::ask`), and keeps `Metadata::unlocked`: the same record with the next sequence number
-    /// and `ask`. Nothing is written when the record says so already, unless
-    /// it leaves the save to the question while one replica does not hold
-    /// it: one that does not read, is missing, or holds another record.
-    /// Transporter reads the question only from a journal whose replicas
-    /// both read, and replaces or creates none, so the record is written
-    /// again, which replaces or creates that replica (`put_replica`).
-    pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
-        self.mark(head, Some(ask), None)
-    }
-
     /// Unlocks the save in progress for Transporter's question
-    /// (`Metadata::unlocked`), whatever game Bank finds from then on, in the
-    /// same way: the same record with the next sequence number.
+    /// (`Metadata::unlocked`), whatever game Bank finds from then on: `mark`
+    /// with `ask` as it is.
     pub fn unlock(&mut self, head: &Head) -> Result<Head, StoreError<S::Error>> {
-        self.mark(head, None, Some(true))
+        self.mark(head, head.metadata.ask, true)
     }
 
-    /// Takes the save in progress away from Transporter's question while its
-    /// backup is written: the same record with the next sequence number,
-    /// with neither `ask` nor `unlocked`. Nothing is written if it holds
-    /// neither.
-    pub fn unmark(&mut self, head: &Head) -> Result<Head, StoreError<S::Error>> {
-        self.mark(head, Some(false), Some(false))
-    }
-
-    /// The record of `head` with `ask` and `unlocked` where they are given,
-    /// written only if it differs, or if Transporter's question then settles
-    /// the save while one replica does not hold the record. One function
-    /// for the three marks: the payload's room is counted (docs/internals.md,
-    /// "Placement").
+    /// What the record of the save in progress says of Transporter's
+    /// question, both marks in one record: `ask` leaves the save to it or
+    /// takes it back (`Metadata::ask`), `unlocked` is `Metadata::unlocked`.
+    /// It is the same record with the next sequence number. Nothing is
+    /// written when the record says so already, unless it leaves the save to
+    /// the question while one replica does not hold it: one that does not
+    /// read, is missing, or holds another record. Transporter reads the
+    /// question only from a journal whose replicas both read, and replaces
+    /// or creates none, so the record is written again, which replaces or
+    /// creates that replica (`put_replica`). Out of line: the payload's room
+    /// is counted (docs/internals.md, "Placement").
     #[inline(never)]
-    fn mark(
+    pub fn mark(
         &mut self,
         head: &Head,
-        ask: Option<bool>,
-        unlocked: Option<bool>,
+        ask: bool,
+        unlocked: bool,
     ) -> Result<Head, StoreError<S::Error>> {
         let head = self.check_head(head)?;
         if !matches!(head.phase(), Phase::Prepared(_)) {
             return Err(StoreError::NoPendingTransfer);
         }
         let marked = Metadata {
-            ask: ask.unwrap_or(head.metadata.ask),
-            unlocked: unlocked.unwrap_or(head.metadata.unlocked),
+            ask,
+            unlocked,
             ..head.metadata
         };
         if marked == head.metadata

@@ -446,7 +446,7 @@ fn make_group<F: Files, X: Extdata>(
         return Ok(());
     }
     ext.rest();
-    files.unmark().map_err(Error::Files)?;
+    files.mark(false, false).map_err(Error::Files)?;
     write_group(ext, path, included, fill, out)
 }
 
@@ -471,16 +471,17 @@ pub fn remove<X: Extdata>(ext: &mut X, folder: &Path) -> Result<(), X::Error> {
 
 /// START found the game with one of the save's two images, which decides the
 /// save: the game and the Bank then hold every Pokémon, and nothing of a
-/// backup is kept. A backup a cut left in part is finished first, so that a
-/// folder beside a clean journal is always whole, also where a cut comes
-/// before the caller's `remove`. The answer is the folder, if there is one.
-pub fn finish<F: Files, X: Extdata>(
+/// backup is kept. Its folder goes before the journal is settled, with the
+/// save taken away from Transporter's question first, so that no folder in
+/// part ever stands beside a clean journal. A cut leaves the save in
+/// progress: the next START goes on, or writes the backup again if the game
+/// is gone by then (`back_up`).
+pub fn discard<F: Files, X: Extdata>(
     files: &mut BankFiles<F>,
-    staging: &mut [u8],
     ext: &mut X,
-) -> Result<Option<Path>, Failed<F, X>> {
+) -> Result<(), Failed<F, X>> {
     let Phase::Prepared(pending) = files.phase().map_err(Error::Files)? else {
-        return Ok(None);
+        return Ok(());
     };
     let folder = folder(State::of(&pending.before), State::of(&pending.after));
     let name = &folder.text()[1..];
@@ -489,10 +490,11 @@ pub fn finish<F: Files, X: Extdata>(
     })
     .map_err(Error::Sd)?;
     if found.is_none() {
-        return Ok(None);
+        return Ok(());
     }
-    back_up(files, staging, ext)?;
-    Ok(Some(folder))
+    ext.rest();
+    files.mark(false, false).map_err(Error::Files)?;
+    remove(ext, &folder).map_err(Error::Sd)
 }
 
 /// Whenever the journal is clean, once the Bank it names was read whole, so

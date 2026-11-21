@@ -220,13 +220,13 @@ impl<S: Storage> BankSession<S> {
         Ok(reconciled.decision)
     }
 
-    /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`BankStore::ask`). Nothing is written when the record says so
+    /// Sets both marks of the save in progress in one record
+    /// (`BankStore::mark`). Nothing is written when the record says so
     /// already. The answer is whether Transporter's question settles it now
-    /// (`Metadata::asks`): also when it was unlocked.
-    pub fn ask(&mut self, ask: bool) -> Result<bool, Error<S::Error>> {
+    /// (`Metadata::asks`).
+    pub fn mark(&mut self, ask: bool, unlocked: bool) -> Result<bool, Error<S::Error>> {
         self.ensure_usable()?;
-        let result = self.store.ask(&self.head, ask);
+        let result = self.store.mark(&self.head, ask, unlocked);
         self.marked(result)?;
         Ok(self.head.metadata().asks())
     }
@@ -241,14 +241,6 @@ impl<S: Storage> BankSession<S> {
     pub fn unlock(&mut self) -> Result<(), Error<S::Error>> {
         self.ensure_usable()?;
         let result = self.store.unlock(&self.head);
-        self.marked(result)
-    }
-
-    /// Takes the save in progress away from Transporter's question
-    /// (`BankStore::unmark`).
-    pub fn unmark(&mut self) -> Result<(), Error<S::Error>> {
-        self.ensure_usable()?;
-        let result = self.store.unmark(&self.head);
         self.marked(result)
     }
 

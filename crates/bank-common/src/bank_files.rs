@@ -632,13 +632,15 @@ impl<F: Files> BankFiles<F> {
         Ok(())
     }
 
-    /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`offline_core::Metadata::ask`). Only the journal is written,
-    /// and only if it does not say so already. The answer is whether
-    /// Transporter's question settles it now, also when it was unlocked
+    /// Sets both marks of the save in progress in one record: `ask` leaves
+    /// it to Transporter's question or takes it back
+    /// (`offline_core::Metadata::ask`), `unlocked` is
+    /// `offline_core::Metadata::unlocked`. Only the journal is written, and
+    /// only if it does not say so already. The answer is whether
+    /// Transporter's question settles it now
     /// (`offline_core::Metadata::asks`).
-    pub fn ask(&mut self, ask: bool) -> Outcome<bool, F> {
-        self.bank()?.ask(ask).map_err(Error::Bank)
+    pub fn mark(&mut self, ask: bool, unlocked: bool) -> Outcome<bool, F> {
+        self.bank()?.mark(ask, unlocked).map_err(Error::Bank)
     }
 
     /// Unlocks the save in progress for Transporter's question, whatever
@@ -651,13 +653,6 @@ impl<F: Files> BankFiles<F> {
     /// Whether the save in progress was unlocked.
     pub fn unlocked(&mut self) -> Outcome<bool, F> {
         Ok(self.bank()?.unlocked())
-    }
-
-    /// Takes the save in progress away from Transporter's question, while a
-    /// file of its backup is written (`interrupted::back_up`). Only the
-    /// journal is written, and only if it marks the save.
-    pub fn unmark(&mut self) -> Outcome<(), F> {
-        self.bank()?.unmark().map_err(Error::Bank)
     }
 
     /// Resolves a prepared save toward the side `decision` names, for a

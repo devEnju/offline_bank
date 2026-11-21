@@ -1128,7 +1128,7 @@ impl Runtime {
                 self.submit(task, Step::Recover, Job::Recover { game, date })?;
                 Ok(None)
             }
-            // The save in progress waits for its game, and nothing was
+            // The save in progress waits for its game, with its backup
             // written. The original's message for another copy of a game
             // names it; the start screen follows, where the game can be put
             // in and START pressed again.

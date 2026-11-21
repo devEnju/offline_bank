@@ -608,14 +608,16 @@ fn equal_sequence_disagreement_is_rejected() {
 /// The save in progress of `prepare`, left to Transporter's question.
 fn asked(memory: Memory) -> (BankStore<Memory>, Head) {
     let (mut store, head) = prepare(memory);
-    let head = store.ask(&head, true).unwrap();
+    let head = store.mark(&head, true, head.metadata().unlocked).unwrap();
     (store, head)
 }
 
 #[test]
 fn a_save_in_progress_left_to_transporters_question_keeps_everything_else() {
     let (mut store, prepared) = prepare(baseline());
-    let head = store.ask(&prepared, true).unwrap();
+    let head = store
+        .mark(&prepared, true, prepared.metadata().unlocked)
+        .unwrap();
     assert!(head.metadata().ask);
     assert_eq!(head.phase(), prepared.phase());
     assert_eq!(head.metadata().sequence, prepared.metadata().sequence + 1);
@@ -624,15 +626,18 @@ fn a_save_in_progress_left_to_transporters_question_keeps_everything_else() {
     // Asked again: nothing is written. Taken back: the record before, with
     // the next sequence number.
     let before = store.storage_mut().bytes.clone();
-    assert_eq!(store.ask(&head, true), Ok(head));
+    assert_eq!(store.mark(&head, true, head.metadata().unlocked), Ok(head));
     assert_eq!(store.storage_mut().bytes, before);
-    let back = store.ask(&head, false).unwrap();
+    let back = store.mark(&head, false, head.metadata().unlocked).unwrap();
     assert!(!back.metadata().ask);
     assert_eq!(back.phase(), prepared.phase());
     // A Bank at rest has nothing to leave to it.
     let mut store = BankStore::new(baseline(), Layout::new(CAPACITY));
     let head = inspect_all(&mut store).unwrap();
-    assert_eq!(store.ask(&head, true), Err(StoreError::NoPendingTransfer));
+    assert_eq!(
+        store.mark(&head, true, head.metadata().unlocked),
+        Err(StoreError::NoPendingTransfer)
+    );
 }
 
 #[test]
@@ -650,9 +655,11 @@ fn an_unlocked_save_in_progress_is_left_to_transporter_whatever_bank_finds_later
     let before = store.storage_mut().bytes.clone();
     assert_eq!(store.unlock(&head), Ok(head));
     assert_eq!(store.storage_mut().bytes, before);
-    let asked = store.ask(&head, true).unwrap();
+    let asked = store.mark(&head, true, head.metadata().unlocked).unwrap();
     assert!(asked.metadata().ask && asked.metadata().unlocked);
-    let back = store.ask(&asked, false).unwrap();
+    let back = store
+        .mark(&asked, false, asked.metadata().unlocked)
+        .unwrap();
     assert!(!back.metadata().ask && back.metadata().unlocked);
     // Transporter's answer settles it, and the record after holds neither.
     let mut journal = Journal::new(store.into_inner());
@@ -757,7 +764,7 @@ fn transporter_settles_only_a_save_left_to_it_and_only_as_it_read_it() {
     // A record that changed since it was read.
     let (store, head) = asked(baseline());
     let mut store = BankStore::new(store.into_inner(), Layout::new(CAPACITY));
-    store.ask(&head, false).unwrap();
+    store.mark(&head, false, head.metadata().unlocked).unwrap();
     let before = store.into_inner();
     let mut journal = Journal::new(before.clone());
     assert_eq!(
@@ -772,11 +779,13 @@ fn a_cut_while_asking_or_settling_leaves_the_record_before_or_after() {
     let (store, prepared) = prepare(baseline());
     let base = store.into_inner().reboot();
     let mut complete = BankStore::new(base.clone(), Layout::new(CAPACITY));
-    complete.ask(&prepared, true).unwrap();
+    complete
+        .mark(&prepared, true, prepared.metadata().unlocked)
+        .unwrap();
     let total = complete.into_inner().operations;
     for cut in 0..=total {
         let mut store = BankStore::new(base.clone().cut_after(cut), Layout::new(CAPACITY));
-        let _ = store.ask(&prepared, true);
+        let _ = store.mark(&prepared, true, prepared.metadata().unlocked);
         let mut store = BankStore::new(store.into_inner().reboot(), Layout::new(CAPACITY));
         let head = inspect_all(&mut store).unwrap_or_else(|err| panic!("ask cut {cut}: {err:?}"));
         assert_eq!(head.phase(), prepared.phase(), "ask cut {cut}");
@@ -830,7 +839,7 @@ fn asking_again_writes_a_record_that_is_missing_or_holds_another() {
                 _ => record[9] ^= 1,
             }
             let mut store = BankStore::new(memory, layout);
-            let head = store.ask(&head, true).unwrap();
+            let head = store.mark(&head, true, head.metadata().unlocked).unwrap();
             let memory = store.into_inner().reboot();
             for slot in [Slot::A, Slot::B] {
                 let at = layout.metadata_offset(slot) as usize;
@@ -847,7 +856,7 @@ fn asking_again_writes_a_record_that_is_missing_or_holds_another() {
     let (store, head) = asked(baseline());
     let mut store = BankStore::new(store.into_inner().reboot(), layout);
     let before = store.storage_mut().bytes.clone();
-    store.ask(&head, true).unwrap();
+    store.mark(&head, true, head.metadata().unlocked).unwrap();
     assert_eq!(store.storage_mut().bytes, before);
 }
 
@@ -859,7 +868,7 @@ fn asking_again_replaces_a_record_a_cut_left_unreadable() {
         let mut memory = store.into_inner().reboot().console();
         memory.unreadable[unit] = true;
         let mut store = BankStore::new(memory, layout);
-        let head = store.ask(&head, true).unwrap();
+        let head = store.mark(&head, true, head.metadata().unlocked).unwrap();
         // Both records read again, and Transporter finds the question.
         let mut journal = Journal::new(store.into_inner().reboot());
         assert!(journal.readable(), "record {unit}");

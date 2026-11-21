@@ -777,8 +777,7 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     // refused: it could not be put back.
     let mut changed = [false; OFFLINE_COUNT];
     for (index, changes) in changed.iter_mut().enumerate() {
-        let differs = differs(sd, index, &offline.files[index], scratch)?;
-        *changes = request.checked[OFFLINE + index] || differs;
+        *changes = differs(sd, index, &offline.files[index], scratch)?;
     }
     // The states the save goes between, and the folder of the cells.
     let [before, after] = files

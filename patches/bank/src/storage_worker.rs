@@ -22,7 +22,7 @@ use bank_common::{
     fault::Fault,
     fs::NoRoom,
     interrupted,
-    sdfiles::{self, Date, Extdata, Path, Store},
+    sdfiles::{self, Date, Extdata, Store},
     transfer_screen,
     worker::WorkerError,
 };
@@ -504,8 +504,9 @@ pub enum Settled {
     /// The game holds neither, or is not there: settled by what it moved.
     ByMoves(RecoveryDecision),
     /// Not settled: it moved Pokémon both ways, and its game is not there,
-    /// or only on the other kind of copy. It waits for its game. Nothing is
-    /// written, but a save left to Transporter's question is taken back.
+    /// or only on the other kind of copy. It waits for its game. At START
+    /// its backup is written, and a save left to Transporter's question is
+    /// taken back.
     Waits,
     /// Not settled: it moved Pokémon both ways, and its game is there on the
     /// kind of copy it was made with, saved on since, so that it no longer
@@ -550,24 +551,21 @@ pub trait Backup<F: Files> {
     fn write(&mut self, _: &mut BankFiles<F>, _: &mut [u8]) -> Stopped<bool, F> {
         Ok(true)
     }
-    /// The game decides the save: a folder a cut left in part is finished,
-    /// before the journal goes clean. `false` for no room.
-    fn finish(&mut self, _: &mut BankFiles<F>, _: &mut [u8]) -> Stopped<bool, F> {
+    /// The game decides the save: the folder goes, before the journal is
+    /// settled. `false` for no room for the journal's record.
+    fn discard(&mut self, _: &mut BankFiles<F>) -> Stopped<bool, F> {
         Ok(true)
     }
-    /// The journal is clean, and the game decided: the folder goes.
-    fn remove(&mut self) {}
 }
 impl<F: Files> Backup<F> for () {}
 
 /// START's backup, in the folders of Bank's extdata (`interrupted`).
 pub struct Kept<'a, X> {
     ext: &'a mut X,
-    folder: Option<Path>,
 }
 impl<'a, X> Kept<'a, X> {
     pub fn new(ext: &'a mut X) -> Self {
-        Self { ext, folder: None }
+        Self { ext }
     }
 }
 impl<F: Files, X: Extdata> Backup<F> for Kept<'_, X>
@@ -583,19 +581,13 @@ where
             Err(error) => sd_ended::<_, X>(error, Fault::JournalRecovery).map(|_| false),
         }
     }
-    fn finish(&mut self, files: &mut BankFiles<F>, staging: &mut [u8]) -> Stopped<bool, F> {
-        match interrupted::finish(files, staging, self.ext) {
-            Ok(folder) => {
+    fn discard(&mut self, files: &mut BankFiles<F>) -> Stopped<bool, F> {
+        match interrupted::discard(files, self.ext) {
+            Ok(()) => {
                 self.ext.rest();
-                self.folder = folder;
                 Ok(true)
             }
             Err(error) => sd_ended::<_, X>(error, Fault::JournalRecovery).map(|_| false),
-        }
-    }
-    fn remove(&mut self) {
-        if let Some(folder) = self.folder.take() {
-            let _ = interrupted::remove(self.ext, &folder);
         }
     }
 }
@@ -646,20 +638,15 @@ where
     }
     match matched {
         // The game decides the save, and nothing of a backup is kept: its
-        // folder, finished first if a cut left it in part, goes once the
-        // journal is clean. A cut in between leaves it whole for the opening.
+        // folder goes first, so that none stands beside the clean journal.
         Match::Before | Match::After => {
-            if !backup.finish(files, staging)? {
+            if !backup.discard(files)? {
                 return Ok(Settled::NoSpace);
             }
-            let result = settled(
+            settled(
                 rule,
                 files.reconcile(evidence.fingerprint).map(Settled::Exact),
-            );
-            if matches!(result, Ok(Settled::Exact(_))) {
-                backup.remove();
-            }
-            result
+            )
         }
         // A save that is neither image, on the kind of copy the save in
         // progress was made with: the game was played on, a new game was
@@ -712,20 +699,21 @@ where
         if !backup.write(files, staging)? {
             return Ok(Settled::NoSpace);
         }
-        // The backup is whole: an unlock stands again, and bit 2 goes by
-        // what was seen; an unlocked save is Transporter's too. No room to
-        // write the record again leaves the save waiting for the next START,
-        // as no room for the backup does.
-        let marked = if unlocked { files.unlock() } else { Ok(()) };
+        // The backup is whole: one record has an unlock stand again and bit
+        // 2 go by what was seen; an unlocked save is Transporter's too. No
+        // room to write it leaves the save waiting for the next START, as no
+        // room for the backup does.
         return settled(
             rule,
-            marked.and_then(|()| files.ask(seen)).map(|asks| {
-                if asks {
-                    Settled::Asks
-                } else {
-                    Settled::Waits
-                }
-            }),
+            files.mark(seen, unlocked).map(
+                |asks| {
+                    if asks {
+                        Settled::Asks
+                    } else {
+                        Settled::Waits
+                    }
+                },
+            ),
         );
     };
     settled(rule, files.reconcile_as(decision).map(Settled::ByMoves))
@@ -2490,12 +2478,10 @@ mod tests {
 
     #[test]
     fn a_game_found_again_decides_the_save_and_loses_nothing_wherever_it_is_cut() {
-        use bank_common::{interrupted, sdfiles};
+        use bank_common::interrupted;
         let (old, sessions) = sessions();
         let new = &sessions[3].1;
         let date = [2026, 11, 16, 14, 3, 7];
-        let mut kept = sdfiles::dated_folder(date);
-        kept.push(interrupted::RETIRED);
         let mut game = Simulated::loaded(true);
         let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
         drop(files);
@@ -2527,17 +2513,36 @@ mod tests {
                 .unwrap();
                 let state = card.0.borrow();
                 assert!(state.ext.is_empty(), "cut {cut}");
-                // Only a cut between the journal and the folder's deletion
-                // leaves the side the Bank does not hold, whole.
-                for (path, bytes) in state.sd.iter() {
-                    assert!(path.starts_with(kept.text()), "cut {cut}: {path:?}");
-                    assert!(
-                        offline_core::boxfile::BoxFile::parse(bytes).is_ok(),
-                        "cut {cut}: {path:?}"
-                    );
-                }
+                // The folder went before the journal: nothing is kept.
+                assert!(state.sd.is_empty(), "cut {cut}");
             }
         }
+    }
+
+    #[test]
+    fn a_game_found_again_settles_a_backup_in_part_on_a_full_sd_card() {
+        use bank_common::interrupted;
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+        drop(files);
+        game.save = Some((OTHER, LOADED));
+        let card = disk.like(true).copy();
+        start_backed(&card, &mut game, &in_progress).unwrap();
+        let (lost, _) = interrupted::file(&backup_folder(&in_progress), 0, true);
+        {
+            let mut state = card.0.borrow_mut();
+            state.ext.remove(lost.text());
+            state.ext_written.remove(lost.text());
+            state.sd_full = true;
+        }
+        game.save = Some((BEFORE, LOADED));
+        assert_eq!(
+            start_backed(&card, &mut game, &in_progress).unwrap(),
+            Settled::Exact(RecoveryDecision::KeepBefore)
+        );
+        assert!(card.0.borrow().ext.is_empty());
     }
 
     #[test]
@@ -2568,7 +2573,7 @@ mod tests {
             let (disk, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
             game.save = Some((OTHER, LOADED));
             if !has_folder {
-                files.ask(true).unwrap();
+                files.mark(true, false).unwrap();
             }
             if unlock {
                 files.unlock().unwrap();
