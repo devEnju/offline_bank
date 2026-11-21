@@ -268,45 +268,28 @@ mod native {
         program: PhantomData<(P, *mut ())>,
     }
 
-    type CloseArchive = unsafe extern "aapcs" fn(*const u32, u64) -> i32;
-
     impl<P: Program> Archive<P> {
         /// Opens archive 9 with an empty path on the program's session.
         pub fn open() -> Result<Self, Code> {
             let empty = [0u8; 4];
-            Self::open_at(
+            let path = Path {
+                kind: PATH_EMPTY,
+                data: empty.as_ptr(),
+                byte_len: 1,
+            };
+            Self::held(open_at::<P>(
+                unsafe { P::fs_session() },
                 ARCHIVE_SDMC,
-                Path {
-                    kind: PATH_EMPTY,
-                    data: empty.as_ptr(),
-                    byte_len: 1,
-                },
-            )
+                path,
+            )?)
         }
 
-        /// Opens the SD extdata archive `id` on the program's session: media
-        /// 1 (the SD card), then the ID's low and high word.
+        /// Opens the SD extdata archive `id` on the program's session.
         pub fn open_extdata(id: u32) -> Result<Self, Code> {
-            let binary = [1u32, id, 0];
-            Self::open_at(
-                ARCHIVE_EXTDATA,
-                Path {
-                    kind: PATH_BINARY,
-                    data: binary.as_ptr().cast(),
-                    byte_len: 12,
-                },
-            )
+            Self::held(open_extdata::<P>(unsafe { P::fs_session() }, id)?)
         }
 
-        fn open_at(archive: u32, path: Path) -> Result<Self, Code> {
-            type OpenArchive = unsafe extern "aapcs" fn(*const u32, *mut u64, u32, Path) -> i32;
-            let session = unsafe { P::fs_session() };
-            let mut handle = 0;
-            let open: OpenArchive = unsafe { transmute(P::OPEN_ARCHIVE) };
-            let code = unsafe { open(&session, &mut handle, archive, path) };
-            if code < 0 {
-                return Err(code);
-            }
+        fn held(handle: u64) -> Result<Self, Code> {
             if handle == 0 {
                 return Err(BAD_PATH);
             }
@@ -318,26 +301,98 @@ mod native {
 
         /// Closes it, with the console's answer.
         pub fn close(self) -> Result<(), Code> {
-            let code = Self::close_handle(self.handle);
+            let closed = close_archive::<P>(unsafe { P::fs_session() }, self.handle);
             core::mem::forget(self);
-            if code < 0 {
-                Err(code)
-            } else {
-                Ok(())
-            }
-        }
-
-        fn close_handle(handle: u64) -> i32 {
-            let session = unsafe { P::fs_session() };
-            let close: CloseArchive = unsafe { transmute(P::CLOSE_ARCHIVE) };
-            unsafe { close(&session, handle) }
+            closed
         }
     }
 
     impl<P: Program> Drop for Archive<P> {
         fn drop(&mut self) {
-            let _ = Self::close_handle(self.handle);
+            let _ = close_archive::<P>(unsafe { P::fs_session() }, self.handle);
         }
+    }
+
+    fn open_at<P: Program>(session: u32, archive: u32, path: Path) -> Result<u64, Code> {
+        type OpenArchive = unsafe extern "aapcs" fn(*const u32, *mut u64, u32, Path) -> i32;
+        let open: OpenArchive = unsafe { transmute(P::OPEN_ARCHIVE) };
+        let mut handle = 0;
+        answer(unsafe { open(&session, &mut handle, archive, path) })?;
+        Ok(handle)
+    }
+
+    fn answer(code: i32) -> Result<(), Code> {
+        if code < 0 {
+            Err(code)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// `units` with their terminator, as the SDK's calls take a path.
+    fn utf16(units: &[u16]) -> Path {
+        Path {
+            kind: PATH_UTF16,
+            data: units.as_ptr().cast(),
+            byte_len: (units.len() * 2) as u32,
+        }
+    }
+
+    // The SDK's calls on an archive, on the session `session`, for both of
+    // the patches' ways to Bank's extdata (`bank_common::fs`, `Archive`).
+
+    /// Opens the SD extdata archive `id`: media 1 (the SD card), then the
+    /// ID's low and high word.
+    pub fn open_extdata<P: Program>(session: u32, id: u32) -> Result<u64, Code> {
+        let binary = [1u32, id, 0];
+        open_at::<P>(
+            session,
+            ARCHIVE_EXTDATA,
+            Path {
+                kind: PATH_BINARY,
+                data: binary.as_ptr().cast(),
+                byte_len: 12,
+            },
+        )
+    }
+
+    pub fn close_archive<P: Program>(session: u32, archive: u64) -> Result<(), Code> {
+        type Close = unsafe extern "aapcs" fn(*const u32, u64) -> i32;
+        let close: Close = unsafe { transmute(P::CLOSE_ARCHIVE) };
+        answer(unsafe { close(&session, archive) })
+    }
+
+    /// Creates the file `path` with `length` bytes, as an extdata file is
+    /// made: its size is fixed from then on. One that is there is a failure.
+    pub fn create_file<P: Program>(
+        session: u32,
+        archive: u64,
+        path: &[u16],
+        length: u64,
+    ) -> Result<(), Code> {
+        type Create = unsafe extern "aapcs" fn(*const u32, u32, u64, Path, u32, u64) -> i32;
+        let create: Create = unsafe { transmute(P::CREATE_FILE.ok_or(BAD_PATH)?) };
+        answer(unsafe { create(&session, 0, archive, utf16(path), 0, length) })
+    }
+
+    pub fn delete_file<P: Program>(session: u32, archive: u64, path: &[u16]) -> Result<(), Code> {
+        type Delete = unsafe extern "aapcs" fn(*const u32, u32, u64, Path) -> i32;
+        let delete: Delete = unsafe { transmute(P::DELETE_FILE.ok_or(BAD_PATH)?) };
+        answer(unsafe { delete(&session, 0, archive, utf16(path)) })
+    }
+
+    /// Opens the file `path` with the SDK's `flags`: its handle.
+    pub fn open_file<P: Program>(
+        session: u32,
+        archive: u64,
+        path: &[u16],
+        flags: u32,
+    ) -> Result<u32, Code> {
+        type Open = unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
+        let open: Open = unsafe { transmute(P::OPEN_FILE) };
+        let mut handle = 0;
+        answer(unsafe { open(&session, &mut handle, 0, archive, utf16(path), flags, 0) })?;
+        Ok(handle)
     }
 
     /// Sends `words` to the program's `fs:USER` session from this thread's
@@ -471,64 +526,28 @@ mod native {
             }
         }
 
-        /// Creates the file at `path` with `length` bytes, as an extdata
-        /// file is made: its size is fixed from then on. One that is there
-        /// is a failure.
+        /// Creates the file at `path` with `length` bytes (`create_file`).
         pub fn create_file(&self, path: &[u8], length: u64) -> Result<(), Code> {
-            type Create = unsafe extern "aapcs" fn(*const u32, u32, u64, Path, u32, u64) -> i32;
             checked(path)?;
-            let address = P::CREATE_FILE.ok_or(BAD_PATH)?;
-            let create: Create = unsafe { transmute(address) };
             let units = wide(path);
-            let session = unsafe { P::fs_session() };
-            let code = unsafe {
-                create(
-                    &session,
-                    0,
-                    self.handle,
-                    Path {
-                        kind: PATH_UTF16,
-                        data: units.as_ptr().cast(),
-                        byte_len: wide_size(path),
-                    },
-                    0,
-                    length,
-                )
-            };
-            if code < 0 {
-                Err(code)
-            } else {
-                Ok(())
-            }
+            create_file::<P>(
+                unsafe { P::fs_session() },
+                self.handle,
+                &units[..path.len()],
+                length,
+            )
         }
 
         /// Opens the file at `path` of this archive with the SDK's `flags`.
         pub fn open_file(&self, path: &[u8], flags: u32) -> Result<file::Handle<P>, Code> {
-            type Open =
-                unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
             checked(path)?;
-            let open: Open = unsafe { transmute(P::OPEN_FILE) };
             let units = wide(path);
-            let session = unsafe { P::fs_session() };
-            let mut handle = 0;
-            let code = unsafe {
-                open(
-                    &session,
-                    &mut handle,
-                    0,
-                    self.handle,
-                    Path {
-                        kind: PATH_UTF16,
-                        data: units.as_ptr().cast(),
-                        byte_len: wide_size(path),
-                    },
-                    flags,
-                    0,
-                )
-            };
-            if code < 0 {
-                return Err(code);
-            }
+            let handle = open_file::<P>(
+                unsafe { P::fs_session() },
+                self.handle,
+                &units[..path.len()],
+                flags,
+            )?;
             unsafe { file::Handle::new(handle) }.ok_or(BAD_PATH)
         }
 

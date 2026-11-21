@@ -465,7 +465,7 @@ A save written by the patched Bank is therefore valid with language 0, which to 
 
 ### File access
 
-The first argument is a pointer to the session or file handle; a negative `i32` is failure. `bank-common`'s `fs` makes these calls through `program::Bank15`; Transporter has the same calls at other addresses ([File access](#file-access-1)).
+The first argument is a pointer to the session or file handle; a negative `i32` is failure. `bank-common`'s `fs` makes these calls through `program::Bank15`, the ones on an archive by way of `patch_common::sd`, which the folders of Bank's extdata use too; Transporter has the same calls at other addresses ([File access](#file-access-1)).
 
 | Address | Call | Arguments after the handle pointer |
 | --- | --- | --- |

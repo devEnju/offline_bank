@@ -883,15 +883,8 @@ impl Storage for GameMainReader<'_> {
 mod native {
     use super::{Api, Error, Operation, Reach};
     use crate::bank_files::UnitFile;
-    use core::{marker::PhantomData, mem::transmute};
-    use patch_common::{file, program::Program};
-
-    #[repr(C)]
-    struct Path {
-        kind: u32,
-        data: *const u8,
-        byte_len: u32,
-    }
+    use core::marker::PhantomData;
+    use patch_common::{file, program::Program, sd};
 
     /// A path of the longest name the archive stores, as UTF-16 with its
     /// terminator: the form the native path type expects.
@@ -926,29 +919,16 @@ mod native {
     impl<P: Program> Native<P> {
         pub(super) fn open_main(&mut self, archive: u64) -> Result<u32, Error> {
             const MAIN: [u16; 6] = [47, 109, 97, 105, 110, 0];
-            let path = Path {
-                kind: 4,
-                data: MAIN.as_ptr().cast(),
-                byte_len: 12,
-            };
-            type Call =
-                unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(P::OPEN_FILE) };
-            let mut file = 0;
-            result(Operation::OpenFile, unsafe {
-                call(&self.session, &mut file, 0, archive, path, 1, 0)
-            })?;
+            let file = sd::open_file::<P>(self.session, archive, &MAIN, 1)
+                .map_err(failed(Operation::OpenFile))?;
             if file == 0 {
                 return Err(Error::InvalidHandle(Operation::OpenFile));
             }
             Ok(file)
         }
-        fn name(&self) -> Path {
-            Path {
-                kind: 4,
-                data: self.name.as_ptr().cast(),
-                byte_len: self.byte_len,
-            }
+        /// The name's units with their terminator.
+        fn units(&self) -> &[u16] {
+            &self.name[..self.byte_len as usize / 2]
         }
         pub(super) fn new(session: u32, path: &str) -> Result<Self, Error> {
             if session == 0 {
@@ -972,13 +952,6 @@ mod native {
         }
     }
 
-    fn result(operation: Operation, code: i32) -> Result<(), Error> {
-        if code < 0 {
-            Err(failed(operation)(code))
-        } else {
-            Ok(())
-        }
-    }
     pub(super) fn failed(operation: Operation) -> impl Fn(file::Code) -> Error {
         move |code| Error::Native {
             operation,
@@ -988,59 +961,33 @@ mod native {
 
     impl<P: Program> Api for Native<P> {
         fn open_archive(&mut self) -> Result<u64, Error> {
-            // media byte=1, reserved bytes=0, extdata ID low/high.
-            let binary = [1u32, crate::sdfiles::BANK_EXTDATA, 0];
-            let path = Path {
-                kind: 2,
-                data: binary.as_ptr().cast(),
-                byte_len: 12,
-            };
-            let mut archive = 0;
-            type Call = unsafe extern "aapcs" fn(*const u32, *mut u64, u32, Path) -> i32;
-            let call: Call = unsafe { transmute(P::OPEN_ARCHIVE) };
-            result(Operation::OpenArchive, unsafe {
-                call(&self.session, &mut archive, 6, path)
-            })?;
+            let archive = sd::open_extdata::<P>(self.session, crate::sdfiles::BANK_EXTDATA)
+                .map_err(failed(Operation::OpenArchive))?;
             if archive == 0 {
                 return Err(Error::InvalidHandle(Operation::OpenArchive));
             }
             Ok(archive)
         }
         fn close_archive(&mut self, archive: u64) -> Result<(), Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32, u64) -> i32;
-            let call: Call = unsafe { transmute(P::CLOSE_ARCHIVE) };
-            result(Operation::CloseArchive, unsafe {
-                call(&self.session, archive)
-            })
+            sd::close_archive::<P>(self.session, archive).map_err(failed(Operation::CloseArchive))
         }
         fn create_file(&mut self, archive: u64, length: u64) -> Result<(), Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32, u32, u64, Path, u32, u64) -> i32;
-            let Some(address) = P::CREATE_FILE else {
+            if P::CREATE_FILE.is_none() {
                 return Err(Error::ReadOnly);
-            };
-            let call: Call = unsafe { transmute(address) };
-            result(Operation::CreateFile, unsafe {
-                call(&self.session, 0, archive, self.name(), 0, length)
-            })
+            }
+            sd::create_file::<P>(self.session, archive, self.units(), length)
+                .map_err(failed(Operation::CreateFile))
         }
         fn delete_file(&mut self, archive: u64) -> Result<(), Error> {
-            type Call = unsafe extern "aapcs" fn(*const u32, u32, u64, Path) -> i32;
-            let Some(address) = P::DELETE_FILE else {
+            if P::DELETE_FILE.is_none() {
                 return Err(Error::ReadOnly);
-            };
-            let call: Call = unsafe { transmute(address) };
-            result(Operation::DeleteFile, unsafe {
-                call(&self.session, 0, archive, self.name())
-            })
+            }
+            sd::delete_file::<P>(self.session, archive, self.units())
+                .map_err(failed(Operation::DeleteFile))
         }
         fn open_file(&mut self, archive: u64) -> Result<u32, Error> {
-            type Call =
-                unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
-            let call: Call = unsafe { transmute(P::OPEN_FILE) };
-            let mut handle = 0;
-            result(Operation::OpenFile, unsafe {
-                call(&self.session, &mut handle, 0, archive, self.name(), 3, 0)
-            })?;
+            let handle = sd::open_file::<P>(self.session, archive, self.units(), 3)
+                .map_err(failed(Operation::OpenFile))?;
             if handle == 0 {
                 return Err(Error::InvalidHandle(Operation::OpenFile));
             }
