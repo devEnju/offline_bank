@@ -280,11 +280,11 @@ pub fn create_dated_folder<S: Sd>(sd: &mut S, date: Date) -> Result<Path, S::Err
     Ok(folder)
 }
 
-/// The box file of `place` (`Path::push_box`) in `folder`: `bank01.bin`..,
-/// `mover0.bin`..
+/// The box file of `place` (`Path::push_box`) in `folder`: `bank01.box`..,
+/// `mover0.box`..
 pub fn box_file(folder: &Path, place: usize) -> Path {
     let mut path = *folder;
-    path.push(b"/").push_box(place).push(b".bin");
+    path.push(b"/").push_box(place).push(b".box");
     path
 }
 
@@ -742,16 +742,16 @@ mod tests {
     fn a_box_is_named_by_its_place() {
         let name = |place| {
             let mut path = Path::new(b"/");
-            path.push_box(place).push(b".bin");
+            path.push_box(place).push(b".box");
             path.text().to_vec()
         };
-        assert_eq!(name(0), b"/bank01.bin");
-        assert_eq!(name(20), b"/bank21.bin");
-        assert_eq!(name(98), b"/bank99.bin");
-        assert_eq!(name(99), b"/bank00.bin");
-        assert_eq!(name(100), b"/mover0.bin");
-        assert_eq!(name(101), b"/mover1.bin");
-        assert_eq!(name(103), b"/mover3.bin");
+        assert_eq!(name(0), b"/bank01.box");
+        assert_eq!(name(20), b"/bank21.box");
+        assert_eq!(name(98), b"/bank99.box");
+        assert_eq!(name(99), b"/bank00.box");
+        assert_eq!(name(100), b"/mover0.box");
+        assert_eq!(name(101), b"/mover1.box");
+        assert_eq!(name(103), b"/mover3.box");
     }
 
     #[test]
@@ -766,6 +766,6 @@ mod tests {
             Some(&b"MOVER1"[..])
         );
         assert_eq!(strip_suffix_ignoring_case(b"bak", b".bak"), None);
-        assert_eq!(strip_suffix_ignoring_case(b"mover1.bin", b".bak"), None);
+        assert_eq!(strip_suffix_ignoring_case(b"mover1.box", b".bak"), None);
     }
 }

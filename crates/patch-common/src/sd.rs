@@ -564,8 +564,8 @@ mod tests {
 
     #[test]
     fn paths_are_rooted_printable_characters_with_one_terminator() {
-        assert!(valid(b"/3ds/Pok\xe9mon Bank/mover1.bin\0"));
-        assert!(!valid(b"/3ds/Pok\xe9mon Bank/mover1.bin"));
+        assert!(valid(b"/3ds/Pok\xe9mon Bank/mover1.box\0"));
+        assert!(!valid(b"/3ds/Pok\xe9mon Bank/mover1.box"));
         assert!(!valid(b"3ds\0"));
         assert!(!valid(b"/3d\0s\0"));
         assert!(!valid(b"\0"));

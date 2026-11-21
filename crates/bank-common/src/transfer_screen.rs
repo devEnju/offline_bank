@@ -8,12 +8,12 @@
 //! it; a cut may leave a spare copy, never a Pokémon without a place.
 //!
 //! ```text
-//! /3ds/Pokémon Bank/mover1.bin .. mover3.bin       the offline boxes; absent is an empty one
+//! /3ds/Pokémon Bank/mover1.box .. mover3.box       the offline boxes; absent is an empty one
 //! /3ds/Pokémon Bank/interrupted-AAAAAAAA-BBBBBBBB/ the folder of the save's two states (`interrupted::folder`)
 //!     mover1.bak                                   a cell before the save
-//! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/bank01.bin     a checked box of the Bank, copied
-//! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover0.bin     the checked transport box, copied
-//! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover1.bin     a checked offline box, copied;
+//! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/bank01.box     a checked box of the Bank, copied
+//! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover0.box     the checked transport box, copied
+//! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover1.box     a checked offline box, copied;
 //!                                                  its cell is an empty box afterwards
 //! ```
 //!
@@ -2050,11 +2050,11 @@ mod tests {
         assert_eq!(
             names,
             [
-                at("/20261109-140307/bank21.bin"),
-                at("/20261109-140307/mover2.bin"),
-                at("/mover1.bin"),
-                at("/mover2.bin"),
-                at("/mover3.bin"),
+                at("/20261109-140307/bank21.box"),
+                at("/20261109-140307/mover2.box"),
+                at("/mover1.box"),
+                at("/mover2.box"),
+                at("/mover3.box"),
             ]
         );
         let folders: Vec<_> = sd.sd_dirs.iter().cloned().collect();
@@ -2069,7 +2069,7 @@ mod tests {
         let read = |name: &str| sd.sd[&at(name)].clone();
         // The checked box of Bank: its pieces and of its label the name's
         // text, the same file the backup makes from the Bank file.
-        let copy = read("/20261109-140307/bank21.bin");
+        let copy = read("/20261109-140307/bank21.box");
         let payload: Vec<u8> = BANK_RANGES
             .iter()
             .flat_map(|range| expected[range.clone()].iter().copied())
@@ -2084,14 +2084,14 @@ mod tests {
         // The checked offline box was copied to the session with its
         // Pokémon, and its cell holds an empty box with the cell's default
         // name, as the screen's memory does.
-        let moved = read("/20261109-140307/mover2.bin");
+        let moved = read("/20261109-140307/mover2.box");
         assert_eq!(BoxFile::parse(&moved).unwrap().occupied(), 2);
-        let left = read("/mover2.bin");
+        let left = read("/mover2.box");
         assert_eq!(left[..], offline.files[1][..]);
         let left = BoxFile::parse(&left).unwrap();
         assert_eq!(left.occupied(), 0);
         assert_eq!(left.name(), offline.defaults[1]);
-        for path in ["/mover1.bin", "/mover3.bin"] {
+        for path in ["/mover1.box", "/mover3.box"] {
             assert_eq!(BoxFile::parse(&read(path)).unwrap().occupied(), 0);
         }
     }
@@ -2142,7 +2142,7 @@ mod tests {
         let folders = disk.0.borrow().sd_dirs.clone();
         run(&mut files, &mut body, &mut offline);
         let card = disk.0.borrow();
-        let file = &card.sd[&at("/mover3.bin")];
+        let file = &card.sd[&at("/mover3.box")];
         assert_eq!(file[boxfile::NAME][0], b'Z');
         let changed: Vec<_> = card
             .sd
@@ -2150,7 +2150,7 @@ mod tests {
             .filter(|(path, bytes)| cards.get(*path) != Some(bytes))
             .map(|(path, _)| path.clone())
             .collect();
-        assert_eq!(changed, [at("/mover3.bin")]);
+        assert_eq!(changed, [at("/mover3.box")]);
         assert_eq!(card.sd.len(), 3);
         assert!(card.sd_dirs == folders);
         drop(card);
@@ -2197,7 +2197,7 @@ mod tests {
         let mut sd = disk.clone();
         run_commit(&mut files, &mut sd, &mut body, &mut offline, &checked).unwrap();
         let sd = disk.0.borrow();
-        let file = &sd.sd[&at("/20261109-140307/mover0.bin")];
+        let file = &sd.sd[&at("/20261109-140307/mover0.box")];
         let file = BoxFile::parse(file).unwrap();
         assert_eq!(file.occupied(), 1);
         assert_eq!(file.name(), offline.transport);
@@ -3063,10 +3063,10 @@ mod tests {
             card.sd_dirs.insert(folder);
             card.sd.insert(path, bytes.to_vec());
         };
-        file("/20261109-140307/mover1.bin", &cell_with(1));
-        file("/20261109-140308/mover1.bin", &cell_with(2));
+        file("/20261109-140307/mover1.box", &cell_with(1));
+        file("/20261109-140308/mover1.box", &cell_with(2));
         file("/20261109-140309", &cell_with(3));
-        file(&std::format!("{KEPT}/mover1.bin"), &cell_with(4));
+        file(&std::format!("{KEPT}/mover1.box"), &cell_with(4));
         file("/interrupted-22222222/mover1.bak", &cell_with(5));
         let before = disk.0.borrow().sd.clone();
         // A session that checks the first cell, then an opening that keeps
@@ -3092,7 +3092,7 @@ mod tests {
                 assert_eq!(card.sd.get(path), Some(bytes), "{path:?}");
             }
         }
-        assert_eq!(card.sd[&at("/20261109-140310/mover1.bin")], cell_with(6));
+        assert_eq!(card.sd[&at("/20261109-140310/mover1.box")], cell_with(6));
         assert_eq!(
             card.sd[&at(&std::format!("{KEPT_NEXT}/mover1.bak"))],
             cell_with(5)
@@ -3155,7 +3155,7 @@ mod tests {
         disk.0
             .borrow_mut()
             .sd
-            .insert(at("/mover2.bin"), vec![1; FILE_SIZE]);
+            .insert(at("/mover2.box"), vec![1; FILE_SIZE]);
         let mut sd = disk.clone();
         let mut offline = Offline::empty();
         assert!(matches!(
@@ -3186,14 +3186,14 @@ mod tests {
         assert_eq!(folder().text(), at("/20261109-140307"));
         assert!(folder().valid());
         for (place, name) in [
-            (0, "/20261109-140307/bank01.bin"),
-            (99, "/20261109-140307/bank00.bin"),
-            (TRANSPORT, "/20261109-140307/mover0.bin"),
-            (OFFLINE + 2, "/20261109-140307/mover3.bin"),
+            (0, "/20261109-140307/bank01.box"),
+            (99, "/20261109-140307/bank00.box"),
+            (TRANSPORT, "/20261109-140307/mover0.box"),
+            (OFFLINE + 2, "/20261109-140307/mover3.box"),
         ] {
             assert_eq!(sdfiles::box_file(&folder(), place).text(), at(name));
         }
-        assert_eq!(cell_path(2).text(), at("/mover3.bin"));
+        assert_eq!(cell_path(2).text(), at("/mover3.box"));
         let part = |crc| offline_core::Part {
             slot: offline_core::Slot::A,
             crc,

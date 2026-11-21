@@ -529,7 +529,7 @@ mod tests {
         // As the card may list a name that fits 8.3.
         assert_eq!(parse(b"MOVER1.BAK"), Some((101, KEPT)));
         assert_eq!(parse(b"BANK30.OLD"), Some((29, OLD)));
-        assert_eq!(parse(b"mover1.bin"), None);
+        assert_eq!(parse(b"mover1.box"), None);
         // Names Bank never writes.
         assert_eq!(parse(b"bank01.bak"), None);
         assert_eq!(parse(b"mover0.bak"), None);

@@ -466,7 +466,7 @@ Numbers are hexadecimal; the screen pads each to eight digits. The second number
 | `12` | Reward state or allowed reward-task progression is inconsistent |
 | `13` | Reward claim result does not match the expected receipt/balance |
 | `14` | Transporter delivery failure: non-space IO failure, write/check failure, invalid box layout, unexpectedly empty transfer box, journal refusal after START, or uncertain delivery announcement |
-| `15` | A box file or folder under `/3ds/Pokémon Bank/` on the SD card cannot be read or written for a reason other than lack of space; the second number is the console's result, or 0 for a file that did not read back as written, or `7B0000pp` for an offline box file that is not a whole box file (`pp` 65, 66, 67: `mover1.bin`, `mover2.bin`, `mover3.bin`) |
+| `15` | A box file or folder under `/3ds/Pokémon Bank/` on the SD card cannot be read or written for a reason other than lack of space; the second number is the console's result, or 0 for a file that did not read back as written, or `7B0000pp` for an offline box file that is not a whole box file (`pp` 65, 66, 67: `mover1.box`, `mover2.box`, `mover3.box`) |
 
 ### Second numbers
 
