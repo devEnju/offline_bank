@@ -40,6 +40,7 @@
 use crate::{
     bank_files::{BankFiles, Files},
     sdfiles::{self, Date, Error, Extdata, Failed, Found, Path, Piece, Sd, Store, ROOT},
+    transfer_screen,
 };
 use offline_core::{
     boxfile::{self, BoxFile, FILE_SIZE, NAME_TEXT},
@@ -491,7 +492,6 @@ pub fn finish<F: Files, X: Extdata>(
         return Ok(None);
     }
     back_up(files, staging, ext)?;
-    ext.rest();
     Ok(Some(folder))
 }
 
@@ -625,11 +625,6 @@ fn of_a_transfer<X: Extdata>(
     }
 }
 
-/// The file of cell `position` (1 to 3).
-fn cell_path(position: usize) -> Path {
-    sdfiles::box_file(&Path::new(ROOT), BOX_COUNT + position)
-}
-
 /// The journal names the transfer save as made: each cell gets its `.new`
 /// box, if it holds its `.old` one, no file, or a file a cut left. A cell
 /// that holds another whole box changed outside the save and stays; the
@@ -655,7 +650,7 @@ fn finish_cells<S: Sd, X: Extdata<Error = S::Error>, E>(
         if BoxFile::parse(&new[..]).is_err() {
             return Err(Error::NotAsWritten);
         }
-        let path = cell_path(position);
+        let path = transfer_screen::cell_path(position - 1);
         let found = sd.get(&path, &mut cell[..]).map_err(Error::Sd)?;
         if found == Found::Read && cell == new {
             continue;
@@ -696,11 +691,11 @@ fn check_cells<S: Sd, X: Extdata<Error = S::Error>>(
         if !matches!(piece, Ok(Piece::Read)) || BoxFile::parse(&old[..]).is_err() {
             continue;
         }
-        let path = cell_path(position);
+        let path = transfer_screen::cell_path(position - 1);
         let found = sd.get(&path, &mut cell[..])?;
         let whole = found == Found::Read && BoxFile::parse(&cell[..]).is_ok();
         if !whole {
-            crate::transfer_screen::empty_box(cell, &[0; NAME_TEXT]);
+            transfer_screen::empty_box(cell, &[0; NAME_TEXT]);
         }
         if cell != old {
             *outside = true;
@@ -791,6 +786,11 @@ mod tests {
     use std::vec::Vec;
 
     type Failure = Error<(), Refused>;
+
+    /// The file of cell `position` (1 to 3).
+    fn cell_path(position: usize) -> Path {
+        transfer_screen::cell_path(position - 1)
+    }
 
     fn state(bank: (Slot, u32), mover: (Slot, u32)) -> State {
         State {

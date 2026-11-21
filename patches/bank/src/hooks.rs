@@ -1148,9 +1148,9 @@ impl Runtime {
                 self.turn_back(task, |ui| unsafe { bank_common::ui::try_again(ui) })
             }
             // No room on the SD card for the backup of the boxes a save in
-            // progress changed (`bank_common::interrupted`): nothing of the
-            // journal was written, and the next START tries again. Or no
-            // room to put back a cell a cut left, or for what a settled
+            // progress changed (`bank_common::interrupted`): the save stays
+            // in progress, and the next START tries again. Or
+            // no room to finish a cell a cut left, or for what a settled
             // write keeps (`interrupted::settle`): its folder stays, and the
             // next START goes on.
             (Step::Open | Step::Recover, Reply::Ended(Ending::NoSpace)) => {

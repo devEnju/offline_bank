@@ -694,7 +694,7 @@ pub fn cell_state(count: u32, checked: bool) -> u8 {
 // ---------------------------------------------------------------- files
 
 /// The file of cell `index`.
-fn cell_path(index: usize) -> Path {
+pub(crate) fn cell_path(index: usize) -> Path {
     sdfiles::box_file(&Path::new(ROOT), OFFLINE + index)
 }
 
@@ -824,24 +824,12 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     if made {
         ext.create_dir(&folder).map_err(Error::Sd)?;
         let included = [false, changed[0], changed[1], changed[2]];
-        let mut as_it_is = |position: usize, to: &mut [u8; FILE_SIZE]| {
-            let index = position - 1;
-            match sd.get(&cell_path(index), &mut to[..]).map_err(Error::Sd)? {
-                Found::Absent => empty_box(to, &[0; NAME_TEXT]),
-                Found::Read if BoxFile::parse(&to[..]).is_ok() => {}
-                _ => return Err(Error::BadFile(OFFLINE + index)),
-            }
-            Ok(())
-        };
+        let mut as_it_is =
+            |position: usize, to: &mut [u8; FILE_SIZE]| held(sd, position - 1, to).map(|_| ());
         let old = interrupted::cells_file(&folder, false);
         interrupted::write_group(ext, &old, &included, &mut as_it_is, scratch)?;
         for index in (0..OFFLINE_COUNT).filter(|index| changed[*index]) {
-            if sd
-                .get(&cell_path(index), &mut scratch[..])
-                .map_err(Error::Sd)?
-                == Found::Absent
-            {
-                empty_box(scratch, &[0; NAME_TEXT]);
+            if !held(sd, index, scratch)? {
                 sd.put(&cell_path(index), &scratch[..]).map_err(Error::Sd)?;
             }
         }
@@ -869,19 +857,33 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     Ok(())
 }
 
-/// Whether cell `index` holds another box than `new`, a cell without a file
-/// an empty box without a name; its box is left in `scratch`.
+/// The box cell `index` holds, into `out`: its file's, which must be a whole
+/// box, or an empty box without a name for a cell without a file. The answer
+/// is whether it has a file.
+fn held<E, S: Sd>(
+    sd: &mut S,
+    index: usize,
+    out: &mut [u8; FILE_SIZE],
+) -> Result<bool, Error<E, S::Error>> {
+    match sd.get(&cell_path(index), out).map_err(Error::Sd)? {
+        Found::Absent => {
+            empty_box(out, &[0; NAME_TEXT]);
+            Ok(false)
+        }
+        Found::Read if BoxFile::parse(out).is_ok() => Ok(true),
+        _ => Err(Error::BadFile(OFFLINE + index)),
+    }
+}
+
+/// Whether cell `index` holds another box than `new` (`held`); its box is
+/// left in `scratch`.
 fn differs<E, S: Sd>(
     sd: &mut S,
     index: usize,
     new: &[u8; FILE_SIZE],
     scratch: &mut [u8; FILE_SIZE],
 ) -> Result<bool, Error<E, S::Error>> {
-    match sd.get(&cell_path(index), scratch).map_err(Error::Sd)? {
-        Found::Absent => empty_box(scratch, &[0; NAME_TEXT]),
-        Found::Read if BoxFile::parse(scratch).is_ok() => {}
-        _ => return Err(Error::BadFile(OFFLINE + index)),
-    }
+    held(sd, index, scratch)?;
     Ok(scratch[..] != new[..])
 }
 

@@ -516,8 +516,8 @@ pub enum Settled {
     /// journal still holds it, for the next start.
     Open,
     /// Not settled: it moved Pokémon both ways, and the SD card has no room
-    /// for the backup of the boxes it changed (`backup`). Nothing of the
-    /// journal was written; the next START tries again.
+    /// for the backup of the boxes it changed (`backup`). It stays in
+    /// progress, and the next START tries again.
     NoSpace,
 }
 
@@ -586,6 +586,7 @@ where
     fn finish(&mut self, files: &mut BankFiles<F>, staging: &mut [u8]) -> Stopped<bool, F> {
         match interrupted::finish(files, staging, self.ext) {
             Ok(folder) => {
+                self.ext.rest();
                 self.folder = folder;
                 Ok(true)
             }
@@ -791,9 +792,6 @@ where
         }
         // A card that is gone is only ever a cartridge's (`card_gone`).
         Settled::Open => Ok(Finalized::Ended(Ending::Retry)),
-        // No backup is written after a save's own write, and no room for
-        // the journal is the error screen there (`settled`).
-        Settled::NoSpace => Ok(Finalized::Ended(Ending::NoSpace)),
         Settled::Exact(RecoveryDecision::KeepBefore)
         | Settled::ByMoves(_)
         | Settled::Waits
@@ -802,10 +800,13 @@ where
         {
             Ok(Finalized::Ended(Ending::Retry))
         }
+        // `NoSpace` is START's alone: no backup is written after a save's own
+        // write, and no room for the journal is an error there (`settled`).
         Settled::Exact(RecoveryDecision::KeepBefore)
         | Settled::ByMoves(_)
         | Settled::Waits
-        | Settled::Asks => Err(Fault::GameWrite.with(status).into()),
+        | Settled::Asks
+        | Settled::NoSpace => Err(Fault::GameWrite.with(status).into()),
     }
 }
 
@@ -999,7 +1000,7 @@ mod arm {
         /// So every session that reaches the transfer screen or a save starts
         /// with none, and a Bank that cannot be read stops the opening before
         /// any file of a folder goes. It works in `ROOM`, as staging holds
-        /// the Bank. No room on the SD card to put a cell back or for what
+        /// the Bank. No room on the SD card to finish a cell or for what
         /// is kept is an ending, "The SD card is full.": the folder stays,
         /// and the next START settles it.
         fn settle_sd(&mut self, date: Date) -> Result<Option<Ending>, WorkerError> {
