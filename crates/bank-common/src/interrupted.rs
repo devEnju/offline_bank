@@ -154,6 +154,7 @@ fn ending(kind: u8) -> &'static [u8] {
 /// The file and position of a place: box 1 is position 1 of `bank00`, box
 /// 100 its position 0, the transport box position 0 of `mover0` and the
 /// cells its positions 1 to 3.
+#[cfg(any(test, feature = "test-support"))]
 pub fn locate(place: usize) -> (usize, usize) {
     if place < BOX_COUNT {
         let number = (place + 1) % BOX_COUNT;
@@ -187,6 +188,7 @@ fn group_file(folder: &Path, group: usize, kind: u8) -> Path {
 
 /// The file of `folder` that holds `place` as it is after the write
 /// (`.new`) or was before it (`.old`), and where in it the place starts.
+#[cfg(any(test, feature = "test-support"))]
 pub fn file(folder: &Path, place: usize, after: bool) -> (Path, u32) {
     let (group, position) = locate(place);
     (

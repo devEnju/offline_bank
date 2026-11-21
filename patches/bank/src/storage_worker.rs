@@ -22,7 +22,7 @@ use bank_common::{
     fault::Fault,
     fs::NoRoom,
     interrupted,
-    sdfiles::{self, Date, Extdata, NoBackup, Store},
+    sdfiles::{self, Date, Extdata, Path, Store},
     transfer_screen,
     worker::WorkerError,
 };
@@ -539,23 +539,69 @@ pub fn settle<F: Files, G: Game>(
 where
     <F::Storage as Storage>::Error: NoRoom,
 {
-    settle_backed(
-        files,
-        game,
-        staging,
-        pending,
-        rule,
-        written,
-        held,
-        None::<&mut NoBackup>,
-    )
+    settle_backed(files, game, staging, pending, rule, written, held, &mut ())
 }
 
-/// `settle`, with Bank's extdata for the backup of a save that moved Pokémon
-/// both ways (`interrupted::back_up`): START's, before the journal
-/// leaves it to Transporter's question or to its game.
+/// What a settle does with the backup of a save that moved Pokémon both
+/// ways. Save and Quit's own settle makes none (`()`); START's is `Kept`.
+pub trait Backup<F: Files> {
+    /// Writes it, before the journal leaves the save to Transporter's
+    /// question or to its game. `false` for no room.
+    fn write(&mut self, _: &mut BankFiles<F>, _: &mut [u8]) -> Stopped<bool, F> {
+        Ok(true)
+    }
+    /// The game decides the save: a folder a cut left in part is finished,
+    /// before the journal goes clean. `false` for no room.
+    fn finish(&mut self, _: &mut BankFiles<F>, _: &mut [u8]) -> Stopped<bool, F> {
+        Ok(true)
+    }
+    /// The journal is clean, and the game decided: the folder goes.
+    fn remove(&mut self) {}
+}
+impl<F: Files> Backup<F> for () {}
+
+/// START's backup, in the folders of Bank's extdata (`interrupted`).
+pub struct Kept<'a, X> {
+    ext: &'a mut X,
+    folder: Option<Path>,
+}
+impl<'a, X> Kept<'a, X> {
+    pub fn new(ext: &'a mut X) -> Self {
+        Self { ext, folder: None }
+    }
+}
+impl<F: Files, X: Extdata> Backup<F> for Kept<'_, X>
+where
+    <F::Storage as Storage>::Error: NoRoom,
+{
+    fn write(&mut self, files: &mut BankFiles<F>, staging: &mut [u8]) -> Stopped<bool, F> {
+        match interrupted::back_up(files, staging, self.ext) {
+            Ok(()) => {
+                self.ext.rest();
+                Ok(true)
+            }
+            Err(error) => sd_ended::<_, X>(error, Fault::JournalRecovery).map(|_| false),
+        }
+    }
+    fn finish(&mut self, files: &mut BankFiles<F>, staging: &mut [u8]) -> Stopped<bool, F> {
+        match interrupted::finish(files, staging, self.ext) {
+            Ok(folder) => {
+                self.folder = folder;
+                Ok(true)
+            }
+            Err(error) => sd_ended::<_, X>(error, Fault::JournalRecovery).map(|_| false),
+        }
+    }
+    fn remove(&mut self) {
+        if let Some(folder) = self.folder.take() {
+            let _ = interrupted::remove(self.ext, &folder);
+        }
+    }
+}
+
+/// `settle`, with what it does with a backup (`Backup`).
 #[allow(clippy::too_many_arguments)]
-pub fn settle_backed<F: Files, G: Game, S: Extdata>(
+pub fn settle_backed<F: Files, G: Game, B: Backup<F>>(
     files: &mut BankFiles<F>,
     game: Option<&mut G>,
     staging: &mut [u8],
@@ -563,7 +609,7 @@ pub fn settle_backed<F: Files, G: Game, S: Extdata>(
     rule: Rule,
     written: Option<SecureValues>,
     held: &mut [[Identity; HELD]; 2],
-    backup: Option<&mut S>,
+    backup: &mut B,
 ) -> Stopped<Settled, F>
 where
     <F::Storage as Storage>::Error: NoRoom,
@@ -602,22 +648,15 @@ where
         // folder, finished first if a cut left it in part, goes once the
         // journal is clean. A cut in between leaves it whole for the opening.
         Match::Before | Match::After => {
-            let backup = match backup {
-                Some(ext) => match interrupted::finish(files, staging, &mut *ext) {
-                    Ok(folder) => folder.map(|folder| (ext, folder)),
-                    Err(error) => {
-                        return sd_ended::<_, S>(error, Fault::JournalRecovery)
-                            .map(|_| Settled::NoSpace)
-                    }
-                },
-                None => None,
-            };
+            if !backup.finish(files, staging)? {
+                return Ok(Settled::NoSpace);
+            }
             let result = settled(
                 rule,
                 files.reconcile(evidence.fingerprint).map(Settled::Exact),
             );
-            if let (Ok(Settled::Exact(_)), Some((ext, folder))) = (&result, backup) {
-                let _ = interrupted::remove(ext, &folder);
+            if matches!(result, Ok(Settled::Exact(_))) {
+                backup.remove();
             }
             result
         }
@@ -648,13 +687,13 @@ where
 /// game is there on the kind of copy it was made with, at START, with a
 /// save that is neither image: then it is left to Transporter's question
 /// (`Settled::Asks`). Otherwise it waits for its game.
-fn by_moves<F: Files, S: Extdata>(
+fn by_moves<F: Files, B: Backup<F>>(
     files: &mut BankFiles<F>,
     staging: &mut [u8],
     rule: Rule,
     seen: bool,
     [before, after]: &mut [[Identity; HELD]; 2],
-    backup: Option<&mut S>,
+    backup: &mut B,
 ) -> Stopped<Settled, F>
 where
     <F::Storage as Storage>::Error: NoRoom,
@@ -665,11 +704,8 @@ where
     let Some(decision) = moved::choose(moved) else {
         // The boxes it changed go into Bank's extdata, both ways, before
         // the journal says anything about it.
-        if let Some(ext) = backup {
-            if let Err(error) = interrupted::back_up(files, staging, ext) {
-                return sd_ended::<_, S>(error, Fault::JournalRecovery).map(|_| Settled::NoSpace);
-            }
-            ext.rest();
+        if !backup.write(files, staging)? {
+            return Ok(Settled::NoSpace);
         }
         // Bit 2 by what was seen; an unlocked save is Transporter's too. No
         // room to write the record again leaves the save as it was, waiting
@@ -1103,7 +1139,7 @@ mod arm {
                         Rule::Start,
                         None,
                         held(),
-                        Some(&mut ext),
+                        &mut Kept::new(&mut ext),
                     )
                     .map_err(stopped)?;
                     match settled {
@@ -2131,7 +2167,7 @@ mod tests {
             Rule::Start,
             None,
             &mut held(),
-            Some(&mut sd),
+            &mut Kept::new(&mut sd),
         )
     }
 
@@ -2540,7 +2576,7 @@ mod tests {
                 Rule::Start,
                 None,
                 &mut held(),
-                Some(&mut ExtCard(card.clone())),
+                &mut Kept::new(&mut ExtCard(card.clone())),
             )
         };
         let counting = disk.cut_after(usize::MAX);

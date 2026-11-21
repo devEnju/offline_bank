@@ -813,14 +813,11 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     // 2: a checked cell is decided here, by its new box. The folder only for
     // a cell that changes.
     for (index, changes) in changed.iter_mut().enumerate() {
-        if !*changes {
-            continue;
-        }
         if request.checked[OFFLINE + index] {
             let default = offline.defaults[index];
             empty_box(&mut offline.files[index], &default);
+            *changes = differs(sd, index, &offline.files[index], scratch)?;
         }
-        *changes = differs(sd, index, &offline.files[index], scratch)?;
     }
     let made = changed.contains(&true);
     if made {

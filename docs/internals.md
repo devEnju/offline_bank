@@ -888,7 +888,7 @@ A folder named by the date, a session's `YYYYMMDD-HHMMSS/` or the one that keeps
 
 **The folder of an interrupted write**, the transfer screen's and the backup's alike, lies in Bank's extdata, beside the journal it belongs to, and is named by the two states of the Bank the write goes between, the one before and the one after: `/AAAAAAAABBBBBBBB/`, 16 characters, each half in hexadecimal: in its top bit the copy of the Bank file in use (0 or 1), in the other 31 bits those of a CRC-32 over that copy (as a 32-bit word) and the checksum of the Bank file, then of the transport box, little endian, as the journal record names them (`interrupted::State::half`, `interrupted::folder`). Every save writes the Bank file into its other copy, so a write's two halves always differ, in their top bit. Once the journal is clean, Bank's opening compares the state it names with the two and keeps only what the Bank does not hold ([The transfer screen](#the-transfer-screen), the table under "No folder of an interrupted write outlives a clean journal").
 
-Its files each hold a group of four places, box files one behind the other, with no header (`interrupted::locate`):
+Its files each hold a group of four places, box files one behind the other, with no header (`interrupted::place_at`):
 
 | File | Position 0 | 1 | 2 | 3 |
 | --- | --- | --- | --- | --- |

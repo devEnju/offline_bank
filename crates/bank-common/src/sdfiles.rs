@@ -134,6 +134,7 @@ impl Path {
     pub fn text(&self) -> &[u8] {
         &self.bytes[..self.len.min(self.bytes.len() - 1)]
     }
+    #[cfg(test)]
     pub fn valid(&self) -> bool {
         self.len < self.bytes.len() && patch_common::sd::valid(self.terminated())
     }
@@ -368,42 +369,6 @@ pub fn probe_extdata<X: Extdata>(ext: &mut X) -> Result<bool, X::Error> {
         left |= name.eq_ignore_ascii_case(b"0123456789ABCDEF");
     })?;
     Ok(same && past == Piece::Missing && listed && inside && !left)
-}
-
-/// No extdata folders: every call fails. For a settle that writes no backup.
-pub struct NoBackup;
-impl Extdata for NoBackup {
-    fn create(&mut self, _: &Path, _: u32) -> Result<(), ()> {
-        Err(())
-    }
-    fn write_at(&mut self, _: &Path, _: u32, _: &[u8]) -> Result<(), ()> {
-        Err(())
-    }
-    fn read_at(&mut self, _: &Path, _: u32, _: &mut [u8]) -> Result<Piece, ()> {
-        Err(())
-    }
-    fn rest(&mut self) {}
-}
-impl Store for NoBackup {
-    type Error = ();
-    fn create_dir(&mut self, _: &Path) -> Result<(), ()> {
-        Err(())
-    }
-    fn delete(&mut self, _: &Path) -> Result<(), ()> {
-        Err(())
-    }
-    fn remove_dir(&mut self, _: &Path) -> Result<(), ()> {
-        Err(())
-    }
-    fn list(&mut self, _: &Path, _: &mut dyn FnMut(&[u8], bool)) -> Result<(), ()> {
-        Err(())
-    }
-    fn no_room(_: &()) -> bool {
-        false
-    }
-    fn code(_: &()) -> u32 {
-        0
-    }
 }
 
 #[cfg(target_arch = "arm")]
@@ -659,11 +624,8 @@ mod tests {
     #[test]
     fn paths_are_built_with_their_terminator() {
         let mut path = Path::new(ROOT);
-        path.push(b"/interrupted-").push_hex(0x00AB_12CD);
-        assert_eq!(
-            path.terminated(),
-            b"/3ds/Pok\xe9mon Bank/interrupted-00AB12CD\0"
-        );
+        path.push(b"/sample-").push_hex(0x00AB_12CD);
+        assert_eq!(path.terminated(), b"/3ds/Pok\xe9mon Bank/sample-00AB12CD\0");
         assert!(path.valid());
         let mut name = Path::new(b"/x/y");
         name.push_decimal(7, 3).push(b".bin");

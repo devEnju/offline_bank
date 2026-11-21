@@ -607,14 +607,14 @@ impl<F: Files> BankFiles<F> {
 
     /// The transport box of one side of the save in progress, as
     /// `pending_moves` compares them: before, what a load showed (its own
-    /// box, or the delivery it took); after, the box the save wrote. `false`
-    /// for a box that cannot be read and was empty, which is then zeros.
+    /// box, or the delivery it took); after, the box the save wrote. A box
+    /// that cannot be read and was empty is zeros.
     pub fn pending_transport(
         &mut self,
         after: bool,
         records: &mut [u8],
         tags: &mut [u8],
-    ) -> Outcome<bool, F> {
+    ) -> Outcome<(), F> {
         let record = self.bank()?.record().map_err(Error::Bank)?;
         let Phase::Prepared(pending) = record.phase else {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
@@ -625,12 +625,11 @@ impl<F: Files> BankFiles<F> {
         } else {
             (shown.source, !shown.delivery && pending.before.held == 0)
         };
-        let read = self.read_box(part, empty, records, tags)?;
-        if !read {
+        if !self.read_box(part, empty, records, tags)? {
             records.fill(0);
             tags.fill(0);
         }
-        Ok(read)
+        Ok(())
     }
 
     /// Leaves the save in progress to Transporter's question, or takes it
