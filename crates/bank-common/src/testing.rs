@@ -826,7 +826,7 @@ impl crate::sdfiles::Extdata for ExtCard {
             return Ok(Piece::Missing);
         }
         if disk.ext_damaged.contains(key) || end > disk.ext_written.get(key).copied().unwrap_or(0) {
-            return Ok(Piece::Damaged);
+            return Err(Refused::FAILED);
         }
         out.copy_from_slice(&file[start..end]);
         Ok(Piece::Read)

@@ -177,9 +177,6 @@ pub enum Piece {
     Read,
     /// There is no such file, or it ends before the piece does.
     Missing,
-    /// The console says its data does not read (`fs_result::damaged`): an
-    /// interrupted write left it.
-    Damaged,
 }
 
 /// What the SD card and Bank's extdata do alike: folders, and deleting.
@@ -418,7 +415,7 @@ mod console {
     use core::marker::PhantomData;
     use patch_common::{
         file::FLUSH,
-        fs_result::{damaged, lack_of_space},
+        fs_result::lack_of_space,
         program::Program,
         sd::{self, OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE},
     };
@@ -547,17 +544,12 @@ mod console {
             {
                 Ok(file) => file,
                 Err(code) if sd::not_found(code as u32) => return Ok(Piece::Missing),
-                Err(code) if damaged(code as u32) => return Ok(Piece::Damaged),
                 Err(code) => return Err(refused(code)),
             };
             if u64::from(offset) + out.len() as u64 > file.size().map_err(refused)? {
                 return Ok(Piece::Missing);
             }
-            let count = match file.read(u64::from(offset), out) {
-                Ok(count) => count,
-                Err(code) if damaged(code as u32) => return Ok(Piece::Damaged),
-                Err(code) => return Err(refused(code)),
-            };
+            let count = file.read(u64::from(offset), out).map_err(refused)?;
             let (closed, handle) = file.close();
             if count as usize != out.len() {
                 return Err(Refused(0));

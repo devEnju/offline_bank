@@ -115,6 +115,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | Swap two offline cells only, Y, Yes, and switch the console off while the loading screen is up. START. | Both cells as before the session, or both as after it. Repeat at different moments. |
 | A save that moves a box onto an offline cell, without a cut. | No folder with a 16-character name and no `-backup` folder is left on the SD card afterwards. |
 | Move a box onto an offline cell, Y, Yes, and switch the console off while the loading screen is up. Without pressing START, back up Bank's extdata with Checkpoint and restore that backup. START. | As after the same cut without Checkpoint: box and offline box as before the session, or as after it; never neither. The folder of the write came back with its journal. |
+| Make that cut again and take the Checkpoint backup without pressing START. START, put another box into that offline cell and save. Restore the backup, START. | The offline cell keeps the other box, whatever the journal says. If it was the state after, a `-backup` folder holds that cell's `.old.box` and `.new.box`. |
 
 ## Transporter, feature by feature
 
@@ -160,7 +161,7 @@ For each case, perform the moves, Save and Quit with the named entry, acknowledg
 | START Bank again. | The same message; nothing new on the SD card. |
 | Open Transporter, START, answer **Yes**, then **Yes** to the final warning. Look at the SD card, then START Bank. | After Transporter nothing new on the SD card. Bank opens with the boxes from before; a folder `YYYYMMDD-HHMMSS-backup/`, with the console's date and time of that START, holds only `.new.box` files, one per changed box, each 7,298 bytes. |
 | Repeat the first step, open Transporter, START, answer **No**, then **Yes** to the final warning, then START Bank. | Bank opens with the boxes from after; the dated folder holds only `.old.box` files. |
-| Repeat the first step, then START Bank with the game holding the save before the session (restore it with Checkpoint first). | Bank opens with the boxes from before; as after Transporter's Yes, the dated folder holds only `.new.box` files. |
+| Repeat the first step, then START Bank with the game holding the save before the session (restore it with Checkpoint first). | Bank opens with the boxes from before; no `-backup` folder is made, as the game decides the session. |
 | Repeat the first step, fill the SD card until less than 15 KB is free, then START Bank. | "The SD card is full." on one line, then the start screen; Transporter still refuses with its message to open Bank. Free space and START: the two-page message. |
 | Repeat the first step, answer **Yes** in Transporter, fill the SD card until less than 7 KB is free, then START Bank. | "The SD card is full." on one line, then the start screen. Free space and START: Bank opens with the boxes from before, and the `-backup` folder holds the `.new.box` files. |
 | Switch the console off while START writes that folder, then START again. | Bank opens as above, with one `-backup` folder and no folder with a 16-character name left. |

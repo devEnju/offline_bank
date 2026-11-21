@@ -598,10 +598,29 @@ where
         secured => secured?,
     }
     match matched {
-        Match::Before | Match::After => settled(
-            rule,
-            files.reconcile(evidence.fingerprint).map(Settled::Exact),
-        ),
+        // The game decides the save, and nothing of a backup is kept: its
+        // folder, finished first if a cut left it in part, goes once the
+        // journal is clean. A cut in between leaves it whole for the opening.
+        Match::Before | Match::After => {
+            let backup = match backup {
+                Some(ext) => match interrupted::finish(files, staging, &mut *ext) {
+                    Ok(folder) => folder.map(|folder| (ext, folder)),
+                    Err(error) => {
+                        return sd_ended::<_, S>(error, Fault::JournalRecovery)
+                            .map(|_| Settled::NoSpace)
+                    }
+                },
+                None => None,
+            };
+            let result = settled(
+                rule,
+                files.reconcile(evidence.fingerprint).map(Settled::Exact),
+            );
+            if let (Ok(Settled::Exact(_)), Some((ext, folder))) = (&result, backup) {
+                let _ = interrupted::remove(ext, &folder);
+            }
+            result
+        }
         // A save that is neither image, on the kind of copy the save in
         // progress was made with: the game was played on, a new game was
         // started on it, or it is another cartridge. It no longer shows
@@ -2378,9 +2397,10 @@ mod tests {
         };
         let (olds, news) = (half(b".old.box"), half(b".new.box"));
         assert!(!olds.is_empty() && !news.is_empty());
+        let nothing = std::vec::Vec::new();
         for (how, left) in [
-            (Settling::Bank(BEFORE), &news),
-            (Settling::Bank(AFTER), &olds),
+            (Settling::Bank(BEFORE), &nothing),
+            (Settling::Bank(AFTER), &nothing),
             (Settling::Transporter(RecoveryDecision::KeepBefore), &news),
             (Settling::Transporter(RecoveryDecision::CommitAfter), &olds),
             (Settling::NoThenDelivery, &olds),
@@ -2410,12 +2430,64 @@ mod tests {
                         .iter()
                         .filter(|dir| dir.ends_with(interrupted::RETIRED))
                         .count();
-                    assert_eq!(dated, 1, "{what}, cut {cut}");
+                    assert_eq!(dated, usize::from(!left.is_empty()), "{what}, cut {cut}");
                     // Each file as it was written.
                     for name in &names {
                         let path = [kept.text(), name].concat();
                         assert!(sd.sd[&path] == written[name], "{what}, cut {cut}");
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_game_found_again_decides_the_save_and_loses_nothing_wherever_it_is_cut() {
+        use bank_common::{interrupted, sdfiles};
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        let date = [2026, 11, 16, 14, 3, 7];
+        let mut kept = sdfiles::dated_folder(date);
+        kept.push(interrupted::RETIRED);
+        let mut game = Simulated::loaded(true);
+        let (disk, files, in_progress, _) = prepared_save(&old, new, &mut game);
+        drop(files);
+        game.save = Some((OTHER, LOADED));
+        let asked_card = disk.like(true).copy();
+        start_backed(&asked_card, &mut game, &in_progress).unwrap();
+        for image in [BEFORE, AFTER] {
+            game.save = Some((image, LOADED));
+            let counting = asked_card.cut_after(usize::MAX);
+            start_backed(&counting, &mut game, &in_progress).unwrap();
+            for cut in 0..counting.0.borrow().operations {
+                let card = asked_card.cut_after(cut);
+                let _ = start_backed(&card, &mut game, &in_progress);
+                let card = card.reboot();
+                if pending(&mut opened(&card)).is_some() {
+                    start_backed(&card, &mut game, &in_progress).unwrap();
+                }
+                let mut files = opened(&card);
+                files
+                    .read(&mut std::vec![0; offline_core::native_blob::BLOB_SIZE])
+                    .unwrap();
+                interrupted::settle(
+                    &mut files,
+                    &mut card.clone(),
+                    &mut ExtCard(card.clone()),
+                    &mut std::vec![0; 2 * offline_core::boxfile::FILE_SIZE],
+                    date,
+                )
+                .unwrap();
+                let state = card.0.borrow();
+                assert!(state.ext.is_empty(), "cut {cut}");
+                // Only a cut between the journal and the folder's deletion
+                // leaves the side the Bank does not hold, whole.
+                for (path, bytes) in state.sd.iter() {
+                    assert!(path.starts_with(kept.text()), "cut {cut}: {path:?}");
+                    assert!(
+                        offline_core::boxfile::BoxFile::parse(bytes).is_ok(),
+                        "cut {cut}: {path:?}"
+                    );
                 }
             }
         }

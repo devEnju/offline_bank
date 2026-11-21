@@ -35,35 +35,9 @@ pub const fn not_found(result: u32) -> bool {
         && (result >> 21) & 0x3f == SUMMARY_NOT_FOUND
 }
 
-/// Whether `result` says that the data of a file does not read: the class
-/// of `0xD900458B`, which the console answers for what an interrupted write
-/// to extdata left. Any other failure says nothing about the file.
-pub const fn damaged(result: u32) -> bool {
-    result & 0xffff_fc00 == 0xd900_4400
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn damaged_is_the_class_of_the_result_an_interrupted_write_leaves() {
-        for result in [0xd900_458b, 0xd900_4400, 0xd900_47ff] {
-            assert!(damaged(result), "{result:08x}");
-        }
-        // A file not there, a full card, a passing failure of the card, the
-        // same description in another module, and no failure.
-        for result in [
-            0xc880_4478,
-            0xc860_44d2,
-            0xc92044e6,
-            0xd900_458b & !(0xff << 10) | 0x12 << 10,
-            0x5900_458b,
-            0,
-        ] {
-            assert!(!damaged(result), "{result:08x}");
-        }
-    }
 
     /// A result of the file system with `description`, at the level and
     /// summary the console gives such a failure.

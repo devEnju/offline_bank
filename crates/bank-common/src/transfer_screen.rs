@@ -3,14 +3,14 @@
 //! offline boxes kept as box files on the SD card, what the blue and the
 //! green cursor do with them, and how what the screen changed is written:
 //! the Bank in one journal record without a game (`BankFiles::commit`), the
-//! cells around it with a `.bak` of them, ordered so that the next opening
+//! cells behind it, from a file proven before it, so that the next opening
 //! finds every Pokémon in the Bank or a cell, as before the save or as after
 //! it; a cut may leave a spare copy, never a Pokémon without a place.
 //!
 //! ```text
 //! /3ds/Pokémon Bank/mover1.box .. mover3.box       the offline boxes; absent is an empty one
 //! Bank's extdata: /AAAAAAAABBBBBBBB/              the folder of the save's two states (`interrupted::folder`)
-//!     mover0.bak                                   the cells before the save
+//!     mover0.old, mover0.new                       the cells before and after the save
 //! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/bank01.box     a checked box of the Bank, copied
 //! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover0.box     the checked transport box, copied
 //! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover1.box     a checked offline box, copied;
@@ -743,17 +743,19 @@ pub struct Commit<'a> {
 /// | Step | What |
 /// | --- | --- |
 /// | 1 | the checked boxes are copied into the session's folder, one no folder was of before |
-/// | 2 | one `mover0.bak` of the cells that change, proven before any cell is touched, in the folder in Bank's extdata of the save's two states (`interrupted::folder`): the journal's now and the one the record of step 4 names |
-/// | 3 | the cells that change, a checked one as an empty box with its default name |
-/// | 4 | the Bank, in one journal record without a game (`BankFiles::commit`) |
-/// | 5 | the `.bak` and its folder are deleted (`interrupted::discard`); a failure here ends nothing, as the save is made |
+/// | 2 | `mover0.old` of the cells that change, proven; a cell among them without a file gets the empty box it holds, so that writing it later needs no new room; then `mover0.new`, proven; both in the folder in Bank's extdata of the save's two states (`interrupted::folder`): the journal's now and the one the record of step 3 names |
+/// | 3 | the Bank, in one journal record without a game (`BankFiles::commit`) |
+/// | 4 | the cells that change, a checked one as an empty box with its default name |
+/// | 5 | the folder is deleted (`interrupted::remove`) |
 ///
 /// Every record writes the Bank file into its other copy, so the two states
 /// differ and the next opening tells by the journal alone whether the save
 /// went through (`interrupted::settle`). A step before the record that
-/// fails ends here; the next opening settles it. Once the record's first
-/// replica is durable the save is made, and the answer says so. The opening before it left no such folder, so none
-/// of an earlier save can count for the states of this one.
+/// fails ends here, with no cell changed. Once the record's first replica is
+/// durable the save is made, and the answer says so: a failure of steps 4
+/// and 5 ends nothing, as the next opening finishes them from the folder. The
+/// opening before it left no such folder, so none of an earlier save can
+/// count for the states of this one.
 pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     files: &mut BankFiles<F>,
     sd: &mut S,
@@ -777,7 +779,7 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
         let differs = differs(sd, index, &offline.files[index], scratch)?;
         *changes = request.checked[OFFLINE + index] || differs;
     }
-    // The states the save goes between, and the folder of the `.bak` files.
+    // The states the save goes between, and the folder of the cells.
     let [before, after] = files
         .commit_states(&body)
         .map_err(Error::Files)?
@@ -808,9 +810,8 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
                 .map_err(Error::Sd)?;
         }
     }
-    // 2: one `.bak` of the cells that change, before any cell; a cell without
-    // a file is an empty box. A checked cell is decided here, by its new box.
-    // The folder only for a `.bak`.
+    // 2: a checked cell is decided here, by its new box. The folder only for
+    // a cell that changes.
     for (index, changes) in changed.iter_mut().enumerate() {
         if !*changes {
             continue;
@@ -825,7 +826,7 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     if made {
         ext.create_dir(&folder).map_err(Error::Sd)?;
         let included = [false, changed[0], changed[1], changed[2]];
-        let mut fill = |position: usize, to: &mut [u8; FILE_SIZE]| {
+        let mut as_it_is = |position: usize, to: &mut [u8; FILE_SIZE]| {
             let index = position - 1;
             match sd.get(&cell_path(index), &mut to[..]).map_err(Error::Sd)? {
                 Found::Absent => empty_box(to, &[0; NAME_TEXT]),
@@ -834,28 +835,38 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
             }
             Ok(())
         };
-        interrupted::write_group(
-            ext,
-            &interrupted::bak(&folder),
-            &included,
-            &mut fill,
-            scratch,
-        )?;
+        let old = interrupted::cells_file(&folder, false);
+        interrupted::write_group(ext, &old, &included, &mut as_it_is, scratch)?;
+        for index in (0..OFFLINE_COUNT).filter(|index| changed[*index]) {
+            if sd
+                .get(&cell_path(index), &mut scratch[..])
+                .map_err(Error::Sd)?
+                == Found::Absent
+            {
+                empty_box(scratch, &[0; NAME_TEXT]);
+                sd.put(&cell_path(index), &scratch[..]).map_err(Error::Sd)?;
+            }
+        }
+        let mut as_it_will_be = |position: usize, to: &mut [u8; FILE_SIZE]| {
+            to.copy_from_slice(&offline.files[position - 1]);
+            Ok(())
+        };
+        let new = interrupted::cells_file(&folder, true);
+        interrupted::write_group(ext, &new, &included, &mut as_it_will_be, scratch)?;
         ext.rest();
     }
-    // 3: the cells.
-    for index in (0..OFFLINE_COUNT).filter(|index| changed[*index]) {
-        sd.put(&cell_path(index), &offline.files[index])
-            .map_err(Error::Sd)?;
-    }
-    // 4: the Bank, as Save and Quit always writes it; its record is also
-    // what tells the next opening that the cells were written.
+    // 3: the Bank, as Save and Quit always writes it; its record decides the
+    // save, and the cells follow it.
     files.commit(body).map_err(Error::Files)?;
-    // 5: the save is made, so the cells' old boxes are in the Bank or a cell
-    // and the `.bak` goes. A failure here ends nothing: a folder left the
-    // next opening settles.
+    // 4 and 5: the save is made. A failure here ends nothing: the folder
+    // stays, and the next opening finishes the cells from it.
     if made {
-        let _ = interrupted::discard(ext, &folder);
+        let written = (0..OFFLINE_COUNT)
+            .filter(|index| changed[*index])
+            .try_for_each(|index| sd.put(&cell_path(index), &offline.files[index]));
+        if written.is_ok() {
+            let _ = interrupted::remove(ext, &folder);
+        }
     }
     Ok(())
 }
@@ -2063,7 +2074,7 @@ mod tests {
         let sd = disk.0.borrow();
         let names: Vec<_> = sd.sd.keys().cloned().collect();
         // The first save writes every cell, with Pokémon or without; no
-        // `.bak` is left, nor the folder it lay in.
+        // file of the write is left, nor the folder it lay in.
         assert_eq!(
             names,
             [
@@ -2152,7 +2163,7 @@ mod tests {
         assert!(disk.0.borrow().sd == cards);
         assert!(journal(&disk) != first);
         let first = journal(&disk);
-        // A new name: only that cell, with its `.bak`, and the Bank.
+        // A new name: only that cell, and the Bank.
         offline.files[2][boxfile::NAME][0] = b'Z';
         boxfile::seal(&mut offline.files[2]);
         let cards = disk.0.borrow().sd.clone();
@@ -2633,7 +2644,7 @@ mod tests {
 
     /// Whether a folder of the date holds only spare copies: every Pokémon
     /// in it is also in the Bank or a cell (`held`) or in a session's
-    /// folder. A `.bak` lies nowhere else.
+    /// folder.
     fn only_spare_copies(card: &Shared, held: &BTreeMap<Identity, usize>) -> bool {
         let sd = card.0.borrow();
         let resolved = |path: &[u8]| {
@@ -2651,10 +2662,7 @@ mod tests {
                 .unwrap_or_default()
         };
         let mut elsewhere: Vec<Identity> = held.keys().copied().collect();
-        for (path, bytes) in sd.sd.iter().filter(|(path, _)| !resolved(path)) {
-            if path.ends_with(b".bak.box") {
-                return false;
-            }
+        for (_, bytes) in sd.sd.iter().filter(|(path, _)| !resolved(path)) {
             elsewhere.extend(identities(bytes));
         }
         sd.sd
@@ -2755,23 +2763,22 @@ mod tests {
     }
 
     #[test]
-    fn no_room_to_put_a_cell_back_leaves_it_for_the_next_opening() {
-        // Box 1 and cell 1 change places; the power goes after the cell is
-        // written, before the journal is. The next opening finds the card
-        // full: it says so, and the `.bak` stays for the one after.
+    fn no_room_to_finish_a_cell_leaves_it_for_the_next_opening() {
+        // Box 1 and cell 1 change places; the power goes after the journal,
+        // before the cell is written. The next opening finds the card full:
+        // it says so, and the folder stays for the one after.
         let (disk, save) = saves().remove(1);
-        let before = on_card(&disk.reboot()).0;
+        let old_cell = disk.0.borrow().sd.get(cell_path(0).text()).cloned();
         let counting = disk.reboot().cut_after(usize::MAX);
         run_save(&counting, &save).unwrap();
+        let after = on_card(&counting).0;
         let start = opened(&disk.reboot()).phase().unwrap();
         for cut in 0..counting.0.borrow().operations {
             let card = disk.reboot().cut_after(cut);
             let _ = run_save(&card, &save);
             let card = card.reboot();
             let cell = card.0.borrow().sd.get(cell_path(0).text()).cloned();
-            if cell.as_deref() != Some(&save.offline.files[0][..])
-                || opened(&card).phase().unwrap() != start
-            {
+            if cell != old_cell || !interrupted(&card) || opened(&card).phase().unwrap() == start {
                 continue;
             }
             card.0.borrow_mut().sd_full = true;
@@ -2789,20 +2796,20 @@ mod tests {
             assert!(Shared::no_room(&error));
             assert!(interrupted(&card));
             card.0.borrow_mut().sd_full = false;
-            assert!(on_card(&card).0 == before, "cut {cut}");
+            assert!(on_card(&card).0 == after, "cut {cut}");
             assert!(!interrupted(&card));
             return;
         }
-        panic!("no cut left the cell written and the journal not");
+        panic!("no cut left the journal written and the cell not");
     }
 
     #[test]
-    fn a_cell_without_a_file_needs_no_room_to_be_put_back() {
+    fn a_save_cut_before_the_journal_needs_no_room_to_be_undone() {
         // The first save, box 1 and cell 1 swapped, every cell without a
-        // file; cut once the `.bak` of cell 1 is written and before the
-        // cell is. The next START, on a card without room for a file,
-        // settles it: the cell has no file, which is the empty box its
-        // `.bak` holds, so nothing is written.
+        // file. Wherever a cut leaves the journal as it was, the next START
+        // settles it on a card without room for a file: no cell holds
+        // anything but the empty box it held, also where the cut fell in
+        // that box's own write.
         let (disk, files, mut body) = setup();
         drop(files);
         assert!(disk.0.borrow().sd.is_empty());
@@ -2822,32 +2829,28 @@ mod tests {
         let counting = disk.reboot().cut_after(usize::MAX);
         run_save(&counting, &save).unwrap();
         let start = opened(&disk.reboot()).phase().unwrap();
+        let mut empty = [0u8; FILE_SIZE];
+        empty_box(&mut empty, &[0; NAME_TEXT]);
         let mut tried = 0;
         for cut in 0..counting.0.borrow().operations {
             let card = disk.reboot().cut_after(cut);
             let _ = run_save(&card, &save);
             let card = card.reboot();
-            let baks = card
-                .0
-                .borrow()
-                .ext
-                .keys()
-                .filter(|key| key.ends_with(b".bak"))
-                .count();
-            let cell = card.0.borrow().sd.contains_key(cell_path(0).text());
-            if baks == 0 || cell || opened(&card).phase().unwrap() != start {
+            if !interrupted(&card) || opened(&card).phase().unwrap() != start {
                 continue;
             }
             tried += 1;
             card.0.borrow_mut().sd_full = true;
             assert!(settle_on(&card).is_ok(), "cut {cut}");
             assert!(!interrupted(&card), "cut {cut}");
-            assert!(
-                !card.0.borrow().sd.contains_key(cell_path(0).text()),
-                "cut {cut}"
-            );
+            let sd = card.0.borrow();
+            let cell = sd.sd.get(cell_path(0).text());
+            assert!(cell.is_none_or(|cell| cell[..] == empty), "cut {cut}");
         }
-        assert!(tried > 0, "no cut left a .bak and the cell without a file");
+        assert!(
+            tried > 0,
+            "no cut left the folder and the journal as it was"
+        );
     }
 
     #[test]
@@ -2879,9 +2882,9 @@ mod tests {
     }
 
     #[test]
-    fn a_delivery_after_a_cut_does_not_hide_the_bak() {
-        // Box 1 and cell 1 change places; the power goes after the cell is
-        // written, before the journal is. Transporter delivers in between.
+    fn a_delivery_after_a_cut_leaves_the_cells_as_before() {
+        // Box 1 and cell 1 change places; the power goes before the journal
+        // is written. Transporter delivers in between.
         let (disk, save) = saves().remove(1);
         let counting = disk.reboot().cut_after(usize::MAX);
         run_save(&counting, &save).unwrap();
@@ -2890,10 +2893,9 @@ mod tests {
             let card = disk.reboot().cut_after(cut);
             let _ = run_save(&card, &save);
             let card = card.reboot();
-            let cell = card.0.borrow().sd.get(cell_path(0).text()).cloned();
             let unwritten =
                 opened(&card).phase().unwrap() == opened(&disk.reboot()).phase().unwrap();
-            if cell.as_deref() != Some(&save.offline.files[0][..]) || !unwritten {
+            if !interrupted(&card) || !unwritten {
                 continue;
             }
             deliver(&card, 1);
@@ -2903,10 +2905,10 @@ mod tests {
             }
             return;
         }
-        panic!("no cut left the cell written and the journal not");
+        panic!("no cut left the folder and the journal not written");
     }
 
-    /// The folder `save`'s `.bak` files lie in, on `card` before it.
+    /// The folder of `save`'s cells, on `card` before it.
     fn save_folder(card: &Shared, save: &Save) -> Path {
         let mut files = opened(&card.reboot());
         let mut body = load(&mut files).0;
@@ -2919,15 +2921,16 @@ mod tests {
     }
 
     #[test]
-    fn a_bak_a_cut_left_after_the_journal_is_deleted() {
+    fn a_cut_after_the_journal_is_finished_in_the_cells() {
         // Box 1 and cell 1 change places; the power goes after the journal
-        // record, before the `.bak` is deleted. The journal names the
-        // folder's state after: the cell's old box is in the Bank now.
+        // record, before the folder is deleted. The journal names the
+        // folder's state after: the cell gets its new box, and the cell's
+        // old box is in the Bank now.
         let (disk, save) = saves().remove(1);
         let Phase::Clean(before) = opened(&disk.reboot()).phase().unwrap() else {
             unreachable!()
         };
-        let hanging = interrupted::bak(&save_folder(&disk, &save));
+        let hanging = interrupted::cells_file(&save_folder(&disk, &save), true);
         let counting = disk.reboot().cut_after(usize::MAX);
         run_save(&counting, &save).unwrap();
         let after = on_card(&counting).0;
@@ -2939,7 +2942,7 @@ mod tests {
             if !written || !card.0.borrow().ext.contains_key(hanging.text()) {
                 continue;
             }
-            // The cells as after the save, no `.bak` anywhere, and no
+            // The cells as after the save, no file of the write, and no
             // folder kept.
             assert!(on_card(&card).0 == after, "cut {cut}");
             let card = card.0.borrow();
@@ -2951,7 +2954,7 @@ mod tests {
                 .any(|dir| dir.ends_with(interrupted::RETIRED)));
             return;
         }
-        panic!("no cut left the journal written and the .bak there");
+        panic!("no cut left the journal written and the folder there");
     }
 
     #[test]
@@ -2978,14 +2981,18 @@ mod tests {
     }
 
     #[test]
-    fn a_bak_of_a_bank_replaced_since_is_kept_in_a_folder_of_the_date() {
-        // Box 1 and cell 1 change places; the power goes after the cell is
-        // written, before the journal is. Before the next START the Bank is
-        // replaced, here by a save that knows nothing of the `.bak`, as a
-        // restored backup of the extdata would: the journal names neither of
-        // its folder's states. Cell 1's box before the save, which only the
-        // `.bak` holds, must not go.
+    fn a_save_of_a_bank_replaced_since_is_kept_in_a_folder_of_the_date() {
+        // Box 1 and cell 1 change places; the power goes before the journal,
+        // with both sides written. Before the next START the Bank is
+        // replaced, here by a save that knows nothing of them, as a restored
+        // backup of the extdata would: the journal names neither of the
+        // folder's states. The cell stays, and both sides are kept.
         let (disk, save) = saves().remove(1);
+        let folder = save_folder(&disk, &save);
+        let (old, new) = (
+            interrupted::cells_file(&folder, false),
+            interrupted::cells_file(&folder, true),
+        );
         let counting = disk.reboot().cut_after(usize::MAX);
         run_save(&counting, &save).unwrap();
         let start = opened(&disk.reboot()).phase().unwrap();
@@ -2993,10 +3000,14 @@ mod tests {
             let card = disk.reboot().cut_after(cut);
             let _ = run_save(&card, &save);
             let card = card.reboot();
-            let cell = card.0.borrow().sd.get(cell_path(0).text()).cloned();
-            if cell.as_deref() != Some(&save.offline.files[0][..])
-                || opened(&card).phase().unwrap() != start
-            {
+            let whole = |path: &Path| {
+                let state = card.0.borrow();
+                state.ext.get(path.text()).is_some_and(|file| {
+                    !state.ext_damaged.contains(path.text())
+                        && state.ext_written.get(path.text()) == Some(&file.len())
+                })
+            };
+            if !whole(&old) || !whole(&new) || opened(&card).phase().unwrap() != start {
                 continue;
             }
             let mut files = opened(&card);
@@ -3004,19 +3015,27 @@ mod tests {
             put(&mut body, 50, 0, 77);
             files.commit(Cleaned::new(&mut body).unwrap()).unwrap();
             on_card(&card);
-            let kept = &card.0.borrow().sd[&at(&std::format!("{KEPT}/mover1.bak.box"))];
+            let state = card.0.borrow();
+            let kept = &state.sd[&at(&std::format!("{KEPT}/mover1.old.box"))];
             assert_eq!(kept[..], cell_with(9)[..], "cut {cut}");
+            assert_eq!(
+                state.sd[&at(&std::format!("{KEPT}/mover1.new.box"))][..],
+                save.offline.files[0][..],
+                "cut {cut}"
+            );
+            assert_eq!(state.sd[cell_path(0).text()][..], cell_with(9)[..]);
+            drop(state);
             assert!(!interrupted(&card));
             return;
         }
-        panic!("no cut left the cell written and the journal not");
+        panic!("no cut left both sides written and the journal not");
     }
 
     #[test]
     fn every_interrupted_folder_that_names_no_state_of_the_journal_is_kept_in_a_folder_of_the_date()
     {
         // Folders of two states the journal does not name: one with both
-        // halves of a backup, one with a `.bak`. What each holds goes, as
+        // halves of a backup, one with a transfer save's cell. What each holds goes, as
         // single box files, into a folder of the date, in the order of the
         // list, each to the next free second.
         let (disk, ..) = setup();
@@ -3025,7 +3044,7 @@ mod tests {
         in_extdata(&disk, ONE, "bank28.old", &[(2, cell_with(1))]);
         in_extdata(&disk, ONE, "bank28.new", &[(2, cell_with(2))]);
         in_extdata(&disk, ONE, "mover0.new", &[(0, cell_with(3))]);
-        in_extdata(&disk, TWO, "mover0.bak", &[(2, cell_with(4))]);
+        in_extdata(&disk, TWO, "mover0.new", &[(2, cell_with(4))]);
         on_card(&disk);
         let card = disk.0.borrow();
         let names: Vec<_> = card.sd.keys().cloned().collect();
@@ -3035,11 +3054,11 @@ mod tests {
                 at(&std::format!("{KEPT}/bank30.new.box")),
                 at(&std::format!("{KEPT}/bank30.old.box")),
                 at(&std::format!("{KEPT}/mover0.new.box")),
-                at(&std::format!("{KEPT_NEXT}/mover2.bak.box")),
+                at(&std::format!("{KEPT_NEXT}/mover2.new.box")),
             ]
         );
         assert_eq!(
-            card.sd[&at(&std::format!("{KEPT_NEXT}/mover2.bak.box"))],
+            card.sd[&at(&std::format!("{KEPT_NEXT}/mover2.new.box"))],
             cell_with(4)
         );
         assert!(card.ext.is_empty() && card.ext_dirs.is_empty());
@@ -3078,7 +3097,7 @@ mod tests {
         in_extdata(
             &disk,
             "1111111122222222",
-            "mover0.bak",
+            "mover0.new",
             &[(1, cell_with(5))],
         );
         let before = disk.0.borrow().sd.clone();
@@ -3105,7 +3124,7 @@ mod tests {
         }
         assert_eq!(card.sd[&at("/20261109-140310/mover1.box")], cell_with(6));
         assert_eq!(
-            card.sd[&at(&std::format!("{KEPT_NEXT}/mover1.bak.box"))],
+            card.sd[&at(&std::format!("{KEPT_NEXT}/mover1.new.box"))],
             cell_with(5)
         );
     }
@@ -3215,8 +3234,8 @@ mod tests {
         };
         let folder = interrupted::folder(state(1), state(2));
         let mut inside = folder;
-        inside.push(b"/mover0.bak");
-        assert_eq!(interrupted::bak(&folder), inside);
+        inside.push(b"/mover0.new");
+        assert_eq!(interrupted::cells_file(&folder, true), inside);
         assert!(inside.valid());
     }
 }
