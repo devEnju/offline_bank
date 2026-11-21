@@ -653,33 +653,43 @@ impl<S: Storage> BankStore<S> {
     /// both read, and replaces or creates none, so the record is written
     /// again, which replaces or creates that replica (`put_replica`).
     pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
-        let head = self.check_head(head)?;
-        self.mark(head, ask, head.metadata.unlocked)
+        self.mark(head, Some(ask), None)
     }
 
     /// Unlocks the save in progress for Transporter's question
     /// (`Metadata::unlocked`), whatever game Bank finds from then on, in the
     /// same way: the same record with the next sequence number.
     pub fn unlock(&mut self, head: &Head) -> Result<Head, StoreError<S::Error>> {
-        let head = self.check_head(head)?;
-        self.mark(head, head.metadata.ask, true)
+        self.mark(head, None, Some(true))
     }
 
-    /// The record of `head` with `ask` and `unlocked`, written only if it
-    /// differs, or if Transporter's question then settles the save while
-    /// one replica does not hold the record.
+    /// Takes the save in progress away from Transporter's question while its
+    /// backup is written: the same record with the next sequence number,
+    /// with neither `ask` nor `unlocked`. Nothing is written if it holds
+    /// neither.
+    pub fn unmark(&mut self, head: &Head) -> Result<Head, StoreError<S::Error>> {
+        self.mark(head, Some(false), Some(false))
+    }
+
+    /// The record of `head` with `ask` and `unlocked` where they are given,
+    /// written only if it differs, or if Transporter's question then settles
+    /// the save while one replica does not hold the record. One function
+    /// for the three marks: the payload's room is counted (docs/internals.md,
+    /// "Placement").
+    #[inline(never)]
     fn mark(
         &mut self,
-        head: Head,
-        ask: bool,
-        unlocked: bool,
+        head: &Head,
+        ask: Option<bool>,
+        unlocked: Option<bool>,
     ) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
         if !matches!(head.phase(), Phase::Prepared(_)) {
             return Err(StoreError::NoPendingTransfer);
         }
         let marked = Metadata {
-            ask,
-            unlocked,
+            ask: ask.unwrap_or(head.metadata.ask),
+            unlocked: unlocked.unwrap_or(head.metadata.unlocked),
             ..head.metadata
         };
         if marked == head.metadata

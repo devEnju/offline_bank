@@ -227,7 +227,7 @@ impl<S: Storage> BankSession<S> {
     pub fn ask(&mut self, ask: bool) -> Result<bool, Error<S::Error>> {
         self.ensure_usable()?;
         let result = self.store.ask(&self.head, ask);
-        self.head = self.storage_result(result)?;
+        self.marked(result)?;
         Ok(self.head.metadata().asks())
     }
 
@@ -241,6 +241,23 @@ impl<S: Storage> BankSession<S> {
     pub fn unlock(&mut self) -> Result<(), Error<S::Error>> {
         self.ensure_usable()?;
         let result = self.store.unlock(&self.head);
+        self.marked(result)
+    }
+
+    /// Takes the save in progress away from Transporter's question
+    /// (`BankStore::unmark`).
+    pub fn unmark(&mut self) -> Result<(), Error<S::Error>> {
+        self.ensure_usable()?;
+        let result = self.store.unmark(&self.head);
+        self.marked(result)
+    }
+
+    /// The record a mark of the save in progress left.
+    #[inline(never)]
+    fn marked(
+        &mut self,
+        result: Result<Head, StoreError<S::Error>>,
+    ) -> Result<(), Error<S::Error>> {
         self.head = self.storage_result(result)?;
         Ok(())
     }

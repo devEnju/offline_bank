@@ -260,6 +260,7 @@ type Fill<'a, E, S> = &'a mut dyn FnMut(usize, &mut [u8; FILE_SIZE]) -> Result<(
 /// with zeros at a position before the last that is not included. It is
 /// made anew, written whole and read back against what was meant
 /// (`group_is`).
+#[inline(never)]
 pub(crate) fn write_group<X: Extdata, E>(
     ext: &mut X,
     path: &Path,
@@ -300,6 +301,7 @@ fn place_bytes<E, S>(
 /// Whether the file `path` holds exactly what `write_group` writes, and ends
 /// there; one that does not read does not. Each position is compared by its
 /// digest, so that this needs room for one box alone.
+#[inline(never)]
 fn group_is<X: Extdata, E>(
     ext: &mut X,
     path: &Path,
@@ -326,8 +328,12 @@ fn group_is<X: Extdata, E>(
 /// Writes the backup of the save in progress: every file that is not there
 /// as it should be, so a START after a cut, or after a file of it was lost,
 /// writes what is missing and one that finds it whole writes nothing.
-/// `staging` holds one Bank file at a time and nothing of use afterwards.
-/// Nothing of Bank's own files is written.
+/// Before it writes a file, the journal stops leaving the save to
+/// Transporter's question (`make_group`), so that no answer can make the
+/// journal clean beside a file being written; the caller marks it again once
+/// this has ended. `staging` holds one Bank file at a time and nothing of use
+/// afterwards. Of Bank's own files only the journal is written, and only for
+/// that.
 pub fn back_up<F: Files, X: Extdata>(
     files: &mut BankFiles<F>,
     staging: &mut [u8],
@@ -403,9 +409,7 @@ pub fn back_up<F: Files, X: Extdata>(
                     boxfile::encode_bank_box(payload, place_at(group, position), to)
                         .map_err(|_| Error::Staging)
                 };
-                if !group_is(ext, &path, &included, &mut fill, out)? {
-                    write_group(ext, &path, &included, &mut fill, out)?;
-                }
+                make_group(files, ext, &path, &included, &mut fill, out)?;
             }
         }
     }
@@ -420,12 +424,29 @@ pub fn back_up<F: Files, X: Extdata>(
                 boxfile::encode_transport(records, tags, &[0; NAME_TEXT], to)
                     .map_err(|_| Error::Staging)
             };
-            if !group_is(ext, &path, &included, &mut fill, out)? {
-                write_group(ext, &path, &included, &mut fill, out)?;
-            }
+            make_group(files, ext, &path, &included, &mut fill, out)?;
         }
     }
     Ok(())
+}
+
+/// Makes a file of the backup hold what it should, unless it does. A file is
+/// written only with the save taken away from Transporter's question: the
+/// extdata store is let go first, as for every write of the journal.
+fn make_group<F: Files, X: Extdata>(
+    files: &mut BankFiles<F>,
+    ext: &mut X,
+    path: &Path,
+    included: &[bool; GROUP],
+    fill: Fill<'_, <F::Storage as offline_core::Storage>::Error, X::Error>,
+    out: &mut [u8; FILE_SIZE],
+) -> Result<(), Failed<F, X>> {
+    if group_is(ext, path, included, fill, out)? {
+        return Ok(());
+    }
+    ext.rest();
+    files.unmark().map_err(Error::Files)?;
+    write_group(ext, path, included, fill, out)
 }
 
 /// What follows the date in the name of the folder of the SD card that

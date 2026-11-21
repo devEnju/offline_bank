@@ -703,18 +703,28 @@ where
         .map_err(files_failed(Fault::JournalRecovery))?;
     let Some(decision) = moved::choose(moved) else {
         // The boxes it changed go into Bank's extdata, both ways, before
-        // the journal says anything about it.
+        // the journal says anything about it. A file written for it takes
+        // the marks off the journal first (`interrupted::back_up`).
+        let unlocked = files
+            .unlocked()
+            .map_err(files_failed(Fault::JournalRecovery))?;
         if !backup.write(files, staging)? {
             return Ok(Settled::NoSpace);
         }
-        // Bit 2 by what was seen; an unlocked save is Transporter's too. No
-        // room to write the record again leaves the save as it was, waiting
-        // for the next START, as no room for the backup does.
+        // The backup is whole: an unlock stands again, and bit 2 goes by
+        // what was seen; an unlocked save is Transporter's too. No room to
+        // write the record again leaves the save waiting for the next START,
+        // as no room for the backup does.
+        let marked = if unlocked { files.unlock() } else { Ok(()) };
         return settled(
             rule,
-            files
-                .ask(seen)
-                .map(|asks| if asks { Settled::Asks } else { Settled::Waits }),
+            marked.and_then(|()| files.ask(seen)).map(|asks| {
+                if asks {
+                    Settled::Asks
+                } else {
+                    Settled::Waits
+                }
+            }),
         );
     };
     settled(rule, files.reconcile_as(decision).map(Settled::ByMoves))
@@ -2526,6 +2536,96 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn a_backup_written_for_a_marked_save_never_stands_torn_beside_transporter_s_answer() {
+        use bank_common::{interrupted, testing::Visit};
+        use offline_core::transport;
+        let (old, sessions) = sessions();
+        let new = &sessions[3].1;
+        let date = [2026, 11, 21, 12, 0, 0];
+        let opening = |card: &Shared| {
+            let mut files = opened(card);
+            files
+                .read(&mut std::vec![0; offline_core::native_blob::BLOB_SIZE])
+                .unwrap();
+            interrupted::settle(
+                &mut files,
+                &mut card.clone(),
+                &mut ExtCard(card.clone()),
+                &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
+                date,
+            )
+        };
+        // A record an earlier release left marked, with no folder, and a
+        // folder that lost a file; each asked, and unlocked.
+        for (has_folder, unlock) in [(false, false), (false, true), (true, false), (true, true)] {
+            let what = std::format!("folder {has_folder}, unlocked {unlock}");
+            let mut game = Simulated::loaded(true);
+            let (disk, mut files, in_progress, _) = prepared_save(&old, new, &mut game);
+            game.save = Some((OTHER, LOADED));
+            if !has_folder {
+                files.ask(true).unwrap();
+            }
+            if unlock {
+                files.unlock().unwrap();
+            }
+            drop(files);
+            let disk = disk.like(true).copy();
+            let expected = backup_files(&old, new);
+            if has_folder {
+                start_backed(&disk, &mut game, &in_progress).unwrap();
+                let (lost, _) = interrupted::file(&backup_folder(&in_progress), 0, true);
+                let mut state = disk.0.borrow_mut();
+                state.ext.remove(lost.text());
+                state.ext_written.remove(lost.text());
+            }
+            let counting = disk.cut_after(usize::MAX);
+            assert_eq!(
+                start_backed(&counting, &mut game, &in_progress).unwrap(),
+                Settled::Asks,
+                "{what}"
+            );
+            // Whole, and marked as it was.
+            assert!(
+                backup_complete(&counting, &in_progress, &expected),
+                "{what}"
+            );
+            assert!(asked(&counting), "{what}");
+            assert_eq!(unlocked(&counting), unlock, "{what}");
+            let total = counting.0.borrow().operations;
+            let mut answers = 0;
+            for cut in 0..total {
+                let card = disk.cut_after(cut);
+                let _ = start_backed(&card, &mut game, &in_progress);
+                let card = card.reboot();
+                // Whenever Transporter answers, no file is being written:
+                // before the marks came off, the folder is as it was, and the
+                // next opening settles it. A replica the cut left unreadable
+                // is refused by Transporter, and nothing changes.
+                if asked(&card) || unlocked(&card) {
+                    let answered = card.copy();
+                    let decision = RecoveryDecision::KeepBefore;
+                    if transport::settle(&mut Visit(answered.clone()), decision).is_ok() {
+                        answers += 1;
+                        opening(&answered).unwrap();
+                        assert!(answered.0.borrow().ext.is_empty(), "{what}, cut {cut}");
+                    }
+                }
+                // And the next START finishes what the cut left.
+                assert_eq!(
+                    start_backed(&card, &mut game, &in_progress).unwrap(),
+                    Settled::Asks,
+                    "{what}, cut {cut}"
+                );
+                assert!(
+                    asked(&card) && backup_complete(&card, &in_progress, &expected),
+                    "{what}, cut {cut}"
+                );
+            }
+            assert!(answers > 0, "{what}");
         }
     }
 

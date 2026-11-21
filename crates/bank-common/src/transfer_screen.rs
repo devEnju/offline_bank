@@ -756,6 +756,7 @@ pub struct Commit<'a> {
 /// and 5 ends nothing, as the next opening finishes them from the folder. The
 /// opening before it left no such folder, so none of an earlier save can
 /// count for the states of this one.
+#[inline(never)]
 pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     files: &mut BankFiles<F>,
     sd: &mut S,

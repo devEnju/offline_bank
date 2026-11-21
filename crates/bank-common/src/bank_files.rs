@@ -653,6 +653,13 @@ impl<F: Files> BankFiles<F> {
         Ok(self.bank()?.unlocked())
     }
 
+    /// Takes the save in progress away from Transporter's question, while a
+    /// file of its backup is written (`interrupted::back_up`). Only the
+    /// journal is written, and only if it marks the save.
+    pub fn unmark(&mut self) -> Outcome<(), F> {
+        self.bank()?.unmark().map_err(Error::Bank)
+    }
+
     /// Resolves a prepared save toward the side `decision` names, for a
     /// game whose save is neither of its two images (`moved::choose`). The
     /// journal's own rule is not loosened: this names the image the game is
