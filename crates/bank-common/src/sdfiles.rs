@@ -157,6 +157,8 @@ pub enum Error<E, S> {
     BadFile(usize),
     /// The room handed over is not what the work needs.
     Staging,
+    /// What was written does not read back as it was meant.
+    NotAsWritten,
 }
 
 /// `Error` for Bank's files `F` and the card `S`.
@@ -231,6 +233,8 @@ pub trait Extdata: Store {
     fn write_at(&mut self, path: &Path, offset: u32, bytes: &[u8]) -> Result<(), Self::Error>;
     /// Reads `out.len()` bytes at `offset`.
     fn read_at(&mut self, path: &Path, offset: u32, out: &mut [u8]) -> Result<Piece, Self::Error>;
+    /// Lets go of the archive; the next call opens it again.
+    fn rest(&mut self);
 }
 
 /// The folder of `date` (year, month, day, hour, minute, second) in the
@@ -389,6 +393,18 @@ impl Sd for NoSd {
     fn rename_dir(&mut self, _: &Path, _: &Path) -> Result<(), ()> {
         Err(())
     }
+}
+impl Extdata for NoSd {
+    fn create(&mut self, _: &Path, _: u32) -> Result<(), ()> {
+        Err(())
+    }
+    fn write_at(&mut self, _: &Path, _: u32, _: &[u8]) -> Result<(), ()> {
+        Err(())
+    }
+    fn read_at(&mut self, _: &Path, _: u32, _: &mut [u8]) -> Result<Piece, ()> {
+        Err(())
+    }
+    fn rest(&mut self) {}
 }
 impl Store for NoSd {
     type Error = ();
@@ -568,6 +584,9 @@ mod console {
             closed.map_err(refused)?;
             handle.map_err(refused)?;
             Ok(Piece::Read)
+        }
+        fn rest(&mut self) {
+            self.archive = None;
         }
     }
 

@@ -831,4 +831,5 @@ impl crate::sdfiles::Extdata for ExtCard {
         out.copy_from_slice(&file[start..end]);
         Ok(Piece::Read)
     }
+    fn rest(&mut self) {}
 }

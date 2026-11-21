@@ -161,7 +161,7 @@ flowchart TD
 | Cartridge disappears during recovery | Leave pending | Retry → A → START |
 | Game read, transaction binding, secure-value operation, recovery write, or Bank readback fails otherwise | Stop the run | HOME error |
 
-**Backup of a mixed-move session.** Before Bank leaves a mixed-move session pending, it writes every box whose Pokémon differ between the save before and the save after to the SD card, both ways: `/3ds/Pokémon Bank/interrupted-XXXXXXXX-XXXXXXXX/bank30.old` and `bank30.new`, and `mover0.old`/`mover0.new` for the transport box. Once the save is settled, by Transporter's answer or by Bank finding the game, Bank's opening with the journal clean renames the folder to `YYYYMMDD-HHMMSS-backup/` and deletes there the side the Bank holds, so the other side is left in it. A START that finds the folder complete writes nothing again.
+**Backup of a mixed-move session.** Before Bank leaves a mixed-move session pending, it writes every box whose Pokémon differ between the save before and the save after into Bank's extdata, both ways: the folder `/AAAAAAAABBBBBBBB/`, with groups of four boxes such as `bank28.old` and `bank28.new`, and `mover0.old`/`mover0.new` for the transport box. Once the save is settled, by Transporter's answer or by Bank finding the game, Bank's opening with the journal clean writes the side the Bank does not hold to the SD card, as single box files in `YYYYMMDD-HHMMSS-backup/`, and deletes the folder. A START that finds the folder complete writes nothing again. A card without room for those boxes shows "The SD card is full." (26:0x00, first line), the folder stays, and the next START goes on.
 
 Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title, kind of copy and trainer (name, Trainer ID and secret ID) present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
 
@@ -466,7 +466,7 @@ Numbers are hexadecimal; the screen pads each to eight digits. The second number
 | `12` | Reward state or allowed reward-task progression is inconsistent |
 | `13` | Reward claim result does not match the expected receipt/balance |
 | `14` | Transporter delivery failure: non-space IO failure, write/check failure, invalid box layout, unexpectedly empty transfer box, journal refusal after START, or uncertain delivery announcement |
-| `15` | A box file or folder under `/3ds/Pokémon Bank/` on the SD card cannot be read or written for a reason other than lack of space; the second number is the console's result, or 0 for a file that did not read back as written, or `7B0000pp` for an offline box file that is not a whole box file (`pp` 65, 66, 67: `mover1.box`, `mover2.box`, `mover3.box`) |
+| `15` | A box file or folder under `/3ds/Pokémon Bank/` on the SD card, or the folder of an interrupted write in Bank's extdata, cannot be read or written for a reason other than lack of space; the second number is the console's result, or 0 for a file that did not read back as written, or `7B0000pp` for an offline box file that is not a whole box file (`pp` 65, 66, 67: `mover1.box`, `mover2.box`, `mover3.box`) |
 
 ### Second numbers
 

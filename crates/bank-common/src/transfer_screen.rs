@@ -3,14 +3,14 @@
 //! offline boxes kept as box files on the SD card, what the blue and the
 //! green cursor do with them, and how what the screen changed is written:
 //! the Bank in one journal record without a game (`BankFiles::commit`), the
-//! cells around it with a `.bak` of each, ordered so that the next opening
+//! cells around it with a `.bak` of them, ordered so that the next opening
 //! finds every Pokémon in the Bank or a cell, as before the save or as after
 //! it; a cut may leave a spare copy, never a Pokémon without a place.
 //!
 //! ```text
 //! /3ds/Pokémon Bank/mover1.box .. mover3.box       the offline boxes; absent is an empty one
-//! /3ds/Pokémon Bank/interrupted-AAAAAAAA-BBBBBBBB/ the folder of the save's two states (`interrupted::folder`)
-//!     mover1.bak                                   a cell before the save
+//! Bank's extdata: /AAAAAAAABBBBBBBB/              the folder of the save's two states (`interrupted::folder`)
+//!     mover0.bak                                   the cells before the save
 //! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/bank01.box     a checked box of the Bank, copied
 //! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover0.box     the checked transport box, copied
 //! /3ds/Pokémon Bank/YYYYMMDD-HHMMSS/mover1.box     a checked offline box, copied;
@@ -23,7 +23,7 @@
 use crate::{
     bank_files::{BankFiles, Cleaned, Files},
     interrupted,
-    sdfiles::{self, Date, Error, Failed, Found, Path, Sd, ROOT},
+    sdfiles::{self, Date, Error, Extdata, Failed, Found, Path, Sd, ROOT},
 };
 use offline_core::{
     boxfile::{self, BoxFile, CATEGORY, FILE_SIZE, LABEL_SIZE, NAME_SIZE, NAME_TEXT, STAMP_SIZE},
@@ -743,20 +743,21 @@ pub struct Commit<'a> {
 /// | Step | What |
 /// | --- | --- |
 /// | 1 | the checked boxes are copied into the session's folder, one no folder was of before |
-/// | 2 | a `.bak` of every cell that changes, before any cell is touched, in the folder of the save's two states (`interrupted::folder`): the journal's now and the one the record of step 4 names |
+/// | 2 | one `mover0.bak` of the cells that change, proven before any cell is touched, in the folder in Bank's extdata of the save's two states (`interrupted::folder`): the journal's now and the one the record of step 4 names |
 /// | 3 | the cells that change, a checked one as an empty box with its default name |
 /// | 4 | the Bank, in one journal record without a game (`BankFiles::commit`) |
-/// | 5 | the folder is resolved as after (`interrupted::resolve`): renamed whole to `YYYYMMDD-HHMMSS-backup`, its `.bak` files deleted there, then the folder; a failure here ends nothing, as the save is made |
+/// | 5 | the `.bak` and its folder are deleted (`interrupted::discard`); a failure here ends nothing, as the save is made |
 ///
 /// Every record writes the Bank file into its other copy, so the two states
 /// differ and the next opening tells by the journal alone whether the save
 /// went through (`interrupted::settle`). A step before the record that
 /// fails ends here; the next opening settles it. Once the record's first
-/// replica is durable the save is made, and the answer says so. The opening before it left no `interrupted-` folder, so none
+/// replica is durable the save is made, and the answer says so. The opening before it left no such folder, so none
 /// of an earlier save can count for the states of this one.
-pub fn commit<F: Files, S: Sd>(
+pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     files: &mut BankFiles<F>,
     sd: &mut S,
+    ext: &mut X,
     body: &mut [u8],
     offline: &mut Offline,
     request: &Commit,
@@ -807,10 +808,9 @@ pub fn commit<F: Files, S: Sd>(
                 .map_err(Error::Sd)?;
         }
     }
-    // 2: every `.bak` before any cell; a cell without a file is an empty box.
-    // A checked cell is decided here, by its new box, with the one read that
-    // also gives its `.bak`. The folder only for a `.bak`.
-    let mut made = false;
+    // 2: one `.bak` of the cells that change, before any cell; a cell without
+    // a file is an empty box. A checked cell is decided here, by its new box.
+    // The folder only for a `.bak`.
     for (index, changes) in changed.iter_mut().enumerate() {
         if !*changes {
             continue;
@@ -820,15 +820,28 @@ pub fn commit<F: Files, S: Sd>(
             empty_box(&mut offline.files[index], &default);
         }
         *changes = differs(sd, index, &offline.files[index], scratch)?;
-        if !*changes {
-            continue;
-        }
-        if !made {
-            sd.create_dir(&folder).map_err(Error::Sd)?;
-            made = true;
-        }
-        sd.put(&interrupted::bak(&folder, OFFLINE + index), &scratch[..])
-            .map_err(Error::Sd)?;
+    }
+    let made = changed.contains(&true);
+    if made {
+        ext.create_dir(&folder).map_err(Error::Sd)?;
+        let included = [false, changed[0], changed[1], changed[2]];
+        let mut fill = |position: usize, to: &mut [u8; FILE_SIZE]| {
+            let index = position - 1;
+            match sd.get(&cell_path(index), &mut to[..]).map_err(Error::Sd)? {
+                Found::Absent => empty_box(to, &[0; NAME_TEXT]),
+                Found::Read if BoxFile::parse(&to[..]).is_ok() => {}
+                _ => return Err(Error::BadFile(OFFLINE + index)),
+            }
+            Ok(())
+        };
+        interrupted::write_group(
+            ext,
+            &interrupted::bak(&folder),
+            &included,
+            &mut fill,
+            scratch,
+        )?;
+        ext.rest();
     }
     // 3: the cells.
     for index in (0..OFFLINE_COUNT).filter(|index| changed[*index]) {
@@ -838,19 +851,11 @@ pub fn commit<F: Files, S: Sd>(
     // 4: the Bank, as Save and Quit always writes it; its record is also
     // what tells the next opening that the cells were written.
     files.commit(body).map_err(Error::Files)?;
-    // 5: the save is made, so the folder is resolved as after
-    // (`interrupted::resolve`): renamed whole to a folder of the date, then
-    // its `.bak` files deleted there. A failure here ends nothing: a folder
-    // left under its name the next opening settles, a cut after the rename
-    // leaves spare copies.
+    // 5: the save is made, so the cells' old boxes are in the Bank or a cell
+    // and the `.bak` goes. A failure here ends nothing: a folder left the
+    // next opening settles.
     if made {
-        let _ = interrupted::resolve(
-            sd,
-            &folder,
-            interrupted::Resolved::After,
-            request.date,
-            scratch,
-        );
+        let _ = interrupted::discard(ext, &folder);
     }
     Ok(())
 }
@@ -1970,22 +1975,32 @@ mod tests {
         sdfiles::dated_folder(SESSION)
     }
 
-    /// The date an opening is made at, which names the folder a kept
-    /// `interrupted-` folder is renamed to.
+    /// The date an opening is made at, which names the folder of the SD
+    /// card that keeps what a settled write leaves.
     const DATE: Date = [2026, 11, 16, 14, 3, 7];
     const KEPT: &str = "/20261116-140307-backup";
     /// The folder of a second folder kept at the same opening: the next
     /// second's.
     const KEPT_NEXT: &str = "/20261116-140308-backup";
 
-    /// Whether the card holds an `interrupted-` folder.
+    /// Whether Bank's extdata holds the folder of an interrupted write.
     fn interrupted(card: &Shared) -> bool {
-        let prefix = at("/interrupted-");
-        card.0
-            .borrow()
-            .sd_dirs
-            .iter()
-            .any(|folder| folder.starts_with(&prefix))
+        !card.0.borrow().ext_dirs.is_empty()
+    }
+
+    /// Puts the file `name` of a folder into Bank's extdata, with `boxes` at
+    /// their positions and zeros before them.
+    fn in_extdata(disk: &Shared, folder: &str, name: &str, boxes: &[(usize, [u8; FILE_SIZE])]) {
+        let length = boxes.iter().map(|(at, _)| at + 1).max().unwrap() * FILE_SIZE;
+        let mut bytes = vec![0; length];
+        for (at, one) in boxes {
+            bytes[at * FILE_SIZE..(at + 1) * FILE_SIZE].copy_from_slice(one);
+        }
+        let mut card = disk.0.borrow_mut();
+        let path = std::format!("/{folder}/{name}").into_bytes();
+        card.ext_dirs.insert(std::format!("/{folder}").into_bytes());
+        card.ext_written.insert(path.clone(), length);
+        card.ext.insert(path, bytes);
     }
 
     /// The path of `name` in the root folder.
@@ -2012,9 +2027,11 @@ mod tests {
         offline: &mut Offline,
         checked: &[bool; PLACES],
     ) -> Result<(), Failed<Shared, Shared>> {
+        let mut ext = ExtCard(sd.clone());
         commit(
             files,
             sd,
+            &mut ext,
             body,
             offline,
             &Commit {
@@ -2215,6 +2232,7 @@ mod tests {
         interrupted::settle(
             &mut files,
             &mut sd,
+            &mut ExtCard(disk.clone()),
             &mut vec![0; offline_core::native_blob::BLOB_SIZE],
             DATE,
         )
@@ -2600,10 +2618,9 @@ mod tests {
                     assert!(held == before.0 || held == after.0, "{what}");
                     let count = counts[usize::from(held != before.0)];
                     assert_eq!(held_count(&card), count, "{what}");
-                    // No `interrupted-` folder is left: the journal names the
-                    // state before or after. A cut after a folder was
-                    // resolved leaves only spare copies in a folder of the
-                    // date. A second opening changes nothing.
+                    // No folder of an interrupted write is left: the journal
+                    // names the state before or after. A second opening
+                    // changes nothing.
                     let sd = card.0.borrow().sd.clone();
                     assert!(!interrupted(&card), "{what}");
                     assert!(only_spare_copies(&card, &held), "{what}");
@@ -2614,9 +2631,9 @@ mod tests {
         }
     }
 
-    /// Whether a folder of the date that an `interrupted-` folder became
-    /// holds only spare copies: every Pokémon in it is also in the Bank or a
-    /// cell (`held`) or in a session's folder. A `.bak` lies nowhere else.
+    /// Whether a folder of the date holds only spare copies: every Pokémon
+    /// in it is also in the Bank or a cell (`held`) or in a session's
+    /// folder. A `.bak` lies nowhere else.
     fn only_spare_copies(card: &Shared, held: &BTreeMap<Identity, usize>) -> bool {
         let sd = card.0.borrow();
         let resolved = |path: &[u8]| {
@@ -2635,7 +2652,7 @@ mod tests {
         };
         let mut elsewhere: Vec<Identity> = held.keys().copied().collect();
         for (path, bytes) in sd.sd.iter().filter(|(path, _)| !resolved(path)) {
-            if path.ends_with(b".bak") {
+            if path.ends_with(b".bak.box") {
                 return false;
             }
             elsewhere.extend(identities(bytes));
@@ -2654,6 +2671,7 @@ mod tests {
         interrupted::settle(
             &mut files,
             &mut card.clone(),
+            &mut ExtCard(card.clone()),
             &mut vec![0; 2 * FILE_SIZE],
             DATE,
         )
@@ -2683,7 +2701,12 @@ mod tests {
                 let card = card.reboot();
                 let state = {
                     let disk = card.0.borrow();
-                    (disk.sd.clone(), disk.sd_dirs.clone())
+                    (
+                        disk.sd.clone(),
+                        disk.sd_dirs.clone(),
+                        disk.ext.clone(),
+                        disk.ext_damaged.clone(),
+                    )
                 };
                 let state = (state, opened(&card).phase().unwrap());
                 if !interrupted(&card) || seen.contains(&state) {
@@ -2756,6 +2779,7 @@ mod tests {
             let failed = interrupted::settle(
                 &mut files,
                 &mut card.clone(),
+                &mut ExtCard(card.clone()),
                 &mut vec![0; 2 * FILE_SIZE],
                 DATE,
             );
@@ -2806,7 +2830,7 @@ mod tests {
             let baks = card
                 .0
                 .borrow()
-                .sd
+                .ext
                 .keys()
                 .filter(|key| key.ends_with(b".bak"))
                 .count();
@@ -2903,7 +2927,7 @@ mod tests {
         let Phase::Clean(before) = opened(&disk.reboot()).phase().unwrap() else {
             unreachable!()
         };
-        let hanging = interrupted::bak(&save_folder(&disk, &save), OFFLINE);
+        let hanging = interrupted::bak(&save_folder(&disk, &save));
         let counting = disk.reboot().cut_after(usize::MAX);
         run_save(&counting, &save).unwrap();
         let after = on_card(&counting).0;
@@ -2912,25 +2936,19 @@ mod tests {
             let _ = run_save(&card, &save);
             let card = card.reboot();
             let written = opened(&card).phase().unwrap() != Phase::Clean(before);
-            if !written || !card.0.borrow().sd.contains_key(hanging.text()) {
+            if !written || !card.0.borrow().ext.contains_key(hanging.text()) {
                 continue;
             }
             // The cells as after the save, no `.bak` anywhere, and no
             // folder kept.
             assert!(on_card(&card).0 == after, "cut {cut}");
             let card = card.0.borrow();
-            assert!(
-                !card.sd.keys().any(|key| key.ends_with(b".bak")),
-                "cut {cut}"
-            );
+            assert!(card.ext.is_empty(), "cut {cut}");
+            assert!(card.ext_dirs.is_empty(), "cut {cut}");
             assert!(!card
                 .sd_dirs
                 .iter()
                 .any(|dir| dir.ends_with(interrupted::RETIRED)));
-            assert!(!card
-                .sd_dirs
-                .iter()
-                .any(|dir| dir.starts_with(&at("/interrupted-"))));
             return;
         }
         panic!("no cut left the journal written and the .bak there");
@@ -2986,7 +3004,7 @@ mod tests {
             put(&mut body, 50, 0, 77);
             files.commit(Cleaned::new(&mut body).unwrap()).unwrap();
             on_card(&card);
-            let kept = &card.0.borrow().sd[&at(&std::format!("{KEPT}/mover1.bak"))];
+            let kept = &card.0.borrow().sd[&at(&std::format!("{KEPT}/mover1.bak.box"))];
             assert_eq!(kept[..], cell_with(9)[..], "cut {cut}");
             assert!(!interrupted(&card));
             return;
@@ -2997,43 +3015,34 @@ mod tests {
     #[test]
     fn every_interrupted_folder_that_names_no_state_of_the_journal_is_kept_in_a_folder_of_the_date()
     {
-        // Folders whose names are not of two states (`interrupted::folder`), so
-        // the journal can name neither: one of files of no patch, one with
-        // both halves of a backup, one with a `.bak`. Each is renamed
-        // whole, in the order of the list, each to the next free second.
+        // Folders of two states the journal does not name: one with both
+        // halves of a backup, one with a `.bak`. What each holds goes, as
+        // single box files, into a folder of the date, in the order of the
+        // list, each to the next free second.
         let (disk, ..) = setup();
-        let file = |name: &str, bytes: &[u8; FILE_SIZE]| {
-            let mut card = disk.0.borrow_mut();
-            let path = at(name);
-            let folder = path[..path.iter().rposition(|byte| *byte == b'/').unwrap()].to_vec();
-            card.sd_dirs.insert(sdfiles::PARENT.to_vec());
-            card.sd_dirs.insert(ROOT.to_vec());
-            card.sd_dirs.insert(folder);
-            card.sd.insert(path, bytes.to_vec());
-        };
-        file("/interrupted-00000000/notes.txt", &[1; FILE_SIZE]);
-        file("/interrupted-11111111/bank30.old", &cell_with(1));
-        file("/interrupted-11111111/bank30.new", &cell_with(2));
-        file("/interrupted-11111111/mover0.new", &cell_with(3));
-        file("/interrupted-22222222/mover2.bak", &cell_with(4));
+        const ONE: &str = "1111111122222222";
+        const TWO: &str = "3333333344444444";
+        in_extdata(&disk, ONE, "bank28.old", &[(2, cell_with(1))]);
+        in_extdata(&disk, ONE, "bank28.new", &[(2, cell_with(2))]);
+        in_extdata(&disk, ONE, "mover0.new", &[(0, cell_with(3))]);
+        in_extdata(&disk, TWO, "mover0.bak", &[(2, cell_with(4))]);
         on_card(&disk);
         let card = disk.0.borrow();
-        const THIRD: &str = "/20261116-140309-backup";
         let names: Vec<_> = card.sd.keys().cloned().collect();
         assert_eq!(
             names,
             [
-                at(&std::format!("{KEPT}/notes.txt")),
-                at(&std::format!("{KEPT_NEXT}/bank30.new")),
-                at(&std::format!("{KEPT_NEXT}/bank30.old")),
-                at(&std::format!("{KEPT_NEXT}/mover0.new")),
-                at(&std::format!("{THIRD}/mover2.bak")),
+                at(&std::format!("{KEPT}/bank30.new.box")),
+                at(&std::format!("{KEPT}/bank30.old.box")),
+                at(&std::format!("{KEPT}/mover0.new.box")),
+                at(&std::format!("{KEPT_NEXT}/mover2.bak.box")),
             ]
         );
         assert_eq!(
-            card.sd[&at(&std::format!("{THIRD}/mover2.bak"))],
+            card.sd[&at(&std::format!("{KEPT_NEXT}/mover2.bak.box"))],
             cell_with(4)
         );
+        assert!(card.ext.is_empty() && card.ext_dirs.is_empty());
         let folders: Vec<_> = card.sd_dirs.iter().cloned().collect();
         assert_eq!(
             folders,
@@ -3042,7 +3051,6 @@ mod tests {
                 ROOT.to_vec(),
                 at(KEPT),
                 at(KEPT_NEXT),
-                at(THIRD),
             ]
         );
     }
@@ -3067,10 +3075,15 @@ mod tests {
         file("/20261109-140308/mover1.box", &cell_with(2));
         file("/20261109-140309", &cell_with(3));
         file(&std::format!("{KEPT}/mover1.box"), &cell_with(4));
-        file("/interrupted-22222222/mover1.bak", &cell_with(5));
+        in_extdata(
+            &disk,
+            "1111111122222222",
+            "mover0.bak",
+            &[(1, cell_with(5))],
+        );
         let before = disk.0.borrow().sd.clone();
         // A session that checks the first cell, then an opening that keeps
-        // the `interrupted-` folder.
+        // the folder in Bank's extdata.
         place_cell(&disk, 0, &cell_with(6));
         let mut offline = Offline::new();
         load_offline::<(), _>(&mut disk.clone(), &mut offline).unwrap();
@@ -3088,13 +3101,11 @@ mod tests {
         let card = disk.0.borrow();
         // Everything that was there is there as it was.
         for (path, bytes) in &before {
-            if !path.starts_with(&at("/interrupted-")) {
-                assert_eq!(card.sd.get(path), Some(bytes), "{path:?}");
-            }
+            assert_eq!(card.sd.get(path), Some(bytes), "{path:?}");
         }
         assert_eq!(card.sd[&at("/20261109-140310/mover1.box")], cell_with(6));
         assert_eq!(
-            card.sd[&at(&std::format!("{KEPT_NEXT}/mover1.bak"))],
+            card.sd[&at(&std::format!("{KEPT_NEXT}/mover1.bak.box"))],
             cell_with(5)
         );
     }
@@ -3204,8 +3215,8 @@ mod tests {
         };
         let folder = interrupted::folder(state(1), state(2));
         let mut inside = folder;
-        inside.push(b"/mover2.bak");
-        assert_eq!(interrupted::bak(&folder, OFFLINE + 1), inside);
+        inside.push(b"/mover0.bak");
+        assert_eq!(interrupted::bak(&folder), inside);
         assert!(inside.valid());
     }
 }

@@ -22,7 +22,7 @@ use bank_common::{
     fault::Fault,
     fs::NoRoom,
     interrupted,
-    sdfiles::{self, Date, NoSd, Sd},
+    sdfiles::{self, Date, Extdata, NoSd, Store},
     transfer_screen,
     worker::WorkerError,
 };
@@ -348,7 +348,7 @@ pub fn created<E: NoRoom>(
 /// fault `15` with the console's result, a cell that is not a whole box
 /// file `15` with `7B0000pp`; a failure of
 /// Bank's files is `files` with its numbers.
-pub fn sd_ended<E: NoRoom, S: Sd>(
+pub fn sd_ended<E: NoRoom, S: Store>(
     error: sdfiles::Error<E, S::Error>,
     files: Fault,
 ) -> Result<Ending, Stop<E>> {
@@ -360,7 +360,9 @@ pub fn sd_ended<E: NoRoom, S: Sd>(
         sdfiles::Error::BadFile(place) => {
             Err(Fault::SdFiles.with(0x7b00_0000 | place as u32).into())
         }
-        sdfiles::Error::Staging => Err(Fault::SdFiles.with(0).into()),
+        sdfiles::Error::Staging | sdfiles::Error::NotAsWritten => {
+            Err(Fault::SdFiles.with(0).into())
+        }
     }
 }
 
@@ -549,11 +551,11 @@ where
     )
 }
 
-/// `settle`, with the SD card for the backup of a save that moved Pokémon
+/// `settle`, with Bank's extdata for the backup of a save that moved Pokémon
 /// both ways (`interrupted::back_up`): START's, before the journal
 /// leaves it to Transporter's question or to its game.
 #[allow(clippy::too_many_arguments)]
-pub fn settle_backed<F: Files, G: Game, S: Sd>(
+pub fn settle_backed<F: Files, G: Game, S: Extdata>(
     files: &mut BankFiles<F>,
     game: Option<&mut G>,
     staging: &mut [u8],
@@ -627,7 +629,7 @@ where
 /// game is there on the kind of copy it was made with, at START, with a
 /// save that is neither image: then it is left to Transporter's question
 /// (`Settled::Asks`). Otherwise it waits for its game.
-fn by_moves<F: Files, S: Sd>(
+fn by_moves<F: Files, S: Extdata>(
     files: &mut BankFiles<F>,
     staging: &mut [u8],
     rule: Rule,
@@ -642,12 +644,13 @@ where
         .pending_moves(staging, before, after)
         .map_err(files_failed(Fault::JournalRecovery))?;
     let Some(decision) = moved::choose(moved) else {
-        // The boxes it changed go to the SD card, both ways, before the
-        // journal says anything about it.
-        if let Some(sd) = backup {
-            if let Err(error) = interrupted::back_up(files, staging, sd) {
+        // The boxes it changed go into Bank's extdata, both ways, before
+        // the journal says anything about it.
+        if let Some(ext) = backup {
+            if let Err(error) = interrupted::back_up(files, staging, ext) {
                 return sd_ended::<_, S>(error, Fault::JournalRecovery).map(|_| Settled::NoSpace);
             }
+            ext.rest();
         }
         // Bit 2 by what was seen; an unlocked save is Transporter's too. No
         // room to write the record again leaves the save as it was, waiting
@@ -838,7 +841,7 @@ mod arm {
         bank_files::ExtFiles,
         fs::{self, GameMainReader},
         program::Bank15,
-        sdfiles::ConsoleSd,
+        sdfiles::{ConsoleExtdata, ConsoleSd},
     };
     use core::mem::transmute;
     use offline_core::{
@@ -924,20 +927,22 @@ mod arm {
                 .phase()
                 .map_err(|e| Fault::StorageInvalid.files(e))
         }
-        /// Every `interrupted-` folder is settled by the state the journal
-        /// names (`interrupted::settle`) whenever the journal has become
-        /// clean, once the Bank it names was read whole: at an opening, and
-        /// after START settled a save in progress. So every session that
-        /// reaches the transfer screen or a save starts with none, and a
-        /// Bank that cannot be read stops the opening before any file of a
-        /// folder goes. It works in `ROOM`, as staging holds the Bank. No
-        /// room to put a cell back is an ending, "The SD card is full.": the
-        /// folder stays, and the next START settles it.
+        /// Every folder of an interrupted write in Bank's extdata is settled
+        /// by the state the journal names (`interrupted::settle`) whenever
+        /// the journal has become clean, once the Bank it names was read
+        /// whole: at an opening, and after START settled a save in progress.
+        /// So every session that reaches the transfer screen or a save starts
+        /// with none, and a Bank that cannot be read stops the opening before
+        /// any file of a folder goes. It works in `ROOM`, as staging holds
+        /// the Bank. No room on the SD card to put a cell back or for what
+        /// is kept is an ending, "The SD card is full.": the folder stays,
+        /// and the next START settles it.
         fn settle_sd(&mut self, date: Date) -> Result<Option<Ending>, WorkerError> {
             let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+            let mut ext = unsafe { ConsoleExtdata::<Bank15>::new() };
             // SAFETY: inside `Open` or `Recover`, the held lists done with.
             let work = unsafe { ROOM.work() };
-            match interrupted::settle(&mut self.files, &mut sd, work, date) {
+            match interrupted::settle(&mut self.files, &mut sd, &mut ext, work, date) {
                 Ok(()) => Ok(None),
                 Err(error) => sd_ended::<_, ConsoleSd<Bank15>>(error, Fault::JournalPrepare)
                     .map(Some)
@@ -989,7 +994,6 @@ mod arm {
                     // once, on a file of its own (docs/testing.md).
                     #[cfg(feature = "test-build")]
                     {
-                        use bank_common::sdfiles::{ConsoleExtdata, Store};
                         // A card without room for the probe's file is no
                         // fault of the card's calls: the probe is skipped,
                         // so the checks of a full card can be made with
@@ -1070,8 +1074,8 @@ mod arm {
                         ..Console::of(game)
                     });
                     // The worker owns the program's file handles, so it
-                    // reaches the SD card too.
-                    let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+                    // reaches the folder of the backup too.
+                    let mut ext = unsafe { ConsoleExtdata::<Bank15>::new() };
                     let settled = settle_backed(
                         &mut self.files,
                         game.as_mut(),
@@ -1080,12 +1084,12 @@ mod arm {
                         Rule::Start,
                         None,
                         held(),
-                        Some(&mut sd),
+                        Some(&mut ext),
                     )
                     .map_err(stopped)?;
                     match settled {
                         Settled::Exact(_) | Settled::ByMoves(_) => {
-                            drop(sd);
+                            drop(ext);
                             let loaded = self.read_bank(staging)?;
                             if let Some(ending) = self.settle_sd(date)? {
                                 return Ok(Reply::Ended(ending));
@@ -1122,6 +1126,7 @@ mod arm {
                 }
                 Job::TransferCommit { checked, date } => {
                     let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
+                    let mut ext = unsafe { ConsoleExtdata::<Bank15>::new() };
                     let (offline, scratch) = unsafe { ROOM.boxes() };
                     let request = transfer_screen::Commit {
                         checked: &checked,
@@ -1130,6 +1135,7 @@ mod arm {
                     match transfer_screen::commit(
                         &mut self.files,
                         &mut sd,
+                        &mut ext,
                         staging,
                         offline,
                         &request,
@@ -1389,7 +1395,7 @@ mod tests {
         bank_files::FileName,
         testing::{
             asked, body, fresh, load, opened, pokemon, transport_check, unlocked, with_boxes,
-            Refused, Shared,
+            ExtCard, Refused, Shared,
         },
     };
     use offline_core::sections::RECORD_SIZE;
@@ -2050,7 +2056,6 @@ mod tests {
 
     #[test]
     fn the_backup_keeps_a_box_whose_pokemon_changed_and_no_other() {
-        use bank_common::interrupted;
         // Both ways in box 1. Box 8 is renamed, box 9 only moved to another
         // category and position, each with the same Pokémon on both sides:
         // no change. Box 1 is renamed too, and its file carries the name.
@@ -2083,7 +2088,7 @@ mod tests {
         assert!(backup_complete(&card, &in_progress, &expected));
         // Of the label only the name's text.
         let folder = backup_folder(&in_progress);
-        let file = card.0.borrow().sd[interrupted::file(&folder, 0, true).text()].clone();
+        let file = backup_box(&card, &folder, 0, true).unwrap();
         let file = offline_core::boxfile::BoxFile::parse(&file).unwrap();
         assert_eq!(
             file.name(),
@@ -2098,7 +2103,7 @@ mod tests {
         pending: &PendingTransfer,
     ) -> Result<Settled, Stop<bank_common::testing::Refused>> {
         let mut files = opened(card);
-        let mut sd = card.clone();
+        let mut sd = ExtCard(card.clone());
         settle_backed(
             &mut files,
             Some(game),
@@ -2129,16 +2134,33 @@ mod tests {
             .collect()
     }
 
+    /// The place `bit` of the backup in `folder`, of the save after or
+    /// before, if the file reaches it and the console reads it.
+    fn backup_box(
+        card: &Shared,
+        folder: &bank_common::sdfiles::Path,
+        bit: usize,
+        after: bool,
+    ) -> Option<std::vec::Vec<u8>> {
+        let (path, offset) = bank_common::interrupted::file(folder, bit, after);
+        let disk = card.0.borrow();
+        if disk.ext_damaged.contains(path.text()) {
+            return None;
+        }
+        let start = offset as usize;
+        disk.ext
+            .get(path.text())?
+            .get(start..start + offline_core::boxfile::FILE_SIZE)
+            .map(<[u8]>::to_vec)
+    }
+
     /// Whether the backup folder of `pending` is whole: it holds a box, and
     /// exactly `files`, each a box file that reads.
     fn backup_complete(card: &Shared, pending: &PendingTransfer, files: &[(usize, bool)]) -> bool {
-        use bank_common::interrupted;
         let folder = backup_folder(pending);
-        let sd = card.0.borrow();
         let whole = |bit, after| {
-            sd.sd
-                .get(interrupted::file(&folder, bit, after).text())
-                .is_some_and(|file| offline_core::boxfile::BoxFile::parse(file).is_ok())
+            backup_box(card, &folder, bit, after)
+                .is_some_and(|file| offline_core::boxfile::BoxFile::parse(&file).is_ok())
         };
         !files.is_empty()
             && (0..=100).all(|bit| {
@@ -2149,7 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn the_boxes_a_save_changed_both_ways_are_on_the_sd_card_before_transporter_is_asked() {
+    fn the_boxes_a_save_changed_both_ways_are_kept_before_transporter_is_asked() {
         use bank_common::interrupted;
         let (_, sessions) = sessions();
         let (moved, _) = &sessions[3];
@@ -2210,34 +2232,41 @@ mod tests {
         let folder = backup_folder(&in_progress);
         assert!(backup_complete(&card, &in_progress, &expected));
         for (bit, after) in &expected {
-            let file = card.0.borrow().sd[interrupted::file(&folder, *bit, *after).text()].clone();
+            let file = backup_box(&card, &folder, *bit, *after).unwrap();
             let file = offline_core::boxfile::BoxFile::parse(&file).unwrap();
             let body = if *after { new } else { old };
             assert!(file.records() == records_of(body, *bit), "box {bit}");
         }
         // The transport box (bit 100) carries no name.
-        let file = card.0.borrow().sd[interrupted::file(&folder, 100, true).text()].clone();
+        let file = backup_box(&card, &folder, 100, true).unwrap();
         let file = offline_core::boxfile::BoxFile::parse(&file).unwrap();
         assert_eq!(file.name(), [0; offline_core::boxfile::NAME_TEXT]);
-        // A second START writes nothing more to the SD card.
-        let before = card.0.borrow().sd.clone();
+        // A second START writes nothing more, and nothing on the SD card.
+        let before = card.0.borrow().ext.clone();
+        assert!(card.0.borrow().sd.is_empty());
+        let operations = card.0.borrow().operations;
         start_backed(&card, &mut game, &in_progress).unwrap();
-        assert!(card.0.borrow().sd == before);
+        assert!(card.0.borrow().ext == before);
+        let again = card.0.borrow().operations - operations;
         // A file of it lost, and another altered under a CRC that fits:
-        // the next START writes both again, and only them.
-        let lost = interrupted::file(&folder, 0, true);
-        let altered = interrupted::file(&folder, 5, false);
-        card.0.borrow_mut().sd.remove(lost.text());
+        // the next START writes both again.
+        let (lost, _) = interrupted::file(&folder, 0, true);
+        let (altered, at) = interrupted::file(&folder, 5, false);
         {
-            let mut sd = card.0.borrow_mut();
-            let file = sd.sd.get_mut(altered.text()).unwrap();
-            file[0x1B30] ^= 1;
-            let mut bytes: [u8; offline_core::boxfile::FILE_SIZE] = file[..].try_into().unwrap();
+            let mut disk = card.0.borrow_mut();
+            disk.ext.remove(lost.text());
+            disk.ext_written.remove(lost.text());
+            let file = disk.ext.get_mut(altered.text()).unwrap();
+            let place = &mut file[at as usize..at as usize + offline_core::boxfile::FILE_SIZE];
+            place[0x1B30] ^= 1;
+            let mut bytes: [u8; offline_core::boxfile::FILE_SIZE] = (&*place).try_into().unwrap();
             offline_core::boxfile::seal(&mut bytes);
-            file.copy_from_slice(&bytes);
+            place.copy_from_slice(&bytes);
         }
+        let operations = card.0.borrow().operations;
         start_backed(&card, &mut game, &in_progress).unwrap();
-        assert!(card.0.borrow().sd == before);
+        assert!(card.0.borrow().ext == before);
+        assert!(card.0.borrow().operations - operations > again);
     }
 
     /// The folder of the backup of `pending`.
@@ -2279,6 +2308,7 @@ mod tests {
             interrupted::settle(
                 &mut files,
                 &mut card.clone(),
+                &mut ExtCard(card.clone()),
                 &mut std::vec![0; offline_core::native_blob::BLOB_SIZE],
                 date,
             )
@@ -2328,15 +2358,25 @@ mod tests {
             }
             (card, backup_folder(&in_progress))
         };
-        let (card, folder) = settled(Settling::Transporter(RecoveryDecision::KeepBefore), true);
-        let all = names_in(&card, folder.text());
+        // Every file a settled backup can keep: those of a Bank replaced from
+        // outside, which keeps both sides, as they were written.
+        let (card, _) = settled(Settling::Outside, true);
+        opening(&card).unwrap();
+        let all = names_in(&card, kept.text());
+        let written: BTreeMap<_, _> = all
+            .iter()
+            .map(|name| {
+                let path = [kept.text(), name].concat();
+                (name.clone(), card.0.borrow().sd[&path].clone())
+            })
+            .collect();
         let half = |suffix: &[u8]| -> Vec<Vec<u8>> {
             all.iter()
                 .filter(|name| name.ends_with(suffix))
                 .cloned()
                 .collect()
         };
-        let (olds, news) = (half(b".old"), half(b".new"));
+        let (olds, news) = (half(b".old.box"), half(b".new.box"));
         assert!(!olds.is_empty() && !news.is_empty());
         for (how, left) in [
             (Settling::Bank(BEFORE), &news),
@@ -2349,10 +2389,8 @@ mod tests {
             for console in [true, false] {
                 let (card, folder) = settled(how, console);
                 let what = std::format!("{how:?}, console {console}");
-                let before = card.0.borrow().sd.clone();
                 // Whatever a cut leaves, the next opening ends with the side
-                // kept. A cut after the folder was renamed leaves, besides,
-                // files of the side the Bank holds there.
+                // kept, in one folder of the date.
                 let counting = card.cut_after(usize::MAX);
                 opening(&counting).unwrap();
                 let total = counting.0.borrow().operations;
@@ -2363,17 +2401,20 @@ mod tests {
                     let card = card.reboot();
                     opening(&card).unwrap();
                     let sd = card.0.borrow();
-                    assert!(!sd.sd_dirs.contains(folder.text()), "{what}, cut {cut}");
+                    assert!(!sd.ext_dirs.contains(folder.text()), "{what}, cut {cut}");
+                    assert!(sd.ext.is_empty(), "{what}, cut {cut}");
                     let names = names_in(&card, kept.text());
-                    assert!(
-                        left.iter().all(|name| names.contains(name)),
-                        "{what}, cut {cut}"
-                    );
+                    assert_eq!(names, **left, "{what}, cut {cut}");
+                    let dated = sd
+                        .sd_dirs
+                        .iter()
+                        .filter(|dir| dir.ends_with(interrupted::RETIRED))
+                        .count();
+                    assert_eq!(dated, 1, "{what}, cut {cut}");
                     // Each file as it was written.
                     for name in &names {
                         let path = [kept.text(), name].concat();
-                        let was = [folder.text(), name].concat();
-                        assert!(sd.sd[&path] == before[&was], "{what}, cut {cut}");
+                        assert!(sd.sd[&path] == written[name], "{what}, cut {cut}");
                     }
                 }
             }
@@ -2427,7 +2468,7 @@ mod tests {
                 Rule::Start,
                 None,
                 &mut held(),
-                Some(&mut card.clone()),
+                Some(&mut ExtCard(card.clone())),
             )
         };
         let counting = disk.cut_after(usize::MAX);
@@ -2446,6 +2487,7 @@ mod tests {
             bank_common::interrupted::settle(
                 &mut files,
                 &mut card.clone(),
+                &mut ExtCard(card.clone()),
                 &mut std::vec![0; 2 * offline_core::boxfile::FILE_SIZE],
                 [2026, 11, 16, 14, 3, 7],
             )

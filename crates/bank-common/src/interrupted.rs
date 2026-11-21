@@ -1,57 +1,65 @@
-//! The files an interrupted write leaves on the SD card, and the one rule
-//! that settles them (docs/internals.md, "Box files"). Each lies in a
-//! folder named by the two states of the Bank the write goes between, the
-//! one before and the one after (`folder`):
+//! What an interrupted write keeps, and the one rule that settles it
+//! (docs/internals.md, "Box files"). It lies in Bank's extdata, beside the
+//! journal it belongs to, in a folder named by the two states of the Bank
+//! the write goes between, the one before and the one after (`folder`):
 //!
 //! ```text
-//! /3ds/Pokémon Bank/interrupted-AAAAAAAA-BBBBBBBB/mover1.bak   a cell before a save of the transfer screen
-//! /3ds/Pokémon Bank/interrupted-AAAAAAAA-BBBBBBBB/bank30.old   box 30 of the save before an interrupted save
-//! /3ds/Pokémon Bank/interrupted-AAAAAAAA-BBBBBBBB/bank30.new   box 30 of the save after it
-//! /3ds/Pokémon Bank/interrupted-AAAAAAAA-BBBBBBBB/mover0.old   the transport box, if it differs
-//! /3ds/Pokémon Bank/interrupted-AAAAAAAA-BBBBBBBB/mover0.new
+//! /AAAAAAAABBBBBBBB/bank00.old   boxes 100, 1, 2, 3 of the save before an interrupted save
+//! /AAAAAAAABBBBBBBB/bank28.new   boxes 28 to 31 of the save after it
+//! /AAAAAAAABBBBBBBB/mover0.old   the transport box, if it differs
+//! /AAAAAAAABBBBBBBB/mover0.new
+//! /AAAAAAAABBBBBBBB/mover0.bak   the cells before a save of the transfer screen
 //! ```
+//!
+//! A file is a group of four places, box files one behind the other with no
+//! header: a place's position is its number modulo 4 (box 100 counts as 0),
+//! and `mover0` is the transport box and the three cells. A place not
+//! included is a box file's size of zeros, which never reads as a box, and
+//! places behind the last one included are not written.
 //!
 //! A save in progress that moved Pokémon both ways is left to Transporter's
 //! question, or waits for its game; before Bank writes that into the journal,
 //! every box whose Pokémon differ between the save before and the save after
 //! (`boxfile::bank_box_contents`) is written twice, as it was and as it
-//! became (`back_up`). The transfer screen keeps each cell it
-//! writes as a `.bak` (`transfer_screen::commit`).
+//! became (`back_up`). The transfer screen keeps the cells it writes in one
+//! `.bak` (`transfer_screen::commit`).
 //!
-//! Nothing is ever deleted from a folder while it bears this name, so the
-//! files of one are always the whole set its write made. Once the journal
-//! is clean, Bank's opening compares the state it names with the folder's
-//! two (`side`; `settle` applies it): the state before puts the `.bak`
-//! files back. Then the folder is resolved (`resolve`): renamed whole, in
-//! one step, to a folder of the date, `YYYYMMDD-HHMMSS-backup/`, and only
-//! there are the files deleted whose Pokémon the Bank or the cells hold. A
-//! cut there leaves in that folder files it would have deleted, never a set
-//! that looks whole and is not.
+//! Once the journal is clean, Bank's opening compares the state it names
+//! with the folder's two (`side`; `settle` applies it): the state before
+//! puts the `.bak` places back. What the Bank and the cells do not hold is
+//! then written to the SD card, into a folder of the same name, as single
+//! box files (`bank30.new.box`), each read back and all compared with the
+//! folder once more. Only then is the folder deleted, and the one on the SD
+//! card renamed to a folder of the date, `YYYYMMDD-HHMMSS-backup/`. A cut at
+//! any step is finished by the next opening, and leaves one such folder.
 
 use crate::{
     bank_files::{BankFiles, Files},
-    sdfiles::{self, Date, Error, Failed, Found, Path, Sd, ROOT},
+    sdfiles::{self, Date, Error, Extdata, Failed, Found, Path, Piece, Sd, ROOT},
 };
 use offline_core::{
     boxfile::{self, BoxFile, FILE_SIZE, NAME_TEXT},
     native_blob::BOX_COUNT,
     sections::{BANK_SIZE, RECORD_SIZE, TRANSPORT_SLOTS},
-    Crc32, Part, Phase, Save,
+    Crc32, Part, Phase, Save, Sha256,
 };
 
 /// 100 boxes and the transport box.
 const BITS: usize = BOX_COUNT + 1;
 const TRANSPORT_BIT: usize = BOX_COUNT;
-/// The boxes, the transport box and the three cells (`mover1`..`mover3`).
-const PLACES: usize = BOX_COUNT + 4;
-/// The places of the three cells.
-const CELLS: core::ops::Range<usize> = BOX_COUNT + 1..PLACES;
-/// The ending of a cell's old box that the transfer screen's write keeps.
-const BAK: &[u8] = b".bak";
 /// One box's `boxfile::Contents`.
 const PRINT: usize = 32;
-/// The start of the name of a folder of an interrupted write.
-const PREFIX: &[u8] = b"interrupted-";
+/// The places of one file.
+pub const GROUP: usize = 4;
+/// The files of the boxes of one side.
+const BANK_GROUPS: usize = BOX_COUNT / GROUP;
+/// The file of the transport box and the three cells.
+const MOVER_GROUP: usize = BANK_GROUPS;
+const GROUPS: usize = BANK_GROUPS + 1;
+/// The characters of a folder's name: two halves of eight.
+const NAME: usize = 16;
+/// The folders Bank's extdata has room for.
+const MOST_FOLDERS: usize = 10;
 
 /// A state of the Bank as the journal names it: the copy of the Bank file
 /// and of the transport box in use, each with its checksum. Every save
@@ -88,16 +96,23 @@ impl State {
     }
 }
 
-/// The folder of a write between `before` and `after`:
-/// `interrupted-AAAAAAAA-BBBBBBBB`, the two states' halves (`State::half`).
+/// The folder in Bank's extdata of a write between `before` and `after`:
+/// `/AAAAAAAABBBBBBBB`, the two states' halves (`State::half`).
 pub fn folder(before: State, after: State) -> Path {
-    let mut path = Path::new(ROOT);
-    path.push(b"/")
-        .push(PREFIX)
-        .push_hex(before.half())
-        .push(b"-")
-        .push_hex(after.half());
+    let mut path = Path::new(b"/");
+    path.push_hex(before.half()).push_hex(after.half());
     path
+}
+
+/// The two halves of a folder's name, if it is of `folder`'s form.
+fn halves(name: &[u8]) -> Option<(u32, u32)> {
+    let hex = |digits: &[u8]| {
+        digits.iter().try_fold(0u32, |value, digit| {
+            Some(value << 4 | char::from(*digit).to_digit(16)?)
+        })
+    };
+    (name.len() == NAME).then_some(())?;
+    Some((hex(&name[..NAME / 2])?, hex(&name[NAME / 2..])?))
 }
 
 /// Which of a folder's two states the journal names.
@@ -106,99 +121,229 @@ pub enum Side {
     Before,
     After,
     /// Neither: the Bank is a version the folder does not know, as one put
-    /// there from outside the patches is. Also a name not of `folder`'s form,
-    /// and one with two equal halves, which no write gives.
+    /// there from outside the patches is. Also a name with two equal halves,
+    /// which no write gives.
     Unknown,
 }
 
-/// The side of the folder `name` (its name in the root folder) that `now`,
-/// the state the clean journal names, is.
+/// The side of the folder `name` that `now`, the state the clean journal
+/// names, is.
 pub fn side(name: &[u8], now: State) -> Side {
-    let hex = |digits: &[u8]| {
-        digits.iter().try_fold(0u32, |value, digit| {
-            Some(value << 4 | char::from(*digit).to_digit(16)?)
-        })
-    };
-    let halves = sdfiles::strip_prefix_ignoring_case(name, PREFIX)
-        .filter(|rest| rest.len() == 17 && rest[8] == b'-')
-        .and_then(|rest| Some((hex(&rest[..8])?, hex(&rest[9..])?)));
-    match halves {
+    match halves(name) {
         Some((before, after)) if before != after && now.half() == before => Side::Before,
         Some((before, after)) if before != after && now.half() == after => Side::After,
         _ => Side::Unknown,
     }
 }
 
-/// A file of the box of the save before (`.old`).
-const OLD: u8 = 1;
-/// A file of the box of the save after (`.new`).
-const NEW: u8 = 2;
-/// A cell's old box (`.bak`).
-const KEPT: u8 = 4;
-const SUFFIXES: [(u8, &[u8]); 3] = [(OLD, b".old"), (NEW, b".new"), (KEPT, BAK)];
+/// A file of the boxes of the save before (`.old`).
+pub const OLD: u8 = 1;
+/// A file of the boxes of the save after (`.new`).
+pub const NEW: u8 = 2;
+/// The cells as they were (`.bak`).
+pub const BAK: u8 = 4;
+const KINDS: [(u8, &[u8]); 3] = [(OLD, b".old"), (NEW, b".new"), (BAK, b".bak")];
 
-/// The files of `folder` that are an interrupted write's, by place
-/// (`push_box`): the kinds found of each, `OLD | NEW | KEPT`.
-fn entries<S: Sd>(sd: &mut S, folder: &Path) -> Result<[u8; PLACES], S::Error> {
-    let mut found = [0u8; PLACES];
-    sd.list(folder, &mut |name, is_folder| {
-        if let (false, Some((place, kind))) = (is_folder, parse(name)) {
-            found[place] |= kind;
+fn ending(kind: u8) -> &'static [u8] {
+    KINDS
+        .iter()
+        .find_map(|(each, ending)| (*each == kind).then_some(*ending))
+        .unwrap_or(b"")
+}
+
+/// The file and position of a place: box 1 is position 1 of `bank00`, box
+/// 100 its position 0, the transport box position 0 of `mover0` and the
+/// cells its positions 1 to 3.
+pub fn locate(place: usize) -> (usize, usize) {
+    if place < BOX_COUNT {
+        let number = (place + 1) % BOX_COUNT;
+        (number / GROUP, number % GROUP)
+    } else {
+        (MOVER_GROUP, place - BOX_COUNT)
+    }
+}
+
+/// The place at `position` of file `group`.
+fn place_at(group: usize, position: usize) -> usize {
+    if group == MOVER_GROUP {
+        BOX_COUNT + position
+    } else {
+        (group * GROUP + position + BOX_COUNT - 1) % BOX_COUNT
+    }
+}
+
+/// Whether a file of `kind` holds a place at `position` of file `group`: a
+/// `.bak` the three cells, `.old` and `.new` a box or the transport box.
+fn holds(group: usize, position: usize, kind: u8) -> bool {
+    if kind == BAK {
+        group == MOVER_GROUP && position > 0
+    } else {
+        group != MOVER_GROUP || position == 0
+    }
+}
+
+/// `folder`'s file of `group` and `kind`.
+fn group_file(folder: &Path, group: usize, kind: u8) -> Path {
+    let mut path = *folder;
+    path.push(b"/");
+    if group == MOVER_GROUP {
+        path.push(b"mover0");
+    } else {
+        path.push(b"bank").push_decimal((group * GROUP) as u32, 2);
+    }
+    path.push(ending(kind));
+    path
+}
+
+/// The file of `folder` that holds `place` (a box, or the transport box) of
+/// the save after (`.new`) or before (`.old`), and where in it the place
+/// starts.
+pub fn file(folder: &Path, place: usize, after: bool) -> (Path, u32) {
+    let (group, position) = locate(place);
+    (
+        group_file(folder, group, if after { NEW } else { OLD }),
+        (position * FILE_SIZE) as u32,
+    )
+}
+
+/// `folder`'s file of the cells as they were.
+pub fn bak(folder: &Path) -> Path {
+    group_file(folder, MOVER_GROUP, BAK)
+}
+
+/// A kept box in a folder of the SD card: `bank30.new.box`, `mover2.bak.box`.
+pub fn kept_file(folder: &Path, place: usize, kind: u8) -> Path {
+    let mut path = *folder;
+    path.push(b"/")
+        .push_box(place)
+        .push(ending(kind))
+        .push(b".box");
+    path
+}
+
+/// The file `name` of a folder: its group and kind.
+fn parse(name: &[u8]) -> Option<(usize, u8)> {
+    let (stem, kind) = KINDS.iter().find_map(|(kind, ending)| {
+        Some((sdfiles::strip_suffix_ignoring_case(name, ending)?, *kind))
+    })?;
+    let group = (0..GROUPS).find(|group| {
+        let path = group_file(&Path::new(b""), *group, kind);
+        path.text()[1..path.text().len() - ending(kind).len()].eq_ignore_ascii_case(stem)
+    })?;
+    (0..GROUP)
+        .any(|position| holds(group, position, kind))
+        .then_some((group, kind))
+}
+
+/// The files of `folder` that are an interrupted write's, by group: the
+/// kinds found of each, `OLD | NEW | BAK`.
+fn entries<X: Extdata>(ext: &mut X, folder: &Path) -> Result<[u8; GROUPS], X::Error> {
+    let mut found = [0u8; GROUPS];
+    ext.list(folder, &mut |name, is_folder| {
+        if let (false, Some((group, kind))) = (is_folder, parse(name)) {
+            found[group] |= kind;
         }
     })?;
     Ok(found)
 }
 
-/// The place and the kind of a file by its name: `bank30.old` is box 29
-/// of the save before, `mover1.bak` the first cell's old box. The card may
-/// list a name that fits 8.3 in capitals (`MOVER1.BAK`), so case does not
-/// count.
-fn parse(name: &[u8]) -> Option<(usize, u8)> {
-    let (stem, kind) = SUFFIXES.iter().find_map(|(kind, suffix)| {
-        Some((sdfiles::strip_suffix_ignoring_case(name, suffix)?, *kind))
-    })?;
-    let place = (0..PLACES).find(|place| {
-        let mut path = Path::new(b"/");
-        path.push_box(*place);
-        path.text()[1..].eq_ignore_ascii_case(stem)
-    })?;
-    // Bank writes a `.bak` only for a cell, and `.old` and `.new` only for a
-    // box of the Bank or the transport box: any other name is of no write.
-    let ours = if kind == KEPT {
-        CELLS.contains(&place)
-    } else {
-        place < BITS
-    };
-    ours.then_some((place, kind))
+fn digest(bytes: &[u8]) -> [u8; 32] {
+    let mut sum = Sha256::new();
+    // A box is far below the hash's length limit.
+    let _ = sum.update(bytes);
+    sum.finalize()
 }
 
-/// The `.bak` of the cell at `place` in `folder`.
-pub fn bak(folder: &Path, place: usize) -> Path {
-    let mut path = *folder;
-    path.push(b"/").push_box(place).push(BAK);
-    path
+/// The bytes of a file that holds the positions `included`: the length up
+/// to the last of them.
+fn group_length(included: &[bool; GROUP]) -> u32 {
+    let last = included
+        .iter()
+        .rposition(|place| *place)
+        .map_or(0, |at| at + 1);
+    (last * FILE_SIZE) as u32
 }
 
-/// The file of `bit` (a box, or the transport box) in `folder`, of the
-/// save after (`.new`) or before (`.old`).
-pub fn file(folder: &Path, bit: usize, after: bool) -> Path {
-    let mut path = *folder;
-    path.push(b"/")
-        .push_box(bit)
-        .push(if after { b".new" } else { b".old" });
-    path
+/// What fills a position of a file with its box.
+type Fill<'a, E, S> = &'a mut dyn FnMut(usize, &mut [u8; FILE_SIZE]) -> Result<(), Error<E, S>>;
+
+/// Makes the file `path` hold the positions `included`, each from `fill`,
+/// with zeros at a position before the last that is not included. It is
+/// made anew, written whole and read back against what was meant, by a
+/// digest of each position, so that it needs room for one box alone.
+pub(crate) fn write_group<X: Extdata, E>(
+    ext: &mut X,
+    path: &Path,
+    included: &[bool; GROUP],
+    fill: Fill<'_, E, X::Error>,
+    scratch: &mut [u8; FILE_SIZE],
+) -> Result<(), Error<E, X::Error>> {
+    let length = group_length(included);
+    ext.create(path, length).map_err(Error::Sd)?;
+    let count = length as usize / FILE_SIZE;
+    let mut sums = [[0u8; 32]; GROUP];
+    for (position, sum) in sums.iter_mut().enumerate().take(count) {
+        if included[position] {
+            fill(position, scratch)?;
+        } else {
+            scratch.fill(0);
+        }
+        *sum = digest(&scratch[..]);
+        ext.write_at(path, (position * FILE_SIZE) as u32, &scratch[..])
+            .map_err(Error::Sd)?;
+    }
+    for (position, sum) in sums.iter().enumerate().take(count) {
+        let found = ext
+            .read_at(path, (position * FILE_SIZE) as u32, &mut scratch[..])
+            .map_err(Error::Sd)?;
+        if found != Piece::Read || digest(&scratch[..]) != *sum {
+            return Err(Error::NotAsWritten);
+        }
+    }
+    Ok(())
 }
 
-/// Writes the backup of the save in progress: every file that is not on the
-/// card as it should be, so a START after a cut, or after a file of it was
-/// lost, writes what is missing and one that finds it whole writes nothing.
+/// Whether the file `path` holds exactly what `write_group` would write.
+fn group_is<X: Extdata, E>(
+    ext: &mut X,
+    path: &Path,
+    included: &[bool; GROUP],
+    fill: Fill<'_, E, X::Error>,
+    meant: &mut [u8; FILE_SIZE],
+    found: &mut [u8],
+) -> Result<bool, Error<E, X::Error>> {
+    let length = group_length(included);
+    let count = length as usize / FILE_SIZE;
+    for (position, is_included) in included.iter().enumerate().take(count) {
+        if *is_included {
+            fill(position, meant)?;
+        } else {
+            meant.fill(0);
+        }
+        let piece = ext
+            .read_at(path, (position * FILE_SIZE) as u32, &mut found[..FILE_SIZE])
+            .map_err(Error::Sd)?;
+        if piece != Piece::Read || found[..FILE_SIZE] != meant[..] {
+            return Ok(false);
+        }
+    }
+    // And it ends there.
+    let behind = ext
+        .read_at(path, length, &mut found[..1])
+        .map_err(Error::Sd)?;
+    Ok(behind == Piece::Missing)
+}
+
+/// Writes the backup of the save in progress: every file that is not there
+/// as it should be, so a START after a cut, or after a file of it was lost,
+/// writes what is missing and one that finds it whole writes nothing.
 /// `staging` holds one Bank file at a time and nothing of use afterwards.
-/// Nothing of Bank's files is written.
-pub fn back_up<F: Files, S: Sd>(
+/// Nothing of Bank's own files is written.
+pub fn back_up<F: Files, X: Extdata>(
     files: &mut BankFiles<F>,
     staging: &mut [u8],
-    sd: &mut S,
-) -> Result<(), Failed<F, S>> {
+    ext: &mut X,
+) -> Result<(), Failed<F, X>> {
     let Phase::Prepared(pending) = files.phase().map_err(Error::Files)? else {
         return Ok(());
     };
@@ -244,143 +389,96 @@ pub fn back_up<F: Files, S: Sd>(
     };
     changed[TRANSPORT_BIT] =
         transport_contents(old_records, old_tags)? != transport_contents(new_records, new_tags)?;
-
-    // The order: each changed box's `.new`, its `.old`, the transport box's
-    // `.old` and `.new`; a file that is as it should be is not written.
     if !changed.contains(&true) {
         return Ok(());
     }
-    sdfiles::create_root(sd).map_err(Error::Sd)?;
-    sd.create_dir(&folder).map_err(Error::Sd)?;
-    let mut ensure = |sd: &mut S, path: &Path, out: &[u8; FILE_SIZE]| {
-        if sd.get(path, found).map_err(Error::Sd)? == Found::Read && found[..] == out[..] {
-            return Ok(());
-        }
-        sd.put(path, &out[..]).map_err(Error::Sd)
-    };
-    let boxes = (0..BOX_COUNT).filter(|index| changed[*index]);
-    let mut write = |sd: &mut S, payload: &[u8], index: usize, after: bool| {
-        boxfile::encode_bank_box(payload, index, out).map_err(|_| Error::Staging)?;
-        ensure(sd, &file(&folder, index, after), out)
-    };
-    for index in boxes.clone() {
-        write(sd, payload, index, true)?;
-    }
-    if boxes.clone().next().is_some() {
-        files
-            .pending_payload(false, payload)
-            .map_err(Error::Files)?;
-        for index in boxes {
-            write(sd, payload, index, false)?;
+    ext.create_dir(&folder).map_err(Error::Sd)?;
+
+    // The order: the boxes' `.new` files, their `.old` files, the transport
+    // box's `.old` and `.new`; a file that is as it should be is not written.
+    if changed[..BOX_COUNT].contains(&true) {
+        for kind in [NEW, OLD] {
+            if kind == OLD {
+                files
+                    .pending_payload(false, payload)
+                    .map_err(Error::Files)?;
+            }
+            for group in 0..BANK_GROUPS {
+                let included: [bool; GROUP] =
+                    core::array::from_fn(|position| changed[place_at(group, position)]);
+                if !included.contains(&true) {
+                    continue;
+                }
+                let path = group_file(&folder, group, kind);
+                let payload = &*payload;
+                let mut fill = |position: usize, to: &mut [u8; FILE_SIZE]| {
+                    boxfile::encode_bank_box(payload, place_at(group, position), to)
+                        .map_err(|_| Error::Staging)
+                };
+                if !group_is(ext, &path, &included, &mut fill, out, found)? {
+                    write_group(ext, &path, &included, &mut fill, out)?;
+                }
+            }
         }
     }
     if changed[TRANSPORT_BIT] {
-        for (records, tags, after) in [
-            (&*old_records, &*old_tags, false),
-            (&*new_records, &*new_tags, true),
+        let included = [true, false, false, false];
+        for (records, tags, kind) in [
+            (&*old_records, &*old_tags, OLD),
+            (&*new_records, &*new_tags, NEW),
         ] {
-            boxfile::encode_transport(records, tags, &[0; NAME_TEXT], out)
-                .map_err(|_| Error::Staging)?;
-            ensure(sd, &file(&folder, TRANSPORT_BIT, after), out)?;
+            let path = group_file(&folder, MOVER_GROUP, kind);
+            let mut fill = |_: usize, to: &mut [u8; FILE_SIZE]| {
+                boxfile::encode_transport(records, tags, &[0; NAME_TEXT], to)
+                    .map_err(|_| Error::Staging)
+            };
+            if !group_is(ext, &path, &included, &mut fill, out, found)? {
+                write_group(ext, &path, &included, &mut fill, out)?;
+            }
         }
     }
     Ok(())
 }
 
-/// What follows the date in the name of the folder an `interrupted-`
-/// folder is renamed to: `YYYYMMDD-HHMMSS-backup`.
+/// What follows the date in the name of the folder of the SD card that
+/// keeps what a settled write leaves: `YYYYMMDD-HHMMSS-backup`.
 pub const RETIRED: &[u8] = b"-backup";
 
-/// What a folder's write is settled as.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Resolved {
-    /// The state before: the `.bak` files are back in their cells, and the
-    /// Bank holds the boxes of the `.old` ones.
-    Before,
-    /// The state after, as the cells show: the Bank or a cell holds what
-    /// every `.bak` held, and the Bank the boxes of the `.new` ones.
-    After,
-    /// Neither: everything is kept.
-    Neither,
+/// The folder `name` in the root folder of the SD card.
+fn on_card(name: &[u8]) -> Path {
+    let mut path = Path::new(ROOT);
+    path.push(b"/").push(name);
+    path
 }
 
-/// The end of an `interrupted-` folder whose write is settled as
-/// `resolved`. An empty one goes. Any other is renamed whole, in one step,
-/// to a new folder of `date` (`sdfiles::free_dated_folder`), so that nothing
-/// is put back from it again; there the files whose Pokémon the Bank or the
-/// cells hold are deleted, and the folder if it is empty then.
-///
-/// | Settled as | Deleted | Kept |
-/// | --- | --- | --- |
-/// | before | `.bak` (back in its cell), `.old` | `.new` |
-/// | after | `.bak`, `.new` | `.old` |
-/// | neither | nothing | everything |
-///
-/// Of what is kept, a file that is not a whole box file goes too: a cut
-/// left it half written, and no one can use it. So every file a folder of
-/// the date keeps is a box file that reads. A cut after the rename leaves
-/// some of the deleted ones in it beside what is kept; nothing comes back
-/// to it. `work` holds one box file.
-pub fn resolve<S: Sd>(
-    sd: &mut S,
-    folder: &Path,
-    resolved: Resolved,
-    date: Date,
-    work: &mut [u8; FILE_SIZE],
-) -> Result<(), S::Error> {
-    if sd.remove_dir(folder).is_ok() {
-        return Ok(());
-    }
-    let found = entries(sd, folder)?;
-    let kept = sdfiles::free_dated_folder(sd, date, RETIRED)?;
-    sd.rename_dir(folder, &kept)?;
-    let held = match resolved {
-        Resolved::Before => KEPT | OLD,
-        Resolved::After => KEPT | NEW,
-        Resolved::Neither => 0,
-    };
-    for (place, kinds) in found.iter().enumerate() {
-        for (kind, path) in [
-            (KEPT, bak(&kept, place)),
-            (OLD, file(&kept, place, false)),
-            (NEW, file(&kept, place, true)),
-        ] {
-            if kinds & kind == 0 {
-                continue;
-            }
-            let goes = kinds & kind & held != 0;
-            if goes || !(sd.get(&path, work)? == Found::Read && BoxFile::parse(work).is_ok()) {
-                sd.delete(&path)?;
-            }
-        }
-    }
-    let _ = sd.remove_dir(&kept);
-    Ok(())
+/// Deletes the `.bak` of a save that went through, and its folder, which
+/// holds nothing else.
+pub fn discard<X: Extdata>(ext: &mut X, folder: &Path) -> Result<(), X::Error> {
+    ext.delete(&bak(folder))?;
+    ext.remove_dir(folder)
 }
 
-/// Whenever the journal is clean, once the Bank it names was read whole,
-/// so that no file of a folder goes beside a Bank that cannot be read: at
-/// every opening, and after START settled a save in progress. Every
-/// `interrupted-` folder is settled by the state the journal names
-/// (`side`) and resolved (`resolve`), and none is left, so that a save of
-/// the transfer screen, or a save in progress, makes its own only after
-/// this. `work` holds two box files; `date` names the folder what is kept
-/// goes to.
+/// Whenever the journal is clean, once the Bank it names was read whole, so
+/// that nothing of a folder goes beside a Bank that cannot be read: at every
+/// opening, and after START settled a save in progress. Every folder of
+/// Bank's extdata named by two states is settled by the state the journal
+/// names (`side`), so that a save of the transfer screen, or a save in
+/// progress, makes its own only after this. `work` holds two box files;
+/// `date` names the folder what is kept goes to.
 ///
-/// | The journal names | Done in the folder | Settled as |
+/// | The journal names | Cells | Kept on the SD card |
 /// | --- | --- | --- |
-/// | the folder's state before | each whole `.bak` put back into its cell | before |
-/// | its state after | nothing | after |
-/// | neither (`Side::Unknown`) | nothing | neither |
+/// | the folder's state before | each whole `.bak` place put back | the `.new` boxes |
+/// | its state after | nothing | the `.old` boxes |
+/// | neither (`Side::Unknown`) | nothing | everything |
 ///
 /// The journal is the one word on a folder: Bank's data replaced, restored
-/// or deleted while a folder lies there, and damaged files, are outside
-/// what this settles (docs/internals.md, "What recovery covers"). Each step
-/// can be made again: a cut before the rename leaves the folder whole under
-/// its name, and the next opening decides the same.
-pub fn settle<F: Files, S: Sd>(
+/// or deleted, and damaged files, are outside what this settles
+/// (docs/internals.md, "What recovery covers"). Each step can be made again.
+pub fn settle<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     files: &mut BankFiles<F>,
     sd: &mut S,
+    ext: &mut X,
     work: &mut [u8],
     date: Date,
 ) -> Result<(), Failed<F, S>> {
@@ -388,59 +486,156 @@ pub fn settle<F: Files, S: Sd>(
         return Ok(());
     };
     let now = State::of(&current);
-    let (bak, rest) = work
+    let (first, second) = work
         .get_mut(..2 * FILE_SIZE)
         .ok_or(Error::Staging)?
         .split_at_mut(FILE_SIZE);
-    let bak: &mut [u8; FILE_SIZE] = bak.try_into().map_err(|_| Error::Staging)?;
-    let cell: &mut [u8; FILE_SIZE] = rest.try_into().map_err(|_| Error::Staging)?;
-    // The root's list is read again after each folder, as settling one
-    // changes it; each one goes.
-    loop {
-        let mut next = None;
-        sd.list(&Path::new(ROOT), &mut |name, is_folder| {
-            let mut path = Path::new(ROOT);
-            path.push(b"/").push(name);
-            let ours = sdfiles::strip_prefix_ignoring_case(name, PREFIX).is_some();
-            if is_folder && ours && path.valid() && next.is_none() {
-                next = Some((path, side(name, now)));
+    let first: &mut [u8; FILE_SIZE] = first.try_into().map_err(|_| Error::Staging)?;
+    let second: &mut [u8; FILE_SIZE] = second.try_into().map_err(|_| Error::Staging)?;
+    let mut names = [[0u8; NAME]; MOST_FOLDERS];
+    let mut count = 0;
+    ext.list(&Path::new(b"/"), &mut |name, is_folder| {
+        if is_folder && halves(name).is_some() && count < MOST_FOLDERS {
+            names[count].copy_from_slice(name);
+            count += 1;
+        }
+    })
+    .map_err(Error::Sd)?;
+    for name in &names[..count] {
+        settle_folder(sd, ext, name, side(name, now), first, second)?;
+    }
+    retire(sd, date).map_err(Error::Sd)
+}
+
+/// Settles the folder `name` as `side`: the cells back for the state before,
+/// what is kept on the SD card in a folder of the same name, proven, and
+/// then the folder gone. A file of it that no patch wrote stays, with the
+/// folder. Nothing goes before all that is kept is on the card.
+fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
+    sd: &mut S,
+    ext: &mut X,
+    name: &[u8],
+    side: Side,
+    first: &mut [u8; FILE_SIZE],
+    second: &mut [u8; FILE_SIZE],
+) -> Result<(), Error<E, S::Error>> {
+    let mut folder = Path::new(b"/");
+    folder.push(name);
+    if side == Side::Before {
+        put_back(sd, ext, &folder, first, second).map_err(Error::Sd)?;
+    }
+    let kept = match side {
+        Side::Before => NEW,
+        Side::After => OLD,
+        Side::Unknown => OLD | NEW | BAK,
+    };
+    let found = entries(ext, &folder).map_err(Error::Sd)?;
+    let card = on_card(name);
+    for proving in [false, true] {
+        keep(
+            sd, ext, &folder, &card, &found, kept, proving, first, second,
+        )?;
+    }
+    for (group, kinds) in found.iter().enumerate() {
+        for (kind, _) in KINDS.iter().filter(|(kind, _)| kinds & kind != 0) {
+            ext.delete(&group_file(&folder, group, *kind))
+                .map_err(Error::Sd)?;
+        }
+    }
+    // A folder that still holds a file of no patch stays.
+    let _ = ext.remove_dir(&folder);
+    Ok(())
+}
+
+/// Every whole box of the kinds `kept` in `folder` as a file of `card`:
+/// written where it is not there as it should be, or with `proving` read
+/// again and compared.
+#[allow(clippy::too_many_arguments)]
+fn keep<S: Sd, X: Extdata<Error = S::Error>, E>(
+    sd: &mut S,
+    ext: &mut X,
+    folder: &Path,
+    card: &Path,
+    found: &[u8; GROUPS],
+    kept: u8,
+    proving: bool,
+    from: &mut [u8; FILE_SIZE],
+    to: &mut [u8; FILE_SIZE],
+) -> Result<(), Error<E, S::Error>> {
+    let mut made = false;
+    for (group, kinds) in found.iter().enumerate() {
+        for (kind, _) in KINDS.iter().filter(|(kind, _)| kinds & kept & kind != 0) {
+            let path = group_file(folder, group, *kind);
+            for position in (0..GROUP).filter(|position| holds(group, *position, *kind)) {
+                let piece = ext
+                    .read_at(&path, (position * FILE_SIZE) as u32, &mut from[..])
+                    .map_err(Error::Sd)?;
+                // Zeros, a place behind the file's end, or what a cut left.
+                if piece != Piece::Read || BoxFile::parse(&from[..]).is_err() {
+                    continue;
+                }
+                let target = kept_file(card, place_at(group, position), *kind);
+                let same =
+                    sd.get(&target, &mut to[..]).map_err(Error::Sd)? == Found::Read && to == from;
+                if same {
+                    continue;
+                }
+                if proving {
+                    return Err(Error::NotAsWritten);
+                }
+                if !made {
+                    sdfiles::create_root(sd).map_err(Error::Sd)?;
+                    sd.create_dir(card).map_err(Error::Sd)?;
+                    made = true;
+                }
+                sd.put(&target, &from[..]).map_err(Error::Sd)?;
             }
-        })
-        .map_err(Error::Sd)?;
-        let Some((folder, side)) = next else {
-            break;
-        };
-        let resolved = match side {
-            Side::Before => {
-                put_back(sd, &folder, bak, cell).map_err(Error::Sd)?;
-                Resolved::Before
-            }
-            Side::After => Resolved::After,
-            Side::Unknown => Resolved::Neither,
-        };
-        resolve(sd, &folder, resolved, date, bak).map_err(Error::Sd)?;
+        }
     }
     Ok(())
 }
 
-/// Puts each whole `.bak` of `folder` back into its cell, unless the cell
-/// holds it already; a cell without a file holds an empty box without a
-/// name, so it needs no `.bak` of one, and a full card is no matter then. A
-/// `.bak` that is not whole was being written, before any cell was touched.
-/// Nothing is deleted.
-fn put_back<S: Sd>(
+/// Each folder of the SD card's root named by two states holds what a
+/// settled write keeps, whole: an empty one goes, any other is renamed, in
+/// one step, to a new folder of `date` (`sdfiles::free_dated_folder`).
+fn retire<S: Sd>(sd: &mut S, date: Date) -> Result<(), S::Error> {
+    loop {
+        let mut next = None;
+        sd.list(&Path::new(ROOT), &mut |name, is_folder| {
+            if is_folder && halves(name).is_some() && next.is_none() {
+                next = Some(on_card(name));
+            }
+        })?;
+        let Some(folder) = next else {
+            return Ok(());
+        };
+        if sd.remove_dir(&folder).is_ok() {
+            continue;
+        }
+        let kept = sdfiles::free_dated_folder(sd, date, RETIRED)?;
+        sd.rename_dir(&folder, &kept)?;
+    }
+}
+
+/// Puts each whole cell of `folder`'s `.bak` back, unless the cell holds it
+/// already; a cell without a file holds an empty box without a name, so it
+/// needs no room to be put back then. A place that is not whole was being
+/// written, before any cell was touched. Nothing is deleted.
+fn put_back<S: Sd, X: Extdata<Error = S::Error>>(
     sd: &mut S,
+    ext: &mut X,
     folder: &Path,
     bak: &mut [u8; FILE_SIZE],
     cell: &mut [u8; FILE_SIZE],
 ) -> Result<(), S::Error> {
-    let found = entries(sd, folder)?;
-    for place in CELLS.filter(|place| found[*place] & KEPT != 0) {
-        let cell_path = sdfiles::box_file(&Path::new(ROOT), place);
-        if sd.get(&self::bak(folder, place), bak)? != Found::Read || BoxFile::parse(bak).is_err() {
+    let path = self::bak(folder);
+    for position in 1..GROUP {
+        let piece = ext.read_at(&path, (position * FILE_SIZE) as u32, &mut bak[..])?;
+        if piece != Piece::Read || BoxFile::parse(&bak[..]).is_err() {
             continue;
         }
-        let holds = match sd.get(&cell_path, cell)? {
+        let cell_path = sdfiles::box_file(&Path::new(ROOT), BOX_COUNT + position);
+        let holds = match sd.get(&cell_path, &mut cell[..])? {
             Found::Read => cell[..] == bak[..],
             Found::Absent => {
                 crate::transfer_screen::empty_box(cell, &[0; NAME_TEXT]);
@@ -449,6 +644,7 @@ fn put_back<S: Sd>(
             Found::OtherSize => false,
         };
         if !holds {
+            sdfiles::create_root(sd)?;
             sd.put(&cell_path, &bak[..])?;
         }
     }
@@ -459,9 +655,14 @@ fn put_back<S: Sd>(
 mod tests {
     use super::*;
     extern crate std;
-    use crate::{sdfiles::Store, testing::Shared};
+    use crate::{
+        sdfiles::Store,
+        testing::{ExtCard, Refused, Shared},
+    };
     use offline_core::Slot;
-    use std::vec::Vec;
+    use std::{vec, vec::Vec};
+
+    type Failure = Error<(), Refused>;
 
     fn state(bank: (Slot, u32), mover: (Slot, u32)) -> State {
         State {
@@ -476,9 +677,26 @@ mod tests {
         }
     }
 
-    /// The name of `folder` in the root folder.
+    /// A whole box file that `id` tells apart.
+    fn a_box(id: u8) -> [u8; FILE_SIZE] {
+        let mut name = [0u8; NAME_TEXT];
+        name[0] = id;
+        let mut out = [0u8; FILE_SIZE];
+        crate::transfer_screen::empty_box(&mut out, &name);
+        out
+    }
+
+    fn put_group(ext: &mut ExtCard, path: &Path, boxes: [Option<u8>; GROUP]) {
+        let included = boxes.map(|one| one.is_some());
+        let mut fill = |position: usize, to: &mut [u8; FILE_SIZE]| -> Result<(), Failure> {
+            *to = a_box(boxes[position].unwrap());
+            Ok(())
+        };
+        write_group(ext, path, &included, &mut fill, &mut [0; FILE_SIZE]).unwrap();
+    }
+
     fn name_of(folder: &Path) -> Vec<u8> {
-        folder.text()[ROOT.len() + 1..].to_vec()
+        folder.text()[1..].to_vec()
     }
 
     #[test]
@@ -494,53 +712,131 @@ mod tests {
         assert_eq!(before.half(), offline_core::crc32(&bytes) & 0x7fff_ffff);
         assert_eq!(after.half() >> 31, 1);
         let folder = folder(before, after);
-        let mut same = Path::new(ROOT);
-        same.push(b"/interrupted-")
-            .push_hex(before.half())
-            .push(b"-")
-            .push_hex(after.half());
+        let mut same = Path::new(b"/");
+        same.push_hex(before.half()).push_hex(after.half());
         assert_eq!(folder, same);
-        assert_eq!(name_of(&folder).len(), b"interrupted-".len() + 17);
-        let name = |bit, after| {
-            let path = file(&folder, bit, after);
-            path.text()[folder.text().len()..].to_vec()
-        };
-        assert_eq!(name(29, false), b"/bank30.old");
-        assert_eq!(name(99, true), b"/bank00.new");
-        assert_eq!(name(TRANSPORT_BIT, true), b"/mover0.new");
+        // The longest name the archive stores.
         assert_eq!(
-            bak(&folder, BOX_COUNT + 1).text()[folder.text().len()..],
-            b"/mover1.bak"[..]
+            name_of(&folder).len(),
+            crate::bank_files::UnitFile::MAX_NAME
         );
-        // The longest path of the folder fits the SD card's commands.
-        assert!(file(&folder, 0, true).valid());
-        assert!(bak(&folder, BOX_COUNT + 3).valid());
-        // Each name reads back as its place and kind.
-        for (place, kind) in [(29, OLD), (99, NEW), (TRANSPORT_BIT, NEW), (101, KEPT)] {
-            let path = match kind {
-                KEPT => bak(&folder, place),
-                kind => file(&folder, place, kind == NEW),
-            };
-            assert_eq!(
-                parse(&path.text()[folder.text().len() + 1..]),
-                Some((place, kind))
-            );
-        }
-        // As the card may list a name that fits 8.3.
-        assert_eq!(parse(b"MOVER1.BAK"), Some((101, KEPT)));
-        assert_eq!(parse(b"BANK30.OLD"), Some((29, OLD)));
-        assert_eq!(parse(b"mover1.box"), None);
+        let name = |place, after| {
+            let (path, offset) = file(&folder, place, after);
+            (path.text()[folder.text().len()..].to_vec(), offset as usize)
+        };
+        assert_eq!(name(29, false), (b"/bank28.old".to_vec(), 2 * FILE_SIZE));
+        assert_eq!(name(99, true), (b"/bank00.new".to_vec(), 0));
+        assert_eq!(name(0, true), (b"/bank00.new".to_vec(), FILE_SIZE));
+        assert_eq!(name(TRANSPORT_BIT, true), (b"/mover0.new".to_vec(), 0));
+        assert_eq!(
+            bak(&folder).text()[folder.text().len()..],
+            b"/mover0.bak"[..]
+        );
+        assert!(file(&folder, 0, true).0.valid());
+        assert!(bak(&folder).valid());
+        // Each name reads back as its group and kind.
+        assert_eq!(parse(b"bank28.old"), Some((7, OLD)));
+        assert_eq!(parse(b"bank96.new"), Some((24, NEW)));
+        assert_eq!(parse(b"mover0.new"), Some((MOVER_GROUP, NEW)));
+        assert_eq!(parse(b"mover0.bak"), Some((MOVER_GROUP, BAK)));
         // Names Bank never writes.
-        assert_eq!(parse(b"bank01.bak"), None);
-        assert_eq!(parse(b"mover0.bak"), None);
-        assert_eq!(parse(b"mover1.old"), None);
-        assert_eq!(parse(b"notes.txt"), None);
+        for name in [
+            &b"bank01.old"[..],
+            b"bank00.bak",
+            b"mover1.bak",
+            b"mover1.old",
+            b"bank00.box",
+            b"notes.txt",
+        ] {
+            assert_eq!(parse(name), None, "{name:?}");
+        }
+        // What the SD card keeps.
         let mut retired = sdfiles::dated_folder([2026, 11, 16, 14, 3, 7]);
         retired.push(RETIRED);
         assert_eq!(retired.text(), [ROOT, b"/20261116-140307-backup"].concat());
-        let mut longest = retired;
-        longest.push(b"/mover1.bak");
-        assert!(longest.valid());
+        let kept = |place, kind| {
+            let path = kept_file(&retired, place, kind);
+            assert!(path.valid());
+            path.text()[retired.text().len()..].to_vec()
+        };
+        assert_eq!(kept(29, NEW), b"/bank30.new.box");
+        assert_eq!(kept(99, OLD), b"/bank00.old.box");
+        assert_eq!(kept(TRANSPORT_BIT, OLD), b"/mover0.old.box");
+        assert_eq!(kept(BOX_COUNT + 2, BAK), b"/mover2.bak.box");
+    }
+
+    #[test]
+    fn every_place_has_one_file_and_position() {
+        let mut seen = std::collections::BTreeSet::new();
+        for place in 0..BOX_COUNT + 4 {
+            let (group, position) = locate(place);
+            assert!(group < GROUPS && position < GROUP, "{place}");
+            assert_eq!(place_at(group, position), place);
+            assert!(seen.insert((group, position)), "{place}");
+        }
+        assert_eq!(seen.len(), GROUPS * GROUP);
+        // Box 100 at the start of the first file, as its number ends in 00.
+        assert_eq!(locate(99), (0, 0));
+        assert_eq!(locate(2), (0, 3));
+        assert_eq!(locate(3), (1, 0));
+        assert_eq!(locate(98), (24, 3));
+        assert_eq!(locate(TRANSPORT_BIT), (MOVER_GROUP, 0));
+        assert_eq!(locate(BOX_COUNT + 3), (MOVER_GROUP, 3));
+    }
+
+    #[test]
+    fn a_place_of_zeros_is_never_a_box() {
+        assert!(BoxFile::parse(&[0u8; FILE_SIZE]).is_err());
+        assert_eq!(offline_core::crc32(&[0u8; FILE_SIZE - 4]), 0x37fa_c18f);
+    }
+
+    #[test]
+    fn a_file_is_its_boxes_one_behind_the_other_up_to_the_last() {
+        let disk = Shared::default();
+        let mut ext = ExtCard(disk.clone());
+        let folder = Path::new(b"/0000000180000002");
+        ext.create_dir(&folder).unwrap();
+        // Only box 2: boxes 100 and 1 are zeros, box 3 is not written.
+        let (path, offset) = file(&folder, 1, true);
+        assert_eq!(offset as usize, 2 * FILE_SIZE);
+        put_group(&mut ext, &path, [None, None, Some(7), None]);
+        let bytes = disk.0.borrow().ext[path.text()].clone();
+        assert_eq!(bytes.len(), 3 * FILE_SIZE);
+        assert!(bytes[..2 * FILE_SIZE].iter().all(|byte| *byte == 0));
+        assert_eq!(bytes[2 * FILE_SIZE..], a_box(7));
+        // All four.
+        let (path, _) = file(&folder, 3, false);
+        put_group(&mut ext, &path, [Some(1), Some(2), Some(3), Some(4)]);
+        let bytes = disk.0.borrow().ext[path.text()].clone();
+        assert_eq!(bytes.len(), GROUP * FILE_SIZE);
+        for (index, part) in bytes.chunks_exact(FILE_SIZE).enumerate() {
+            assert_eq!(part, a_box(index as u8 + 1));
+        }
+    }
+
+    #[test]
+    fn the_worst_case_fits_the_archive() {
+        // Every box and the transport box, both sides: 52 files. The
+        // simulated archive refuses more than its 100 with the Bank's 8.
+        let disk = Shared::default();
+        let mut ext = ExtCard(disk.clone());
+        let folder = Path::new(b"/0000000180000002");
+        ext.create_dir(&folder).unwrap();
+        for kind in [OLD, NEW] {
+            for group in 0..BANK_GROUPS {
+                put_group(
+                    &mut ext,
+                    &group_file(&folder, group, kind),
+                    [Some(1), Some(2), Some(3), Some(4)],
+                );
+            }
+            put_group(
+                &mut ext,
+                &group_file(&folder, MOVER_GROUP, kind),
+                [Some(1), None, None, None],
+            );
+        }
+        assert_eq!(disk.0.borrow().ext.len(), 52);
     }
 
     #[test]
@@ -562,154 +858,222 @@ mod tests {
             side(&name, state((Slot::A, 9), (Slot::B, 2))),
             Side::Unknown
         );
-        // Lower-case digits read as the card may list them.
+        // Lower-case digits read as a list may give them.
         assert_eq!(side(&name.to_ascii_lowercase(), after), Side::After);
-        assert_eq!(side(&name.to_ascii_uppercase(), after), Side::After);
         // Two equal halves tell no side.
         let same = name_of(&folder(before, before));
         assert_eq!(side(&same, before), Side::Unknown);
         // Names not of the form.
-        let hex = |state: State| {
-            let mut path = Path::new(b"");
-            path.push_hex(state.half());
-            path.text().to_vec()
+        assert_eq!(halves(&name[..15]), None);
+        assert_eq!(halves(&[name.as_slice(), b"0"].concat()), None);
+        assert_eq!(halves(b"G000000000000000"), None);
+        assert_eq!(halves(b"0000000-00000000"), None);
+    }
+
+    /// A card with a folder of every kind of file.
+    fn card() -> (Shared, Path) {
+        let disk = Shared::default();
+        let mut ext = ExtCard(disk.clone());
+        let folder = Path::new(b"/0000000180000002");
+        ext.create_dir(&folder).unwrap();
+        put_group(
+            &mut ext,
+            &file(&folder, 29, false).0,
+            [None, None, Some(1), None],
+        );
+        put_group(
+            &mut ext,
+            &file(&folder, 29, true).0,
+            [None, None, Some(2), None],
+        );
+        put_group(
+            &mut ext,
+            &file(&folder, TRANSPORT_BIT, true).0,
+            [Some(3), None, None, None],
+        );
+        put_group(&mut ext, &bak(&folder), [None, Some(4), None, Some(5)]);
+        (disk, folder)
+    }
+
+    fn settled(disk: &Shared, folder: &Path, side: Side) -> Result<(), Failure> {
+        let (mut first, mut second) = ([0; FILE_SIZE], [0; FILE_SIZE]);
+        settle_folder(
+            &mut disk.clone(),
+            &mut ExtCard(disk.clone()),
+            &folder.text()[1..],
+            side,
+            &mut first,
+            &mut second,
+        )?;
+        retire(&mut disk.clone(), [2026, 11, 16, 14, 3, 7]).map_err(Error::Sd)
+    }
+
+    const KEPT_AT: &[u8] = b"/20261116-140307-backup";
+
+    /// The names of the folder of the date, with what each holds.
+    fn kept_names(disk: &Shared) -> Vec<(Vec<u8>, u8)> {
+        let start = [ROOT, KEPT_AT, b"/"].concat();
+        disk.0
+            .borrow()
+            .sd
+            .iter()
+            .filter_map(|(path, bytes)| {
+                Some((path.strip_prefix(start.as_slice())?.to_vec(), bytes[0x1b30]))
+            })
+            .collect()
+    }
+
+    fn expected(side: Side) -> Vec<(Vec<u8>, u8)> {
+        let one = |name: &[u8], id| (name.to_vec(), id);
+        let mut names = match side {
+            Side::Before => vec![one(b"bank30.new.box", 2), one(b"mover0.new.box", 3)],
+            Side::After => vec![one(b"bank30.old.box", 1)],
+            Side::Unknown => vec![
+                one(b"bank30.old.box", 1),
+                one(b"bank30.new.box", 2),
+                one(b"mover0.new.box", 3),
+                one(b"mover1.bak.box", 4),
+                one(b"mover3.bak.box", 5),
+            ],
         };
-        for other in [
-            [b"interrupted-".as_slice(), &hex(before)].concat(),
-            [b"interrupted-".as_slice(), &hex(before), b"_", &hex(after)].concat(),
-            [
-                b"interrupted-".as_slice(),
-                &hex(before),
-                b"-",
-                &hex(after),
-                b"0",
-            ]
-            .concat(),
-            [b"interrupted-".as_slice(), b"G0000000-", &hex(after)].concat(),
-            [b"backup-".as_slice(), &hex(before), b"-", &hex(after)].concat(),
-        ] {
-            assert_eq!(side(&other, before), Side::Unknown, "{other:?}");
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn settling_keeps_what_the_bank_does_not_hold_and_leaves_no_folder() {
+        for side in [Side::Before, Side::After, Side::Unknown] {
+            let (disk, folder) = card();
+            settled(&disk, &folder, side).unwrap();
+            assert_eq!(kept_names(&disk), expected(side), "{side:?}");
+            let state = disk.0.borrow();
+            assert!(state.ext.is_empty(), "{side:?}");
+            assert!(state.ext_dirs.is_empty(), "{side:?}");
+            let on_card = on_card(&folder.text()[1..]);
+            assert!(!state.sd_dirs.contains(on_card.text()), "{side:?}");
+            // The cells back only for the state before.
+            let cell = |place| {
+                state
+                    .sd
+                    .get(sdfiles::box_file(&Path::new(ROOT), place).text())
+            };
+            if side == Side::Before {
+                assert_eq!(cell(BOX_COUNT + 1).unwrap()[..], a_box(4));
+                assert_eq!(cell(BOX_COUNT + 3).unwrap()[..], a_box(5));
+                assert!(cell(BOX_COUNT + 2).is_none());
+            } else {
+                assert!(cell(BOX_COUNT + 1).is_none());
+            }
         }
     }
 
     #[test]
-    fn resolve_renames_a_folder_whole_and_deletes_there_only_what_is_held() {
-        let date = [2026, 11, 16, 14, 3, 7];
-        let backup = folder(
-            state((Slot::A, 1), (Slot::A, 2)),
-            state((Slot::B, 3), (Slot::A, 4)),
-        );
-        // A folder of every kind of file, each a whole box file, on a card
-        // whose second of `date` is taken already.
-        let card = |files: &[(usize, u8)]| {
-            let disk = Shared::default();
-            let mut sd = disk.clone();
-            sdfiles::create_root(&mut sd).unwrap();
-            let mut taken = sdfiles::dated_folder(date);
-            taken.push(RETIRED);
-            sd.create_dir(&taken).unwrap();
-            sd.create_dir(&backup).unwrap();
-            for (place, kind) in files {
-                let path = match *kind {
-                    KEPT => bak(&backup, *place),
-                    kind => file(&backup, *place, kind == NEW),
-                };
-                let mut name = [0u8; NAME_TEXT];
-                name[0] = *place as u8;
-                let mut out = [0u8; FILE_SIZE];
-                crate::transfer_screen::empty_box(&mut out, &name);
-                sd.put(&path, &out).unwrap();
+    fn a_cut_at_every_step_of_settling_ends_the_same_with_one_folder_of_the_date() {
+        for side in [Side::Before, Side::After, Side::Unknown] {
+            let (base, folder) = card();
+            let counting = base.cut_after(usize::MAX);
+            settled(&counting, &folder, side).unwrap();
+            let total = counting.0.borrow().operations;
+            for cut in 0..total {
+                let disk = base.cut_after(cut);
+                assert!(settled(&disk, &folder, side).is_err(), "cut {cut}");
+                let disk = disk.reboot();
+                settled(&disk, &folder, side).unwrap();
+                assert_eq!(kept_names(&disk), expected(side), "{side:?}, cut {cut}");
+                let state = disk.0.borrow();
+                assert!(state.ext.is_empty(), "{side:?}, cut {cut}");
+                assert!(state.ext_dirs.is_empty(), "{side:?}, cut {cut}");
+                let dated = state
+                    .sd_dirs
+                    .iter()
+                    .filter(|dir| dir.ends_with(RETIRED))
+                    .count();
+                assert_eq!(dated, 1, "{side:?}, cut {cut}");
+                assert!(
+                    !state.sd_dirs.iter().any(|dir| {
+                        halves(&dir[dir.iter().rposition(|b| *b == b'/').unwrap() + 1..]).is_some()
+                    }),
+                    "{side:?}, cut {cut}"
+                );
             }
-            disk
-        };
-        let all = [(29, OLD), (29, NEW), (TRANSPORT_BIT, NEW), (101, KEPT)];
-        let kept = [ROOT, b"/20261116-140308-backup"].concat();
-        for (resolved, left) in [
-            (Resolved::Neither, &all[..]),
-            (Resolved::Before, &[(29, NEW), (TRANSPORT_BIT, NEW)][..]),
-            (Resolved::After, &[(29, OLD)][..]),
-        ] {
-            let disk = card(&all);
-            resolve(
-                &mut disk.clone(),
-                &backup,
-                resolved,
-                date,
-                &mut [0; FILE_SIZE],
-            )
-            .unwrap();
-            let sd = disk.0.borrow();
-            assert!(!sd.sd_dirs.contains(backup.text()), "{resolved:?}");
-            let kept_path = Path::new(&kept);
-            let mut names: Vec<Vec<u8>> = left
-                .iter()
-                .map(|(place, kind)| {
-                    match *kind {
-                        KEPT => bak(&kept_path, *place),
-                        kind => file(&kept_path, *place, kind == NEW),
-                    }
-                    .text()
-                    .to_vec()
-                })
-                .collect();
-            names.sort();
-            let found: Vec<Vec<u8>> = sd.sd.keys().cloned().collect();
-            assert_eq!(found, names, "{resolved:?}");
         }
-        // Nothing left: no folder of the date stays.
-        let disk = card(&[(101, KEPT)]);
-        resolve(
-            &mut disk.clone(),
-            &backup,
-            Resolved::After,
-            date,
-            &mut [0; FILE_SIZE],
-        )
-        .unwrap();
-        assert!(!disk.0.borrow().sd_dirs.contains(&kept));
-        assert!(disk.0.borrow().sd.is_empty());
-        // A cut after the rename: the folder of the date holds the rest, and
-        // no `interrupted-` folder is left to put anything back from.
-        let disk = card(&all).cut_after(2);
-        assert!(resolve(
-            &mut disk.clone(),
-            &backup,
-            Resolved::Before,
-            date,
-            &mut [0; FILE_SIZE]
-        )
-        .is_err());
-        let sd = disk.0.borrow();
-        assert!(!sd.sd_dirs.contains(backup.text()));
-        assert!(sd.sd_dirs.contains(&kept));
+    }
+
+    #[test]
+    fn nothing_goes_while_the_card_has_no_room_for_what_is_kept() {
+        let (disk, folder) = card();
+        let before = disk.0.borrow().ext.clone();
+        disk.0.borrow_mut().sd_full = true;
+        let failed = settled(&disk, &folder, Side::After);
+        assert!(matches!(failed, Err(Error::Sd(error)) if error.full));
+        assert!(disk.0.borrow().ext == before);
+        disk.0.borrow_mut().sd_full = false;
+        settled(&disk, &folder, Side::After).unwrap();
+        assert_eq!(kept_names(&disk), expected(Side::After));
+    }
+
+    #[test]
+    fn a_place_that_does_not_read_costs_only_itself() {
+        let (disk, folder) = card();
+        // One box of the `.bak` damaged under its CRC: the other is put back.
+        let path = bak(&folder);
+        disk.0.borrow_mut().ext.get_mut(path.text()).unwrap()[FILE_SIZE] ^= 1;
+        settled(&disk, &folder, Side::Before).unwrap();
+        let state = disk.0.borrow();
+        let cell = |place| {
+            state
+                .sd
+                .get(sdfiles::box_file(&Path::new(ROOT), place).text())
+        };
+        assert!(cell(BOX_COUNT + 1).is_none());
+        assert_eq!(cell(BOX_COUNT + 3).unwrap()[..], a_box(5));
+    }
+
+    #[test]
+    fn a_file_the_console_says_is_damaged_counts_as_not_whole() {
+        let (disk, folder) = card();
+        let path = bak(&folder);
+        disk.0.borrow_mut().ext_damaged.insert(path.text().to_vec());
+        settled(&disk, &folder, Side::Before).unwrap();
+        // No cell is written from it, and it goes with its folder.
+        let state = disk.0.borrow();
+        let cell = sdfiles::box_file(&Path::new(ROOT), BOX_COUNT + 1);
+        assert!(!state.sd.contains_key(cell.text()));
+        assert!(state.ext.is_empty());
+    }
+
+    #[test]
+    fn a_file_of_no_patch_stays_with_its_folder_and_blocks_nothing() {
+        let (disk, folder) = card();
+        let mut foreign = folder;
+        foreign.push(b"/notes.txt");
+        let mut ext = ExtCard(disk.clone());
+        crate::sdfiles::Extdata::create(&mut ext, &foreign, 4).unwrap();
+        settled(&disk, &folder, Side::After).unwrap();
+        assert_eq!(kept_names(&disk), expected(Side::After));
+        let state = disk.0.borrow();
+        assert_eq!(state.ext.len(), 1);
+        assert!(state.ext.contains_key(foreign.text()));
+        assert!(state.ext_dirs.contains(folder.text()));
+    }
+
+    #[test]
+    fn a_folder_on_the_card_without_its_folder_in_extdata_is_only_renamed() {
+        // A cut after the folder in extdata went, before the rename.
+        let disk = Shared::default();
+        let mut sd = disk.clone();
+        sdfiles::create_root(&mut sd).unwrap();
+        let held = on_card(b"0000000180000002");
+        sd.create_dir(&held).unwrap();
+        sd.put(&kept_file(&held, 29, OLD), &a_box(1)).unwrap();
         // An empty one goes, and no folder of the date is made for it.
-        drop(sd);
-        let disk = card(&[]);
-        let before = disk.0.borrow().sd_dirs.len();
-        resolve(
-            &mut disk.clone(),
-            &backup,
-            Resolved::Neither,
-            date,
-            &mut [0; FILE_SIZE],
-        )
-        .unwrap();
-        assert_eq!(disk.0.borrow().sd_dirs.len(), before - 1);
-        // A file a cut left half written is not kept, whatever is settled:
-        // no one could use it.
-        let disk = card(&all);
-        let torn = file(&backup, 29, true);
-        disk.0.borrow_mut().sd.get_mut(torn.text()).unwrap()[0] ^= 1;
-        resolve(
-            &mut disk.clone(),
-            &backup,
-            Resolved::Neither,
-            date,
-            &mut [0; FILE_SIZE],
-        )
-        .unwrap();
-        let names: Vec<Vec<u8>> = disk.0.borrow().sd.keys().cloned().collect();
-        assert_eq!(names.len(), all.len() - 1);
-        assert!(!names.iter().any(|name| name.ends_with(b"/bank30.new")));
+        let empty = on_card(b"0000000380000004");
+        sd.create_dir(&empty).unwrap();
+        retire(&mut sd, [2026, 11, 16, 14, 3, 7]).unwrap();
+        let state = disk.0.borrow();
+        assert!(!state.sd_dirs.contains(held.text()));
+        assert!(!state.sd_dirs.contains(empty.text()));
+        drop(state);
+        assert_eq!(kept_names(&disk), [(b"bank30.old.box".to_vec(), 1)]);
     }
 }

@@ -119,9 +119,9 @@ Look in your game first:
 | --- | --- |
 | The Pokémon you put **into** Bank are still in your boxes | Yes |
 | The Pokémon you took **out of** Bank are in your boxes | No |
-| Neither, or you are not sure | Either. Bank has copied every box whose Pokémon the session changed to the SD card, as it was before and after ([bank.md](bank.md#a-save-left-to-transporter)). |
+| Neither, or you are not sure | Either. Bank has kept every box whose Pokémon the session changed, as it was before and after ([bank.md](bank.md#a-save-left-to-transporter)). |
 
-Transporter leaves that backup as it is. Bank's next START keeps only the side Bank does not hold, in a folder of the date, `YYYYMMDD-HHMMSS-backup/`: after Yes the `.new` boxes, after No the `.old` ones.
+Transporter leaves that backup as it is. Bank's next START writes the side Bank does not hold to a folder of the date on the SD card, `YYYYMMDD-HHMMSS-backup/`: after Yes the `.new.box` files, after No the `.old.box` ones.
 
 ## A game save that does not load
 
