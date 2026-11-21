@@ -989,7 +989,7 @@ mod native {
     impl<P: Program> Api for Native<P> {
         fn open_archive(&mut self) -> Result<u64, Error> {
             // media byte=1, reserved bytes=0, extdata ID low/high.
-            let binary = [1u32, 0xc9b, 0];
+            let binary = [1u32, crate::sdfiles::BANK_EXTDATA, 0];
             let path = Path {
                 kind: 2,
                 data: binary.as_ptr().cast(),

@@ -4,8 +4,9 @@
 //! renaming a folder, and deleting a file are `fs:USER` commands the patch sends
 //! itself on the program's session, built as the SDK builds its own: the
 //! command in the thread's buffer, then the kernel's SendSyncRequest
-//! (`kernel`). They go to the SD card's archive (ID 9 with an empty path),
-//! opened once for all of a job's commands (`Archive`). A path is kept as
+//! (`kernel`). They go to the SD card's archive (ID 9 with an empty path) or
+//! to an SD extdata archive (ID 6 with its ID), opened once for all of a
+//! job's commands (`Archive`). A path is kept as
 //! one byte per character with its terminator, ASCII and the upper half of
 //! Latin-1 (the "é" of the box files' folder), and sent as UTF-16 (`wide`),
 //! the path type libctru uses for every path of the SD card.
@@ -17,7 +18,9 @@ pub const OPEN_WRITE_CREATE: u32 = 6;
 
 /// The SD card's archive and the path types of its calls.
 pub const ARCHIVE_SDMC: u32 = 9;
+pub const ARCHIVE_EXTDATA: u32 = 6;
 pub const PATH_EMPTY: u32 = 1;
+pub const PATH_BINARY: u32 = 2;
 pub const PATH_UTF16: u32 = 4;
 
 /// The longest path the patch passes, in characters with its terminator.
@@ -182,7 +185,10 @@ pub use native::*;
 
 #[cfg(target_arch = "arm")]
 mod native {
-    use super::{command, valid, wide, wide_size, ARCHIVE_SDMC, PATH_EMPTY, PATH_UTF16};
+    use super::{
+        command, valid, wide, wide_size, ARCHIVE_EXTDATA, ARCHIVE_SDMC, PATH_BINARY, PATH_EMPTY,
+        PATH_UTF16,
+    };
     use crate::{
         file,
         kernel::{close_handle, send_sync_request},
@@ -253,7 +259,7 @@ mod native {
         byte_len: u32,
     }
 
-    /// The SD card's archive, open: the folder commands are sent on it, so
+    /// An archive, the SD card's or an extdata's, open: the commands are sent on it, so
     /// that a job of many of them opens it once. It is closed by `close`,
     /// or when it is dropped, where a failure to close counts for nothing:
     /// every command on it has answered by then.
@@ -267,23 +273,37 @@ mod native {
     impl<P: Program> Archive<P> {
         /// Opens archive 9 with an empty path on the program's session.
         pub fn open() -> Result<Self, Code> {
+            let empty = [0u8; 4];
+            Self::open_at(
+                ARCHIVE_SDMC,
+                Path {
+                    kind: PATH_EMPTY,
+                    data: empty.as_ptr(),
+                    byte_len: 1,
+                },
+            )
+        }
+
+        /// Opens the SD extdata archive `id` on the program's session: media
+        /// 1 (the SD card), then the ID's low and high word.
+        pub fn open_extdata(id: u32) -> Result<Self, Code> {
+            let binary = [1u32, id, 0];
+            Self::open_at(
+                ARCHIVE_EXTDATA,
+                Path {
+                    kind: PATH_BINARY,
+                    data: binary.as_ptr().cast(),
+                    byte_len: 12,
+                },
+            )
+        }
+
+        fn open_at(archive: u32, path: Path) -> Result<Self, Code> {
             type OpenArchive = unsafe extern "aapcs" fn(*const u32, *mut u64, u32, Path) -> i32;
             let session = unsafe { P::fs_session() };
-            let empty = [0u8; 4];
             let mut handle = 0;
             let open: OpenArchive = unsafe { transmute(P::OPEN_ARCHIVE) };
-            let code = unsafe {
-                open(
-                    &session,
-                    &mut handle,
-                    ARCHIVE_SDMC,
-                    Path {
-                        kind: PATH_EMPTY,
-                        data: empty.as_ptr(),
-                        byte_len: 1,
-                    },
-                )
-            };
+            let code = unsafe { open(&session, &mut handle, archive, path) };
             if code < 0 {
                 return Err(code);
             }
@@ -449,6 +469,67 @@ mod native {
                 Err(code) if super::not_found(code as u32) => Ok(()),
                 other => other,
             }
+        }
+
+        /// Creates the file at `path` with `length` bytes, as an extdata
+        /// file is made: its size is fixed from then on. One that is there
+        /// is a failure.
+        pub fn create_file(&self, path: &[u8], length: u64) -> Result<(), Code> {
+            type Create = unsafe extern "aapcs" fn(*const u32, u32, u64, Path, u32, u64) -> i32;
+            checked(path)?;
+            let address = P::CREATE_FILE.ok_or(BAD_PATH)?;
+            let create: Create = unsafe { transmute(address) };
+            let units = wide(path);
+            let session = unsafe { P::fs_session() };
+            let code = unsafe {
+                create(
+                    &session,
+                    0,
+                    self.handle,
+                    Path {
+                        kind: PATH_UTF16,
+                        data: units.as_ptr().cast(),
+                        byte_len: wide_size(path),
+                    },
+                    0,
+                    length,
+                )
+            };
+            if code < 0 {
+                Err(code)
+            } else {
+                Ok(())
+            }
+        }
+
+        /// Opens the file at `path` of this archive with the SDK's `flags`.
+        pub fn open_file(&self, path: &[u8], flags: u32) -> Result<file::Handle<P>, Code> {
+            type Open =
+                unsafe extern "aapcs" fn(*const u32, *mut u32, u32, u64, Path, u32, u32) -> i32;
+            checked(path)?;
+            let open: Open = unsafe { transmute(P::OPEN_FILE) };
+            let units = wide(path);
+            let session = unsafe { P::fs_session() };
+            let mut handle = 0;
+            let code = unsafe {
+                open(
+                    &session,
+                    &mut handle,
+                    0,
+                    self.handle,
+                    Path {
+                        kind: PATH_UTF16,
+                        data: units.as_ptr().cast(),
+                        byte_len: wide_size(path),
+                    },
+                    flags,
+                    0,
+                )
+            };
+            if code < 0 {
+                return Err(code);
+            }
+            unsafe { file::Handle::new(handle) }.ok_or(BAD_PATH)
         }
 
         /// Renames the folder at `from` to `to`, which must not be there.

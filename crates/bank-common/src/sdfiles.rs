@@ -4,9 +4,14 @@
 //! `patch_common::sd`, in the tests a simulated card (`testing`). Each
 //! operation is whole or reports a failure: a file is written, flushed,
 //! closed and read back before `put` answers, and a reader checks what it
-//! reads (`offline_core::boxfile`).
+//! reads (`offline_core::boxfile`). `Extdata` reaches folders and files of
+//! Bank's extdata archive the same way, by the rules of that archive: a
+//! file has the size it was made with.
 
-use offline_core::native_blob::BOX_COUNT;
+use offline_core::{boxfile::FILE_SIZE, native_blob::BOX_COUNT};
+
+/// Bank's SD extdata archive.
+pub const BANK_EXTDATA: u32 = 0xc9b;
 
 /// A date and time of the console's clock, which names a folder: year,
 /// month, day, hour, minute, second. Bank reads it on the main thread with
@@ -157,7 +162,7 @@ pub enum Error<E, S> {
 /// `Error` for Bank's files `F` and the card `S`.
 pub type Failed<F, S> = Error<
     <<F as crate::bank_files::Files>::Storage as offline_core::Storage>::Error,
-    <S as Sd>::Error,
+    <S as Store>::Error,
 >;
 
 /// What a read found.
@@ -171,20 +176,25 @@ pub enum Found {
     Read,
 }
 
-pub trait Sd {
+/// What a read of a piece of an extdata file found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Piece {
+    /// It was read whole.
+    Read,
+    /// There is no such file, or it ends before the piece does.
+    Missing,
+    /// The console says its data does not read (`fs_result::damaged`): an
+    /// interrupted write left it.
+    Damaged,
+}
+
+/// What the SD card and Bank's extdata do alike: folders, and deleting.
+pub trait Store {
     type Error: Copy + core::fmt::Debug;
     /// Makes the folder; one that is there counts as made.
     fn create_dir(&mut self, path: &Path) -> Result<(), Self::Error>;
-    /// Makes the file hold exactly `bytes`: written, flushed, closed and read
-    /// back. A file that was there is replaced.
-    fn put(&mut self, path: &Path, bytes: &[u8]) -> Result<(), Self::Error>;
-    /// Reads the whole file into `out`, if it is `out.len()` bytes.
-    fn get(&mut self, path: &Path, out: &mut [u8]) -> Result<Found, Self::Error>;
     /// Deletes the file; one that is not there counts as deleted.
     fn delete(&mut self, path: &Path) -> Result<(), Self::Error>;
-    /// Renames a folder, with everything in it, within its folder; `to`
-    /// must not be there.
-    fn rename_dir(&mut self, from: &Path, to: &Path) -> Result<(), Self::Error>;
     /// Deletes the folder if it is empty; one that is not there counts as
     /// deleted. A folder that is not empty is an error, which the callers
     /// leave as it is: nothing depends on a folder.
@@ -198,6 +208,29 @@ pub trait Sd {
     fn no_room(error: &Self::Error) -> bool;
     /// The second number of the error screen for `error`.
     fn code(error: &Self::Error) -> u32;
+}
+
+/// The plain files of the SD card.
+pub trait Sd: Store {
+    /// Makes the file hold exactly `bytes`: written, flushed, closed and read
+    /// back. A file that was there is replaced.
+    fn put(&mut self, path: &Path, bytes: &[u8]) -> Result<(), Self::Error>;
+    /// Reads the whole file into `out`, if it is `out.len()` bytes.
+    fn get(&mut self, path: &Path, out: &mut [u8]) -> Result<Found, Self::Error>;
+    /// Renames a folder, with everything in it, within its folder; `to`
+    /// must not be there.
+    fn rename_dir(&mut self, from: &Path, to: &Path) -> Result<(), Self::Error>;
+}
+
+/// Files in folders of Bank's extdata. A file has the size it is made with,
+/// and a write never changes it.
+pub trait Extdata: Store {
+    /// Makes the file anew with `length` bytes; one that was there is gone.
+    fn create(&mut self, path: &Path, length: u32) -> Result<(), Self::Error>;
+    /// Writes `bytes` at `offset` and flushes them.
+    fn write_at(&mut self, path: &Path, offset: u32, bytes: &[u8]) -> Result<(), Self::Error>;
+    /// Reads `out.len()` bytes at `offset`.
+    fn read_at(&mut self, path: &Path, offset: u32, out: &mut [u8]) -> Result<Piece, Self::Error>;
 }
 
 /// The folder of `date` (year, month, day, hour, minute, second) in the
@@ -296,23 +329,73 @@ pub fn probe<S: Sd>(sd: &mut S) -> Result<bool, S::Error> {
     Ok(found == Found::Read && read == bytes && listed)
 }
 
+/// Every call Bank's extdata folders need, on a folder of its own with the
+/// longest name the archive stores, and nothing left behind: a file of the
+/// largest size a backup's file has, written whole, a piece read at an
+/// offset inside it and one past its end, the folder and the file found in
+/// their lists, then both deleted. The console test build makes it at every
+/// opening. The answer is whether all of it was as written.
+pub fn probe_extdata<X: Extdata>(ext: &mut X) -> Result<bool, X::Error> {
+    const LENGTH: usize = 4 * FILE_SIZE;
+    const PIECE: usize = 512;
+    let (root, folder) = (Path::new(b"/"), Path::new(b"/0123456789ABCDEF"));
+    let file = Path::new(b"/0123456789ABCDEF/bank00.old");
+    // What a probe cut short left.
+    ext.delete(&file)?;
+    ext.remove_dir(&folder)?;
+    ext.create_dir(&folder)?;
+    ext.create(&file, LENGTH as u32)?;
+    for offset in (0..LENGTH).step_by(PIECE) {
+        let bytes = [(offset / PIECE) as u8; PIECE];
+        let count = PIECE.min(LENGTH - offset);
+        ext.write_at(&file, offset as u32, &bytes[..count])?;
+    }
+    // A piece across the pieces written, at the last box's start.
+    let at = 3 * FILE_SIZE;
+    let mut read = [0u8; 2 * PIECE];
+    let found = ext.read_at(&file, at as u32, &mut read)?;
+    let same = found == Piece::Read
+        && read
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| *byte == ((at + index) / PIECE) as u8);
+    let past = ext.read_at(&file, LENGTH as u32 - 4, &mut [0; 8])?;
+    let mut listed = false;
+    ext.list(&root, &mut |name, is_folder| {
+        listed |= is_folder && name.eq_ignore_ascii_case(b"0123456789ABCDEF");
+    })?;
+    let mut inside = false;
+    ext.list(&folder, &mut |name, is_folder| {
+        inside |= !is_folder && name.eq_ignore_ascii_case(b"bank00.old");
+    })?;
+    ext.delete(&file)?;
+    ext.remove_dir(&folder)?;
+    let mut left = false;
+    ext.list(&root, &mut |name, _| {
+        left |= name.eq_ignore_ascii_case(b"0123456789ABCDEF");
+    })?;
+    Ok(same && past == Piece::Missing && listed && inside && !left)
+}
+
 /// No SD card: every call fails. For a settle that writes no backup.
 pub struct NoSd;
 impl Sd for NoSd {
-    type Error = ();
-    fn create_dir(&mut self, _: &Path) -> Result<(), ()> {
-        Err(())
-    }
     fn put(&mut self, _: &Path, _: &[u8]) -> Result<(), ()> {
         Err(())
     }
     fn get(&mut self, _: &Path, _: &mut [u8]) -> Result<Found, ()> {
         Err(())
     }
-    fn delete(&mut self, _: &Path) -> Result<(), ()> {
+    fn rename_dir(&mut self, _: &Path, _: &Path) -> Result<(), ()> {
         Err(())
     }
-    fn rename_dir(&mut self, _: &Path, _: &Path) -> Result<(), ()> {
+}
+impl Store for NoSd {
+    type Error = ();
+    fn create_dir(&mut self, _: &Path) -> Result<(), ()> {
+        Err(())
+    }
+    fn delete(&mut self, _: &Path) -> Result<(), ()> {
         Err(())
     }
     fn remove_dir(&mut self, _: &Path) -> Result<(), ()> {
@@ -330,28 +413,52 @@ impl Sd for NoSd {
 }
 
 #[cfg(target_arch = "arm")]
-pub use console::ConsoleSd;
+pub use console::{ConsoleExtdata, ConsoleSd};
 
 #[cfg(target_arch = "arm")]
 mod console {
-    use super::{Found, Path, Sd};
+    use super::{Extdata, Found, Path, Piece, Sd, Store, BANK_EXTDATA};
     use core::marker::PhantomData;
     use patch_common::{
         file::FLUSH,
-        fs_result::lack_of_space,
+        fs_result::{damaged, lack_of_space},
         program::Program,
-        sd::{self, OPEN_READ, OPEN_WRITE_CREATE},
+        sd::{self, OPEN_READ, OPEN_READ_WRITE, OPEN_WRITE_CREATE},
     };
 
-    /// The SD card through the program's own session, on the thread that
-    /// owns the program's file handles (the worker). Its archive is opened
-    /// at the first folder command and kept until it is dropped, at the end
-    /// of the job, so that a job of many commands opens it once.
-    pub struct ConsoleSd<P: Program> {
-        archive: Option<sd::Archive<P>>,
-        program: PhantomData<(P, *mut ())>,
+    /// Which archive a `Console` works in.
+    pub trait Place {
+        fn open<P: Program>() -> Result<sd::Archive<P>, patch_common::file::Code>;
     }
-    impl<P: Program> ConsoleSd<P> {
+    /// The SD card.
+    pub struct Card;
+    impl Place for Card {
+        fn open<P: Program>() -> Result<sd::Archive<P>, patch_common::file::Code> {
+            sd::Archive::open()
+        }
+    }
+    /// Bank's extdata.
+    pub struct BankData;
+    impl Place for BankData {
+        fn open<P: Program>() -> Result<sd::Archive<P>, patch_common::file::Code> {
+            sd::Archive::open_extdata(BANK_EXTDATA)
+        }
+    }
+
+    /// An archive through the program's own session, on the thread that
+    /// owns the program's file handles (the worker). It is opened at the
+    /// first command and kept until it is dropped, at the end of the job, so
+    /// that a job of many commands opens it once.
+    pub struct Console<P: Program, W: Place> {
+        archive: Option<sd::Archive<P>>,
+        program: PhantomData<(P, W, *mut ())>,
+    }
+    /// The SD card.
+    pub type ConsoleSd<P> = Console<P, Card>;
+    /// Bank's extdata.
+    pub type ConsoleExtdata<P> = Console<P, BankData>;
+
+    impl<P: Program, W: Place> Console<P, W> {
         /// # Safety
         /// Only on the worker of program `P`, after its start-up.
         pub const unsafe fn new() -> Self {
@@ -363,7 +470,7 @@ mod console {
 
         fn archive(&mut self) -> Result<&sd::Archive<P>, Refused> {
             if self.archive.is_none() {
-                self.archive = Some(sd::Archive::open().map_err(refused)?);
+                self.archive = Some(W::open().map_err(refused)?);
             }
             self.archive.as_ref().ok_or(Refused(0))
         }
@@ -378,13 +485,93 @@ mod console {
         Refused(code as u32)
     }
 
-    impl<P: Program> Sd for ConsoleSd<P> {
+    impl<P: Program, W: Place> Store for Console<P, W> {
         type Error = Refused;
         fn create_dir(&mut self, path: &Path) -> Result<(), Refused> {
             self.archive()?
                 .create_directory(path.terminated())
                 .map_err(refused)
         }
+        fn delete(&mut self, path: &Path) -> Result<(), Refused> {
+            self.archive()?.delete(path.terminated()).map_err(refused)
+        }
+        fn remove_dir(&mut self, path: &Path) -> Result<(), Refused> {
+            self.archive()?
+                .delete_directory(path.terminated())
+                .map_err(refused)
+        }
+        fn list(&mut self, path: &Path, each: &mut dyn FnMut(&[u8], bool)) -> Result<(), Refused> {
+            self.archive()?
+                .list(path.terminated(), &mut |units, folder| {
+                    let mut name = [0u8; sd::command::ENTRY_NAME];
+                    for (byte, unit) in name.iter_mut().zip(units) {
+                        match u8::try_from(*unit) {
+                            Ok(value) => *byte = value,
+                            Err(_) => return,
+                        }
+                    }
+                    each(&name[..units.len().min(name.len())], folder);
+                })
+                .map_err(refused)
+        }
+        fn no_room(error: &Refused) -> bool {
+            lack_of_space(error.0)
+        }
+        fn code(error: &Refused) -> u32 {
+            error.0
+        }
+    }
+
+    impl<P: Program> Extdata for ConsoleExtdata<P> {
+        fn create(&mut self, path: &Path, length: u32) -> Result<(), Refused> {
+            let archive = self.archive()?;
+            archive.delete(path.terminated()).map_err(refused)?;
+            archive
+                .create_file(path.terminated(), u64::from(length))
+                .map_err(refused)
+        }
+        fn write_at(&mut self, path: &Path, offset: u32, bytes: &[u8]) -> Result<(), Refused> {
+            let file = self
+                .archive()?
+                .open_file(path.terminated(), OPEN_READ_WRITE)
+                .map_err(refused)?;
+            let written = file.write(u64::from(offset), bytes, FLUSH).map_err(refused);
+            let (closed, handle) = file.close();
+            if written? as usize != bytes.len() {
+                return Err(Refused(0));
+            }
+            closed.map_err(refused)?;
+            handle.map_err(refused)
+        }
+        fn read_at(&mut self, path: &Path, offset: u32, out: &mut [u8]) -> Result<Piece, Refused> {
+            let file = match self
+                .archive()?
+                .open_file(path.terminated(), OPEN_READ_WRITE)
+            {
+                Ok(file) => file,
+                Err(code) if sd::not_found(code as u32) => return Ok(Piece::Missing),
+                Err(code) if damaged(code as u32) => return Ok(Piece::Damaged),
+                Err(code) => return Err(refused(code)),
+            };
+            if u64::from(offset) + out.len() as u64 > file.size().map_err(refused)? {
+                return Ok(Piece::Missing);
+            }
+            let count = match file.read(u64::from(offset), out) {
+                Ok(count) => count,
+                Err(code) if damaged(code as u32) => return Ok(Piece::Damaged),
+                Err(code) => return Err(refused(code)),
+            };
+            let (closed, handle) = file.close();
+            if count as usize != out.len() {
+                return Err(Refused(0));
+            }
+            closed.map_err(refused)?;
+            handle.map_err(refused)?;
+            Ok(Piece::Read)
+        }
+    }
+
+    impl<P: Program> Sd for ConsoleSd<P> {
         fn put(&mut self, path: &Path, bytes: &[u8]) -> Result<(), Refused> {
             let path = path.terminated();
             self.archive()?.delete(path).map_err(refused)?;
@@ -432,38 +619,10 @@ mod console {
             handle.map_err(refused)?;
             Ok(Found::Read)
         }
-        fn delete(&mut self, path: &Path) -> Result<(), Refused> {
-            self.archive()?.delete(path.terminated()).map_err(refused)
-        }
         fn rename_dir(&mut self, from: &Path, to: &Path) -> Result<(), Refused> {
             self.archive()?
                 .rename_directory(from.terminated(), to.terminated())
                 .map_err(refused)
-        }
-        fn remove_dir(&mut self, path: &Path) -> Result<(), Refused> {
-            self.archive()?
-                .delete_directory(path.terminated())
-                .map_err(refused)
-        }
-        fn list(&mut self, path: &Path, each: &mut dyn FnMut(&[u8], bool)) -> Result<(), Refused> {
-            self.archive()?
-                .list(path.terminated(), &mut |units, folder| {
-                    let mut name = [0u8; sd::command::ENTRY_NAME];
-                    for (byte, unit) in name.iter_mut().zip(units) {
-                        match u8::try_from(*unit) {
-                            Ok(value) => *byte = value,
-                            Err(_) => return,
-                        }
-                    }
-                    each(&name[..units.len().min(name.len())], folder);
-                })
-                .map_err(refused)
-        }
-        fn no_room(error: &Refused) -> bool {
-            lack_of_space(error.0)
-        }
-        fn code(error: &Refused) -> u32 {
-            error.0
         }
     }
 }
@@ -479,6 +638,30 @@ mod tests {
         assert!(disk.0.borrow().sd.is_empty());
         assert!(disk.0.borrow().sd_dirs.contains(ROOT));
         assert!(disk.0.borrow().sd_dirs.contains(PARENT));
+    }
+
+    #[test]
+    fn the_extdata_probe_leaves_nothing_behind() {
+        let disk = crate::testing::Shared::default();
+        let mut ext = crate::testing::ExtCard(disk.clone());
+        assert!(probe_extdata(&mut ext).unwrap());
+        assert!(disk.0.borrow().ext.is_empty());
+        assert!(disk.0.borrow().ext_dirs.is_empty());
+        // A cut at every step: the next probe finds what it left and ends
+        // with nothing either.
+        for budget in 0.. {
+            let disk = crate::testing::Shared::default();
+            disk.0.borrow_mut().budget = Some(budget);
+            let mut ext = crate::testing::ExtCard(disk.clone());
+            let done = probe_extdata(&mut ext).is_ok();
+            disk.0.borrow_mut().budget = None;
+            assert!(probe_extdata(&mut ext).unwrap(), "cut at {budget}");
+            assert!(disk.0.borrow().ext.is_empty(), "cut at {budget}");
+            assert!(disk.0.borrow().ext_dirs.is_empty(), "cut at {budget}");
+            if done {
+                break;
+            }
+        }
     }
 
     #[test]

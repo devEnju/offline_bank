@@ -51,6 +51,15 @@ pub struct Disk {
     pub sd_dirs: BTreeSet<Vec<u8>>,
     /// The SD card has no room for a new plain file.
     pub sd_full: bool,
+    /// The files of folders of Bank's extdata (`ExtCard`), by path, each
+    /// with the size it was made with, and those folders.
+    pub ext: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub ext_dirs: BTreeSet<Vec<u8>>,
+    /// How far each of those files has been written: what lies behind does
+    /// not read, as on the console.
+    pub ext_written: BTreeMap<Vec<u8>, usize>,
+    /// Those a cut left unreadable.
+    pub ext_damaged: BTreeSet<Vec<u8>>,
 }
 
 /// What the simulated card answers an operation it refuses with: whether it
@@ -176,6 +185,10 @@ impl Shared {
             sd: disk.sd.clone(),
             sd_dirs: disk.sd_dirs.clone(),
             sd_full: disk.sd_full,
+            ext: disk.ext.clone(),
+            ext_dirs: disk.ext_dirs.clone(),
+            ext_written: disk.ext_written.clone(),
+            ext_damaged: disk.ext_damaged.clone(),
         })))
     }
     /// A copy that behaves like the console, or like the simple card.
@@ -543,18 +556,69 @@ pub fn deliver(disk: &Shared, pokemon: usize) -> Delivery {
     try_deliver(disk, pokemon).expect("Transporter must be allowed to deliver")
 }
 
-/// The plain files of the SD card. Every call is one operation of the
-/// card's budget, but a write: it deletes, creates and writes, three
-/// operations, as the console's `put` does. A cut at its second leaves no
-/// file, one at its third the file there with the wrong bytes, as a torn
-/// write does. A file goes only into a folder that is there.
-impl crate::sdfiles::Sd for Shared {
+/// What the SD card's files and folders do.
+impl crate::sdfiles::Store for Shared {
     type Error = Refused;
     fn create_dir(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
         self.tick()?;
         self.0.borrow_mut().sd_dirs.insert(path.text().to_vec());
         Ok(())
     }
+    fn delete(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
+        self.tick()?;
+        self.0.borrow_mut().sd.remove(path.text());
+        Ok(())
+    }
+    fn list(
+        &mut self,
+        path: &crate::sdfiles::Path,
+        each: &mut dyn FnMut(&[u8], bool),
+    ) -> Result<(), Refused> {
+        let inside = [path.text(), b"/"].concat();
+        let disk = self.0.borrow();
+        let files = entries(&inside, &mut disk.sd.keys());
+        let folders = entries(&inside, &mut disk.sd_dirs.iter());
+        drop(disk);
+        for name in files {
+            each(&name, false);
+        }
+        for name in folders {
+            each(&name, true);
+        }
+        Ok(())
+    }
+    fn remove_dir(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
+        self.tick()?;
+        let mut disk = self.0.borrow_mut();
+        let inside = [path.text(), b"/"].concat();
+        if disk.sd.keys().any(|key| key.starts_with(&inside)) {
+            return Err(Refused::FAILED);
+        }
+        disk.sd_dirs.remove(path.text());
+        Ok(())
+    }
+    fn no_room(error: &Refused) -> bool {
+        error.full
+    }
+    fn code(_: &Refused) -> u32 {
+        0
+    }
+}
+
+/// The names directly inside the folder whose path ends in `inside`.
+fn entries(inside: &[u8], keys: &mut dyn Iterator<Item = &Vec<u8>>) -> Vec<Vec<u8>> {
+    keys.filter_map(|key| key.strip_prefix(inside))
+        .filter(|name| !name.contains(&b'/'))
+        .map(|name| name.to_vec())
+        .collect()
+}
+
+/// The plain files of the SD card. Every call is one operation of the
+/// card's budget, but a write: it deletes, creates and writes, three
+/// operations, as the console's `put` does. A cut at its second leaves no
+/// file, one at its third the file there with the wrong bytes, as a torn
+/// write does. A file goes only into a folder that is there.
+impl crate::sdfiles::Sd for Shared {
     fn put(&mut self, path: &crate::sdfiles::Path, bytes: &[u8]) -> Result<(), Refused> {
         let key = path.text().to_vec();
         let folder = key[..key.iter().rposition(|byte| *byte == b'/').unwrap_or(0)].to_vec();
@@ -593,11 +657,6 @@ impl crate::sdfiles::Sd for Shared {
             }
         })
     }
-    fn delete(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
-        self.tick()?;
-        self.0.borrow_mut().sd.remove(path.text());
-        Ok(())
-    }
     /// One operation: the folder and everything in it, or nothing.
     fn rename_dir(
         &mut self,
@@ -629,21 +688,50 @@ impl crate::sdfiles::Sd for Shared {
         }
         Ok(())
     }
+}
+
+/// The folders of Bank's extdata on the simulated card, by the limits of
+/// that archive: names of 16 characters at most, 10 folders, 100 files with
+/// the Bank's 8, and a file keeps the size it was made with. Every call is
+/// one operation of the card's budget; a cut in a write leaves the file
+/// unreadable, as on the console.
+pub struct ExtCard(pub Shared);
+
+/// The Bank's own files in the archive's count of 100.
+const BANK_UNITS: usize = 8;
+
+impl crate::sdfiles::Store for ExtCard {
+    type Error = Refused;
+    fn create_dir(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
+        self.0.tick()?;
+        let key = path.text().to_vec();
+        assert!(names_fit(&key), "name too long: {path:?}");
+        let mut disk = self.0 .0.borrow_mut();
+        disk.ext_dirs.insert(key);
+        assert!(disk.ext_dirs.len() <= 10, "more than 10 folders");
+        Ok(())
+    }
+    fn delete(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
+        self.0.tick()?;
+        let mut disk = self.0 .0.borrow_mut();
+        disk.ext.remove(path.text());
+        disk.ext_written.remove(path.text());
+        disk.ext_damaged.remove(path.text());
+        Ok(())
+    }
     fn list(
         &mut self,
         path: &crate::sdfiles::Path,
         each: &mut dyn FnMut(&[u8], bool),
     ) -> Result<(), Refused> {
-        let inside = [path.text(), b"/"].concat();
-        let disk = self.0.borrow();
-        let entries = |keys: &mut dyn Iterator<Item = &Vec<u8>>| {
-            keys.filter_map(|key| key.strip_prefix(inside.as_slice()))
-                .filter(|name| !name.contains(&b'/'))
-                .map(|name| name.to_vec())
-                .collect::<Vec<_>>()
+        let inside = if path.text() == b"/" {
+            b"/".to_vec()
+        } else {
+            [path.text(), b"/"].concat()
         };
-        let files = entries(&mut disk.sd.keys());
-        let folders = entries(&mut disk.sd_dirs.iter());
+        let disk = self.0 .0.borrow();
+        let files = entries(&inside, &mut disk.ext.keys());
+        let folders = entries(&inside, &mut disk.ext_dirs.iter());
         drop(disk);
         for name in files {
             each(&name, false);
@@ -654,13 +742,13 @@ impl crate::sdfiles::Sd for Shared {
         Ok(())
     }
     fn remove_dir(&mut self, path: &crate::sdfiles::Path) -> Result<(), Refused> {
-        self.tick()?;
-        let mut disk = self.0.borrow_mut();
+        self.0.tick()?;
+        let mut disk = self.0 .0.borrow_mut();
         let inside = [path.text(), b"/"].concat();
-        if disk.sd.keys().any(|key| key.starts_with(&inside)) {
+        if disk.ext.keys().any(|key| key.starts_with(&inside)) {
             return Err(Refused::FAILED);
         }
-        disk.sd_dirs.remove(path.text());
+        disk.ext_dirs.remove(path.text());
         Ok(())
     }
     fn no_room(error: &Refused) -> bool {
@@ -668,5 +756,79 @@ impl crate::sdfiles::Sd for Shared {
     }
     fn code(_: &Refused) -> u32 {
         0
+    }
+}
+
+/// Whether every part of the path is a name the archive stores.
+fn names_fit(path: &[u8]) -> bool {
+    path.split(|byte| *byte == b'/')
+        .all(|name| name.len() <= crate::bank_files::UnitFile::MAX_NAME)
+}
+
+impl crate::sdfiles::Extdata for ExtCard {
+    fn create(&mut self, path: &crate::sdfiles::Path, length: u32) -> Result<(), Refused> {
+        let key = path.text().to_vec();
+        assert!(names_fit(&key), "name too long: {path:?}");
+        assert!(length > 0, "the console opens no file of size 0");
+        let folder = key[..key.iter().rposition(|byte| *byte == b'/').unwrap_or(0)].to_vec();
+        assert!(
+            self.0 .0.borrow().ext_dirs.contains(&folder),
+            "no folder for {path:?}"
+        );
+        crate::sdfiles::Store::delete(self, path)?;
+        if self.0 .0.borrow().sd_full {
+            return Err(Refused::FULL);
+        }
+        self.0.tick()?;
+        let mut disk = self.0 .0.borrow_mut();
+        disk.ext.insert(key.clone(), vec![0; length as usize]);
+        disk.ext_written.insert(key, 0);
+        assert!(disk.ext.len() + BANK_UNITS <= 100, "more than 100 files");
+        Ok(())
+    }
+    fn write_at(
+        &mut self,
+        path: &crate::sdfiles::Path,
+        offset: u32,
+        bytes: &[u8],
+    ) -> Result<(), Refused> {
+        let key = path.text().to_vec();
+        if let Err(error) = self.0.tick() {
+            self.0 .0.borrow_mut().ext_damaged.insert(key);
+            return Err(error);
+        }
+        let mut disk = self.0 .0.borrow_mut();
+        let start = offset as usize;
+        let written = disk.ext_written.get(&key).copied().ok_or(Refused::FAILED)?;
+        let file = disk.ext.get_mut(&key).ok_or(Refused::FAILED)?;
+        assert!(start + bytes.len() <= file.len(), "a write past the end");
+        file[start..start + bytes.len()].copy_from_slice(bytes);
+        if start <= written {
+            disk.ext_written
+                .insert(key, written.max(start + bytes.len()));
+        }
+        Ok(())
+    }
+    fn read_at(
+        &mut self,
+        path: &crate::sdfiles::Path,
+        offset: u32,
+        out: &mut [u8],
+    ) -> Result<crate::sdfiles::Piece, Refused> {
+        use crate::sdfiles::Piece;
+        let disk = self.0 .0.borrow();
+        let key = path.text();
+        let Some(file) = disk.ext.get(key) else {
+            return Ok(Piece::Missing);
+        };
+        let (start, end) = (offset as usize, offset as usize + out.len());
+        if end > file.len() {
+            return Ok(Piece::Missing);
+        }
+        if disk.ext_damaged.contains(key) || end > disk.ext_written.get(key).copied().unwrap_or(0) {
+            return Ok(Piece::Damaged);
+        }
+        out.copy_from_slice(&file[start..end]);
+        Ok(Piece::Read)
     }
 }

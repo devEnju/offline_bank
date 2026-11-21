@@ -989,6 +989,7 @@ mod arm {
                     // once, on a file of its own (docs/testing.md).
                     #[cfg(feature = "test-build")]
                     {
+                        use bank_common::sdfiles::{ConsoleExtdata, Store};
                         // A card without room for the probe's file is no
                         // fault of the card's calls: the probe is skipped,
                         // so the checks of a full card can be made with
@@ -1000,6 +1001,18 @@ mod arm {
                             Err(error) if ConsoleSd::<Bank15>::no_room(&error) => {}
                             Err(error) => {
                                 return Err(Fault::SdFiles.with(ConsoleSd::<Bank15>::code(&error)))
+                            }
+                        }
+                        // The same for the folders of Bank's extdata.
+                        let mut ext = unsafe { ConsoleExtdata::<Bank15>::new() };
+                        match bank_common::sdfiles::probe_extdata(&mut ext) {
+                            Ok(true) => {}
+                            Ok(false) => return Err(Fault::SdFiles.with(0)),
+                            Err(error) if ConsoleExtdata::<Bank15>::no_room(&error) => {}
+                            Err(error) => {
+                                return Err(
+                                    Fault::SdFiles.with(ConsoleExtdata::<Bank15>::code(&error))
+                                )
                             }
                         }
                     }

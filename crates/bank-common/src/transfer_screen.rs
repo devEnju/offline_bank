@@ -876,6 +876,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::bank_files::body_crcs;
+    use crate::sdfiles::Store;
     use crate::testing::*;
     use offline_core::{
         sections::{Identity, BANK_RANGES},

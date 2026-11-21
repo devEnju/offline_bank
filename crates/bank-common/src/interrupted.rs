@@ -459,7 +459,7 @@ fn put_back<S: Sd>(
 mod tests {
     use super::*;
     extern crate std;
-    use crate::testing::Shared;
+    use crate::{sdfiles::Store, testing::Shared};
     use offline_core::Slot;
     use std::vec::Vec;
 
