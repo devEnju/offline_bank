@@ -711,10 +711,10 @@ mod tests {
     #[test]
     fn names_compare_without_regard_to_case() {
         assert_eq!(
-            strip_suffix_ignoring_case(b"MOVER1.BAK", b".bak"),
+            strip_suffix_ignoring_case(b"MOVER1.BOX", b".box"),
             Some(&b"MOVER1"[..])
         );
-        assert_eq!(strip_suffix_ignoring_case(b"bak", b".bak"), None);
-        assert_eq!(strip_suffix_ignoring_case(b"mover1.box", b".bak"), None);
+        assert_eq!(strip_suffix_ignoring_case(b"box", b".box"), None);
+        assert_eq!(strip_suffix_ignoring_case(b"mover1.old", b".box"), None);
     }
 }

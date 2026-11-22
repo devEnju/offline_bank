@@ -157,7 +157,11 @@ Nothing counts as changed when every box shows what it showed when the screen op
 
 Each of the three cells always holds a box, as each of the 100 boxes does, with Pokémon or without. A checked offline box is **moved** into the session's folder: copied there, and its cell holds an empty box afterwards; a checked box of Bank is only copied. A check goes with its box, so a checked box of Bank moved onto a cell with the blue hand is moved out at the save as well: a way to free a box of Bank and keep its Pokémon in the session's folder. To bring a box back, copy its file (a file of a session's folder, also a copy of a box of Bank or of the transport box) to `/3ds/Pokémon Bank/` as `mover1.box`, `mover2.box` or `mover3.box`, over the file of a cell without Pokémon, open the transfer screen and move it into Bank with the blue or the green hand. A box file keeps a box's Pokémon and its name, not its group or its place in the group: a box brought back takes those of the box in Bank whose spot it takes. A file that is not a whole box file stops the transfer screen with error `00000015` and is left as it is: a power cut, or a full SD card, while a file was written can leave one, in a session's folder or a `-backup` folder; delete it from the cell, it holds nothing usable.
 
-Every write is safe against a power cut: the next START finishes it or undoes it, and no Pokémon is lost. While a save runs, Bank keeps the offline boxes it writes inside its own data, as they were and as they will be, where you do not see them, and changes an offline box only once the save is made. A normal save leaves nothing of that behind. What START cannot decide by itself is kept in a folder `YYYYMMDD-HHMMSS-backup/`, as single box files such as `bank30.new.box` or `mover2.old.box`; a START that says "The SD card is full." does this at the next START, after you freed some space. A folder with a name of 16 letters and digits is one a power cut stopped START from finishing: leave it, and the next START renames it. The files of a `-backup` folder are yours to use: copy one to `/3ds/Pokémon Bank/` as the file of an empty cell, renamed to `mover1.box`, `mover2.box` or `mover3.box`, to bring it back like any box file. Keep a `-backup` folder until you have found the Pokémon in it where you need them; it may hold their only copy. **After a power cut, press START once before you restore or delete Bank's data, or copy a box file into a cell.** Checkpoint restores Bank's data but not the offline boxes: restoring an older Bank after Pokémon moved between it and an offline box is the same as loading an old save over newer Pokémon. To keep the two together, copy `mover1.box` to `mover3.box` with each Checkpoint backup and put them back with it. A dated folder is always a new one: when a folder of that second is there already, as after the console's clock was set back, the next free second names it, so no box a folder keeps is ever written over. It is a backup of your boxes that does not need Checkpoint, and fully optional.
+Every write is safe against a power cut: the next START finishes it or undoes it. While a save runs, Bank keeps the offline boxes it writes inside its own data, as they were and as they will be, where you do not see them, and changes an offline box only once the save is made. A normal save leaves nothing of that behind.
+
+After an interrupted save, START copies the offline boxes with Pokémon that save changed into a folder `YYYYMMDD-HHMMSS-backup/`, as they were (`mover2.old.box`) and as they became (`mover2.new.box`), unless everything is still exactly as before the save. Most of these are spare copies, but one may be the only copy, so keep the folder until you have found its Pokémon where you need them. A START that says "The SD card is full." does this at the next START, after you freed some space. A folder with a name of 16 letters and digits is one a power cut stopped START from finishing: leave it, and the next START renames it. To bring a box back, copy its file to `/3ds/Pokémon Bank/` as the file of an empty cell, renamed to `mover1.box`, `mover2.box` or `mover3.box`.
+
+If a file of the interrupted save can no longer be read, as on a failing SD card, it cannot be recovered. Bank copies what it can read and deletes the rest. Where Pokémon may be gone, it shows the error screen with `00000015 00000000` once, and the next START opens normally. A dated folder is always a new one: when a folder of that second is there already, as after the console's clock was set back, the next free second names it, so no box a folder keeps is ever written over.
 
 ## Backing up the Bank
 
@@ -166,6 +170,16 @@ Bank keeps your boxes safe by itself: a power cut or a pulled Game Card during a
 To keep a copy of Pokémon, check their boxes on the [transfer screen](#the-transfer-screen) and save: each checked box of Bank, and the transport box, is copied into the session's folder, `/3ds/Pokémon Bank/YYYYMMDD-HHMMSS/`. A checked offline box is **moved** there: its offline box is empty afterwards, and its file in the session's folder is the only copy of its Pokémon, so keep it. To bring one back, copy its file to `/3ds/Pokémon Bank/` as the file of a cell without Pokémon, `mover1.box`, `mover2.box` or `mover3.box`, and move it into a box on the transfer screen ([The transfer screen](#the-transfer-screen)). The copies lie on the same SD card as Bank: to keep them apart from it, copy the folder `/3ds/Pokémon Bank/` to a PC now and then.
 
 The three offline boxes are no part of the Bank: they are files of the SD card, a way into and out of the Bank for Pokémon from elsewhere. Bank's own data, its extdata, holds the 100 boxes and the transport box; a Pokémon in an offline box is part of it only once moved into a box of the Bank.
+
+### Backups and restoring
+
+Bank cannot notice what is changed from outside, so these five rules are yours to follow:
+
+1. Back up and restore Bank and `mover1.box`, `mover2.box` and `mover3.box` together.
+2. After Transporter asks its question, open Bank and press START before you restore anything.
+3. Only delete a `-backup` or session folder once you have checked that you no longer need its boxes.
+4. Copy a box file only into an empty offline box, and only while Bank is closed.
+5. Don't bring a box back while its Pokémon are still in Bank.
 
 ## If Save and Quit is interrupted
 
@@ -212,7 +226,7 @@ If Bank finds the game with the save before or after the session, that decides i
     mover0.new.box                   the transport box, if it changed
 ```
 
-They are the only copies of those boxes: keep the folder until you have found the Pokémon in it where you need them. To bring one back, copy it to `/3ds/Pokémon Bank/` as the file of a cell without Pokémon, `mover1.box`, `mover2.box` or `mover3.box`, and move it in on the [transfer screen](#the-transfer-screen). Without room on the SD card for the backup or for those boxes, START shows "The SD card is full." and nothing is lost: free some space and press START again.
+They can be the only copies of those boxes: keep the folder until you have found the Pokémon in it where you need them. To bring one back, copy it to `/3ds/Pokémon Bank/` as the file of a cell without Pokémon, `mover1.box`, `mover2.box` or `mover3.box`, and move it in on the [transfer screen](#the-transfer-screen). Without room on the SD card for the backup or for those boxes, START shows "The SD card is full." and nothing is lost: free some space and press START again.
 
 ### Unlock without the game
 

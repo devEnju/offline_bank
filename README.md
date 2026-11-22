@@ -16,7 +16,7 @@ Two Luma3DS patches that make **Pokémon Bank 1.5** and **Poké Transporter 1.5*
 - National Pokédex and adventure records, taken over in the records screen as in the original.
 - Poké Miles earned locally at a lossless rate and redeemed through the respective screens, with the welcome gift of 100 Miles ([details](docs/bank.md#poké-miles)).
 - A damaged game save is refused before it is loaded. The original loaded and wrote it back.
-- Saves are journaled: an interrupted Save and Quit leaves either the old or the new boxes ([details](docs/bank.md#if-save-and-quit-is-interrupted)). Before an interrupted save is left to Transporter's question, the boxes whose Pokémon it changed are copied to the SD card, as they were and as they became.
+- Saves are journaled: an interrupted Save and Quit leaves either the old or the new boxes ([details](docs/bank.md#if-save-and-quit-is-interrupted)). Before an interrupted save is left to Transporter's question, the boxes whose Pokémon it changed are kept in Bank's extdata, as they were and as they became.
 - Back on game selection opens the transfer screen as a box manager: swap whole boxes, move a box's Pokémon, three offline boxes as files on the SD card, and backups of checked boxes into a folder per session ([details](docs/bank.md#the-transfer-screen)).
 
 Details: [docs/bank.md](docs/bank.md).

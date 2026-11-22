@@ -683,8 +683,10 @@ impl Runtime {
                         self.step = Step::Unlocked;
                         Ok(0)
                     }
-                    // No room to write the journal again: nothing is
-                    // unlocked, and the next START offers it again.
+                    // No room to write the journal again. If its first
+                    // record was written the key counts, and the next START
+                    // shows the message to open Transporter; otherwise it
+                    // offers the unlock again.
                     Some(Reply::Ended(Ending::NoSpace)) => {
                         self.turn_back(task, |ui| unsafe { bank_common::ui::sd_full(ui) })?;
                         Ok(0)

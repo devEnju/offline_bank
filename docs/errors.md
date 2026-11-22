@@ -107,7 +107,7 @@ flowchart TD
     MEDIUM -->|"Yes"| PRESENT{"What moved?"}
     PRESENT -->|"Deposits only"| COMMIT
     PRESENT -->|"Withdrawals/releases only, or no moves"| KEEP
-    PRESENT -->|"Deposits and withdrawals"| BACKUP{"Back up the changed boxes<br/>to the SD card"}
+    PRESENT -->|"Deposits and withdrawals"| BACKUP{"Back up the changed boxes<br/>to Bank's extdata"}
     BACKUP -->|"Written, or there already"| TRAINER{"The save's trainer:<br/>name, Trainer ID and secret ID?"}
     BACKUP -->|"No room"| SDFULL["The SD card is full.<br/>1 page"]
     BACKUP -->|"Other failure of the SD card"| F15["HOME error: 15"]
@@ -123,7 +123,7 @@ flowchart TD
     AVAILABLE -->|"Game unavailable"| ABSENT
     ABSENT -->|"Deposits only"| COMMIT
     ABSENT -->|"Withdrawals/releases only, or no moves"| KEEP
-    ABSENT -->|"Deposits and withdrawals"| BACKUP2{"Back up the changed boxes<br/>to the SD card"}
+    ABSENT -->|"Deposits and withdrawals"| BACKUP2{"Back up the changed boxes<br/>to Bank's extdata"}
     BACKUP2 -->|"Written, or there already"| TAKEBACK{"Leave pending; take back any<br/>Transporter restore question"}
     BACKUP2 -->|"No room"| SDFULL
     BACKUP2 -->|"Other failure of the SD card"| F15
@@ -156,12 +156,12 @@ flowchart TD
 | Game missing, different medium with a different image, or another trainer's game; deposits and withdrawals | Leave pending; take back any Transporter question | Waiting for game → A → START |
 | Any of the two rows that leave it pending, with L, A and START held on the loading screen and the save not unlocked | Leave pending | Unlock screen (below) |
 | Any of the two rows that leave it pending, unlocked | Leave pending | Two-page instruction → A → Bank start screen |
-| Any of the rows that leave it pending, when the SD card has no room for the backup of the changed boxes | Leave pending; the journal is not written | Full SD → A → START |
+| Any of the rows that leave it pending, when the SD card has no room for the backup of the changed boxes | Leave pending. If a backup file had to be written, bits 2 and 3 are already cleared: Transporter does not ask, and an unlocked save needs its key again | Full SD → A → START |
 | Any of the rows that leave it pending, when the SD card refuses the backup otherwise | Stop the run | HOME error `15` |
 | Cartridge disappears during recovery | Leave pending | Retry → A → START |
 | Game read, transaction binding, secure-value operation, recovery write, or Bank readback fails otherwise | Stop the run | HOME error |
 
-**Backup of a mixed-move session.** Before Bank leaves a mixed-move session pending, it writes every box whose Pokémon differ between the save before and the save after into Bank's extdata, both ways: the folder `/AAAAAAAABBBBBBBB/`, with groups of four boxes such as `bank28.old` and `bank28.new`, and `mover0.old`/`mover0.new` for the transport box. When Bank finds the game with one of the two images, that decides the save and the folder goes with nothing kept. After Transporter's answer, Bank's next opening writes the side the Bank does not hold to the SD card, as single box files in `YYYYMMDD-HHMMSS-backup/`, and deletes the folder. A file of the folder that the journal depends on and that does not read shows error `15`, with nothing deleted. A START that finds the folder complete writes nothing again. A card without room for those boxes shows "The SD card is full." (26:0x00, first line), the folder stays, and the next START goes on.
+**Backup of a mixed-move session.** Before Bank leaves a mixed-move session pending, it writes every box whose Pokémon differ between the save before and the save after into Bank's extdata, both ways: the folder `/AAAAAAAABBBBBBBB/`, with groups of four boxes such as `bank28.old` and `bank28.new`, and `mover0.old`/`mover0.new` for the transport box. When Bank finds the game with one of the two images, that decides the save and the folder goes with nothing kept. After Transporter's answer, Bank's next opening writes the side the Bank does not hold to the SD card, as single box files in `YYYYMMDD-HHMMSS-backup/`, and deletes the folder. While the save is in progress, a file of the folder that does not read is written again at the next START. After Transporter's answer it cannot be: what reads is kept, the file goes with the folder, and the error screen shows `15` with second number 0, once. A START that finds the folder complete writes nothing again. A card without room for those boxes shows "The SD card is full." (26:0x00, first line), the folder stays, and the next START goes on.
 
 Recovery from one-way moves is a deliberate policy: deposits can be duplicated when new Bank is kept, and withdrawals can be duplicated when old Bank is retained. A mixed-move session with neither exact game image is never settled automatically. With the expected title, kind of copy and trainer (name, Trainer ID and secret ID) present, Bank records that Transporter must ask the user; otherwise Bank waits for the game and takes back any earlier question. Recording or taking back the question changes only the journal, not the Bank snapshots or the game save. Recovery runs before the new chosen-game corruption check.
 
@@ -174,7 +174,7 @@ Recovery from one-way moves is a deliberate policy: deposits can be duplicated w
 | Cancel | The message the opening found, at once (the different copy, or the two-page instruction), then the start screen | — |
 | Bank closed while the keyboard is up | — | — |
 
-No room to write bit 3 is "The SD card is full." (26:0x00, first line), nothing is unlocked, and the next START offers the unlock again; any other failed write of bit 3 is the HOME error screen with `10`.
+No room to write bit 3 is "The SD card is full." (26:0x00, first line). If the first journal record was written, the key counts and the next START shows the two-page message to open Transporter; otherwise the unlock is offered again. Any other failed write of bit 3 is the HOME error screen with `10`.
 
 Repeated Bank START with the same nonmatching game repeats the message to open Transporter. If an exact before/after image becomes available, Bank can settle it itself. If the game is absent, only a nonmatching copy on the other medium is available, or the game is another trainer's, Bank waits instead. Taking out one cartridge may expose an installed copy of the same title; Bank then treats that other medium as unavailable for the pending save.
 
@@ -212,7 +212,16 @@ flowchart TD
 
 B with nothing held always asks "Would you like to quit without saving?" (38:0x21 in the bar of the original's 38:0x39), whatever was changed; Yes to it writes nothing. DONE (Y) asks by what was checked and changed: when every box shows what it showed at the opening (its Pokémon, name, category and position), nothing changed, however it got there; a move of the green hand always counts, also when its Pokémon are moved back. "Move these Pokémon?" is "Move these Pokémon to Pokémon HOME?" (38:0x38) without its words about Pokémon HOME. What would put Pokémon into the transport box (a box put onto it) goes back to its place and shows "Cannot be transported there." (38:0x23), with the box screen's refusal sound. Any other place a held box cannot go (Pokémon onto Pokémon) shows no message: the box screen's refusal sound, and the box stays in the hand.
 
-A write that a power cut interrupts is finished or undone by the next START, once the Bank was read whole, also when that START settles a save in progress; a Bank that cannot be read stops START with its numbers and leaves every file of the write; no room to put a cell back is "The SD card is full." (26:0x00, first line), and the START after tries again; any other failure of the SD card there is error `15`. When the write stops with a full card, nothing of it holds: the next START puts every cell back, and Bank and the offline boxes are as before (a session folder may keep copies). When it stops with another error, the next START settles it as after a power cut: as before, or as after once the Bank's record was written; every save writes one. A cell whose file is not a whole box file stops the write before anything is written, with `15` and `7B0000pp`.
+A write that a power cut interrupts is finished or undone by the next START, once the Bank was read whole, also when that START settles a save in progress; a Bank that cannot be read stops START with its numbers and leaves every file of the write. No room to finish a cell or for what is kept is "The SD card is full." (26:0x00, first line), and the START after tries again; any other failure of the SD card there is error `15`. When the write stops with a full card, nothing of it holds: the next START leaves the cells as they were, and Bank and the offline boxes are as before (a session folder may keep copies). When it stops with another error, the next START settles it as after a power cut: as before, or as after once the Bank's record was written; every save writes one. A cell whose file is not a whole box file stops the write before anything is written, with `15` and `7B0000pp`.
+
+What the next START does with the write's folder in Bank's extdata:
+
+| The journal names | Copied to `YYYYMMDD-HHMMSS-backup/` | A file that does not read |
+| --- | --- | --- |
+| The state before the save, every changed offline box as it was | Nothing | Deleted, nothing shown |
+| The state before the save, an offline box changed since | `.old` and `.new` of the changed boxes with Pokémon | Deleted, nothing shown |
+| The state after the save | `.old` and `.new` of the changed boxes with Pokémon; each offline box is finished unless it holds another box | Deleted; error `15` with second number 0, once. A box whose `.new` does not read stays as it is |
+| Neither (Bank's data was replaced) | Everything that reads | Deleted, nothing shown |
 
 ## 3. Bank: Save and Quit
 
@@ -466,7 +475,7 @@ Numbers are hexadecimal; the screen pads each to eight digits. The second number
 | `12` | Reward state or allowed reward-task progression is inconsistent |
 | `13` | Reward claim result does not match the expected receipt/balance |
 | `14` | Transporter delivery failure: non-space IO failure, write/check failure, invalid box layout, unexpectedly empty transfer box, journal refusal after START, or uncertain delivery announcement |
-| `15` | A box file or folder under `/3ds/Pokémon Bank/` on the SD card, or the folder of an interrupted write in Bank's extdata, cannot be read or written for a reason other than lack of space; the second number is the console's result, or 0 for a file that did not read back as written, or `7B0000pp` for an offline box file that is not a whole box file (`pp` 65, 66, 67: `mover1.box`, `mover2.box`, `mover3.box`) |
+| `15` | A box file or folder under `/3ds/Pokémon Bank/` on the SD card, or the folder of an interrupted write in Bank's extdata, cannot be read or written for a reason other than lack of space; the second number is the console's result, or 0 for a file that did not read back as written or a file of an interrupted write that no longer reads (shown once, the next START opens), or `7B0000pp` for an offline box file that is not a whole box file (`pp` 65, 66, 67: `mover1.box`, `mover2.box`, `mover3.box`) |
 
 ### Second numbers
 
