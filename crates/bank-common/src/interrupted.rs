@@ -530,9 +530,9 @@ pub fn discard<F: Files, X: Extdata>(
 /// stays. A box without Pokémon of a cell is never kept. A place that does
 /// not read is not kept, and goes with the folder. Where the save had
 /// happened (`Side::After`, or a Save and Quit's place the journal's state
-/// needs kept) the answer is then `Error::NotAsWritten`, once, also when
-/// something else stops the opening after it, which the next START goes on
-/// with. Each step can be made again.
+/// needs kept) the answer is then `Error::NotAsWritten`, once its folder is
+/// gone, also when something else stops the opening after that, which the
+/// next START goes on with. Each step can be made again.
 pub fn settle<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     files: &mut BankFiles<F>,
     sd: &mut S,
@@ -560,7 +560,8 @@ pub fn settle<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
 }
 
 /// Every folder of a write, then the folders of the SD card. `damaged` is
-/// set as soon as a place is lost, so that a stop after it does not hide it.
+/// set when a folder with a lost place is gone, so that a stop after that
+/// does not hide it.
 fn settle_folders<S: Sd, X: Extdata<Error = S::Error>, E>(
     sd: &mut S,
     ext: &mut X,
@@ -634,21 +635,37 @@ fn held_at<X: Extdata>(
     }
 }
 
-/// Whether a `mover0` file is longer than one box, as only a transfer save's
-/// is: a Save and Quit's holds the transport box alone. The size is known
-/// without its content. A file that does not even open counts as longer.
-fn past_one_box<X: Extdata>(ext: &mut X, path: &Path, byte: &mut [u8; FILE_SIZE]) -> bool {
-    !matches!(
-        ext.read_at(path, FILE_SIZE as u32, &mut byte[..1]),
-        Ok(Piece::Missing)
-    )
+/// Whether the folder's `mover0` is a Save and Quit's, which holds the
+/// transport box alone and no cells: a side is one box long, and no side
+/// reads past that. The size is known without the content. It only tells
+/// whether a place that does not read matters: a box that reads is always
+/// handled.
+fn no_cells<X: Extdata>(
+    ext: &mut X,
+    folder: &Path,
+    found: &[u8; GROUPS],
+    byte: &mut [u8; FILE_SIZE],
+) -> bool {
+    let (mut one_box, mut longer) = (false, false);
+    for (kind, _) in KINDS
+        .iter()
+        .filter(|(kind, _)| found[MOVER_GROUP] & kind != 0)
+    {
+        let path = group_file(folder, MOVER_GROUP, *kind);
+        match ext.read_at(&path, FILE_SIZE as u32, &mut byte[..1]) {
+            Ok(Piece::Missing) => one_box = true,
+            Ok(Piece::Read) => longer = true,
+            Err(_) => {}
+        }
+    }
+    one_box && !longer
 }
 
 /// Settles `folder` as `side`: the cells, what is kept on the SD card in a
 /// folder of the same name, proven, and then the folder gone, with every file
-/// in it. `damaged` is set if a place that had to be there is not on the card
-/// by then. A `mover0` one box long, on either side, is a Save and Quit's,
-/// which has no cells.
+/// in it. Once it is gone, `damaged` is set if a place that had to be there
+/// did not read. A stop before that leaves the folder, and the next START
+/// finds the same.
 fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
     sd: &mut S,
     ext: &mut X,
@@ -659,32 +676,31 @@ fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
     damaged: &mut bool,
 ) -> Result<(), Error<E, S::Error>> {
     let found = entries(ext, folder).map_err(Error::Sd)?;
-    let no_cells = [OLD, NEW].iter().any(|kind| {
-        found[MOVER_GROUP] & kind != 0
-            && !past_one_box(ext, &group_file(folder, MOVER_GROUP, *kind), first)
-    });
-    let keep_cells = !no_cells
-        && match side {
-            Side::After => {
-                *damaged |= finish_cells(sd, ext, folder, first, second)?;
-                true
-            }
-            Side::Before => {
-                let has_new = found[MOVER_GROUP] & NEW != 0;
-                !check_cells(sd, ext, folder, has_new, first, second).map_err(Error::Sd)?
-            }
-            Side::Unknown => true,
-        };
+    let no_cells = no_cells(ext, folder, &found, first);
+    let mut lost = false;
+    let keep_cells = match side {
+        Side::After => {
+            lost = finish_cells(sd, ext, folder, first, second)? && !no_cells;
+            true
+        }
+        Side::Before => {
+            let has_new = found[MOVER_GROUP] & NEW != 0;
+            !check_cells(sd, ext, folder, has_new, first, second).map_err(Error::Sd)?
+        }
+        Side::Unknown => true,
+    };
     let card = on_card(&folder.text()[1..]);
     // The second pass writes what the first could not read, and only its
-    // answer counts: what is on the card by then is not lost.
+    // answer counts.
     keep(
         sd, ext, folder, &card, &found, side, keep_cells, no_cells, first, second,
     )?;
-    *damaged |= keep(
+    lost |= keep(
         sd, ext, folder, &card, &found, side, keep_cells, no_cells, first, second,
     )?;
-    remove(ext, folder).map_err(Error::Sd)
+    remove(ext, folder).map_err(Error::Sd)?;
+    *damaged |= lost;
+    Ok(())
 }
 
 /// The journal names the transfer save as made: each cell gets its `.new`
@@ -773,8 +789,8 @@ fn check_cells<S: Sd, X: Extdata<Error = S::Error>>(
 
 /// Every whole box that `side` keeps from `folder`, as a file of `card`,
 /// written where it is not there as it should be (`Sd::put` reads it back).
-/// The answer is whether a place that had to be there did not read and is
-/// not on the card either (`settle`).
+/// The answer is whether a place that had to be there did not read
+/// (`settle`).
 #[allow(clippy::too_many_arguments)]
 fn keep<S: Sd, X: Extdata<Error = S::Error>, E>(
     sd: &mut S,
@@ -808,21 +824,14 @@ fn keep<S: Sd, X: Extdata<Error = S::Error>, E>(
                 if !wanted {
                     continue;
                 }
-                let target = kept_file(card, place_at(group, position), *kind);
                 match held_at(ext, &path, position, from) {
                     Held::Nothing => continue,
                     Held::Damaged => {
-                        let matters = match side {
-                            Side::After => true,
+                        damaged |= match side {
+                            Side::After => !(of_a_cell && no_cells),
                             Side::Before => !of_a_cell && (group != MOVER_GROUP || no_cells),
                             Side::Unknown => false,
                         };
-                        if matters {
-                            let there = sd.get(&target, &mut to[..]).map_err(Error::Sd)?
-                                == Found::Read
-                                && BoxFile::parse(&to[..]).is_ok();
-                            damaged |= !there;
-                        }
                         continue;
                     }
                     Held::Whole => {}
@@ -830,6 +839,7 @@ fn keep<S: Sd, X: Extdata<Error = S::Error>, E>(
                 if of_a_cell && sections::occupied(&from[boxfile::RECORDS]) == 0 {
                     continue;
                 }
+                let target = kept_file(card, place_at(group, position), *kind);
                 let same =
                     sd.get(&target, &mut to[..]).map_err(Error::Sd)? == Found::Read && to == from;
                 if same {
@@ -1773,6 +1783,106 @@ mod tests {
             }
         }
         assert!(stopped_after_the_folder);
+    }
+
+    #[test]
+    fn a_short_old_file_never_hides_a_readable_new_box() {
+        // The cell was deleted for its write, and `.old` lost all but its
+        // first box of zeros: `.new` still goes into the cell.
+        let (disk, folder) = transfer_card();
+        disk.clone().delete(&cell_path(1)).unwrap();
+        let old = cells_file(&folder, false);
+        {
+            let mut state = disk.0.borrow_mut();
+            state.ext.get_mut(old.text()).unwrap().truncate(FILE_SIZE);
+            state.ext_written.insert(old.text().to_vec(), FILE_SIZE);
+        }
+        settled(&disk, &folder, Side::After).unwrap();
+        assert_eq!(cell_id(&disk, 1), Some(20));
+        assert!(kept_names(&disk).contains(&(b"mover1.new.box".to_vec(), 20)));
+        no_folder_left(&disk, "short old");
+    }
+
+    #[test]
+    fn a_full_card_beside_a_lost_place_says_so_and_the_loss_is_reported_once() {
+        let before = state((Slot::A, 1), (Slot::B, 2));
+        let after = state((Slot::B, 3), (Slot::A, 4));
+        let disk = Shared::default();
+        let name = folder(before, after);
+        let mut ext = ExtCard(disk.clone());
+        ext.create_dir(&name).unwrap();
+        put_group(
+            &mut ext,
+            &cells_file(&name, false),
+            [None, Some(10), None, Some(11)],
+        );
+        put_group(
+            &mut ext,
+            &cells_file(&name, true),
+            [None, Some(20), None, Some(21)],
+        );
+        let new = cells_file(&name, true);
+        disk.0.borrow_mut().ext_damaged.insert(new.text().to_vec());
+        let mut sd = disk.clone();
+        sdfiles::create_root(&mut sd).unwrap();
+        sd.put(&cell_path(1), &a_box(10)).unwrap();
+        sd.put(&cell_path(3), &a_box(11)).unwrap();
+        let run = |disk: &Shared| {
+            let (mut first, mut second) = ([0; FILE_SIZE], [0; FILE_SIZE]);
+            let mut damaged = false;
+            let ended: Result<(), Failure> = settle_folders(
+                &mut disk.clone(),
+                &mut ExtCard(disk.clone()),
+                after,
+                [2026, 11, 16, 14, 3, 7],
+                &mut first,
+                &mut second,
+                &mut damaged,
+            );
+            (ended, damaged)
+        };
+        disk.0.borrow_mut().sd_full = true;
+        let (ended, damaged) = run(&disk);
+        assert!(matches!(ended, Err(Error::Sd(error)) if error.full));
+        assert!(!damaged);
+        assert!(!disk.0.borrow().ext_dirs.is_empty());
+        disk.0.borrow_mut().sd_full = false;
+        let (ended, damaged) = run(&disk);
+        assert!(ended.is_ok() && damaged);
+        let (ended, damaged) = run(&disk);
+        assert!(ended.is_ok() && !damaged);
+    }
+
+    #[test]
+    fn an_earlier_copy_on_the_card_is_no_proof_for_a_place_that_does_not_read() {
+        let (disk, folder) = backup_card();
+        let mut sd = disk.clone();
+        sdfiles::create_root(&mut sd).unwrap();
+        let held = on_card(&folder.text()[1..]);
+        sd.create_dir(&held).unwrap();
+        sd.put(&kept_file(&held, 29, OLD), &a_box(77)).unwrap();
+        let old = file(&folder, 29, false).0;
+        disk.0.borrow_mut().ext_damaged.insert(old.text().to_vec());
+        assert!(settled(&disk, &folder, Side::After).unwrap());
+    }
+
+    #[test]
+    fn the_probe_s_folder_is_never_taken_for_an_interrupted_write() {
+        let counting = ExtCard(Shared::default().cut_after(usize::MAX));
+        let mut ext = ExtCard(counting.0.clone());
+        assert!(sdfiles::probe_extdata(&mut ext).unwrap());
+        let total = counting.0 .0.borrow().operations;
+        let mut seen = false;
+        for cut in 0..total {
+            let disk = Shared::default().cut_after(cut);
+            assert!(sdfiles::probe_extdata(&mut ExtCard(disk.clone())).is_err());
+            for dir in &disk.0.borrow().ext_dirs {
+                seen = true;
+                assert_eq!(dir.len(), NAME + 1, "cut {cut}");
+                assert!(!of_a_write(&dir[1..], true), "cut {cut}");
+            }
+        }
+        assert!(seen);
     }
 
     #[test]

@@ -324,7 +324,8 @@ pub fn probe<S: Sd>(sd: &mut S) -> Result<bool, S::Error> {
 }
 
 /// Every call Bank's extdata folders need, on a folder of its own with the
-/// longest name the archive stores, and nothing left behind: a file of the
+/// longest name the archive stores, which is not hexadecimal, so that it is
+/// never taken for the folder of an interrupted write, and nothing left behind: a file of the
 /// largest size a backup's file has, written whole, a piece read at an
 /// offset inside it and one past its end, the folder and the file found in
 /// their lists, then both deleted. The console test build makes it at every
@@ -332,8 +333,8 @@ pub fn probe<S: Sd>(sd: &mut S) -> Result<bool, S::Error> {
 pub fn probe_extdata<X: Extdata>(ext: &mut X) -> Result<bool, X::Error> {
     const LENGTH: usize = 4 * FILE_SIZE;
     const PIECE: usize = 512;
-    let (root, folder) = (Path::new(b"/"), Path::new(b"/0123456789ABCDEF"));
-    let file = Path::new(b"/0123456789ABCDEF/bank00.old");
+    let (root, folder) = (Path::new(b"/"), Path::new(b"/0123456789ABCDEG"));
+    let file = Path::new(b"/0123456789ABCDEG/bank00.old");
     // What a probe cut short left.
     ext.delete(&file)?;
     ext.remove_dir(&folder)?;
@@ -356,7 +357,7 @@ pub fn probe_extdata<X: Extdata>(ext: &mut X) -> Result<bool, X::Error> {
     let past = ext.read_at(&file, LENGTH as u32 - 4, &mut [0; 8])?;
     let mut listed = false;
     ext.list(&root, &mut |name, is_folder| {
-        listed |= is_folder && name.eq_ignore_ascii_case(b"0123456789ABCDEF");
+        listed |= is_folder && name.eq_ignore_ascii_case(b"0123456789ABCDEG");
     })?;
     let mut inside = false;
     ext.list(&folder, &mut |name, is_folder| {
@@ -366,7 +367,7 @@ pub fn probe_extdata<X: Extdata>(ext: &mut X) -> Result<bool, X::Error> {
     ext.remove_dir(&folder)?;
     let mut left = false;
     ext.list(&root, &mut |name, _| {
-        left |= name.eq_ignore_ascii_case(b"0123456789ABCDEF");
+        left |= name.eq_ignore_ascii_case(b"0123456789ABCDEG");
     })?;
     Ok(same && past == Piece::Missing && listed && inside && !left)
 }
