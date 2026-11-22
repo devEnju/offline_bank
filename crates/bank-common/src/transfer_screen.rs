@@ -615,15 +615,14 @@ impl Changes {
     ) -> Result<(), Refusal> {
         let (group, _) = places.group(place).ok_or(Refusal::Place)?;
         // An insert changes no box's group: its members are the same after.
-        let mut members = [false; TRANSPORT];
-        for (other, member) in members.iter_mut().enumerate() {
-            *member = places.group(other).is_some_and(|(of, _)| of == group);
-            if *member {
-                self.see_label(places, other);
-            }
+        let member = |places: &Places, other: &usize| {
+            places.group(*other).is_some_and(|(of, _)| of == group)
+        };
+        for other in (0..TRANSPORT).filter(|other| member(places, other)) {
+            self.see_label(places, other);
         }
         places.insert_position(place, position)?;
-        for (other, _) in members.iter().enumerate().filter(|(_, member)| **member) {
+        for other in (0..TRANSPORT).filter(|other| member(places, other)) {
             self.shows_other[other] = places.shown_label(other) != self.labels[other];
         }
         Ok(())
@@ -710,14 +709,7 @@ pub fn load_offline<E, S: Sd>(sd: &mut S, offline: &mut Offline) -> Result<(), E
     offline.defaults = [[0; NAME_TEXT]; OFFLINE_COUNT];
     offline.transport = [0; NAME_TEXT];
     for (index, file) in offline.files.iter_mut().enumerate() {
-        let found = sd.get(&cell_path(index), file).map_err(Error::Sd)?;
-        match found {
-            Found::Absent => empty_box(file, &[0; NAME_TEXT]),
-            Found::OtherSize => return Err(Error::BadFile(OFFLINE + index)),
-            Found::Read => {
-                BoxFile::parse(file).map_err(|_| Error::BadFile(OFFLINE + index))?;
-            }
-        }
+        held(sd, index, file)?;
     }
     Ok(())
 }
