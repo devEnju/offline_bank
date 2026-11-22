@@ -568,12 +568,14 @@ impl<'a, X> Kept<'a, X> {
         Self { ext }
     }
 }
-impl<F: Files, X: Extdata> Backup<F> for Kept<'_, X>
-where
-    <F::Storage as Storage>::Error: NoRoom,
-{
-    fn write(&mut self, files: &mut BankFiles<F>, staging: &mut [u8]) -> Stopped<bool, F> {
-        match interrupted::back_up(files, staging, self.ext) {
+impl<X: Extdata> Kept<'_, X> {
+    /// What a write or a discard of the backup ended in: the store is let
+    /// go after it, and `false` is no room.
+    fn ended<F: Files>(&mut self, done: Result<(), sdfiles::Failed<F, X>>) -> Stopped<bool, F>
+    where
+        <F::Storage as Storage>::Error: NoRoom,
+    {
+        match done {
             Ok(()) => {
                 self.ext.rest();
                 Ok(true)
@@ -581,14 +583,18 @@ where
             Err(error) => sd_ended::<_, X>(error, Fault::JournalRecovery).map(|_| false),
         }
     }
+}
+impl<F: Files, X: Extdata> Backup<F> for Kept<'_, X>
+where
+    <F::Storage as Storage>::Error: NoRoom,
+{
+    fn write(&mut self, files: &mut BankFiles<F>, staging: &mut [u8]) -> Stopped<bool, F> {
+        let done = interrupted::back_up(files, staging, self.ext);
+        self.ended::<F>(done)
+    }
     fn discard(&mut self, files: &mut BankFiles<F>) -> Stopped<bool, F> {
-        match interrupted::discard(files, self.ext) {
-            Ok(()) => {
-                self.ext.rest();
-                Ok(true)
-            }
-            Err(error) => sd_ended::<_, X>(error, Fault::JournalRecovery).map(|_| false),
-        }
+        let done = interrupted::discard(files, self.ext);
+        self.ended::<F>(done)
     }
 }
 

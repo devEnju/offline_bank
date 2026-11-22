@@ -52,7 +52,7 @@ use crate::{
 use offline_core::{
     boxfile::{self, BoxFile, FILE_SIZE, NAME_TEXT},
     native_blob::BOX_COUNT,
-    sections::{BANK_SIZE, RECORD_SIZE, TRANSPORT_SLOTS},
+    sections::{self, BANK_SIZE, RECORD_SIZE, TRANSPORT_SLOTS},
     Crc32, Part, Phase, Save, Sha256,
 };
 
@@ -827,7 +827,7 @@ fn keep<S: Sd, X: Extdata<Error = S::Error>, E>(
                     }
                     Held::Whole => {}
                 }
-                if of_a_cell && BoxFile::parse(&from[..]).is_ok_and(|box_| box_.occupied() == 0) {
+                if of_a_cell && sections::occupied(&from[boxfile::RECORDS]) == 0 {
                     continue;
                 }
                 let same =
