@@ -530,9 +530,9 @@ pub fn discard<F: Files, X: Extdata>(
 /// stays. A box without Pokémon of a cell is never kept. A place that does
 /// not read is not kept, and goes with the folder. Where the save had
 /// happened (`Side::After`, or a Save and Quit's place the journal's state
-/// needs kept) the answer is then `Error::NotAsWritten`, once its folder is
-/// gone, also when something else stops the opening after that, which the
-/// next START goes on with. Each step can be made again.
+/// needs kept) the answer is then `Error::NotAsWritten`, once what reads is
+/// kept, also when deleting the folder or a later step stops the opening,
+/// which the next START goes on with. Each step can be made again.
 pub fn settle<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     files: &mut BankFiles<F>,
     sd: &mut S,
@@ -560,8 +560,8 @@ pub fn settle<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
 }
 
 /// Every folder of a write, then the folders of the SD card. `damaged` is
-/// set when a folder with a lost place is gone, so that a stop after that
-/// does not hide it.
+/// set once what reads of a folder is kept, before it is deleted, so that a
+/// stop after that does not hide it.
 fn settle_folders<S: Sd, X: Extdata<Error = S::Error>, E>(
     sd: &mut S,
     ext: &mut X,
@@ -663,9 +663,9 @@ fn no_cells<X: Extdata>(
 
 /// Settles `folder` as `side`: the cells, what is kept on the SD card in a
 /// folder of the same name, proven, and then the folder gone, with every file
-/// in it. Once it is gone, `damaged` is set if a place that had to be there
-/// did not read. A stop before that leaves the folder, and the next START
-/// finds the same.
+/// in it. Once what reads is kept, before the delete, `damaged` is set if a
+/// place that had to be there did not read. A stop before that leaves the
+/// folder whole, and the next START finds the same.
 fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
     sd: &mut S,
     ext: &mut X,
@@ -698,9 +698,8 @@ fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
     lost |= keep(
         sd, ext, folder, &card, &found, side, keep_cells, no_cells, first, second,
     )?;
-    remove(ext, folder).map_err(Error::Sd)?;
     *damaged |= lost;
-    Ok(())
+    remove(ext, folder).map_err(Error::Sd)
 }
 
 /// The journal names the transfer save as made: each cell gets its `.new`
@@ -1729,8 +1728,9 @@ mod tests {
 
     #[test]
     fn a_stop_after_a_lost_place_does_not_hide_it() {
-        // Wherever the card stops once the folder in extdata is gone, as at
-        // the rename of the folder on the SD card, the answer is the damage.
+        // Wherever the card stops once the damaged file is gone, in the rest
+        // of the delete or at the rename of the folder on the SD card, the
+        // answer is the damage.
         let before = state((Slot::A, 1), (Slot::B, 2));
         let after = state((Slot::B, 3), (Slot::A, 4));
         let card = || {
@@ -1772,17 +1772,18 @@ mod tests {
         let counting = card().cut_after(usize::MAX);
         assert_eq!(run(&counting), (false, true));
         let total = counting.0.borrow().operations;
-        let mut stopped_after_the_folder = false;
+        let lost = file(&folder(before, after), 29, false).0;
+        let mut stopped_after_the_file = false;
         for cut in 0..total {
             let disk = card().cut_after(cut);
             let (stopped, damaged) = run(&disk);
             assert!(stopped, "cut {cut}");
-            if disk.0.borrow().ext_dirs.is_empty() {
-                stopped_after_the_folder = true;
+            if !disk.0.borrow().ext.contains_key(lost.text()) {
+                stopped_after_the_file = true;
                 assert!(damaged, "cut {cut}");
             }
         }
-        assert!(stopped_after_the_folder);
+        assert!(stopped_after_the_file);
     }
 
     #[test]

@@ -156,7 +156,7 @@ flowchart TD
 | Game missing, different medium with a different image, or another trainer's game; deposits and withdrawals | Leave pending; take back any Transporter question | Waiting for game → A → START |
 | Any of the two rows that leave it pending, with L, A and START held on the loading screen and the save not unlocked | Leave pending | Unlock screen (below) |
 | Any of the two rows that leave it pending, unlocked | Leave pending | Two-page instruction → A → Bank start screen |
-| Any of the rows that leave it pending, when the SD card has no room for the backup of the changed boxes | Leave pending. If a backup file had to be written, bits 2 and 3 are already cleared: Transporter does not ask, and an unlocked save needs its key again | Full SD → A → START |
+| Any of the rows that leave it pending, when the SD card has no room for the backup of the changed boxes | Leave pending. Without room even for the backup's folder, the marks stay as they were. Once a backup file is being written, bits 2 and 3 are cleared: Transporter does not ask, and an unlocked save needs its key again | Full SD → A → START |
 | Any of the rows that leave it pending, when the SD card refuses the backup otherwise | Stop the run | HOME error `15` |
 | Cartridge disappears during recovery | Leave pending | Retry → A → START |
 | Game read, transaction binding, secure-value operation, recovery write, or Bank readback fails otherwise | Stop the run | HOME error |
@@ -220,7 +220,7 @@ What the next START does with the write's folder in Bank's extdata:
 | --- | --- | --- |
 | The state before the save, every changed offline box as it was | Nothing | Deleted, nothing shown |
 | The state before the save, an offline box changed since | `.old` and `.new` of the changed boxes with Pokémon | Deleted, nothing shown |
-| The state after the save | `.old` and `.new` of the changed boxes with Pokémon (only `.old` after a cut while the finished save deletes its folder); each offline box is finished unless it holds another box | Deleted; error `15` with second number 0, once the folder is gone. A card without room says "The SD card is full." first, and the START after it shows the error. A box whose `.new` does not read stays as it is |
+| The state after the save | `.old` and `.new` of the changed boxes with Pokémon (only `.old` after a cut while the finished save deletes its folder); each offline box is finished unless it holds another box | Deleted; error `15` with second number 0, once what reads is kept. A card without room says "The SD card is full." first, and the START after it shows the error. A box whose `.new` does not read stays as it is |
 | Neither (Bank's data was replaced) | Everything that reads | Deleted, nothing shown |
 
 ## 3. Bank: Save and Quit
