@@ -746,7 +746,7 @@ pub struct Commit<'a> {
 /// | 2 | `mover0.old` of the cells that change, proven; a cell among them without a file gets the empty box it holds, so that writing it later needs no new room; then `mover0.new`, proven; both in the folder in Bank's extdata of the save's two states (`interrupted::folder`): the journal's now and the one the record of step 3 names |
 /// | 3 | the Bank, in one journal record without a game (`BankFiles::commit`) |
 /// | 4 | the cells that change, a checked one as an empty box with its default name |
-/// | 5 | the folder is deleted (`interrupted::remove`) |
+/// | 5 | `mover0.new` is deleted, then `mover0.old` and the folder (`interrupted::remove`), so that a cut leaves the side the opening keeps |
 ///
 /// Every record writes the Bank file into its other copy, so the two states
 /// differ and the next opening tells by the journal alone whether the save
@@ -850,7 +850,10 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
             .filter(|index| changed[*index])
             .try_for_each(|index| sd.put(&cell_path(index), &offline.files[index]));
         if written.is_ok() {
-            let _ = interrupted::remove(ext, &folder);
+            let new = interrupted::cells_file(&folder, true);
+            let _ = ext
+                .delete(&new)
+                .and_then(|()| interrupted::remove(ext, &folder));
         }
     }
     Ok(())
@@ -2941,19 +2944,236 @@ mod tests {
             if !written || !card.0.borrow().ext.contains_key(hanging.text()) {
                 continue;
             }
-            // The cells as after the save, no file of the write, and no
-            // folder kept.
+            // The cells as after the save, no file of the write, and both
+            // sides of the cell kept.
             assert!(on_card(&card).0 == after, "cut {cut}");
             let card = card.0.borrow();
             assert!(card.ext.is_empty(), "cut {cut}");
             assert!(card.ext_dirs.is_empty(), "cut {cut}");
-            assert!(!card
-                .sd_dirs
-                .iter()
-                .any(|dir| dir.ends_with(interrupted::RETIRED)));
+            let kept = &card.sd[&at(&std::format!("{KEPT}/mover1.old.box"))];
+            assert_eq!(kept[..], cell_with(9)[..], "cut {cut}");
+            assert_eq!(
+                card.sd[&at(&std::format!("{KEPT}/mover1.new.box"))][..],
+                save.offline.files[0][..],
+                "cut {cut}"
+            );
             return;
         }
         panic!("no cut left the journal written and the folder there");
+    }
+
+    /// Puts back what a Checkpoint backup of Bank's extdata holds: its
+    /// files and folders, with nothing of the plain files of the SD card.
+    fn restore_extdata(card: &Shared, backup: &Shared) {
+        let saved = backup.0.borrow();
+        let mut disk = card.0.borrow_mut();
+        disk.files = saved.files.clone();
+        disk.absent = saved.absent.clone();
+        disk.unreadable = saved.unreadable.clone();
+        disk.ext = saved.ext.clone();
+        disk.ext_dirs = saved.ext_dirs.clone();
+        disk.ext_written = saved.ext_written.clone();
+        disk.ext_damaged = saved.ext_damaged.clone();
+    }
+
+    /// Whether a box file anywhere on the card holds the Pokémon `id`.
+    fn on_the_card(card: &Shared, id: u32) -> bool {
+        let wanted = sections::stored_identity(&pokemon(id));
+        card.0.borrow().sd.values().any(|bytes| {
+            BoxFile::parse(bytes).is_ok_and(|file| {
+                file.records()
+                    .chunks_exact(RECORD_SIZE)
+                    .any(|record| sections::stored_identity(record.try_into().unwrap()) == wanted)
+            })
+        })
+    }
+
+    #[test]
+    fn a_checked_box_survives_a_cut_after_the_journal_and_a_restored_backup() {
+        // Offline box 1 holds Pikachu; it is checked and saved, and the power
+        // goes after the record, before the cell. A Checkpoint backup, START,
+        // Pikachu copied back into the cell and every other file on the SD
+        // card deleted, the backup restored, START: the journal says "after"
+        // and the cell gets the empty box, with Pikachu kept.
+        const PIKACHU: u32 = 9;
+        let (disk, files, body) = setup();
+        drop(files);
+        place_cell(&disk, 0, &cell_with(PIKACHU));
+        let mut offline = Offline::empty();
+        offline.files[0] = cell_with(PIKACHU);
+        let mut checked = [false; PLACES];
+        checked[OFFLINE] = true;
+        let save = Save {
+            name: "a checked cell",
+            body,
+            offline,
+            checked,
+        };
+        let folder = save_folder(&disk, &save);
+        let new = interrupted::cells_file(&folder, true);
+        let start = opened(&disk.reboot()).phase().unwrap();
+        let counting = disk.reboot().cut_after(usize::MAX);
+        run_save(&counting, &save).unwrap();
+        for cut in 0..counting.0.borrow().operations {
+            let card = disk.reboot().cut_after(cut);
+            let _ = run_save(&card, &save);
+            let card = card.reboot();
+            let cell = card.0.borrow().sd.get(cell_path(0).text()).cloned();
+            if opened(&card).phase().unwrap() == start
+                || !card.0.borrow().ext.contains_key(new.text())
+                || cell.as_deref() != Some(&cell_with(PIKACHU)[..])
+            {
+                continue;
+            }
+            let backup = card.copy();
+            on_card(&card);
+            {
+                let mut state = card.0.borrow_mut();
+                state.sd.clear();
+                state.sd_dirs.clear();
+            }
+            place_cell(&card, 0, &cell_with(PIKACHU));
+            restore_extdata(&card, &backup);
+            on_card(&card);
+            assert!(on_the_card(&card, PIKACHU), "cut {cut}");
+            assert!(!interrupted(&card), "cut {cut}");
+            return;
+        }
+        panic!("no cut left the journal written and the cell not");
+    }
+
+    #[test]
+    fn a_box_survives_a_cut_before_the_journal_and_a_restored_backup() {
+        // Offline box 1 holds Pikachu, which moves into Bank; the power goes
+        // before the record. A Checkpoint backup, START, Eevee put into
+        // offline box 1, the backup restored, START: the journal says
+        // "before", the cell holds Eevee, and Pikachu is only in `.old`.
+        const PIKACHU: u32 = 9;
+        const EEVEE: u32 = 13;
+        let (disk, save) = saves().remove(1);
+        let folder = save_folder(&disk, &save);
+        let (old, new) = (
+            interrupted::cells_file(&folder, false),
+            interrupted::cells_file(&folder, true),
+        );
+        let start = opened(&disk.reboot()).phase().unwrap();
+        let counting = disk.reboot().cut_after(usize::MAX);
+        run_save(&counting, &save).unwrap();
+        for cut in 0..counting.0.borrow().operations {
+            let card = disk.reboot().cut_after(cut);
+            let _ = run_save(&card, &save);
+            let card = card.reboot();
+            let whole = |path: &Path| {
+                let state = card.0.borrow();
+                state.ext.get(path.text()).is_some_and(|file| {
+                    !state.ext_damaged.contains(path.text())
+                        && state.ext_written.get(path.text()) == Some(&file.len())
+                })
+            };
+            if !whole(&old) || !whole(&new) || opened(&card).phase().unwrap() != start {
+                continue;
+            }
+            let backup = card.copy();
+            on_card(&card);
+            place_cell(&card, 0, &cell_with(EEVEE));
+            restore_extdata(&card, &backup);
+            on_card(&card);
+            assert!(on_the_card(&card, PIKACHU), "cut {cut}");
+            assert_eq!(
+                card.0.borrow().sd[cell_path(0).text()][..],
+                cell_with(EEVEE)[..],
+                "cut {cut}"
+            );
+            return;
+        }
+        panic!("no cut left both sides written and the journal not");
+    }
+
+    #[test]
+    fn a_read_that_fails_once_loses_nothing_it_does_not_report() {
+        // Each save cut wherever it leaves its folder, then an opening whose
+        // one read fails, at each read in turn. It ends in one of three ways:
+        // as the opening without the failure, stopped with the folder there
+        // for the next START, or with the folder gone and the damage reported.
+        for (disk, save) in saves() {
+            let base = disk.reboot().like(true);
+            let before = on_card(&base.copy());
+            let counting = base.cut_after(usize::MAX);
+            run_save(&counting, &save).unwrap();
+            let total = counting.0.borrow().operations;
+            let after = on_card(&counting);
+            let mut seen = Vec::new();
+            for cut in 0..total {
+                let card = base.cut_after(cut);
+                let _ = run_save(&card, &save);
+                let card = card.reboot();
+                let state = {
+                    let disk = card.0.borrow();
+                    (
+                        disk.sd.clone(),
+                        disk.sd_dirs.clone(),
+                        disk.ext.clone(),
+                        disk.ext_damaged.clone(),
+                    )
+                };
+                let state = (state, opened(&card).phase().unwrap());
+                if !interrupted(&card) || seen.contains(&state) {
+                    continue;
+                }
+                seen.push(state);
+                let plain = card.copy();
+                settle_on(&plain).unwrap();
+                let reads = plain.0.borrow().reads;
+                for read in 0..reads {
+                    let what = std::format!("{}, cut {cut}, read {read}", save.name);
+                    let once = card.copy();
+                    once.0.borrow_mut().fail_reads.insert(read);
+                    let answer = settle_on(&once);
+                    let once = once.reboot();
+                    if answer.is_err() && !interrupted(&once) {
+                        // Reported, once: the next opening has nothing left.
+                        assert!(settle_on(&once).is_ok(), "{what}");
+                        continue;
+                    }
+                    let (held, all) = on_card(&once);
+                    assert_eq!(all, before.1, "{what}");
+                    assert!(held == before.0 || held == after.0, "{what}");
+                    assert!(!interrupted(&once), "{what}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_finished_save_deletes_new_before_old() {
+        // Wherever a cut falls in the deletion, `.old` is there as long as
+        // anything of the folder is.
+        let (disk, save) = saves().remove(1);
+        let folder = save_folder(&disk, &save);
+        let (old, new) = (
+            interrupted::cells_file(&folder, false),
+            interrupted::cells_file(&folder, true),
+        );
+        let start = opened(&disk.reboot()).phase().unwrap();
+        let counting = disk.reboot().cut_after(usize::MAX);
+        run_save(&counting, &save).unwrap();
+        let mut only_old = false;
+        for cut in 0..counting.0.borrow().operations {
+            let card = disk.reboot().cut_after(cut);
+            let _ = run_save(&card, &save);
+            let card = card.reboot();
+            if opened(&card).phase().unwrap() == start {
+                continue;
+            }
+            let state = card.0.borrow();
+            let (has_old, has_new) = (
+                state.ext.contains_key(old.text()),
+                state.ext.contains_key(new.text()),
+            );
+            assert!(has_old || !has_new, "cut {cut}");
+            only_old |= has_old && !has_new;
+        }
+        assert!(only_old, "no cut fell between the two deletions");
     }
 
     #[test]

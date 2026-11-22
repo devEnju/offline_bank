@@ -990,7 +990,9 @@ mod arm {
         /// any file of a folder goes. It works in `ROOM`, as staging holds
         /// the Bank. No room on the SD card to finish a cell or for what
         /// is kept is an ending, "The SD card is full.": the folder stays,
-        /// and the next START settles it.
+        /// and the next START settles it. A file of the folder that does not
+        /// read where the save had happened goes with it and ends this
+        /// opening with the error screen, once.
         fn settle_sd(&mut self, date: Date) -> Result<Option<Ending>, WorkerError> {
             let mut sd = unsafe { ConsoleSd::<Bank15>::new() };
             let mut ext = unsafe { ConsoleExtdata::<Bank15>::new() };

@@ -60,6 +60,11 @@ pub struct Disk {
     pub ext_written: BTreeMap<Vec<u8>, usize>,
     /// Those a cut left unreadable.
     pub ext_damaged: BTreeSet<Vec<u8>>,
+    /// How many reads of the SD card's plain files and of those files were
+    /// made since this copy of the card was taken.
+    pub reads: usize,
+    /// The reads, by their number in `reads`, that fail once.
+    pub fail_reads: BTreeSet<usize>,
 }
 
 /// What the simulated card answers an operation it refuses with: whether it
@@ -169,6 +174,14 @@ impl Shared {
         disk.operations += 1;
         Ok(())
     }
+    /// Counts a read of a plain file or of a folder's file: whether it is
+    /// one that fails.
+    fn read_fails(&self) -> bool {
+        let mut disk = self.0.borrow_mut();
+        let read = disk.reads;
+        disk.reads += 1;
+        disk.fail_reads.contains(&read)
+    }
     pub fn copy(&self) -> Self {
         let disk = self.0.borrow();
         Self(Rc::new(RefCell::new(Disk {
@@ -189,6 +202,8 @@ impl Shared {
             ext_dirs: disk.ext_dirs.clone(),
             ext_written: disk.ext_written.clone(),
             ext_damaged: disk.ext_damaged.clone(),
+            reads: 0,
+            fail_reads: BTreeSet::new(),
         })))
     }
     /// A copy that behaves like the console, or like the simple card.
@@ -647,6 +662,9 @@ impl crate::sdfiles::Sd for Shared {
         out: &mut [u8],
     ) -> Result<crate::sdfiles::Found, Refused> {
         use crate::sdfiles::Found;
+        if self.read_fails() {
+            return Err(Refused::FAILED);
+        }
         let disk = self.0.borrow();
         Ok(match disk.sd.get(path.text()) {
             None => Found::Absent,
@@ -816,6 +834,9 @@ impl crate::sdfiles::Extdata for ExtCard {
         out: &mut [u8],
     ) -> Result<crate::sdfiles::Piece, Refused> {
         use crate::sdfiles::Piece;
+        if self.0.read_fails() {
+            return Err(Refused::FAILED);
+        }
         let disk = self.0 .0.borrow();
         let key = path.text();
         let Some(file) = disk.ext.get(key) else {
