@@ -635,6 +635,20 @@ fn held_at<X: Extdata>(
     }
 }
 
+/// `held_at`, with a place that does not read read once more, for a decision
+/// that one failed read must not change.
+fn held_twice<X: Extdata>(
+    ext: &mut X,
+    path: &Path,
+    position: usize,
+    out: &mut [u8; FILE_SIZE],
+) -> Held {
+    match held_at(ext, path, position, out) {
+        Held::Damaged => held_at(ext, path, position, out),
+        held => held,
+    }
+}
+
 /// Whether the folder's `mover0` is a Save and Quit's, which holds the
 /// transport box alone and no cells: a side is one box long, and no side
 /// reads past that. The size is known without the content. It only tells
@@ -746,9 +760,11 @@ fn finish_cells<S: Sd, X: Extdata<Error = S::Error>, E>(
 /// The journal does not name the transfer save as made, so it wrote no box
 /// into a cell. The answer is whether every cell is exactly as before the
 /// save. A file a cut left of the empty box a cell without a file gets goes
-/// again. An `.old` place that does not read, with no `.new` file, is what a
-/// cut left while it was written: the save reached no cell, and a broken
-/// file in one is that empty box's, which is written only after `.old`.
+/// again, only beside an `.old` place that reads as that box, which is
+/// written first. An `.old` place that does not read, with no `.new` file,
+/// is what a cut left while it was written: the save reached no cell, and a
+/// broken file in one stays. A place that fails is read once more before any
+/// of this is decided (`held_twice`).
 fn check_cells<S: Sd, X: Extdata<Error = S::Error>>(
     sd: &mut S,
     ext: &mut X,
@@ -760,10 +776,10 @@ fn check_cells<S: Sd, X: Extdata<Error = S::Error>>(
     let (old_file, new_file) = (cells_file(folder, false), cells_file(folder, true));
     let mut exact = true;
     for position in 1..GROUP {
-        let place = held_at(ext, &old_file, position, old);
+        let place = held_twice(ext, &old_file, position, old);
         if place == Held::Nothing {
             // A `.new` box without its `.old` shows no state before.
-            exact &= held_at(ext, &new_file, position, old) != Held::Whole;
+            exact &= held_twice(ext, &new_file, position, old) != Held::Whole;
             continue;
         }
         let path = transfer_screen::cell_path(position - 1);
@@ -779,7 +795,7 @@ fn check_cells<S: Sd, X: Extdata<Error = S::Error>>(
         };
         if !same {
             exact = false;
-        } else if !whole && found != Found::Absent {
+        } else if place == Held::Whole && !whole && found != Found::Absent {
             sd.delete(&path)?;
         }
     }
@@ -1680,6 +1696,83 @@ mod tests {
                 assert_eq!(cell_id(&disk, 1), Some(99), "reads {first}, {second}");
                 assert!(whole || reported, "reads {first}, {second}: {kept:?}");
                 no_folder_left(&disk, "defect 3");
+            }
+        }
+    }
+
+    /// A transfer save whose `.old` does not read, with a broken cell 1.
+    fn broken_cell_card() -> (Shared, Path) {
+        let (disk, folder) = transfer_card();
+        disk.clone().put(&cell_path(1), &[0x5a; FILE_SIZE]).unwrap();
+        let old = cells_file(&folder, false);
+        disk.0.borrow_mut().ext_damaged.insert(old.text().to_vec());
+        (disk, folder)
+    }
+
+    fn holds_the_broken_cell(disk: &Shared) -> bool {
+        let state = disk.0.borrow();
+        state
+            .sd
+            .get(cell_path(1).text())
+            .is_some_and(|file| file[..] == [0x5a; FILE_SIZE])
+    }
+
+    #[test]
+    fn a_broken_cell_beside_an_old_place_that_does_not_read_stays() {
+        let (disk, folder) = broken_cell_card();
+        ExtCard(disk.clone())
+            .delete(&cells_file(&folder, true))
+            .unwrap();
+        assert!(!settled(&disk, &folder, Side::Before).unwrap());
+        assert!(holds_the_broken_cell(&disk));
+        no_folder_left(&disk, "broken cell");
+    }
+
+    #[test]
+    fn a_cut_in_the_cleanup_does_not_change_what_happens_to_a_broken_cell() {
+        let mut between = 0;
+        for budget in 0..400 {
+            let (disk, folder) = broken_cell_card();
+            disk.0.borrow_mut().budget = Some(budget);
+            let ended = settled(&disk, &folder, Side::Before);
+            disk.0.borrow_mut().budget = None;
+            let (old, new) = (cells_file(&folder, false), cells_file(&folder, true));
+            let left = {
+                let state = disk.0.borrow();
+                state.ext.contains_key(old.text()) && !state.ext.contains_key(new.text())
+            };
+            if ended.is_err() && left {
+                between += 1;
+                settled(&disk, &folder, Side::Before).unwrap();
+                assert!(holds_the_broken_cell(&disk), "budget {budget}");
+            }
+        }
+        assert!(between > 0);
+    }
+
+    #[test]
+    fn one_failed_read_of_the_comparison_keeps_the_boxes_that_read() {
+        // Cell 1 holds its `.old` box; `.old` ends at the start of cell 3's.
+        fn card() -> (Shared, Path) {
+            let (disk, folder) = transfer_card();
+            let old = cells_file(&folder, false);
+            let mut state = disk.0.borrow_mut();
+            state
+                .ext
+                .get_mut(old.text())
+                .unwrap()
+                .truncate(3 * FILE_SIZE);
+            state.ext_written.insert(old.text().to_vec(), 3 * FILE_SIZE);
+            drop(state);
+            (disk, folder)
+        }
+        for read in 0..reads_of(card, Side::Before) {
+            let (disk, folder) = card();
+            disk.0.borrow_mut().fail_reads.insert(read);
+            settled_to_the_end(&disk, &folder, Side::Before);
+            let kept = kept_names(&disk);
+            for name in [(&b"mover1.old.box"[..], 10), (b"mover1.new.box", 20)] {
+                assert!(kept.contains(&(name.0.to_vec(), name.1)), "read {read}");
             }
         }
     }
