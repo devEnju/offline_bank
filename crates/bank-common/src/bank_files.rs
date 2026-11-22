@@ -222,8 +222,8 @@ pub struct BankFiles<F: Files> {
     files: F,
     bank: Option<BankSession<F::Storage>>,
     /// The delivery that waits was read at the last load and is the box
-    /// shown, with this many Pokémon.
-    taken: Option<u8>,
+    /// shown.
+    taken: bool,
     /// Test builds: what the next save rehearses.
     #[cfg(feature = "test-build")]
     rehearsal: Rehearsal,
@@ -256,7 +256,7 @@ impl<F: Files> BankFiles<F> {
         Self {
             files,
             bank: None,
-            taken: None,
+            taken: false,
             #[cfg(feature = "test-build")]
             rehearsal: Rehearsal::None,
         }
@@ -275,7 +275,7 @@ impl<F: Files> BankFiles<F> {
     }
     /// Releases the Bank file. The other files are never held open.
     pub fn close(&mut self) -> Option<F::Storage> {
-        self.taken = None;
+        self.taken = false;
         self.bank.take().map(BankSession::into_storage)
     }
 
@@ -368,7 +368,7 @@ impl<F: Files> BankFiles<F> {
         if self.open()?.is_some() {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         }
-        self.taken = None;
+        self.taken = false;
         let sides = self.write_sides(staging, Slot::A, Slot::A)?;
         let payload = &staging[..BANK_SIZE];
         let session = match self.files.open(FileName::Bank).map_err(Error::Io)? {
@@ -413,7 +413,7 @@ impl<F: Files> BankFiles<F> {
         let record = self.bank()?.record().map_err(Error::Bank)?;
         let current = self.bank()?.read_bank(staging).map_err(Error::Bank)?;
         sections::expand(staging).map_err(|_| Error::Side(FileName::Bank, Problem::Layout))?;
-        self.taken = None;
+        self.taken = false;
 
         // The main file holds what Bank cannot do without: the header with
         // the format, the Miles and the flags, and the Pokédex. Its copy
@@ -449,7 +449,7 @@ impl<F: Files> BankFiles<F> {
             loaded.transport_missing = true;
         } else if load.delivery {
             loaded.delivered = sections::occupied(records);
-            self.taken = u8::try_from(loaded.delivered).ok();
+            self.taken = true;
         }
         Ok(loaded)
     }
@@ -500,7 +500,7 @@ impl<F: Files> BankFiles<F> {
         self.bank()?
             .commit_bytes(&staging[..BANK_SIZE], sides)
             .map_err(Error::Bank)?;
-        self.taken = None;
+        self.taken = false;
         Ok(())
     }
 
@@ -533,7 +533,7 @@ impl<F: Files> BankFiles<F> {
     fn next_copies(&mut self) -> Outcome<(Save, Slot), F> {
         let current = self.bank()?.current().map_err(Error::Bank)?;
         let delivery = self.bank()?.record().map_err(Error::Bank)?.delivery;
-        if delivery.is_some() && self.taken.is_none() {
+        if delivery.is_some() && !self.taken {
             return Err(Error::Side(FileName::Transport, Problem::Conflict));
         }
         Ok((current, current.next_mover(delivery.is_some())))
