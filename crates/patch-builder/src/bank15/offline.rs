@@ -91,7 +91,7 @@ pub(super) const OWN: [Edit; 31] = [
     // Its count of the Bank's Pokémon (was: bl 001d5ec0), so that it opens
     // for a Bank without Pokémon too.
     (0x002a_8308, 0xebfc_b6ec, Call("bank_transfer_count")),
-    (0x002a_8324, 0xe594_002c, Branch(0x002a_8380)),
+    (0x002a_8318, 0xe355_0000, Branch(0x002a_8380)),
     (0x0033_d38c, 0x002a_7f08, Entry("bank_transfer_scene_done")),
     (0x0036_0750, 0x0028_5ba8, Entry("bank_transfer_input")),
     (0x0036_074c, 0x0028_672c, Entry("bank_transfer_event")),

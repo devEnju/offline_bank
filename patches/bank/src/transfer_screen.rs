@@ -285,6 +285,35 @@ pub const BOX_WORD: [(&str, &str); 10] = [
     ("傳送盒", "盒"),
 ];
 
+/// The word for "box" of the transport box's name `transport` (`BOX_WORD`).
+fn box_word(transport: &[u16]) -> Option<&'static str> {
+    BOX_WORD
+        .iter()
+        .find(|(name, _)| transport.iter().copied().eq(name.encode_utf16()))
+        .map(|(_, word)| *word)
+}
+
+/// What the top line names an offline box's category, whatever the box is
+/// called: the word for "box" of `transport`, the transport box's name as a
+/// box file holds it. `None` for a name that is not one of `BOX_WORD`'s.
+pub fn offline_category(
+    transport: &[u8; offline_core::boxfile::NAME_TEXT],
+) -> Option<[u8; offline_core::boxfile::NAME_TEXT]> {
+    let mut units = [0u16; offline_core::boxfile::NAME_TEXT / 2];
+    for (unit, pair) in units.iter_mut().zip(transport.chunks_exact(2)) {
+        *unit = u16::from_le_bytes([pair[0], pair[1]]);
+    }
+    let len = units.iter().position(|unit| *unit == 0)?;
+    let word = box_word(&units[..len])?;
+    let mut name = [0u16; offline_core::boxfile::NAME_TEXT / 2];
+    let mut len = 0;
+    for unit in word.encode_utf16() {
+        *name.get_mut(len)? = unit;
+        len += 1;
+    }
+    offline_core::boxfile::name_text(&name[..len])
+}
+
 /// The default name of an offline box, in the pattern of the 100 boxes'
 /// ("Bank 37"): the word for "box" (`BOX_WORD`) from `transport`, the
 /// transport box's name, then what `default`, a box's default name (39:0x45
@@ -304,9 +333,7 @@ pub fn offline_default(
             .unwrap_or(text.len())
     };
     let (default, transport) = (&default[..ended(default)], &transport[..ended(transport)]);
-    let (_, word) = BOX_WORD
-        .iter()
-        .find(|(name, _)| transport.iter().copied().eq(name.encode_utf16()))?;
+    let word = box_word(transport)?;
     let digit = |unit: &u16| matches!(unit, 0x30..=0x39 | 0xFF10..=0xFF19);
     let number = default.len() - default.iter().rev().take_while(|unit| digit(unit)).count();
     if number == default.len() {
@@ -1939,7 +1966,8 @@ mod console {
                 let bytes = match of {
                     Of::Group(group) => places.group_name(group)?,
                     Of::Place(TRANSPORT) => places.offline.transport,
-                    Of::Place(place) => places.label(place),
+                    Of::Place(_) => super::offline_category(&places.offline.transport)
+                        .unwrap_or([0; offline_core::boxfile::NAME_TEXT]),
                 };
                 for (unit, pair) in name.iter_mut().zip(bytes.chunks_exact(2)) {
                     *unit = u16::from_le_bytes([pair[0], pair[1]]);
@@ -2590,6 +2618,10 @@ mod console {
         let context = unsafe { follow(ui, 0x5c) }?;
         match session.opening {
             Opening::Ask => {
+                // The set-up leaves the UI as game selection left it, so
+                // that its text window is not gone for a frame: it is hidden
+                // here, in the frame the question comes up.
+                unsafe { bank_common::ui::hide_all(ui) }.ok()?;
                 unsafe { bank_common::ui::notice_from(ui, 0, 2, shorten_question) }.ok()?;
                 session.opening = Opening::Question;
             }
@@ -2780,7 +2812,8 @@ mod console {
     }
 
     /// Replaces task `0x1B`'s update (vtable slot 3, `002a7bf0`): its set-up
-    /// shows no notice (`002a8324`), so the question comes first, then the
+    /// hides nothing and shows no notice (`002a8318`), so the question comes
+    /// first, then the
     /// loading panel while the offline boxes are read (`Job::LoadOffline`),
     /// then the original's update with the boxes (state 9, scene 1).
     /// # Safety
@@ -3171,6 +3204,35 @@ mod tests {
 
     fn units(text: &str) -> std::vec::Vec<u16> {
         text.encode_utf16().collect()
+    }
+
+    #[test]
+    fn an_offline_box_s_category_is_the_word_for_box_in_every_language() {
+        let name = |text: &str| offline_core::boxfile::name_text(&units(text)).unwrap();
+        for (transport, word) in [
+            ("てんそうボックス", "ボックス"),
+            ("転送ボックス", "ボックス"),
+            ("Transport Box", "Box"),
+            ("Boîte Transfert", "Boîte"),
+            ("Trasferibox", "Box"),
+            ("Transferbox", "Box"),
+            ("Caja de Traslado", "Caja"),
+            ("전송박스", "박스"),
+            ("传送盒", "盒"),
+            ("傳送盒", "盒"),
+        ] {
+            assert_eq!(
+                offline_category(&name(transport)),
+                Some(name(word)),
+                "{transport}"
+            );
+        }
+        // A name that is none of the original's, or none at all.
+        assert_eq!(offline_category(&name("Transport")), None);
+        assert_eq!(
+            offline_category(&[0; offline_core::boxfile::NAME_TEXT]),
+            None
+        );
     }
 
     #[test]

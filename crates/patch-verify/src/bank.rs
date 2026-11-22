@@ -121,7 +121,7 @@ pub fn expectation(kind: &'static str) -> Expectation {
             // updates, its cursor's making, the layout parser's slot.
             (0x00361820, 0x002a7bf0, Ptr(Sym("bank_transfer_update"))),
             (0x002a8308, 0xebfcb6ec, Bl(Sym("bank_transfer_count"))),
-            (0x002a8324, 0xe594002c, B(At(0x002a8380))),
+            (0x002a8318, 0xe3550000, B(At(0x002a8380))),
             (0x0033d38c, 0x002a7f08, Ptr(Sym("bank_transfer_scene_done"))),
             (0x00360750, 0x00285ba8, Ptr(Sym("bank_transfer_input"))),
             (0x0036074c, 0x0028672c, Ptr(Sym("bank_transfer_event"))),
