@@ -548,12 +548,17 @@ where
 pub trait Backup<F: Files> {
     /// Writes it, before the journal leaves the save to Transporter's
     /// question or to its game. `false` for no room.
-    fn write(&mut self, _: &mut BankFiles<F>, _: &mut [u8]) -> Stopped<bool, F> {
+    fn write(
+        &mut self,
+        _: &mut BankFiles<F>,
+        _: &PendingTransfer,
+        _: &mut [u8],
+    ) -> Stopped<bool, F> {
         Ok(true)
     }
     /// The game decides the save: the folder goes, before the journal is
     /// settled. `false` for no room for the journal's record.
-    fn discard(&mut self, _: &mut BankFiles<F>) -> Stopped<bool, F> {
+    fn discard(&mut self, _: &mut BankFiles<F>, _: &PendingTransfer) -> Stopped<bool, F> {
         Ok(true)
     }
 }
@@ -588,12 +593,17 @@ impl<F: Files, X: Extdata> Backup<F> for Kept<'_, X>
 where
     <F::Storage as Storage>::Error: NoRoom,
 {
-    fn write(&mut self, files: &mut BankFiles<F>, staging: &mut [u8]) -> Stopped<bool, F> {
-        let done = interrupted::back_up(files, staging, self.ext);
+    fn write(
+        &mut self,
+        files: &mut BankFiles<F>,
+        pending: &PendingTransfer,
+        staging: &mut [u8],
+    ) -> Stopped<bool, F> {
+        let done = interrupted::back_up(files, pending, staging, self.ext);
         self.ended::<F>(done)
     }
-    fn discard(&mut self, files: &mut BankFiles<F>) -> Stopped<bool, F> {
-        let done = interrupted::discard(files, self.ext);
+    fn discard(&mut self, files: &mut BankFiles<F>, pending: &PendingTransfer) -> Stopped<bool, F> {
+        let done = interrupted::discard(files, pending, self.ext);
         self.ended::<F>(done)
     }
 }
@@ -614,7 +624,7 @@ where
     <F::Storage as Storage>::Error: NoRoom,
 {
     let Some(game) = game else {
-        return by_moves(files, staging, rule, false, held, backup);
+        return by_moves(files, pending, staging, rule, false, held, backup);
     };
     let cartridge = made_on_cartridge(pending)?;
     let evidence = match game.inspect() {
@@ -646,7 +656,7 @@ where
         // The game decides the save, and nothing of a backup is kept: its
         // folder goes first, so that none stands beside the clean journal.
         Match::Before | Match::After => {
-            if !backup.discard(files)? {
+            if !backup.discard(files, pending)? {
                 return Ok(Settled::NoSpace);
             }
             settled(
@@ -670,7 +680,7 @@ where
                 && game
                     .trainer()
                     .is_some_and(|inserted| Trainer::of(&pending.game).same(inserted, gen7));
-            by_moves(files, staging, rule, seen, held, backup)
+            by_moves(files, pending, staging, rule, seen, held, backup)
         }
     }
 }
@@ -683,6 +693,7 @@ where
 /// (`Settled::Asks`). Otherwise it waits for its game.
 fn by_moves<F: Files, B: Backup<F>>(
     files: &mut BankFiles<F>,
+    pending: &PendingTransfer,
     staging: &mut [u8],
     rule: Rule,
     seen: bool,
@@ -702,7 +713,7 @@ where
         let unlocked = files
             .unlocked()
             .map_err(files_failed(Fault::JournalRecovery))?;
-        if !backup.write(files, staging)? {
+        if !backup.write(files, pending, staging)? {
             return Ok(Settled::NoSpace);
         }
         // The backup is whole: one record has an unlock stand again and bit

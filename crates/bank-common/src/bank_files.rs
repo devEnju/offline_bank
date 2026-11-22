@@ -27,8 +27,8 @@ use offline_core::{
         self, Identity, BANK_RANGES, BANK_SIZE, HELD, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE,
         TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
-    transport, Crc32, Fingerprint, GameIdentity, Part, Phase, RecoveryDecision, Save, Sides, Slot,
-    Storage,
+    transport, Crc32, Fingerprint, GameIdentity, Metadata, Part, PendingTransfer, Phase,
+    RecoveryDecision, Save, Sides, Slot, Storage,
 };
 
 /// The checksums the journal names for the Bank file of `body`, a full
@@ -227,6 +227,19 @@ pub struct BankFiles<F: Files> {
     /// Test builds: what the next save rehearses.
     #[cfg(feature = "test-build")]
     rehearsal: Rehearsal,
+}
+
+/// The copy of the transport box of one side of the save in progress, and
+/// whether it was empty, so that one that cannot be read loses nothing:
+/// before, what a load showed (its own box, or the delivery it took); after,
+/// the box the save wrote.
+fn pending_box(record: &Metadata, pending: &PendingTransfer, after: bool) -> (Part, bool) {
+    if after {
+        (pending.after.mover, pending.after.held == 0)
+    } else {
+        let shown = transport::on_load(record);
+        (shown.source, !shown.delivery && pending.before.held == 0)
+    }
 }
 
 fn side<E>(file: FileName) -> impl Fn(PairError<E>) -> Error<E> {
@@ -576,19 +589,11 @@ impl<F: Files> BankFiles<F> {
         }
         // The transport box: before, what a load showed (its own box, or the
         // delivery it took); after, the box the save wrote.
-        let shown = transport::on_load(&record);
         let (records, tags) = staging[..TRANSPORT_SIZE].split_at_mut(TRANSPORT_SLOTS * RECORD_SIZE);
-        for (part, empty, list, count) in [
-            (
-                shown.source,
-                !shown.delivery && pending.before.held == 0,
-                &mut *before,
-                0,
-            ),
-            (pending.after.mover, pending.after.held == 0, &mut *after, 1),
-        ] {
+        for (side, list) in [&mut *before, &mut *after].into_iter().enumerate() {
+            let (part, empty) = pending_box(&record, &pending, side == 1);
             if self.read_box(part, empty, records, tags)? {
-                counts[count] = sections::identities(records, list, counts[count]);
+                counts[side] = sections::identities(records, list, counts[side]);
             }
         }
         Ok(moved::moved(
@@ -619,12 +624,7 @@ impl<F: Files> BankFiles<F> {
         let Phase::Prepared(pending) = record.phase else {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         };
-        let shown = transport::on_load(&record);
-        let (part, empty) = if after {
-            (pending.after.mover, pending.after.held == 0)
-        } else {
-            (shown.source, !shown.delivery && pending.before.held == 0)
-        };
+        let (part, empty) = pending_box(&record, &pending, after);
         if !self.read_box(part, empty, records, tags)? {
             records.fill(0);
             tags.fill(0);

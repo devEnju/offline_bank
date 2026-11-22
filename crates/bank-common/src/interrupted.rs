@@ -53,7 +53,7 @@ use offline_core::{
     boxfile::{self, BoxFile, FILE_SIZE, NAME_TEXT},
     native_blob::BOX_COUNT,
     sections::{self, BANK_SIZE, RECORD_SIZE, TRANSPORT_SLOTS},
-    Crc32, Part, Phase, Save, Sha256,
+    Crc32, Part, PendingTransfer, Phase, Save, Sha256,
 };
 
 /// 100 boxes and the transport box.
@@ -344,12 +344,10 @@ fn group_is<X: Extdata, E>(
 /// that.
 pub fn back_up<F: Files, X: Extdata>(
     files: &mut BankFiles<F>,
+    pending: &PendingTransfer,
     staging: &mut [u8],
     ext: &mut X,
 ) -> Result<(), Failed<F, X>> {
-    let Phase::Prepared(pending) = files.phase().map_err(Error::Files)? else {
-        return Ok(());
-    };
     let side = RECORD_SIZE * TRANSPORT_SLOTS + TRANSPORT_SLOTS;
     if staging.len() < BANK_SIZE + FILE_SIZE + 2 * side + BOX_COUNT * PRINT {
         return Err(Error::Staging);
@@ -493,11 +491,9 @@ pub fn remove<X: Extdata>(ext: &mut X, folder: &Path) -> Result<(), X::Error> {
 /// is gone by then (`back_up`).
 pub fn discard<F: Files, X: Extdata>(
     files: &mut BankFiles<F>,
+    pending: &PendingTransfer,
     ext: &mut X,
 ) -> Result<(), Failed<F, X>> {
-    let Phase::Prepared(pending) = files.phase().map_err(Error::Files)? else {
-        return Ok(());
-    };
     let folder = folder(State::of(&pending.before), State::of(&pending.after));
     let name = &folder.text()[1..];
     let found = next(ext, &Path::new(b"/"), &|entry, is_folder| {
