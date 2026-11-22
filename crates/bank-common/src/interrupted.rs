@@ -714,8 +714,10 @@ fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
 
 /// The journal names the transfer save as made: each cell gets its `.new`
 /// box, if it holds its `.old` one, no file, or a file a cut left. A cell
-/// that holds another whole box changed outside the save and stays. The
-/// answer is whether a place this needed did not read: its cell stays too.
+/// that holds another whole box changed outside the save and stays. A place
+/// that fails is read once more, as the folder goes after this and no later
+/// START could finish the cell. The answer is whether a place this needed
+/// still did not read: its cell stays too.
 fn finish_cells<S: Sd, X: Extdata<Error = S::Error>, E>(
     sd: &mut S,
     ext: &mut X,
@@ -726,7 +728,7 @@ fn finish_cells<S: Sd, X: Extdata<Error = S::Error>, E>(
     let (old_file, new_file) = (cells_file(folder, false), cells_file(folder, true));
     let mut damaged = false;
     for position in 1..GROUP {
-        match held_at(ext, &new_file, position, new) {
+        match held_twice(ext, &new_file, position, new) {
             Held::Nothing => continue,
             Held::Damaged => {
                 damaged = true;
@@ -741,7 +743,11 @@ fn finish_cells<S: Sd, X: Extdata<Error = S::Error>, E>(
         }
         if found == Found::Read && BoxFile::parse(&cell[..]).is_ok() {
             let held = digest(&cell[..]);
-            let was = ext.read_at(&old_file, (position * FILE_SIZE) as u32, &mut cell[..]);
+            let at = (position * FILE_SIZE) as u32;
+            let was = match ext.read_at(&old_file, at, &mut cell[..]) {
+                Err(_) => ext.read_at(&old_file, at, &mut cell[..]),
+                piece => piece,
+            };
             if !matches!(was, Ok(Piece::Read)) || digest(&cell[..]) != held {
                 damaged |= was.is_err();
                 continue;
@@ -1873,6 +1879,18 @@ mod tests {
             }
         }
         assert!(stopped_after_the_file);
+    }
+
+    #[test]
+    fn one_failed_read_never_leaves_a_finished_save_half_applied() {
+        for read in 0..reads_of(transfer_card, Side::After) {
+            let (disk, folder) = transfer_card();
+            disk.0.borrow_mut().fail_reads.insert(read);
+            settled_to_the_end(&disk, &folder, Side::After);
+            assert_eq!(cell_id(&disk, 1), Some(20), "read {read}");
+            assert_eq!(cell_id(&disk, 3), Some(21), "read {read}");
+            no_folder_left(&disk, "one failed read");
+        }
     }
 
     #[test]

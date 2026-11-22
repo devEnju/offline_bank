@@ -3081,9 +3081,10 @@ mod tests {
     #[test]
     fn a_read_that_fails_once_loses_nothing_it_does_not_report() {
         // Each save cut wherever it leaves its folder, then an opening whose
-        // one read fails, at each read in turn. It ends in one of three ways:
-        // as the opening without the failure, stopped with the folder there
-        // for the next START, or with the folder gone and the damage reported.
+        // one read fails, at each read in turn. It ends as the opening without
+        // the failure, stopped with the folder there for the next START, or
+        // with one error too many and the folder gone. Each time the Bank and
+        // the cells end as before or as after, with no Pokémon lost.
         for (disk, save) in saves() {
             let base = disk.reboot().like(true);
             let before = on_card(&base.copy());
@@ -3122,7 +3123,6 @@ mod tests {
                     if answer.is_err() && !interrupted(&once) {
                         // Reported, once: the next opening has nothing left.
                         assert!(settle_on(&once).is_ok(), "{what}");
-                        continue;
                     }
                     let (held, all) = on_card(&once);
                     assert_eq!(all, before.1, "{what}");
