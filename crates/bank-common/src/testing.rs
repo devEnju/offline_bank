@@ -60,6 +60,9 @@ pub struct Disk {
     pub ext_written: BTreeMap<Vec<u8>, usize>,
     /// Those a cut left unreadable.
     pub ext_damaged: BTreeSet<Vec<u8>>,
+    /// Those the console cannot even open: a read fails before their size
+    /// is known, as the console's `read_at` asks for it after the open.
+    pub ext_unopenable: BTreeSet<Vec<u8>>,
     /// How many reads of the SD card's plain files and of those files were
     /// made since this copy of the card was taken.
     pub reads: usize,
@@ -202,6 +205,7 @@ impl Shared {
             ext_dirs: disk.ext_dirs.clone(),
             ext_written: disk.ext_written.clone(),
             ext_damaged: disk.ext_damaged.clone(),
+            ext_unopenable: disk.ext_unopenable.clone(),
             reads: 0,
             fail_reads: BTreeSet::new(),
         })))
@@ -735,6 +739,7 @@ impl crate::sdfiles::Store for ExtCard {
         disk.ext.remove(path.text());
         disk.ext_written.remove(path.text());
         disk.ext_damaged.remove(path.text());
+        disk.ext_unopenable.remove(path.text());
         Ok(())
     }
     fn list(
@@ -842,6 +847,9 @@ impl crate::sdfiles::Extdata for ExtCard {
         let Some(file) = disk.ext.get(key) else {
             return Ok(Piece::Missing);
         };
+        if disk.ext_unopenable.contains(key) {
+            return Err(Refused::FAILED);
+        }
         let (start, end) = (offset as usize, offset as usize + out.len());
         if end > file.len() {
             return Ok(Piece::Missing);

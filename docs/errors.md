@@ -220,7 +220,7 @@ What the next START does with the write's folder in Bank's extdata:
 | --- | --- | --- |
 | The state before the save, every changed offline box as it was | Nothing | Deleted, nothing shown |
 | The state before the save, an offline box changed since | `.old` and `.new` of the changed boxes with Pokémon | Deleted, nothing shown |
-| The state after the save | `.old` and `.new` of the changed boxes with Pokémon; each offline box is finished unless it holds another box | Deleted; error `15` with second number 0, once. A box whose `.new` does not read stays as it is |
+| The state after the save | `.old` and `.new` of the changed boxes with Pokémon (only `.old` after a cut while the finished save deletes its folder); each offline box is finished unless it holds another box | Deleted; error `15` with second number 0, once, also if something else stops that START. A box whose `.new` does not read stays as it is |
 | Neither (Bank's data was replaced) | Everything that reads | Deleted, nothing shown |
 
 ## 3. Bank: Save and Quit

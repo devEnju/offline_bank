@@ -738,7 +738,7 @@ pub struct Commit<'a> {
 /// | 2 | `mover0.old` of the cells that change, proven; a cell among them without a file gets the empty box it holds, so that writing it later needs no new room; then `mover0.new`, proven; both in the folder in Bank's extdata of the save's two states (`interrupted::folder`): the journal's now and the one the record of step 3 names |
 /// | 3 | the Bank, in one journal record without a game (`BankFiles::commit`) |
 /// | 4 | the cells that change, a checked one as an empty box with its default name |
-/// | 5 | `mover0.new` is deleted, then `mover0.old` and the folder (`interrupted::remove`), so that a cut leaves the side the opening keeps |
+/// | 5 | the folder is deleted, `mover0.new` first (`interrupted::remove`) |
 ///
 /// Every record writes the Bank file into its other copy, so the two states
 /// differ and the next opening tells by the journal alone whether the save
@@ -842,10 +842,7 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
             .filter(|index| changed[*index])
             .try_for_each(|index| sd.put(&cell_path(index), &offline.files[index]));
         if written.is_ok() {
-            let new = interrupted::cells_file(&folder, true);
-            let _ = ext
-                .delete(&new)
-                .and_then(|()| interrupted::remove(ext, &folder));
+            let _ = interrupted::remove(ext, &folder);
         }
     }
     Ok(())
