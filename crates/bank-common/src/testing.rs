@@ -68,6 +68,8 @@ pub struct Disk {
     pub reads: usize,
     /// The reads, by their number in `reads`, that fail once.
     pub fail_reads: BTreeSet<usize>,
+    /// Unit files of Bank's containers whose next read fails, once.
+    pub fail_unit_once: BTreeSet<UnitId>,
 }
 
 /// What the simulated card answers an operation it refuses with: whether it
@@ -208,6 +210,7 @@ impl Shared {
             ext_unopenable: disk.ext_unopenable.clone(),
             reads: 0,
             fail_reads: BTreeSet::new(),
+            fail_unit_once: BTreeSet::new(),
         })))
     }
     /// A copy that behaves like the console, or like the simple card.
@@ -255,6 +258,12 @@ impl Storage for Handle {
     fn read(&mut self, at: u64, out: &mut [u8]) -> Result<(), Refused> {
         self.take_up();
         let units = self.units(at, out.len() as u64);
+        {
+            let mut disk = (self.0).0.borrow_mut();
+            if units.iter().any(|unit| disk.fail_unit_once.remove(unit)) {
+                return Err(Refused::FAILED);
+            }
+        }
         let disk = (self.0).0.borrow();
         if units.iter().any(|unit| disk.unreadable.contains(unit)) {
             return Err(Refused::FAILED);

@@ -171,14 +171,14 @@ impl<S: Storage> BankSession<S> {
 
     /// Makes the payload and `sides` the current save without a game
     /// (`BankStore::commit`): success only once the record that names them
-    /// is durable. Returns the new save.
-    pub fn commit_bytes(&mut self, payload: &[u8], sides: Sides) -> Result<Save, Error<S::Error>> {
+    /// is durable.
+    pub fn commit_bytes(&mut self, payload: &[u8], sides: Sides) -> Result<(), Error<S::Error>> {
         self.ensure_loaded()?;
         sections::validate_bank(payload).map_err(Error::Payload)?;
         let result = self.store.commit(&self.head, payload, sides);
         self.head = self.storage_result(result)?;
         self.loaded = false;
-        self.current()
+        Ok(())
     }
 
     /// Test builds only: see `BankStore::republish`.

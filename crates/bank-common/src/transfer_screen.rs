@@ -3166,6 +3166,47 @@ mod tests {
     }
 
     #[test]
+    fn a_journal_copy_that_fails_to_read_once_is_not_taken_for_a_cut() {
+        // Box 1 and cell 1 change places; the power goes once the newer
+        // record is durable, before the cell. At the next START one read of
+        // either journal copy fails: the save is still finished.
+        let (disk, save) = saves().remove(1);
+        let start = opened(&disk.reboot()).phase().unwrap();
+        let old_cell = disk.0.borrow().sd.get(cell_path(0).text()).cloned();
+        let counting = disk.reboot().cut_after(usize::MAX);
+        run_save(&counting, &save).unwrap();
+        let after = on_card(&counting).0;
+        let mut tried = 0;
+        for console in [true, false] {
+            let base = disk.reboot().like(console);
+            for cut in 0..counting.0.borrow().operations {
+                let card = base.cut_after(cut);
+                let _ = run_save(&card, &save);
+                let card = card.reboot();
+                let cell = card.0.borrow().sd.get(cell_path(0).text()).cloned();
+                if opened(&card).phase().unwrap() == start
+                    || !interrupted(&card)
+                    || cell != old_cell
+                {
+                    continue;
+                }
+                for unit in 0..2 {
+                    let once = card.copy();
+                    once.0
+                        .borrow_mut()
+                        .fail_unit_once
+                        .insert((crate::bank_files::FileName::Bank as u8, unit));
+                    settle_on(&once).unwrap();
+                    let what = std::format!("console {console}, cut {cut}, copy {unit}");
+                    assert!(on_card(&once.reboot()).0 == after, "{what}");
+                    tried += 1;
+                }
+            }
+        }
+        assert!(tried > 0);
+    }
+
+    #[test]
     fn a_checked_cell_that_is_no_whole_box_is_refused_before_anything_is_written() {
         let (disk, mut files, mut body) = setup();
         let mut half = cell_with(9);

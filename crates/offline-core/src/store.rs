@@ -132,9 +132,11 @@ fn record_offset(slot: Slot) -> u64 {
 
 fn read_record<S: Storage>(storage: &mut S, slot: Slot) -> Result<Record, StoreError<S::Error>> {
     let mut bytes = [0; METADATA_SIZE];
-    // A record that cannot be read is one an interrupted publication
-    // left behind, as a torn one is; the other replica decides.
-    if storage.read(record_offset(slot), &mut bytes).is_err() {
+    // A record that cannot be read, also on a second try, is one an
+    // interrupted publication left behind, as a torn one is; the other
+    // replica decides. One failed read must not hide the newer record.
+    let offset = record_offset(slot);
+    if storage.read(offset, &mut bytes).is_err() && storage.read(offset, &mut bytes).is_err() {
         return Ok(Record::Damaged);
     }
     if zero(&bytes) {

@@ -769,26 +769,27 @@ fn check_cells<S: Sd, X: Extdata<Error = S::Error>>(
     let (old_file, new_file) = (cells_file(folder, false), cells_file(folder, true));
     let mut exact = true;
     for position in 1..GROUP {
-        let place = held_twice(ext, &old_file, position, old);
-        if place == Held::Nothing {
-            // A `.new` box without its `.old` shows no state before.
-            exact &= held_twice(ext, &new_file, position, old) != Held::Whole;
-            continue;
+        match held_twice(ext, &old_file, position, old) {
+            Held::Whole => {}
+            Held::Damaged => {
+                exact &= !has_new;
+                continue;
+            }
+            Held::Nothing => {
+                // A `.new` box without its `.old` shows no state before.
+                exact &= held_twice(ext, &new_file, position, old) != Held::Whole;
+                continue;
+            }
         }
         let path = transfer_screen::cell_path(position - 1);
         let found = sd.get(&path, &mut cell[..])?;
         let whole = found == Found::Read && BoxFile::parse(&cell[..]).is_ok();
-        let same = if place == Held::Damaged {
-            !has_new
-        } else {
-            if !whole {
-                transfer_screen::empty_box(cell, &[0; NAME_TEXT]);
-            }
-            cell == old
-        };
-        if !same {
+        if !whole {
+            transfer_screen::empty_box(cell, &[0; NAME_TEXT]);
+        }
+        if cell != old {
             exact = false;
-        } else if place == Held::Whole && !whole && found != Found::Absent {
+        } else if !whole && found != Found::Absent {
             sd.delete(&path)?;
         }
     }

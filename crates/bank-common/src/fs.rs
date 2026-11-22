@@ -429,8 +429,17 @@ impl<R: Reach> Split<R> {
         let archive = this.archive()?;
         let mut found = false;
         for (index, file) in files.iter().enumerate() {
-            // Looked at and closed again; it is opened when it is used.
-            match File::open(this.reach.api(file)?, archive, file.len, false) {
+            // Looked at and closed again; it is opened when it is used. One
+            // that fails is looked at once more: what is remembered here
+            // decides which journal record is read.
+            let mut opened = File::open(this.reach.api(file)?, archive, file.len, false);
+            if opened.as_ref().err().is_some_and(|error| {
+                error.reported_absence() != Some(ReportedAbsence::File)
+                    && !matches!(error, Error::WrongSize { .. })
+            }) {
+                opened = File::open(this.reach.api(file)?, archive, file.len, false);
+            }
+            match opened {
                 Ok(_) => this.units[index] = Unit::Present,
                 Err(error) if error.reported_absence() == Some(ReportedAbsence::File) => continue,
                 Err(error @ Error::WrongSize { .. }) => return Err(error),
@@ -1464,6 +1473,8 @@ mod split_tests {
         files: Rc<RefCell<BTreeMap<&'static str, Entry>>>,
         archive_fails: Rc<RefCell<bool>>,
         flush_fails: Rc<RefCell<bool>>,
+        /// Unit files whose next open fails, one failure per entry.
+        open_fails: Rc<RefCell<Vec<&'static str>>>,
         archives: Count,
         handles: Count,
     }
@@ -1511,6 +1522,11 @@ mod split_tests {
             }
         }
         fn open_file(&mut self, _: u64) -> Result<u32, Error> {
+            let failing = self.0.open_fails.borrow().iter().position(|p| *p == self.1);
+            if let Some(at) = failing {
+                self.0.open_fails.borrow_mut().remove(at);
+                return Err(native(Operation::OpenFile, CORRUPTED));
+            }
             match self.0.files.borrow().get(self.1) {
                 Some(_) => {
                     self.0.handles.opened();
@@ -1692,6 +1708,25 @@ mod split_tests {
         split.recreate(0, 4).unwrap();
         drop(split);
         assert_eq!((card.archives.most(), card.handles.most()), (1, 1));
+    }
+
+    #[test]
+    fn a_unit_file_that_fails_to_open_once_is_opened_again() {
+        let card = card();
+        card.open_fails.borrow_mut().push("/two.bin");
+        let mut split = open(&card);
+        let mut all = [0; 15];
+        split.read(0, &mut all).unwrap();
+        assert_eq!(&all, b"abcdefghijklmno");
+        drop(split);
+        // Failing twice, it counts as what an interrupted write left.
+        card.open_fails
+            .borrow_mut()
+            .extend(["/two.bin", "/two.bin"]);
+        let mut split = open(&card);
+        assert_eq!(split.read(4, &mut [0; 2]), Err(Error::Unreadable));
+        drop(split);
+        assert_eq!((card.archives.now(), card.handles.now()), (0, 0));
     }
 
     #[test]
