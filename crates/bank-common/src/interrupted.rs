@@ -650,19 +650,14 @@ fn held_twice<X: Extdata>(
 /// reads past that. The size is known without the content. It only tells
 /// whether a place that does not read matters: a box that reads is always
 /// handled.
-fn no_cells<X: Extdata>(
-    ext: &mut X,
-    folder: &Path,
-    found: &[u8; GROUPS],
-    byte: &mut [u8; FILE_SIZE],
-) -> bool {
+fn no_cells<X: Extdata>(ext: &mut X, folder: &Path, found: &[u8; GROUPS]) -> bool {
     let (mut one_box, mut longer) = (false, false);
     for (kind, _) in KINDS
         .iter()
         .filter(|(kind, _)| found[MOVER_GROUP] & kind != 0)
     {
         let path = group_file(folder, MOVER_GROUP, *kind);
-        match ext.read_at(&path, FILE_SIZE as u32, &mut byte[..1]) {
+        match ext.read_at(&path, FILE_SIZE as u32, &mut [0u8; 1]) {
             Ok(Piece::Missing) => one_box = true,
             Ok(Piece::Read) => longer = true,
             Err(_) => {}
@@ -686,7 +681,7 @@ fn settle_folder<S: Sd, X: Extdata<Error = S::Error>, E>(
     damaged: &mut bool,
 ) -> Result<(), Error<E, S::Error>> {
     let found = entries(ext, folder).map_err(Error::Sd)?;
-    let no_cells = no_cells(ext, folder, &found, first);
+    let no_cells = no_cells(ext, folder, &found);
     let mut lost = false;
     let keep_cells = match side {
         Side::After => {
@@ -743,13 +738,9 @@ fn finish_cells<S: Sd, X: Extdata<Error = S::Error>, E>(
         }
         if found == Found::Read && BoxFile::parse(&cell[..]).is_ok() {
             let held = digest(&cell[..]);
-            let at = (position * FILE_SIZE) as u32;
-            let was = match ext.read_at(&old_file, at, &mut cell[..]) {
-                Err(_) => ext.read_at(&old_file, at, &mut cell[..]),
-                piece => piece,
-            };
-            if !matches!(was, Ok(Piece::Read)) || digest(&cell[..]) != held {
-                damaged |= was.is_err();
+            let was = held_twice(ext, &old_file, position, cell);
+            if was != Held::Whole || digest(&cell[..]) != held {
+                damaged |= was == Held::Damaged;
                 continue;
             }
         }

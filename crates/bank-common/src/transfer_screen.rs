@@ -766,7 +766,7 @@ pub fn commit<F: Files, S: Sd, X: Extdata<Error = S::Error>>(
     // without a file holding an empty box without a name; a checked one is
     // decided once its new box is known (step 2). Every cell's file is read
     // here, before anything is written, and one that is not a whole box is
-    // refused: it could not be put back.
+    // refused: it cannot be proven as its `.old` box.
     let mut changed = [false; OFFLINE_COUNT];
     for (index, changes) in changed.iter_mut().enumerate() {
         *changes = differs(sd, index, &offline.files[index], scratch)?;
