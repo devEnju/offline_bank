@@ -267,8 +267,7 @@ impl Places<'_> {
     /// bytes from a work string (`002ba124`), so a stored name can hold what
     /// an earlier text left behind its end: no part of the name, but bytes
     /// of the box that a move carries along unchanged. The category and the
-    /// position behind them belong to the place in Bank, and a box moved
-    /// there joins that category at that position.
+    /// position behind them are not part of the name (`keep_categories`).
     fn name_bytes(&self, place: usize) -> [u8; NAME_TEXT] {
         let label = if place >= OFFLINE {
             &self.offline.files[place - OFFLINE][boxfile::NAME]
@@ -378,22 +377,17 @@ impl Places<'_> {
         label.copy_from_slice(name);
     }
 
-    /// After two boxes of Bank changed places: one of a different category
-    /// keeps its category and its position in it, so each takes them along
-    /// (the unused byte, the category, the position: `label` stops before
-    /// them). Of the same category they stay with the places, so the two
-    /// change positions: their order in the category changes. Either way
-    /// every category keeps its positions unique and without gaps. An
-    /// offline box holds no category: the place in Bank it leaves or fills
-    /// keeps its own.
+    /// After two boxes of Bank changed places: each keeps its category and
+    /// its position in it, so each takes them along (the unused byte, the
+    /// category, the position: `label` stops before them). So a swap changes
+    /// no category's order, and every category keeps its positions unique
+    /// and without gaps. An offline box holds no category: the place in Bank
+    /// it leaves or fills keeps its own.
     fn keep_categories(&mut self, from: usize, to: usize) {
         if from >= TRANSPORT || to >= TRANSPORT {
             return;
         }
         let (a, b) = (label_range(from), label_range(to));
-        if self.body[a.start + CATEGORY] == self.body[b.start + CATEGORY] {
-            return;
-        }
         let mut tail = [0u8; LABEL_SIZE - NAME_TEXT];
         tail.copy_from_slice(&self.body[a.start + NAME_TEXT..a.end]);
         self.body
@@ -542,7 +536,7 @@ impl Places<'_> {
 /// first change that can touch it, and after each change whether the place
 /// now differs in either. So a place changed exactly when either differs: blue swaps back and forth,
 /// or round and back, change nothing; empty boxes that ended up at each
-/// other's places change nothing; L round its group back to the start
+/// other's places, their positions put back with L, change nothing; L round its group back to the start
 /// changes nothing. A put-down of the green cursor is a change whatever
 /// follows (`moved`), also on its own box and when its Pokémon are moved
 /// back, as each Pokémon it puts down gets the time of the move
@@ -1030,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn categories_go_with_their_boxes_and_positions_swap_within_one() {
+    fn a_swap_of_boxes_of_bank_takes_category_and_position_along() {
         // Every box in a category of its own position: byte 0x23 the
         // category, the word behind it the position.
         let mut body = bank_body(&[(0, 0, 1), (1, 3, 2), (2, 5, 3), (3, 7, 4), (4, 9, 5)]);
@@ -1050,11 +1044,11 @@ mod tests {
             body: &mut body,
             offline: &mut offline,
         };
-        // Swaps among boxes of different categories (0 and 1) and of the
-        // same (0 and 3), into and out of offline places, green moves.
+        // Swaps among boxes of the same category (0 and 3) and of different
+        // ones (then 0 and 1), into and out of offline places, green moves.
         let moves: [(bool, usize, usize); 10] = [
-            (true, 0, 1),
             (true, 0, 3),
+            (true, 0, 1),
             (true, 2, OFFLINE),
             (true, OFFLINE, 40),
             (true, 3, OFFLINE + 1),
@@ -1071,13 +1065,9 @@ mod tests {
                 places.move_all(from, to, NOW)
             };
             assert_eq!(result, Ok(()), "{from} -> {to}");
-            // Of different categories a blue swap takes them along; any
-            // other move leaves them with the places.
-            if blue
-                && from < TRANSPORT
-                && to < TRANSPORT
-                && expected[from][CATEGORY - NAME_TEXT] != expected[to][CATEGORY - NAME_TEXT]
-            {
+            // A blue swap of two boxes of Bank takes them along; any other
+            // move leaves them with the places.
+            if blue && from < TRANSPORT && to < TRANSPORT {
                 expected.swap(from, to);
             }
             for (place, tail) in expected.iter().enumerate() {
@@ -1101,9 +1091,10 @@ mod tests {
                 );
             }
         }
-        // The swap of 0 and 1 (categories 0 and 1) moved them: place 1 now
-        // has category 0; the swap of 0 and 3 (both category 0) swapped
-        // their positions.
+        // The swap of 0 and 3 (both category 0) took their positions along:
+        // place 3 now holds position 0. The swap with place 1 took the
+        // category along: place 1 now has category 0.
+        assert_eq!(expected[3][CATEGORY - NAME_TEXT + 1..], [0, 0]);
         assert_eq!(expected[1][CATEGORY - NAME_TEXT], 0);
     }
 
@@ -1114,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_boxes_at_each_other_s_places_are_no_change() {
+    fn empty_boxes_at_each_other_s_places_with_their_order_put_back_are_no_change() {
         // Box 1 "Fire" with a Pokémon in group 0; boxes 10 and 11 empty,
         // with their defaults, emptied at different times; every other box
         // in no group.
@@ -1171,15 +1162,15 @@ mod tests {
             }
             (seen(&places) == before, changes.any())
         };
-        // "Fire" into 10, on into 11, back to 1, all of one group: the empty
-        // boxes are at each other's places, each with its place's name and
-        // position, and nothing shows a change.
+        // "Fire" into 10, on into 11, back to 1: the empty boxes are at each
+        // other's places, each with its place's name. They took their
+        // positions along, in Fire's group as in another, so they end in
+        // each other's order, a change, which L puts back.
         let round = [(1, 10), (10, 11), (11, 1)];
-        assert_eq!(run(0, &round, &[]), (true, false));
-        // The empty boxes in another group take their positions along, so
-        // they end in each other's order, which L puts back.
-        assert!(!run(1, &round, &[]).0);
-        assert_eq!(run(1, &round, &[10]), (true, false));
+        for group in [0, 1] {
+            assert_eq!(run(group, &round, &[]), (false, true));
+            assert_eq!(run(group, &round, &[10]), (true, false));
+        }
         // "Fire" left in 10: a change.
         assert_eq!(run(0, &[(1, 10)], &[]), (false, true));
     }
@@ -1814,7 +1805,8 @@ mod tests {
     fn a_category_s_order_and_a_name_count_as_a_change() {
         // Boxes A at 1 and B at 2 of one category, an empty box E at 3 of
         // another: A onto E, B onto E, A onto E, B onto A. Every box is at
-        // its place again, but A and B are in each other's position.
+        // its place again with its own position: no change. L then puts A
+        // and B in each other's position: a change.
         let (mut body, mut offline) = varied();
         for (place, category, position) in [(1, 0u8, 0u16), (2, 0, 1), (3, 1, 0)] {
             let at = label_range(place).start;
@@ -1840,6 +1832,8 @@ mod tests {
                 "box {place} holds its own Pokémon again"
             );
         }
+        assert!(!changes.any());
+        changes.insert(&mut places, 1, 1).unwrap();
         assert!(changes.any());
         // A box named with another place's default: box 13 "Bank 41" and box
         // 41 bearing its default "Bank 41". Swapped and back, box 13 comes

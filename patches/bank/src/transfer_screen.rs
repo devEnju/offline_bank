@@ -499,6 +499,15 @@ pub fn upper(mode: Mode, held: Option<usize>, cursor: usize) -> Upper {
     }
 }
 
+/// What the upper screen shows with the cursor at `cursor`, `last` the place
+/// it showed last and `back` as for `upper_cursor`. The upper screen's icon
+/// and the top line both read it, so they name the same box.
+pub fn upper_at(mode: Mode, held: Option<usize>, back: bool, cursor: u32, last: usize) -> Upper {
+    let green = held.filter(|_| mode == Mode::Move);
+    let shown = shown_place(cursor, last, green);
+    upper(mode, held, upper_cursor(held, back, shown))
+}
+
 /// The state the upper screen's box icon shows for `upper` (animation 2 of
 /// group 0): empty while its Pokémon are lifted out of it, else `state`.
 pub fn upper_state(upper: Upper, state: u8) -> u8 {
@@ -534,27 +543,21 @@ pub enum Line {
     Group { of: Of, index: u16, amount: u16 },
 }
 
-/// The line for `mode`, what is `held` and the place under the `cursor`
-/// (`None` on the button row); `group` gives a box of Bank's group and
-/// position in it, `amount` how many boxes a group has. The red hand, and
-/// any hand on the button row, shows the title. The blue and the green
-/// hand show the box under the cursor: a box of Bank by its group, the
-/// transport box as 1/1, offline box k as k/3. A box the blue hand
-/// holds shows the group and position it would have where the cursor is,
-/// by the swap's rules (`Places::swap`): of the same group the two change
-/// positions, of another group each keeps its own, and a box of Bank's
-/// place keeps its group for an offline box put there. A box with a
-/// category the Bank has no group for shows the title.
+/// The line for `mode` and `place`, the box the upper screen shows
+/// (`upper_at`); `group` gives a box of Bank's group and position in it,
+/// `amount` how many boxes a group has. The red hand shows the title. The
+/// blue and the green hand show that box: a box of Bank by its group, the
+/// transport box as 1/1, offline box k as k/3. A box with a category the
+/// Bank has no group for shows the title.
 pub fn line(
     mode: Mode,
-    held: Option<usize>,
-    cursor: Option<usize>,
+    place: usize,
     group: impl Fn(usize) -> Option<(u8, u16)>,
     amount: impl Fn(u8) -> u16,
 ) -> Line {
-    let Some(place) = cursor.filter(|_| mode != Mode::Check) else {
+    if mode == Mode::Check {
         return Line::Title;
-    };
+    }
     if place == TRANSPORT {
         return Line::Group {
             of: Of::Place(place),
@@ -569,11 +572,7 @@ pub fn line(
             amount: (PLACES - OFFLINE) as u16,
         };
     }
-    let shown = match (mode, held.and_then(&group), group(place)) {
-        (Mode::Swap, Some(own), Some(there)) if own.0 != there.0 => Some(own),
-        (_, _, there) => there,
-    };
-    match shown {
+    match group(place) {
         Some((group, position)) => Line::Group {
             of: Of::Group(group),
             index: position + 1,
@@ -1593,10 +1592,13 @@ mod console {
         let (Some(context), Some(cursor)) = (context(selection), cursor(selection)) else {
             return;
         };
-        let green = session.held.filter(|_| session.mode == Mode::Move);
-        let shown = shown_place(cursor, session.last_shown, green);
-        let cursor = upper_cursor(session.held, session.back, shown);
-        let shown = upper(session.mode, session.held, cursor);
+        let shown = upper_at(
+            session.mode,
+            session.held,
+            session.back,
+            cursor,
+            session.last_shown,
+        );
         let place = shown.place;
         let state = if place < TRANSPORT {
             unsafe { states(selection).add(place).read() }
@@ -1952,13 +1954,19 @@ mod console {
     const NUMBER: usize = 0x001e_6c0c;
     fn show_line(session: &Session, selection: *mut u8) -> Option<()> {
         let context = context(selection)?;
-        let cursor = cursor(selection).and_then(place_of);
+        let place = upper_at(
+            session.mode,
+            session.held,
+            session.back,
+            cursor(selection)?,
+            session.last_shown,
+        )
+        .place;
         let mut name = [0u16; NAME_UNITS];
         let line = with_places(|places| {
             let line = super::line(
                 session.mode,
-                session.held,
-                cursor,
+                place,
                 |place| places.group(place),
                 |group| places.group_size(group),
             );
@@ -2792,6 +2800,7 @@ mod console {
                     session.turn = Some(0);
                     session.back = true;
                     preview(session, selection);
+                    show_line(session, selection);
                     false
                 }
                 None => true,
@@ -3442,63 +3451,67 @@ mod tests {
     }
 
     #[test]
-    fn the_line_names_the_group_and_place_by_the_hand_and_what_it_holds() {
+    fn the_line_names_the_box_the_upper_screen_shows() {
         // Boxes 0..99: group place % 3 at position place / 3; group 0 has 34.
         let group =
             |place: usize| (place < TRANSPORT).then_some(((place % 3) as u8, (place / 3) as u16));
         let amount = |group: u8| if group == 0 { 34 } else { 33 };
-        let at = |mode, held, cursor| line(mode, held, cursor, group, amount);
+        // The cursor on `cursor`, the upper screen last on box 12.
+        let at = |mode, held, back, cursor: usize| {
+            let shown = upper_at(mode, held, back, cursor as u32, 12);
+            line(mode, shown.place, group, amount)
+        };
         let of = |group: u8, index: u16, amount: u16| Line::Group {
             of: Of::Group(group),
             index,
             amount,
         };
-        // Red, and the button row: the title.
-        assert_eq!(at(Mode::Check, None, Some(7)), Line::Title);
-        assert_eq!(at(Mode::Swap, None, None), Line::Title);
-        assert_eq!(at(Mode::Move, Some(3), None), Line::Title);
-        // Blue and green: the box under the cursor.
+        let cell = |place: usize, index: u16, amount: u16| Line::Group {
+            of: Of::Place(place),
+            index,
+            amount,
+        };
+        const BUTTONS: usize = 105;
+        const TRANSPORT_CURSOR: usize = 113;
+        const OFFLINE_CURSOR: usize = 114;
+        // Red: the title, on every place and on the buttons.
+        for cursor in [7, TRANSPORT_CURSOR, OFFLINE_CURSOR, BUTTONS] {
+            assert_eq!(at(Mode::Check, None, false, cursor), Line::Title);
+        }
+        // Blue and green, nothing held: the box under the cursor, and on the
+        // buttons the last one shown.
         for mode in [Mode::Swap, Mode::Move] {
-            assert_eq!(at(mode, None, Some(7)), of(1, 3, 33));
-            assert_eq!(at(mode, None, Some(99)), of(0, 34, 34));
+            assert_eq!(at(mode, None, false, 7), of(1, 3, 33));
+            assert_eq!(at(mode, None, false, 99), of(0, 34, 34));
             assert_eq!(
-                at(mode, None, Some(TRANSPORT)),
-                Line::Group {
-                    of: Of::Place(TRANSPORT),
-                    index: 1,
-                    amount: 1
-                }
+                at(mode, None, false, TRANSPORT_CURSOR),
+                cell(TRANSPORT, 1, 1)
             );
             assert_eq!(
-                at(mode, None, Some(OFFLINE + 1)),
-                Line::Group {
-                    of: Of::Place(OFFLINE + 1),
-                    index: 2,
-                    amount: 3
-                }
+                at(mode, None, false, OFFLINE_CURSOR + 1),
+                cell(OFFLINE + 1, 2, 3)
+            );
+            assert_eq!(at(mode, None, false, BUTTONS), of(0, 5, 34));
+        }
+        // Blue, holding box 3 (group 0, 2nd): that box, wherever the cursor is.
+        for cursor in [3, 6, 7, TRANSPORT_CURSOR, OFFLINE_CURSOR + 2, BUTTONS] {
+            assert_eq!(at(Mode::Swap, Some(3), false, cursor), of(0, 2, 34));
+        }
+        // Blue, holding an offline box: that box, wherever the cursor is.
+        for cursor in [7, TRANSPORT_CURSOR, OFFLINE_CURSOR + 2, BUTTONS] {
+            assert_eq!(
+                at(Mode::Swap, Some(OFFLINE + 1), false, cursor),
+                cell(OFFLINE + 1, 2, 3)
             );
         }
-        // Blue, holding box 3 (group 0, 2nd): over box 6 of its group, box 6's
-        // position; over box 7 of another group, its own; over itself, its own.
-        assert_eq!(at(Mode::Swap, Some(3), Some(6)), of(0, 3, 34));
-        assert_eq!(at(Mode::Swap, Some(3), Some(7)), of(0, 2, 34));
-        assert_eq!(at(Mode::Swap, Some(3), Some(3)), of(0, 2, 34));
-        // Holding an offline box over a box of Bank: that place's group.
-        assert_eq!(at(Mode::Swap, Some(OFFLINE), Some(7)), of(1, 3, 33));
-        // Over an offline box or the transport box: that box.
-        assert_eq!(
-            at(Mode::Swap, Some(3), Some(OFFLINE + 2)),
-            Line::Group {
-                of: Of::Place(OFFLINE + 2),
-                index: 3,
-                amount: 3
-            }
-        );
-        // Green, holding: the box under the cursor as it is.
-        assert_eq!(at(Mode::Move, Some(3), Some(7)), of(1, 3, 33));
+        // Green, holding box 3's Pokémon: the box under the cursor; on the
+        // buttons, and while the upper screen turns back, their box.
+        assert_eq!(at(Mode::Move, Some(3), false, 7), of(1, 3, 33));
+        assert_eq!(at(Mode::Move, Some(3), false, BUTTONS), of(0, 2, 34));
+        assert_eq!(at(Mode::Move, Some(3), true, 7), of(0, 2, 34));
         // A category the Bank has no group for: the title.
         let none = |_: usize| None;
-        assert_eq!(line(Mode::Swap, None, Some(5), none, amount), Line::Title);
+        assert_eq!(line(Mode::Swap, 5, none, amount), Line::Title);
     }
 
     #[test]
