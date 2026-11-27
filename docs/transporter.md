@@ -30,22 +30,17 @@ Gen 5 games produce Gen 6 Pokémon while Gen 1 and Gen 2 Virtual Console games p
 
 ## Choosing the language of the games
 
-The game list shows the games of **one language** only: the cartridge, the saves on the SD card and the Virtual Console titles alike. The original language screen, reached from the start screen, chooses that language. It no longer changes the language of the screens, which stay in the console's language.
+The game list shows the games of **one language** only: the cartridge, the saves on the SD card and the Virtual Console titles alike. The original language screen chooses it; the screens stay in the console's language.
 
-- Until you choose, the games in the console's language are listed. A console set to a language no source game exists in (Chinese, Dutch, Portuguese, Russian) starts with English.
-- The choice is not saved, as the original saved nothing either: it lasts until Transporter is closed.
-- After a choice, the start screen shows it: its logo and its start prompt appear in the chosen language. Japanese, English and Korean have the same prompt and differ in the logo only. Everything else stays in the console's language.
-- The list offers the six languages that are not chosen already, and a **Back** button below them that leaves the screen without changing anything, as B does. The two Chinese entries are gone, because no Gen 1, 2 or 5 game exists in Chinese.
-- Japanese is confirmed like every other language and the kana/kanji step is gone, since the screens do not change.
-- The Back button is built like the Back buttons of Pokémon Bank's menus, to which this screen belongs: the screen's own list button with the text of the game-selection screen's Back, in the language of the screens, and the return icon in its own colour. It is put together when the screen is opened from parts the original already has.
-- The seven entries are spaced like the buttons of Bank's main menu, with a small gap between them, and centred on the screen.
-- The language is the game's, not the save's: for a Gen 5 game the language letter of its game code, for a Virtual Console title the language of the installed title.
+- Until you choose, the console's language is listed. A console language no source game exists in (Chinese, Dutch, Portuguese, Russian) starts with English.
+- The choice lasts until Transporter is closed, as the original saved nothing either.
+- The start screen's logo and start prompt show the chosen language.
+- The list offers the six other languages and a **Back** button, which leaves as B does. The Chinese entries and the kana/kanji step are gone.
+- A game's language is the game's, not the save's: the language letter of a Gen 5 game code, the installed language of a Virtual Console title.
 
 ## Black/White saves on the SD card
 
-Transporter looks for saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps on the SD card and offers each one as its own entry in the game list, beside the cartridge and the Virtual Console titles. Only saves in the [chosen language](#choosing-the-language-of-the-games) are looked for. **The cartridge is preferred for its own game:** with, say, German chosen and a German White cartridge inserted, the White entry is the cartridge and a German White save on the SD card is not offered while saves of the other three games still are. Bank does the same with a game that is both inserted and installed: it uses the cartridge. A cartridge in another language than the chosen one is not listed.
-
-Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's default folder `SD:/roms/nds/saves/`. Each game has exactly one name per language:
+Transporter also lists the saves that TWiLight Menu++ or an nds-bootstrap forwarder keeps in `SD:/roms/nds/saves/`, each as its own entry, in the [chosen language](#choosing-the-language-of-the-games) only. A cartridge of the same game is preferred and hides its save, as Bank prefers a cartridge to an installed game. Only the names GodMode9 gives a cartridge dump are accepted:
 
 | Language | Black | White | Black 2 | White 2 |
 | --- | --- | --- | --- | --- |
@@ -57,15 +52,14 @@ Only the names GodMode9 gives a cartridge dump are accepted, in TWiLight Menu's 
 | Spanish | `POKEMON_B_IRBS01_00.sav` | `POKEMON_W_IRAS01_00.sav` | `POKEMON_B2_IRES01_00.sav` | `POKEMON_W2_IRDS01_00.sav` |
 | Korean | `POKEMON_B_IRBK01_00.sav` | `POKEMON_W_IRAK01_00.sav` | `POKEMON_B2_IREK01_00.sav` | `POKEMON_W2_IRDK01_00.sav` |
 
-- The last two digits are the cartridge's revision: `01` for the Japanese Black 2 and White 2, `00` for every other one. A save under the other number is not listed. Rename it to the name in the table.
-- A save is listed only while its language is chosen: `POKEMON_W2_IRDD01_00.sav` is a German White 2.
-- Any other name, folder or spelling is ignored. A file that is not exactly 524,288 bytes is ignored. A save of another game or language than its name says is ignored: a White save renamed to the Black name, or an English save renamed to the German name.
-- At most four saves are offered, one per game, and the whole list holds 40 games, as in the original.
+- The last two digits are the cartridge's revision. A save under the other number is not listed: rename it to the name in the table.
+- Ignored: any other name or folder, a file that is not exactly 524,288 bytes, and a save of another game or language than its name says.
+- At most four saves are offered, one per game; the whole list holds 40 games, as in the original.
 
 What happens to the file:
 
 - The original reads and checks it as it would a cartridge's save.
-- Before the first change in a session, the untouched save is copied to `SD:/3ds/Pokémon Bank/<name>.sav.bak` (one copy, replaced the next time) and read back. If the copy cannot be written whole, nothing changes. A `.sav.bak` beside the save is one of an earlier release: nothing reads it, and it may be deleted.
+- Before the first change in a session, it is copied to `SD:/3ds/Pokémon Bank/<name>.sav.bak` (replaced the next time) and read back. If the copy cannot be written whole, nothing changes.
 - Every write is read back. The Pokémon are removed only after the delivery to Bank is written and checked.
 - The file is never created, resized or renamed.
 
@@ -111,7 +105,7 @@ This only comes after Bank has sent you here with "Your communication with Poké
 
 > This is your final warning. The Pokémon you are trying to send could be lost forever. Are you sure you want to try to restore your data?
 
-Its **Yes** applies your first answer, and Bank opens normally again. Its **No** changes nothing, and the next START asks again. Closing Transporter on either question changes nothing, too. If the error screen comes instead, your answer was not applied, and the next START asks again.
+Its **Yes** applies your first answer, and Bank opens normally again. Its **No**, closing Transporter, or the error screen changes nothing, and the next START asks again.
 
 Look in your game first:
 
@@ -121,15 +115,15 @@ Look in your game first:
 | The Pokémon you took **out of** Bank are in your boxes | No |
 | Neither, or you are not sure | Either. Bank has kept every box whose Pokémon the session changed, as it was before and after ([bank.md](bank.md#a-save-left-to-transporter)). |
 
-Transporter leaves that backup as it is. Bank's next START writes the side Bank does not hold to a folder of the date on the SD card, `YYYYMMDD-HHMMSS-backup/`: after Yes the `.new.box` files, after No the `.old.box` ones.
+Bank's next START writes the side not chosen to `YYYYMMDD-HHMMSS-backup/` on the SD card: after Yes the `.new.box` files, after No the `.old.box` ones. To bring one back, see [bank.md](bank.md#on-the-sd-card).
 
 ## A game save that does not load
 
 > The saved data in your Pokémon game is corrupted.
 
-The original's check of the chosen game failed, so nothing is transferred and nothing is written. Start the game itself to see what it makes of its save. For a save on the SD card, `/3ds/Pokémon Bank/<name>.sav.bak` also holds it as it was before its last session: copy it to `/roms/nds/saves/` as `<name>.sav` in place of the old file.
+The original's check of the chosen game failed, so nothing is transferred and nothing is written. Start the game itself to see what it makes of its save. For a save on the SD card, `/3ds/Pokémon Bank/<name>.sav.bak` holds it as it was before its last session: copy it to `/roms/nds/saves/` as `<name>.sav` in place of the old file.
 
-The patch's changes cannot cause this. The check and the message are the original Transporter's own, and so is every save of a game: the one before the question and the one that removes the transferred Pokémon are written by the original's own code, exactly as without the patch. For a save on the SD card the patch only carries those bytes to the file, after copying it to `<name>.sav.bak`, and reads each write back.
+The patch's changes cannot cause this: the check, the message and every save of the game are the original's own code. For a save on the SD card the patch only carries those bytes to the file and reads each write back.
 
 ## Troubleshooting
 
