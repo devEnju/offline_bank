@@ -116,6 +116,34 @@ pub fn expectation(kind: &'static str) -> Expectation {
             (0x00362044, 0x002b4a20, Ptr(Sym("bank_offline_save"))),
             (0x00361e84, 0x002af034, Raw(0x002af124)),
             (0x00361c20, 0x002ad7bc, Ptr(Sym("bank_offline_unlock"))),
+            // The transfer screen: task 0x1B's update, its set-up's notice
+            // skipped, scene 1's end, the selection object's key and button
+            // updates, its cursor's making, the layout parser's slot.
+            (0x00361820, 0x002a7bf0, Ptr(Sym("bank_transfer_update"))),
+            (0x002a8308, 0xebfcb6ec, Bl(Sym("bank_transfer_count"))),
+            (0x002a8318, 0xe3550000, B(At(0x002a8380))),
+            (0x0033d38c, 0x002a7f08, Ptr(Sym("bank_transfer_scene_done"))),
+            (0x00360750, 0x00285ba8, Ptr(Sym("bank_transfer_input"))),
+            (0x0036074c, 0x0028672c, Ptr(Sym("bank_transfer_event"))),
+            (
+                0x00360774,
+                0x00285ba0,
+                Ptr(Sym("bank_transfer_input_thunk")),
+            ),
+            (
+                0x00360764,
+                0x00286724,
+                Ptr(Sym("bank_transfer_event_thunk")),
+            ),
+            (0x00286cf4, 0xebfd7e50, Bl(Sym("bank_transfer_cursor"))),
+            (0x0035f118, 0x0024f1f8, Ptr(Sym("bank_layout_check_stub"))),
+            (0x0028644c, 0xebfe9614, Bl(Sym("bank_transfer_slot"))),
+            (0x00285ed8, 0xebfd5638, Bl(Sym("bank_transfer_name"))),
+            (0x00286db0, 0xebfd5282, Bl(Sym("bank_transfer_name"))),
+            // The upper layout's animation 0 is box_name2, and the set-up
+            // does not play it.
+            (0x0033d89c, 0x0000003a, Raw(0x0000003b)),
+            (0x00286094, 0xebfd8e14, Raw(0xe320f000)),
         ]),
     }
     // Only the test build: the main menu's update (its table slot) and its
@@ -278,9 +306,9 @@ pub fn expectation(kind: &'static str) -> Expectation {
         protected,
         router,
         entries: match kind {
-            "bank" => 10,
+            "bank" => 21,
             "migration" => 3,
-            "test" => 12,
+            "test" => 23,
             _ => 7,
         },
         menu_edits: if kind == "test" { 2 } else { 0 },
@@ -314,6 +342,20 @@ fn extra(expect: &Expectation, _original: &[u8], patched: &[u8], elf: &Elf) -> R
         )?;
     }
     if matches!(kind, "bank" | "test") {
+        // The layout slot names a check beside the start-up hook, as layouts
+        // are built before the payload can run; it begins with cmp r1, #0.
+        let layout = elf
+            .symbols
+            .get("bank_layout_check_stub")
+            .map_or(0, |s| s.value);
+        let boot = elf.boot();
+        check(
+            layout >= boot.address
+                && layout as u64 + 4 <= boot.address as u64 + boot.file_bytes as u64
+                && word(patched, 0x0035f118).ok() == Some(layout)
+                && word(patched, layout).ok() == Some(0xe3510000),
+            "Layout check lies beside the start-up hook and begins with cmp r1, #0",
+        )?;
         // The no-game stub hands the task in r4 on and keeps lr and sp.
         let stub = elf
             .symbols

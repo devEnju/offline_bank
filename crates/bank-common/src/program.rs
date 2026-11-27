@@ -62,4 +62,5 @@ impl Program for Bank15 {
     const FILE_WRITE: usize = 0x0016_594c;
     const FILE_CLOSE: usize = 0x0016_5920;
     const FS_SESSION: usize = 0x0039_0100;
+    const OPEN_FILE_DIRECTLY: usize = 0x0022_d338;
 }

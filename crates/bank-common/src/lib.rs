@@ -16,16 +16,19 @@
 pub mod bank_files;
 pub mod fault;
 pub mod fs;
+pub mod interrupted;
 pub mod native_bank;
 pub mod program;
 #[cfg(feature = "test-build")]
 pub mod rehearsal;
 #[cfg(any(test, feature = "test-support"))]
 pub mod router;
+pub mod sdfiles;
 pub mod session;
 pub mod task;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+pub mod transfer_screen;
 #[cfg(target_arch = "arm")]
 pub mod ui;
 pub mod worker;

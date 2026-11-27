@@ -64,4 +64,5 @@ impl Program for Transporter15 {
     const FILE_WRITE: usize = 0x0015_9390;
     const FILE_CLOSE: usize = 0x0015_9364;
     const FS_SESSION: usize = 0x0031_1f80;
+    const OPEN_FILE_DIRECTLY: usize = 0x001d_f448;
 }

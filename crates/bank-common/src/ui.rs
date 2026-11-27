@@ -8,7 +8,9 @@
 //! that message's other part, the advice to check the card and try again;
 //! the scan's message for a card without room; the first line of the
 //! server messages' "The SD card is full."; or Transporter's "The saved data
-//! in your Pokémon game is corrupted." Nothing else is written here.
+//! in your Pokémon game is corrupted." Nothing else is written here. The
+//! one text read for a file is "Transport Box", the name the transport box's
+//! box files carry.
 
 use core::mem::transmute;
 use patch_common::native::pointer as native_pointer;
@@ -225,6 +227,24 @@ pub unsafe fn stop_loading(ui: *mut u8) -> Result<(), Error> {
         .map_err(|_| Error::InvalidPointer)
 }
 
+/// `001d5f50(ui)`: hides what the shared UI may still show (the dialog
+/// scene, the loading panel and its text frame, the dialog and the
+/// buttons), as task `0x1B`'s and the box screen's set-ups do before their
+/// screens (`002a8320`, `002a78c8`).
+const HIDE_ALL: usize = 0x001d_5f50;
+
+/// Takes everything of the shared UI off the screen (`HIDE_ALL`): after a
+/// loading panel with text, before a screen of the original that expects
+/// the UI as its set-up leaves it.
+/// # Safety
+/// `ui` has stop's native lifetime contract, on the main task thread.
+pub unsafe fn hide_all(ui: *mut u8) -> Result<(), Error> {
+    unsafe { context(ui) }?;
+    let hide: unsafe extern "aapcs" fn(*mut u8) = unsafe { transmute(HIDE_ALL) };
+    unsafe { hide(ui) };
+    Ok(())
+}
+
 /// `001d7ed8(layout, pane)`: a pane of a layout, or null, as `001e7084`
 /// finds the pane it shows or hides.
 const FIND_PANE: usize = 0x001d_7ed8;
@@ -248,6 +268,17 @@ pub unsafe fn loading_shown(ui: *mut u8) -> Result<bool, Error> {
     Ok(unsafe { pane.add(0xb7).read() } & 1 != 0)
 }
 
+/// The box screen's sound when its hand changes colour (`00288ab0`).
+pub const HAND_SOUND: u32 = 0x0005_0008;
+
+/// Plays a sound once, as the original does (`PLAY_SOUND`, see `saved`).
+/// # Safety
+/// On the main task thread.
+pub unsafe fn sound(id: u32) {
+    let play: unsafe extern "aapcs" fn(u32, u32, u32, u32) = unsafe { transmute(PLAY_SOUND) };
+    unsafe { play(id, 0, u32::MAX, 0) };
+}
+
 /// Native message 9: "Success! Changes saved."
 const SAVED_NOTICE: u32 = 9;
 
@@ -264,8 +295,7 @@ const SAVED_NOTICE: u32 = 9;
 pub unsafe fn saved(ui: *mut u8) -> Result<(), Error> {
     unsafe { ready(ui) }?;
     unsafe {
-        let play: unsafe extern "aapcs" fn(u32, u32, u32, u32) = transmute(PLAY_SOUND);
-        play(0x0005_0012, 0, u32::MAX, 0);
+        sound(0x0005_0012);
         stop_loading(ui)?;
         display(ui, SAVED_NOTICE, true)
     }
@@ -334,6 +364,37 @@ pub unsafe fn notice_rest(ui: *mut u8, message: u32) -> Result<(), Error> {
         return Err(Error::MissingBuffer);
     };
     let len = message::keep_rest(room, len).ok_or(Error::InvalidMessage)?;
+    unsafe { begin(context, text, room, len) };
+    Ok(())
+}
+
+/// Shows an original message from its page `skip` + 1 on (`message::keep_rest`
+/// `skip` times), without waiting, as task 3 shows its question before its
+/// two buttons (`001d6650(ui, 0, 0, 0)`, state `0x18`). The rest moves to
+/// the front of the UI's own string object, where `edit` may shorten it
+/// (it answers the new length and ends the text there).
+/// # Safety
+/// `ui` has stop's native lifetime contract, with no other dialog active.
+pub unsafe fn notice_from(
+    ui: *mut u8,
+    message: u32,
+    skip: usize,
+    edit: impl FnOnce(&mut [u16], usize) -> usize,
+) -> Result<(), Error> {
+    unsafe { display(ui, message, false)? };
+    let context = unsafe { context(ui) }?;
+    let Some(Text {
+        object: text,
+        room,
+        mut len,
+    }) = (unsafe { text(ui)? })
+    else {
+        return Err(Error::MissingBuffer);
+    };
+    for _ in 0..skip {
+        len = message::keep_rest(room, len).ok_or(Error::InvalidMessage)?;
+    }
+    let len = edit(room, len);
     unsafe { begin(context, text, room, len) };
     Ok(())
 }
@@ -416,6 +477,43 @@ unsafe fn foreign_notice(
     let len = message::first_line(&room[..len]);
     unsafe { begin(context, text, room, len) };
     Ok(())
+}
+
+/// `002299f8(messages, message, string)` loads a message into a string
+/// object; `002298a0(words, into, from)` fills in its values. A screen's
+/// context keeps its words at `+0x30`.
+const LOAD_MESSAGE: usize = 0x0022_99f8;
+const FILL_IN: usize = 0x0022_98a0;
+const CONTEXT_WORDS: usize = 0x30;
+
+/// Message `message` with its values filled in, as `001e21c8` loads one
+/// for a pane: from the context's own file (`[context + 0x28]`), into the
+/// first of the context's two work strings; `set` gives the context's words their values; filled in
+/// into the second, whose room is answered with the text, which ends at its
+/// first zero. The caller uses it before the next message is loaded.
+/// # Safety
+/// `context` is a live layout context of the original, on the main thread;
+/// nothing else still needs the work strings' texts.
+pub unsafe fn filled(
+    context: *mut u8,
+    message: u32,
+    set: impl FnOnce(*mut u8),
+) -> Option<&'static mut [u16]> {
+    unsafe {
+        let strings = shared::work_strings(context)?;
+        let (raw, filled) = (
+            native_pointer(word(strings, 0))?,
+            native_pointer(word(strings, 4))?,
+        );
+        let messages = native_pointer(word(context, CONTEXT_MESSAGES))?;
+        let words = native_pointer(word(context, CONTEXT_WORDS))?;
+        let load: unsafe extern "aapcs" fn(*mut u8, u32, *mut u8) = transmute(LOAD_MESSAGE);
+        let fill: unsafe extern "aapcs" fn(*mut u8, *mut u8, *mut u8) = transmute(FILL_IN);
+        load(messages, message, raw);
+        set(words);
+        fill(words, filled, raw);
+        Some(shared::text(filled).ok()??.room)
+    }
 }
 
 /// "The SD card is full.": the first line of message 0 of text file 26; the

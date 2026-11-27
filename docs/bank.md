@@ -6,7 +6,7 @@ A Luma3DS patch for **Pokémon Bank 1.5** (title `00040000000C9B00`, TMD version
 
 | Original Bank | Patched |
 | --- | --- |
-| Connects, checks the account and pass, then shows the main menu. | No connection. Start screen and after that **game selection**. There is no main menu; Back on game selection returns to the start screen. |
+| Connects, checks the account and pass, then shows the main menu. | No connection. Start screen and after that **game selection**. There is no main menu; Back on game selection opens the [transfer screen](#the-transfer-screen), a box manager. |
 | Downloads the Bank from the server and uploads it on save. | Reads and writes local files on a background thread while the original loading screen keeps animating. |
 | The server resolves interrupted saves. | A local journal does. An interruption leaves either the old or the new state, never a mix ([below](#if-save-and-quit-is-interrupted)). |
 | First start: asks for a language, which cannot be changed later. | Never asks. Bank is always in the console's language ([below](#first-start)). |
@@ -17,25 +17,23 @@ A Luma3DS patch for **Pokémon Bank 1.5** (title `00040000000C9B00`, TMD version
 
 ## First start
 
-The original asks two things when it has no save data of its own yet. Both are gone:
+The original asks two things when it has no save data of its own yet (Bank's small save, not the extdata with your boxes). Both are gone:
 
-- **Language.** Bank no longer asks and no longer follows an earlier choice: it is in the console's language at every start, as Poké Transporter is. No language is ever stored, and one stored earlier by the original is cleared. A Japanese console therefore gets kana and kanji could only be chosen on the removed screen.
-- **Precaution for Use.** The notice is not shown. Bank goes on as if you had accepted it and creates its save data in the same step, once.
+- **Language.** Bank is always in the console's language, as Poké Transporter is. No language is stored, and one the original stored is cleared. A Japanese console gets kana; kanji could only be chosen on the removed screen.
+- **Precaution for Use.** Not shown. It counts as accepted and is saved as the original saves it.
 
-**If you remove the patch later**, the original finds save data in which the notice is accepted and no language is chosen: it asks for the language and does not show the notice again. That also holds for save data in which the original had stored a language: the patched Bank clears it at its first start, so the original asks again.
+**If you remove the patch later**, the original asks for the language again and does not show the notice.
 
-This save data is Bank's own small save, not the extra data that holds your boxes.
-
-**Brigette's welcome** is kept. The original plays it when no Bank exists yet, right before it creates one, and stores no mark for it. The patch does the same: it plays once, when the offline Bank is created, and never for a Bank that already exists. If you close Bank while she talks, no Bank has been created and the welcome plays at the next start.
+**Brigette's welcome** plays once, when the Bank is created, as in the original. If you close Bank while she talks, it plays again at the next start.
 
 ## Poké Miles
 
-**What you earn.** One Pokémon in the Bank earns one Mile in 30 days, counted by the hour: every full hour adds `Pokémon in the boxes ÷ 720` Miles. The part below a whole Mile is carried, so nothing is lost to rounding, however often you open Bank. This is the original rate, but the original dropped the remainder at every visit.
+**What you earn.** One Pokémon in the 100 boxes earns one Mile in 30 days: every full hour adds `Pokémon ÷ 720` Miles, and the part below a whole Mile is carried. The rate is the original's, which dropped that part at every visit.
 
-- Only the 100 regular boxes count. The game's boxes and the transport box do not.
+- The game's boxes and the transport box do not count.
 - 30 Pokémon earn 1 Mile a day, 15 earn 1 Mile every two days, 3,000 earn 100 a day.
 - An hour counts when the clock passes a full hour: saved at 10:55 and opened at 11:05 is one hour.
-- The hours up to a Save and Quit are paid for the Pokémon that were in the boxes when the game was loaded. What you deposit or withdraw counts from that save on.
+- The hours up to a save are paid for the Pokémon that were in the boxes when the game was loaded, or when the transfer screen's boxes appeared. What you deposit, withdraw or move counts from that save on.
 - There is one balance for the whole Bank. Opening one game and then another does not earn twice.
 - The balance stops at the original limit of 65,535.
 
@@ -45,9 +43,9 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 - It becomes permanent with the next Save and Quit, together with the Miles. If you leave without saving, it comes again at the next opening, again with 100, never twice.
 - A Gen 6 gift still waiting in the game, or a full Gen 7 gift list, comes first with the original's notice. If you go on to the boxes, the welcome waits for the next opening of a game that can take a gift.
 
-**When it is saved.** Miles are added when the selected game has loaded and again at Save and Quit, and become permanent there, in the same step as your boxes. If you exit without saving, nothing changes and the same hours are credited next time. A new Bank starts earning with its first Save and Quit even if the 100 extra Miles had not been redeemed yet.
+**When it is saved.** Miles are added when the game has loaded (or the transfer screen's boxes appear) and again at the save, and become permanent with your boxes. Leaving without saving changes nothing: the same hours count next time. A new Bank earns from its first save on.
 
-**The clock.** The date of the last Save and Quit and the day of the last redemption only move forward.
+**The clock.** The date of the last save (Save and Quit, or the transfer screen's) and the day of the last redemption only move forward.
 
 - Console date set back: saving still works, no Miles are earned, and the stored dates are kept. Earning resumes once the clock passes the stored date again.
 - Console date set ahead: that time is paid once, because a console cannot tell a jump from a real absence. Back on the real date, nothing is earned until it catches up.
@@ -65,30 +63,28 @@ This save data is Bank's own small save, not the extra data that holds your boxe
 | --- | --- | --- |
 | 0 | | Nothing. The boxes open directly. |
 | any | yes | Nothing for the rest of the day, also when the balance passes 10 again. |
-| 1 to 9 | no | The original message, without choices, at the first opening of a day. After a Save and Quit on that day nothing more, until the balance reaches 10 or the day changes. |
+| 1 to 9 | no | The original message, without choices, at the first opening of a day. After a save on that day nothing more, until the balance reaches 10 or the day changes. |
 | 10 or more | no | The original message and the choices, at every opening until you redeem. |
 
-- "The first opening of a day" means that the last Save and Quit was on an earlier day. If you leave without saving, the message comes again at the next opening.
+- "The first opening of a day" means that the last save (Save and Quit, or the transfer screen's) was on an earlier day. If you leave without saving, the message comes again at the next opening.
 - An offer you decline comes back at the next opening, with the Miles of the hours since.
-- The original's notice about a present still waiting in a Gen 6 game, or about a full gift list in a Gen 7 game, only comes together with an offer of 10 or more, where it stands in the way of a redemption. Without an offer it is not shown.
+- The notice about a gift still waiting in a Gen 6 game, or a full gift list in a Gen 7 game, comes only with an offer of 10 or more.
 - With the console date set back before a stored date, that date counts as today.
 
 The patch adds one safety check: after a claim, the balance and the gift in the game must match what was shown. If not, the balance is restored and the session ends with error `00000013` without saving.
 
 ## Pokédex and adventure records
 
-As in the original, with one addition for games the Bank already knows. The Bank keeps eight separate slots, one per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon). The National Pokédex you see is the combination of all eight.
+As in the original, with one addition. The Bank keeps one slot per game version (X, Y, Omega Ruby, Alpha Sapphire, Sun, Moon, Ultra Sun, Ultra Moon); the National Pokédex you see combines all eight.
 
-- A game's Pokédex and adventure records are taken over for the first time when you **open the records screen** with that game while saving alone does not do it. They **replace that version's slot**. The other seven slots are untouched.
-- Once a game is in its slot, **every Save and Quit with that game brings its Pokédex and records up to date**, without a visit to the records screen. This holds only for the same trainer.
-- If the slot belongs to a different trainer, opening the screen takes nothing over. Choose that game's entry there and the original confirmation appears. Accepting replaces the slot, declining keeps it.
-- What was taken over is stored with the next Save and Quit. If you leave without saving, it is not.
-
-The original import copies and does not merge within a version.
+- A game is taken over the first time you **open the records screen** with it. It replaces its version's slot; the others stay.
+- After that, **every Save and Quit with that game** updates its slot, for the same trainer.
+- A slot of another trainer is replaced only if you choose that game on the records screen and accept the original's confirmation.
+- Nothing is stored until the next Save and Quit.
 
 ## Where the Bank is stored
 
-Eight files inside SD extdata archive `0x00000C9B`, the archive Bank already owns, in four pairs. The first three hold the data the original Bank kept on the server, cut into three pieces and otherwise unchanged.
+Eight files in four pairs, in Bank's own SD extdata archive `0x00000C9B`. The first three pairs hold what the original kept on the server, cut into three pieces and otherwise unchanged.
 
 | Files | Size of each | Each holds |
 | --- | --- | --- |
@@ -97,11 +93,11 @@ Eight files inside SD extdata archive `0x00000C9B`, the archive Bank already own
 | `/mover.bin`, `/mover.alt.bin` | 6,990 bytes | The transport box: up to 30 Pokémon from Poké Transporter. |
 | `/journal.bin`, `/journal.alt.bin` | 140 bytes | The record that ties the others together: which file of each pair is current, with its checksum, and whether a save is in progress. |
 
-**Why pairs.** A save writes the file of each pair that is not in use and switches over only when everything is written. A power cut during a save leaves the files in use as they were, and the next start decides from the game's save which ones to keep ([below](#if-save-and-quit-is-interrupted)). `.alt` is not an older save: the two files take turns.
+**Why pairs.** A save writes the file of each pair that is not in use and switches over only when everything is written, so a power cut leaves the files in use as they were ([below](#if-save-and-quit-is-interrupted)). `.alt` is not an older save: the two take turns.
 
-- Files are written only at Save and Quit, when they are first created, and when a start finishes an interrupted save. Loading and moving Pokémon never write.
+- Files are written only at Save and Quit, at the transfer screen's save, when they are first created, and when a start finishes an interrupted save. Loading and moving Pokémon never write.
 - If a file Bank needs cannot be read, Bank shows its error screen and changes nothing. It never replaces what it cannot read with something empty.
-- The transport box is filled by the [Transporter patch](transporter.md). You take Pokémon out by moving them into boxes and what you leave there stays.
+- The transport box is filled by the [Transporter patch](transporter.md). What you do not move out of it stays there.
 - The files are inside encrypted extdata, not loose on the SD card. An edited save dropped onto the card does not work.
 
 The formats are described in [internals.md](internals.md#storage).
@@ -117,9 +113,76 @@ SD:/luma/titles/00040000000C9B00/exheader.bin
 
 The first start creates an empty Bank.
 
+## The transfer screen
+
+Press **Back** on game selection. The original's question comes, without its words about Pokémon HOME: "Do you want to move the Pokémon in Pokémon Bank?". "Begin the move" shows "Communicating with the Pokémon Bank server..." for a moment, then the box screen of the HOME transfer; "Cancel" goes back to the start screen. Nothing is sent anywhere.
+
+The screen shows your 100 boxes and, behind the last one, the **transport box** ("Transport Box", on a blue label) and three **offline boxes**: files on the SD card, named as default boxes are ("Box 1" to "Box 3" in English). It opens also for a Bank without Pokémon. **START** changes the hand while nothing is held:
+
+| Hand | A on a box, then A on another | |
+| --- | --- | --- |
+| Red | Checks or unchecks it. | Checked boxes are backed up at the save. |
+| Blue | Swaps the two boxes, with their Pokémon, names, checks and places in their groups. | Not the transport box. **L** moves the box under the cursor one place up in its group (the first to the end); held, it repeats. |
+| Green | Moves its Pokémon into the other box, each into the same slot. | The other box must hold no Pokémon. Not a checked box. Names stay. |
+
+- B puts a held box back. Where it cannot go, A plays the refusal sound; onto the transport box it goes back, and "Cannot be transported there." shows.
+- While something is held, only A, B and the cursor work.
+- Nothing goes into the transport box. Its Pokémon leave only with the green hand.
+- A box keeps a name it brings along. A default name ("Bank 12", "Box 2") stays with its place, and a box of Bank left without a name gets its default.
+- The top line counts the checked boxes, out of 104. With the blue or green hand it names the shown box's group and place ("Group: <name>", "12/13").
+
+**When you finish**, press Y (DONE). B, while nothing is held, asks "Would you like to quit without saving?": Yes goes to the start screen, No back to the boxes.
+
+| You have | Y asks | Yes | No |
+| --- | --- | --- | --- |
+| Checked a box | "Move these Pokémon?" | Writes everything | Back to the boxes |
+| Changed boxes, none checked | "Would you like to save and quit?" | Writes everything | Back to the boxes |
+| Changed nothing | "Quit moving Pokémon?" | Start screen | Back to the boxes |
+
+A box counts as changed if its Pokémon, name, group or position differ from when the screen opened; boxes swapped and back are unchanged. Putting Pokémon down with the green hand always counts. After a write comes "Success! Changes saved." and the start screen.
+
+### On the SD card
+
+```text
+/3ds/Pokémon Bank/
+    mover1.box .. mover3.box         the offline boxes, written at the first save
+    20261109-140307/                 one folder per save with a box checked
+        bank21.box                   box 21, copied: it stays in Bank (box 100 is bank00)
+        mover0.box                   the transport box, copied
+        mover2.box                   offline box 2, moved: its cell is empty afterwards
+    20261116-091500-backup/          boxes START kept from an interrupted save (below)
+    POKEMON_W_IRAD01_00.sav.bak      Poké Transporter's copy of a game's save (transporter.md)
+```
+
+- A checked box of Bank is copied; a checked offline box is moved. So a box of Bank swapped onto a cell and checked leaves Bank and is kept in the folder.
+- **To bring a box back**, copy its file to `/3ds/Pokémon Bank/` as `mover1.box`, `mover2.box` or `mover3.box`, over a cell without Pokémon, and move it in. It takes the group and place of the box whose spot it takes.
+- A file that is not a whole box file stops the screen with error `00000015`. A cut or a full card while writing can leave one; delete it.
+
+**An interrupted save.** The next START finishes or undoes it. It copies the offline boxes with Pokémon that the save changed into `YYYYMMDD-HHMMSS-backup/`, as they were (`mover2.old.box`) and as they became (`mover2.new.box`), unless nothing had changed yet. One of them may be the only copy: keep the folder until you have found its Pokémon.
+
+- Cut at the very end of a save: only `.old` may be there, as the new box is in its cell.
+- "The SD card is full.": the next START does it, after you freed space.
+- A folder named with 16 letters and digits: START was cut. Leave it; the next START renames it.
+- A file that can no longer be read is deleted. Where Pokémon may be gone, the error screen shows `00000015 00000000` once.
+- No folder is written over: if its name is taken, the next free second names it.
+
 ## Backing up the Bank
 
-The boxes are in Bank's extdata, so a backup of Bank's *save* does not contain them. In [Checkpoint](https://github.com/BernardoGiordano/Checkpoint), switch to **extdata** mode (X button), select Pokémon Bank, and back up or restore from there.
+Bank needs no other tool to get through a power cut or a pulled Game Card ([below](#if-save-and-quit-is-interrupted)); putting back an older copy of Bank's data is what can get in its way.
+
+To keep a copy of Pokémon, check their boxes on the [transfer screen](#the-transfer-screen) and save: they go into `/3ds/Pokémon Bank/YYYYMMDD-HHMMSS/` ([On the SD card](#on-the-sd-card)). The file of a checked offline box is then the only copy of its Pokémon, so keep it. To keep copies off the SD card, copy `/3ds/Pokémon Bank/` to a PC now and then.
+
+The offline boxes are files of the SD card, not part of Bank's extdata: a Pokémon in one is in the Bank only once moved into a box.
+
+### Backups and restoring
+
+Bank cannot notice what is changed from outside, so these five rules are yours to follow:
+
+1. Back up and restore Bank and `mover1.box`, `mover2.box` and `mover3.box` together.
+2. After Transporter asks its question, open Bank and press START before you restore anything.
+3. Only delete a `-backup` or session folder once you have checked that you no longer need its boxes.
+4. Copy a box file only into an empty offline box, and only while Bank is closed.
+5. Don't bring a box back while its Pokémon are still in Bank.
 
 ## If Save and Quit is interrupted
 
@@ -156,6 +219,16 @@ The session's game is not there. Make it the one Bank finds and press START. Ban
 
 The game is there but was saved on since, so its save cannot show which boxes fit it. Open Poké Transporter and press START: it asks you ([transporter.md](transporter.md#a-save-left-to-transporter)). Until you answer, nothing changes.
 
+**Your boxes are backed up first.** Before showing this message or the one that waits for your game, Bank keeps every box the session changed, as it was before and after, inside its own data. Once you answer in Transporter, the next START writes the side not chosen to the SD card: after Yes the `.new.box` files, after No the `.old.box` ones. If Bank finds the game with its save from before or after the session instead, that decides it and nothing is written.
+
+```text
+/3ds/Pokémon Bank/YYYYMMDD-HHMMSS-backup/
+    bank30.new.box                   box 30 after the session
+    mover0.new.box                   the transport box, if it changed
+```
+
+They can be the only copies: keep the folder until you have found their Pokémon. To bring one back, see [On the SD card](#on-the-sd-card). If START says "The SD card is full.", nothing is lost: free some space and press START again.
+
 ### Unlock without the game
 
 Only if your session's game will never be available again. Press START and hold **L, A and START** until the loading screen ends. The following screen then comes in place of the message. Enter the eight digits as shown.
@@ -177,9 +250,9 @@ Bank shows the original's message and returns to its start screen after A. Nothi
 
 > The saved data in your Pokémon game is corrupted.
 
-The chosen game's save failed the check of its checksums, so Bank does not load it. Nothing is written, and every other game can be chosen as usual. Start the game itself to see what it makes of its save.
+The chosen game's save failed its checksum check, so Bank does not load it and writes nothing; every other game works as usual. Start the game itself to see what it makes of its save.
 
-The patch's changes cannot cause this. The game's save is written by the original Bank's own code, exactly as without the patch. What the patch adds is the check: the original did not check a save when loading it, and its next Save and Quit wrote a damaged one back with new checksums, which hid the damage. The patch checks first, so that nothing damaged reaches your boxes.
+The patch cannot cause this: the game's save is written by the original's own code. The check is the patch's: the original loaded a damaged save and wrote it back with new checksums, which hid the damage.
 
 ## Troubleshooting
 

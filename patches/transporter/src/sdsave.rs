@@ -9,6 +9,10 @@
 //! /roms/nds/saves/POKEMON_<B|W|B2|W2>_IR<g><l>01_<rr>.sav
 //! ```
 //!
+//! The copy made before a save's first change lies in the patches' own
+//! folder of the SD card (`bank_common::sdfiles::ROOT`), under the save's
+//! name with `.bak` behind it.
+//!
 //! `<g>` is the game letter, `<l>` the language letter the original accepts,
 //! `<rr>` the revision of that game's cartridge in that language (`revision`):
 //! one name per game and language, no other. The four-letter game code the
@@ -18,6 +22,7 @@
 //! of a pair or which language it belongs to.
 
 use crate::language;
+use bank_common::sdfiles::ROOT;
 
 /// Exact size of a Gen 5 save.
 pub const SAVE_SIZE: u64 = 0x8_0000;
@@ -32,6 +37,8 @@ pub const MAX_SAVES: usize = GAMES.len();
 const TRAINER_IDENTITY: u64 = 0x19400 + 0x1E;
 
 const FOLDER: &[u8] = b"/roms/nds/saves/POKEMON_";
+/// The same start of a save's name, behind the backups' folder.
+const BACKUP: &[u8] = b"/POKEMON_";
 
 /// One of the four games, as the original tells them apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,14 +150,20 @@ impl Save {
         named
     }
     /// Writes the terminated path and returns its length with terminator.
-    /// `backup` names the copy made before the first change.
+    /// `backup` names the copy made before the first change, which lies in
+    /// the patches' folder (`ROOT`) under the save's own name and `.bak`.
     pub fn path(self, backup: bool, out: &mut [u8; PATH_CAPACITY]) -> usize {
         let mut at = 0;
         let mut put = |bytes: &[u8]| {
             out[at..at + bytes.len()].copy_from_slice(bytes);
             at += bytes.len();
         };
-        put(FOLDER);
+        if backup {
+            put(ROOT);
+            put(BACKUP);
+        } else {
+            put(FOLDER);
+        }
         put(self.info().title);
         put(b"_IR");
         put(&[self.info().letter, self.language]);
@@ -469,9 +482,12 @@ mod tests {
         assert!(names.contains(&String::from("/roms/nds/saves/POKEMON_W_IRAD01_00.sav")));
         assert!(names.contains(&String::from("/roms/nds/saves/POKEMON_W2_IRDD01_00.sav")));
         assert!(names.contains(&String::from("/roms/nds/saves/POKEMON_B2_IRED01_00.sav")));
+        // The backup: the same name in the patches' folder, with `.bak`.
+        let mut out = [0; PATH_CAPACITY];
+        let length = save(2, b'J').path(true, &mut out);
         assert_eq!(
-            text(save(2, b'J'), true),
-            "/roms/nds/saves/POKEMON_B2_IREJ01_01.sav.bak"
+            out[..length],
+            [ROOT, b"/POKEMON_B2_IREJ01_01.sav.bak\0"].concat()[..]
         );
         // The longest path fits, terminator included.
         let mut out = [0; PATH_CAPACITY];

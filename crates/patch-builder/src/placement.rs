@@ -9,6 +9,9 @@ use crate::{build_ips, fail, inspect_code, inspect_exheader, sha256, CheckedEdit
 const PAGE: u32 = 0x1000;
 const MAX_IPS_IMAGE: usize = 0x1000000;
 const APPLICATION_HEAP_BASE: u32 = 0x08000000;
+/// The kernel maps a whole megabyte of a segment as one section, whose
+/// rights the start-up hook cannot change.
+const SECTION: u32 = 0x10_0000;
 
 /// Fingerprints must come from an independently reviewed input manifest.
 #[derive(Debug, Clone, Copy)]
@@ -169,6 +172,17 @@ pub fn prepare_expanded_data(
     if payload_end > APPLICATION_HEAP_BASE {
         return fail("expanded code would reach the application heap address range");
     }
+    if section_holds_code(
+        header.data.address,
+        payload_address,
+        payload.executable_size,
+        payload_end,
+    ) {
+        return fail(
+            "the enlarged data segment covers a whole megabyte that holds payload code; \
+             the kernel would map it as a section the start-up hook cannot make executable",
+        );
+    }
     let expanded_data_size = payload_end
         .checked_sub(header.data.address)
         .ok_or_else(|| Error("payload precedes data segment".into()))?;
@@ -242,6 +256,17 @@ pub fn prepare_expanded_data(
         ips,
         expanded_code_sha256: sha256(&base),
         payload_sha256: sha256(payload.image),
+    })
+}
+
+/// Whether a megabyte-aligned block that holds payload code lies wholly
+/// inside the enlarged data segment `[data, end)`.
+fn section_holds_code(data: u32, code: u32, code_size: u32, end: u32) -> bool {
+    let first = code / SECTION;
+    let last = (code + code_size - 1) / SECTION;
+    (first..=last).any(|block| {
+        let start = block as u64 * SECTION as u64;
+        data as u64 <= start && start + SECTION as u64 <= end as u64
     })
 }
 
@@ -523,5 +548,27 @@ mod tests {
         );
         assert_eq!(prepared.layout().payload_file_offset, 0x2fb000);
         assert_eq!(prepared.layout().expanded_code_size, 0x2fd000);
+
+        // Code from 3fb000 reaches into the megabyte at 400000; the data
+        // segment may end inside it, never at or past 500000.
+        for (memory_size, fits) in [(0x104000, true), (0x105000, false), (0x107000, false)] {
+            let linked = LinkedPayload {
+                linked_address: 0x3fb000,
+                executable_size: 0x20000,
+                memory_size,
+                ..payload(&bytes)
+            };
+            let identity = identity(&code, &exheader);
+            let prepared = prepare_expanded_data(&code, &exheader, &identity, &linked, &[]);
+            assert_eq!(prepared.is_ok(), fits, "{memory_size:x}");
+        }
+    }
+    #[test]
+    fn a_megabyte_with_code_must_not_lie_inside_the_data_segment() {
+        assert!(!section_holds_code(0x314000, 0x3fb000, 0x20000, 0x4ff000));
+        assert!(section_holds_code(0x314000, 0x3fb000, 0x20000, 0x500000));
+        assert!(!section_holds_code(0x314000, 0x3fb000, 0x5000, 0x600000));
+        assert!(section_holds_code(0x300000, 0x3fb000, 0x5000, 0x400000));
+        assert!(!section_holds_code(0x36a000, 0x381000, 0x20000, 0x3c0000));
     }
 }

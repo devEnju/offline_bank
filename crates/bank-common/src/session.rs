@@ -169,6 +169,18 @@ impl<S: Storage> BankSession<S> {
         }
     }
 
+    /// Makes the payload and `sides` the current save without a game
+    /// (`BankStore::commit`): success only once the record that names them
+    /// is durable.
+    pub fn commit_bytes(&mut self, payload: &[u8], sides: Sides) -> Result<(), Error<S::Error>> {
+        self.ensure_loaded()?;
+        sections::validate_bank(payload).map_err(Error::Payload)?;
+        let result = self.store.commit(&self.head, payload, sides);
+        self.head = self.storage_result(result)?;
+        self.loaded = false;
+        Ok(())
+    }
+
     /// Test builds only: see `BankStore::republish`.
     #[cfg(feature = "test-build")]
     pub fn tear_record(&mut self, passes: u32) -> Result<(), Error<S::Error>> {
@@ -208,14 +220,14 @@ impl<S: Storage> BankSession<S> {
         Ok(reconciled.decision)
     }
 
-    /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`BankStore::ask`). Nothing is written when the record says so
+    /// Sets both marks of the save in progress in one record
+    /// (`BankStore::mark`). Nothing is written when the record says so
     /// already. The answer is whether Transporter's question settles it now
-    /// (`Metadata::asks`): also when it was unlocked.
-    pub fn ask(&mut self, ask: bool) -> Result<bool, Error<S::Error>> {
+    /// (`Metadata::asks`).
+    pub fn mark(&mut self, ask: bool, unlocked: bool) -> Result<bool, Error<S::Error>> {
         self.ensure_usable()?;
-        let result = self.store.ask(&self.head, ask);
-        self.head = self.storage_result(result)?;
+        let result = self.store.mark(&self.head, ask, unlocked);
+        self.marked(result)?;
         Ok(self.head.metadata().asks())
     }
 
@@ -229,6 +241,15 @@ impl<S: Storage> BankSession<S> {
     pub fn unlock(&mut self) -> Result<(), Error<S::Error>> {
         self.ensure_usable()?;
         let result = self.store.unlock(&self.head);
+        self.marked(result)
+    }
+
+    /// The record a mark of the save in progress left.
+    #[inline(never)]
+    fn marked(
+        &mut self,
+        result: Result<Head, StoreError<S::Error>>,
+    ) -> Result<(), Error<S::Error>> {
         self.head = self.storage_result(result)?;
         Ok(())
     }

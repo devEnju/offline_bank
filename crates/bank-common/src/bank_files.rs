@@ -24,11 +24,27 @@ use offline_core::{
     native_blob::BLOB_SIZE,
     pair::{Pair, PairError},
     sections::{
-        self, Identity, BANK_SIZE, HELD, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE, TRANSPORT_RECORDS,
-        TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
+        self, Identity, BANK_RANGES, BANK_SIZE, HELD, MAIN_RANGES, MAIN_SIZE, RECORD_SIZE,
+        TRANSPORT_RECORDS, TRANSPORT_SIZE, TRANSPORT_SLOTS, TRANSPORT_TAGS,
     },
-    transport, Fingerprint, GameIdentity, Part, Phase, RecoveryDecision, Sides, Slot, Storage,
+    transport, Crc32, Fingerprint, GameIdentity, Metadata, Part, PendingTransfer, Phase,
+    RecoveryDecision, Save, Sides, Slot, Storage,
 };
+
+/// The checksums the journal names for the Bank file of `body`, a full
+/// native body, and for its transport box: CRC-32 over the Bank's ranges in
+/// order, as the compacted Bank file holds them, and over the transport
+/// box's records and tags, as its file holds them.
+pub fn body_crcs(body: &[u8]) -> (u32, u32) {
+    let mut bank = Crc32::new();
+    for range in BANK_RANGES {
+        bank.update(&body[range]);
+    }
+    let mut mover = Crc32::new();
+    mover.update(&body[TRANSPORT_RECORDS]);
+    mover.update(&body[TRANSPORT_TAGS]);
+    (bank.finish(), mover.finish())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -166,6 +182,27 @@ impl<E> Error<E> {
         }
     }
 }
+/// A full native body, cleaned (`sections::clean`), as every write of the
+/// Bank takes it: cleaned once, so that a checksum the caller takes of it is
+/// of what is written. A write consumes it, as it compacts the body into the
+/// Bank payload.
+pub struct Cleaned<'a>(&'a mut [u8]);
+
+impl<'a> Cleaned<'a> {
+    /// Cleans `body`; `None` when it is not a full native body.
+    pub fn new(body: &'a mut [u8]) -> Option<Self> {
+        sections::clean(body).ok()?;
+        Some(Cleaned(body))
+    }
+}
+
+impl core::ops::Deref for Cleaned<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.0
+    }
+}
+
 type Outcome<T, F> = Result<T, Error<<<F as Files>::Storage as Storage>::Error>>;
 
 #[cfg(feature = "test-build")]
@@ -184,11 +221,25 @@ pub struct Loaded {
 pub struct BankFiles<F: Files> {
     files: F,
     bank: Option<BankSession<F::Storage>>,
-    /// The delivery that waits was read at the last load and is the box shown.
+    /// The delivery that waits was read at the last load and is the box
+    /// shown.
     taken: bool,
     /// Test builds: what the next save rehearses.
     #[cfg(feature = "test-build")]
     rehearsal: Rehearsal,
+}
+
+/// The copy of the transport box of one side of the save in progress, and
+/// whether it was empty, so that one that cannot be read loses nothing:
+/// before, what a load showed (its own box, or the delivery it took); after,
+/// the box the save wrote.
+fn pending_box(record: &Metadata, pending: &PendingTransfer, after: bool) -> (Part, bool) {
+    if after {
+        (pending.after.mover, pending.after.held == 0)
+    } else {
+        let shown = transport::on_load(record);
+        (shown.source, !shown.delivery && pending.before.held == 0)
+    }
 }
 
 fn side<E>(file: FileName) -> impl Fn(PairError<E>) -> Error<E> {
@@ -289,9 +340,9 @@ impl<F: Files> BankFiles<F> {
     }
 
     /// Writes the main file and the transport box of the next save from the
-    /// full body in `staging`, into the copies `main` and `mover`, then
-    /// compacts `staging[..BANK_SIZE]` into the Bank payload. Returns what the
-    /// journal records of the two.
+    /// cleaned body in `staging` (`Cleaned`), into the copies `main` and
+    /// `mover`, then compacts `staging[..BANK_SIZE]` into the Bank payload.
+    /// Returns what the journal records of the two.
     fn write_sides(&mut self, staging: &mut [u8], main: Slot, mover: Slot) -> Outcome<Sides, F> {
         let layout = Error::Side(FileName::Bank, Problem::Layout);
         let Ok(held) = sections::transport_count(staging) else {
@@ -321,11 +372,12 @@ impl<F: Files> BankFiles<F> {
         })
     }
 
-    /// Creates a new Bank from the full native body in `staging`. Afterwards
-    /// `staging` holds the compact Bank payload, not a body. Files left by a
-    /// creation that was cut are finished in place. Beside a Bank that
-    /// exists, or one that cannot be read, nothing is written.
-    pub fn initialize(&mut self, staging: &mut [u8]) -> Outcome<(), F> {
+    /// Creates a new Bank from the cleaned body `body`. Afterwards its bytes
+    /// hold the compact Bank payload, not a body. Files left by a creation
+    /// that was cut are finished in place. Beside a Bank that exists, or one
+    /// that cannot be read, nothing is written.
+    pub fn initialize(&mut self, body: Cleaned<'_>) -> Outcome<(), F> {
+        let staging = body.0;
         if self.open()?.is_some() {
             return Err(Error::Side(FileName::Bank, Problem::NotReady));
         }
@@ -409,30 +461,25 @@ impl<F: Files> BankFiles<F> {
             tags.fill(0);
             loaded.transport_missing = true;
         } else if load.delivery {
-            self.taken = true;
             loaded.delivered = sections::occupied(records);
+            self.taken = true;
         }
         Ok(loaded)
     }
 
     /// Makes the next save durable up to the game write: the main file and
-    /// the transport box first, then the journal with the Bank file.
-    /// `staging` holds the full native body and is compacted. The native game
-    /// writer MUST NOT run if this fails.
+    /// the transport box first, then the journal with the Bank file, from
+    /// the cleaned body `body`, which is compacted. The native game writer
+    /// MUST NOT run if this fails.
     pub fn prepare(
         &mut self,
-        staging: &mut [u8],
+        body: Cleaned<'_>,
         game: GameIdentity,
         before: Fingerprint,
         after: Fingerprint,
     ) -> Outcome<(), F> {
-        let current = self.bank()?.current().map_err(Error::Bank)?;
-        let delivery = self.bank()?.record().map_err(Error::Bank)?.delivery;
-        // The record that makes this save current says that nothing waits
-        // any more, so a delivery that was not shown is not saved over.
-        if delivery.is_some() && !self.taken {
-            return Err(Error::Side(FileName::Transport, Problem::Conflict));
-        }
+        let staging = body.0;
+        let (current, mover) = self.next_copies()?;
         // Test builds: keep the record being written for a while, so that a
         // real power cut lands inside one of its writes.
         #[cfg(feature = "test-build")]
@@ -441,11 +488,7 @@ impl<F: Files> BankFiles<F> {
                 .tear_record(TEAR_RECORD_PASSES)
                 .map_err(Error::Bank)?;
         }
-        let sides = self.write_sides(
-            staging,
-            current.main.slot.other(),
-            current.next_mover(delivery.is_some()),
-        )?;
+        let sides = self.write_sides(staging, current.main.slot.other(), mover)?;
         // Test builds: the same for the spare copy of the Bank file.
         #[cfg(feature = "test-build")]
         if self.rehearsal == Rehearsal::TearBoxes {
@@ -457,6 +500,56 @@ impl<F: Files> BankFiles<F> {
             .prepare_bytes(&staging[..BANK_SIZE], sides, game, before, after)
             .map_err(Error::Bank)?;
         Ok(())
+    }
+
+    /// Makes the cleaned body `body` the current save, without a game: the
+    /// main file and the transport box first, then the journal with the Bank
+    /// file, in one record (`BankStore::commit`). `body` is compacted.
+    /// Follow it with `read` before another write.
+    pub fn commit(&mut self, body: Cleaned<'_>) -> Outcome<(), F> {
+        let staging = body.0;
+        let (current, mover) = self.next_copies()?;
+        let sides = self.write_sides(staging, current.main.slot.other(), mover)?;
+        self.bank()?
+            .commit_bytes(&staging[..BANK_SIZE], sides)
+            .map_err(Error::Bank)?;
+        self.taken = false;
+        Ok(())
+    }
+
+    /// The Bank file and the transport box of the current save, and those
+    /// `commit` of `body` would name, each its copy and checksum: the Bank
+    /// file always into its other copy (`BankStore::commit`), the transport
+    /// box where the next save writes it (`next_copies`).
+    pub fn commit_states(&mut self, body: &Cleaned<'_>) -> Outcome<[(Part, Part); 2], F> {
+        let (current, mover) = self.next_copies()?;
+        let (bank_crc, mover_crc) = body_crcs(body);
+        Ok([
+            (current.bank, current.mover),
+            (
+                Part {
+                    slot: current.bank.slot.other(),
+                    crc: bank_crc,
+                },
+                Part {
+                    slot: mover,
+                    crc: mover_crc,
+                },
+            ),
+        ])
+    }
+
+    /// The current save, and the copy the next save writes the transport box
+    /// into (`Save::next_mover`), for `prepare` and `commit` alike. The
+    /// record that makes the next save current says that nothing waits any
+    /// more, so a delivery that was not shown is not saved over: refused.
+    fn next_copies(&mut self) -> Outcome<(Save, Slot), F> {
+        let current = self.bank()?.current().map_err(Error::Bank)?;
+        let delivery = self.bank()?.record().map_err(Error::Bank)?.delivery;
+        if delivery.is_some() && !self.taken {
+            return Err(Error::Side(FileName::Transport, Problem::Conflict));
+        }
+        Ok((current, current.next_mover(delivery.is_some())))
     }
 
     /// Resolves a prepared save from the game actually observed. Follow it
@@ -496,19 +589,11 @@ impl<F: Files> BankFiles<F> {
         }
         // The transport box: before, what a load showed (its own box, or the
         // delivery it took); after, the box the save wrote.
-        let shown = transport::on_load(&record);
         let (records, tags) = staging[..TRANSPORT_SIZE].split_at_mut(TRANSPORT_SLOTS * RECORD_SIZE);
-        for (part, empty, list, count) in [
-            (
-                shown.source,
-                !shown.delivery && pending.before.held == 0,
-                &mut *before,
-                0,
-            ),
-            (pending.after.mover, pending.after.held == 0, &mut *after, 1),
-        ] {
+        for (side, list) in [&mut *before, &mut *after].into_iter().enumerate() {
+            let (part, empty) = pending_box(&record, &pending, side == 1);
             if self.read_box(part, empty, records, tags)? {
-                counts[count] = sections::identities(records, list, counts[count]);
+                counts[side] = sections::identities(records, list, counts[side]);
             }
         }
         Ok(moved::moved(
@@ -517,13 +602,45 @@ impl<F: Files> BankFiles<F> {
         ))
     }
 
-    /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`offline_core::Metadata::ask`). Only the journal is written,
-    /// and only if it does not say so already. The answer is whether
-    /// Transporter's question settles it now, also when it was unlocked
+    /// The Bank file payload of one side of the save in progress into
+    /// `staging[..BANK_SIZE]`, checked. Nothing is written.
+    pub fn pending_payload(&mut self, after: bool, staging: &mut [u8]) -> Outcome<(), F> {
+        self.bank()?
+            .read_pending(after, staging)
+            .map_err(Error::Bank)
+    }
+
+    /// The transport box of one side of the save in progress, as
+    /// `pending_moves` compares them: before, what a load showed (its own
+    /// box, or the delivery it took); after, the box the save wrote. A box
+    /// that cannot be read and was empty is zeros.
+    pub fn pending_transport(
+        &mut self,
+        after: bool,
+        records: &mut [u8],
+        tags: &mut [u8],
+    ) -> Outcome<(), F> {
+        let record = self.bank()?.record().map_err(Error::Bank)?;
+        let Phase::Prepared(pending) = record.phase else {
+            return Err(Error::Side(FileName::Bank, Problem::NotReady));
+        };
+        let (part, empty) = pending_box(&record, &pending, after);
+        if !self.read_box(part, empty, records, tags)? {
+            records.fill(0);
+            tags.fill(0);
+        }
+        Ok(())
+    }
+
+    /// Sets both marks of the save in progress in one record: `ask` leaves
+    /// it to Transporter's question or takes it back
+    /// (`offline_core::Metadata::ask`), `unlocked` is
+    /// `offline_core::Metadata::unlocked`. Only the journal is written, and
+    /// only if it does not say so already. The answer is whether
+    /// Transporter's question settles it now
     /// (`offline_core::Metadata::asks`).
-    pub fn ask(&mut self, ask: bool) -> Outcome<bool, F> {
-        self.bank()?.ask(ask).map_err(Error::Bank)
+    pub fn mark(&mut self, ask: bool, unlocked: bool) -> Outcome<bool, F> {
+        self.bank()?.mark(ask, unlocked).map_err(Error::Bank)
     }
 
     /// Unlocks the save in progress for Transporter's question, whatever
@@ -668,7 +785,9 @@ mod tests {
 
         staging[MILES].copy_from_slice(&777u32.to_le_bytes());
         staging[REWARD_DATE.start + 3] = 7;
-        files.prepare(&mut staging, GAME, BEFORE, AFTER).unwrap();
+        files
+            .prepare(Cleaned::new(&mut staging).unwrap(), GAME, BEFORE, AFTER)
+            .unwrap();
         // A save that is undone leaves the balance and the date of before.
         let before = recovered(&disk, BEFORE).0;
         assert_eq!(&before[MILES], &999u32.to_le_bytes());
@@ -718,7 +837,12 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
+            .prepare(
+                Cleaned::new(&mut old.clone()).unwrap(),
+                GAME,
+                [8; 32],
+                [9; 32],
+            )
             .unwrap();
         files.reconcile([9; 32]).unwrap();
         load(&mut files);
@@ -738,7 +862,7 @@ mod tests {
                 4 => Rehearsal::TearBoxes,
                 _ => Rehearsal::None,
             });
-            files.prepare(&mut new.clone(), GAME, BEFORE, AFTER)
+            files.prepare(Cleaned::new(&mut new.clone()).unwrap(), GAME, BEFORE, AFTER)
         };
         let counting = base.cut_after(usize::MAX);
         save(&counting).unwrap();
@@ -765,7 +889,12 @@ mod tests {
             }
             load(&mut files);
             files
-                .prepare(&mut third.clone(), GAME, [5; 32], [6; 32])
+                .prepare(
+                    Cleaned::new(&mut third.clone()).unwrap(),
+                    GAME,
+                    [5; 32],
+                    [6; 32],
+                )
                 .unwrap_or_else(|error| panic!("{context}: the next save: {error:?}"));
             files.reconcile([6; 32]).unwrap();
             let bytes = load(&mut opened(&files.files_mut().reboot())).0;
@@ -798,6 +927,54 @@ mod tests {
         }
     }
 
+    /// A save without a game (`commit`), as the transfer screen's moves make
+    /// one: a cut at every write leaves the old save or the new one, whole,
+    /// and the next save goes through. A delivery that waits is taken by it
+    /// or still waits.
+    #[test]
+    fn a_cut_at_every_write_of_a_commit_leaves_the_old_save_or_the_new_one() {
+        for (console, delivered) in [(false, 0), (true, 0), (false, 4), (true, 4)] {
+            let old = body(0x31, 0x44, if delivered == 0 { 2 } else { 0 });
+            let new = body(0x52, 0x66, 1);
+            let disk = fresh(&old);
+            if delivered != 0 {
+                deliver(&disk, delivered);
+            }
+            let base = disk.reboot().like(console);
+            let commit = |disk: &Shared| {
+                let mut files = opened(disk);
+                load(&mut files);
+                files.commit(Cleaned::new(&mut new.clone()).unwrap())
+            };
+            let counting = base.cut_after(usize::MAX);
+            commit(&counting).unwrap();
+            let total = counting.0.borrow().operations;
+            let old_state = body(0x31, 0x44, if delivered == 0 { 2 } else { delivered });
+            let mut committed = false;
+            for cut in 0..=total {
+                let disk = base.cut_after(cut);
+                let _ = commit(&disk);
+                let mut files = BankFiles::new(disk.reboot());
+                assert!(matches!(files.open().unwrap(), Some(Phase::Clean(_))));
+                let (bytes, loaded) = load(&mut files);
+                if bytes == new {
+                    committed = true;
+                    assert_eq!(loaded.delivered, 0, "cut {cut}");
+                } else {
+                    assert!(!committed, "cut {cut}: the old save came back");
+                    assert!(bytes == old_state, "cut {cut}: neither save");
+                    assert_eq!(loaded.delivered as usize, delivered, "cut {cut}");
+                }
+                let third = body(0x73, 0x21, 1);
+                files
+                    .commit(Cleaned::new(&mut third.clone()).unwrap())
+                    .unwrap_or_else(|error| panic!("cut {cut}: the next commit: {error:?}"));
+                assert!(load(&mut opened(&files.files_mut().reboot())).0 == third);
+            }
+            assert!(committed);
+        }
+    }
+
     #[test]
     fn pokedex_of_two_games_survives_saves_and_a_rollback() {
         // Y's region marked 0x19, then Ultra Sun adds 0x76 beside it.
@@ -808,13 +985,20 @@ mod tests {
         let disk = fresh(&body(0x31, 0, 0));
         let mut files = opened(&disk);
         load(&mut files);
-        files.prepare(&mut y.clone(), GAME, BEFORE, AFTER).unwrap();
+        files
+            .prepare(Cleaned::new(&mut y.clone()).unwrap(), GAME, BEFORE, AFTER)
+            .unwrap();
         files.reconcile(AFTER).unwrap();
         assert!(load(&mut files).0 == y);
         // A live import alone publishes nothing.
         assert!(load(&mut opened(&disk.reboot())).0 == y);
         files
-            .prepare(&mut both.clone(), GAME, [3; 32], [4; 32])
+            .prepare(
+                Cleaned::new(&mut both.clone()).unwrap(),
+                GAME,
+                [3; 32],
+                [4; 32],
+            )
             .unwrap();
         assert!(recovered(&disk, [3; 32]).0 == y);
         assert!(recovered(&disk, [4; 32]).0 == both);
@@ -845,7 +1029,12 @@ mod tests {
             original[..TRANSPORT_RECORDS.start]
         );
         files
-            .prepare(&mut original.clone(), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut original.clone()).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         files.reconcile(AFTER).unwrap();
         let bytes = load(&mut files).0;
@@ -899,6 +1088,38 @@ mod tests {
     }
 
     #[test]
+    fn commit_states_are_what_the_journal_names_before_and_after_a_commit() {
+        // Without a delivery and with one shown; the Bank as it was, and
+        // changed.
+        for (delivered, change) in [(0, false), (0, true), (12, false), (12, true)] {
+            let disk = fresh(&body(0x31, 0x44, 0));
+            load(&mut opened(&disk));
+            if delivered > 0 {
+                deliver(&disk, delivered);
+            }
+            let mut files = opened(&disk);
+            let (mut shown, _) = load(&mut files);
+            if change {
+                shown[sections::BOXES_START] ^= 1;
+            }
+            let shown = Cleaned::new(&mut shown).unwrap();
+            let [before, after] = files.commit_states(&shown).unwrap();
+            let state = |card: &Shared| {
+                let Phase::Clean(now) = opened(&card.reboot()).phase().unwrap() else {
+                    unreachable!()
+                };
+                (now.bank, now.mover)
+            };
+            assert_eq!(before, state(&disk));
+            files.commit(shown).unwrap();
+            let what = std::format!("delivered {delivered}, changed {change}");
+            assert_eq!(after, state(&disk), "{what}");
+            // The Bank file's copy changes, whatever the Bank holds.
+            assert!(before.0.slot != after.0.slot, "{what}");
+        }
+    }
+
+    #[test]
     fn a_delivery_is_taken_once_and_what_stays_in_the_box_is_kept() {
         let disk = fresh(&body(0x31, 0x44, 0));
         load(&mut opened(&disk));
@@ -916,7 +1137,12 @@ mod tests {
         // Eight are moved into boxes, four stay in the transport box.
         let after = body(0x52, 0x44, 4);
         files
-            .prepare(&mut after.clone(), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut after.clone()).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         // Rolled back: the delivery is whole again.
         let (bytes, loaded) = recovered(&disk, BEFORE);
@@ -953,7 +1179,9 @@ mod tests {
             let mut files = BankFiles::new(disk.clone());
             match files.open()? {
                 Some(_) => Ok(false),
-                None => files.initialize(&mut body.to_vec()).map(|_| true),
+                None => files
+                    .initialize(Cleaned::new(&mut body.to_vec()).unwrap())
+                    .map(|_| true),
             }
         };
         let empty = Shared::default().like(console);
@@ -1009,7 +1237,12 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
+            .prepare(
+                Cleaned::new(&mut old.clone()).unwrap(),
+                GAME,
+                [8; 32],
+                [9; 32],
+            )
             .unwrap();
         files.reconcile([9; 32]).unwrap();
         assert!(load(&mut files).0 == old);
@@ -1052,7 +1285,7 @@ mod tests {
             let mut files = opened(&prepared);
             load(&mut files);
             files
-                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
+                .prepare(Cleaned::new(&mut new.clone()).unwrap(), GAME, BEFORE, AFTER)
                 .unwrap();
             let operations = prepared.0.borrow().operations;
 
@@ -1096,7 +1329,12 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
+            .prepare(
+                Cleaned::new(&mut old.clone()).unwrap(),
+                GAME,
+                [8; 32],
+                [9; 32],
+            )
             .unwrap();
         files.reconcile([9; 32]).unwrap();
         let base = disk.reboot();
@@ -1137,7 +1375,12 @@ mod tests {
             2,
         );
         files
-            .prepare(&mut moved_in.clone(), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut moved_in.clone()).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         assert_eq!(count(&delivered), (0, 0));
 
@@ -1150,7 +1393,12 @@ mod tests {
         let at = 0x17C + 9 * 0x1B56;
         with_deposit[at..at + RECORD_SIZE].copy_from_slice(&pokemon(7));
         files
-            .prepare(&mut with_deposit, GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut with_deposit).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         assert_eq!(count(&delivered), (1, 0));
 
@@ -1160,7 +1408,7 @@ mod tests {
         load(&mut files);
         files
             .prepare(
-                &mut with_boxes(0x52, &[(0, 0, pokemon(1))], 0),
+                Cleaned::new(&mut with_boxes(0x52, &[(0, 0, pokemon(1))], 0)).unwrap(),
                 GAME,
                 BEFORE,
                 AFTER,
@@ -1187,7 +1435,12 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut body(0x52, 0x44, 0), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut body(0x52, 0x44, 0)).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         files.reconcile(AFTER).unwrap();
         drop(files);
@@ -1204,7 +1457,7 @@ mod tests {
         let mut files = BankFiles::new(lost.clone());
         assert!(matches!(files.open(), Err(Error::Bank(_))));
         assert!(matches!(
-            files.initialize(&mut body(0, 0, 0)),
+            files.initialize(Cleaned::new(&mut body(0, 0, 0)).unwrap()),
             Err(Error::Bank(_))
         ));
         // Nothing was written beside it either.
@@ -1212,7 +1465,7 @@ mod tests {
         // Nor is a Bank that is there ever created over.
         let mut files = BankFiles::new(intact);
         assert_eq!(
-            files.initialize(&mut body(0, 0, 0)),
+            files.initialize(Cleaned::new(&mut body(0, 0, 0)).unwrap()),
             Err(Error::Side(FileName::Bank, Problem::NotReady))
         );
     }
@@ -1227,7 +1480,12 @@ mod tests {
         // All three are moved out before saving.
         let emptied = body(0x52, 0x44, 0);
         files
-            .prepare(&mut emptied.clone(), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut emptied.clone()).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         // Power is lost right after the game was saved, before any cleanup.
         let (bytes, loaded) = recovered(&disk, AFTER);
@@ -1265,7 +1523,12 @@ mod tests {
         let mut files = opened(&rolled_back);
         load(&mut files);
         files
-            .prepare(&mut body(0x52, 0x44, 4), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut body(0x52, 0x44, 4)).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
 
         drop(files);
@@ -1312,7 +1575,9 @@ mod tests {
         assert!(try_deliver(&disk, 2).is_none());
         let mut files = BankFiles::new(disk.clone());
         assert_eq!(files.open(), Ok(None));
-        files.initialize(&mut body(0x31, 0x44, 0)).unwrap();
+        files
+            .initialize(Cleaned::new(&mut body(0x31, 0x44, 0)).unwrap())
+            .unwrap();
         let (bytes, loaded) = load(&mut opened(&disk.reboot()));
         assert_eq!(loaded.delivered, 0);
         assert!(bytes == body(0x31, 0x44, 0));
@@ -1339,7 +1604,12 @@ mod tests {
         // A save would say that nothing waits any more: it is refused, and
         // the delivery stays where it is.
         assert_eq!(
-            files.prepare(&mut body(0x52, 0x44, 0), GAME, BEFORE, AFTER),
+            files.prepare(
+                Cleaned::new(&mut body(0x52, 0x44, 0)).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER
+            ),
             Err(Error::Side(FileName::Transport, Problem::Conflict))
         );
         assert!(disk.0.borrow().files == damaged);
@@ -1352,7 +1622,12 @@ mod tests {
         let mut files = opened(&disk);
         load(&mut files);
         files
-            .prepare(&mut body(0x31, 0x44, 3), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut body(0x31, 0x44, 3)).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         files.reconcile(AFTER).unwrap();
         let Phase::Clean(current) = files.phase().unwrap() else {
@@ -1440,7 +1715,12 @@ mod tests {
             load(&mut files);
             let emptied = body(0x52, 0x44, 0);
             files
-                .prepare(&mut emptied.clone(), GAME, BEFORE, AFTER)
+                .prepare(
+                    Cleaned::new(&mut emptied.clone()).unwrap(),
+                    GAME,
+                    BEFORE,
+                    AFTER,
+                )
                 .unwrap_or_else(|error| panic!("cut {cut}: the next save: {error:?}"));
             files.reconcile(AFTER).unwrap();
             assert!(load(&mut files).0 == emptied, "cut {cut}");
@@ -1476,7 +1756,12 @@ mod tests {
             let bytes = load(&mut files).0;
             assert!(bytes == expected);
             files
-                .prepare(&mut next.clone(), GAME, BEFORE, AFTER)
+                .prepare(
+                    Cleaned::new(&mut next.clone()).unwrap(),
+                    GAME,
+                    BEFORE,
+                    AFTER,
+                )
                 .unwrap();
             files.reconcile(AFTER).unwrap();
             end_session(&mut files, &disk);
@@ -1510,7 +1795,7 @@ mod tests {
             assert!(load(&mut files).0 == old);
             between_jobs(&mut files);
             files
-                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
+                .prepare(Cleaned::new(&mut new.clone()).unwrap(), GAME, BEFORE, AFTER)
                 .unwrap();
             between_jobs(&mut files);
             assert!(matches!(files.phase(), Ok(Phase::Prepared(_))));
@@ -1535,7 +1820,12 @@ mod tests {
         let mut files = opened(&counting);
         load(&mut files);
         files
-            .prepare(&mut body(0x52, 0x66, 0), GAME, BEFORE, AFTER)
+            .prepare(
+                Cleaned::new(&mut body(0x52, 0x66, 0)).unwrap(),
+                GAME,
+                BEFORE,
+                AFTER,
+            )
             .unwrap();
         let total = counting.0.borrow().operations;
         drop(files);
@@ -1545,7 +1835,12 @@ mod tests {
             let failed = files.open().is_err()
                 || files.read(&mut vec![0; BLOB_SIZE]).is_err()
                 || files
-                    .prepare(&mut body(0x52, 0x66, 0), GAME, BEFORE, AFTER)
+                    .prepare(
+                        Cleaned::new(&mut body(0x52, 0x66, 0)).unwrap(),
+                        GAME,
+                        BEFORE,
+                        AFTER,
+                    )
                     .is_err();
             assert!(failed, "cut {cut}");
             end_session(&mut files, &disk);
@@ -1561,7 +1856,7 @@ mod tests {
             let mut files = opened(&disk);
             load(&mut files);
             files
-                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
+                .prepare(Cleaned::new(&mut new.clone()).unwrap(), GAME, BEFORE, AFTER)
                 .unwrap();
             // The session ends before the game answered.
             end_session(&mut files, &disk);
@@ -1574,7 +1869,7 @@ mod tests {
             let mut first = opened(&restarted);
             load(&mut first);
             first
-                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
+                .prepare(Cleaned::new(&mut new.clone()).unwrap(), GAME, BEFORE, AFTER)
                 .unwrap();
             drop(first);
             assert!(recovered(&restarted, game).0 == bytes);
@@ -1592,12 +1887,17 @@ mod tests {
             files.open().unwrap();
             load(&mut files);
             files
-                .prepare(&mut old.clone(), GAME, [8; 32], [9; 32])
+                .prepare(
+                    Cleaned::new(&mut old.clone()).unwrap(),
+                    GAME,
+                    [8; 32],
+                    [9; 32],
+                )
                 .unwrap();
             files.reconcile([9; 32]).unwrap();
             assert!(load(&mut files).0 == old);
             files
-                .prepare(&mut new.clone(), GAME, BEFORE, AFTER)
+                .prepare(Cleaned::new(&mut new.clone()).unwrap(), GAME, BEFORE, AFTER)
                 .unwrap();
             end_session(&mut files, &disk);
 

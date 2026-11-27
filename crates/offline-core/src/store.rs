@@ -132,9 +132,11 @@ fn record_offset(slot: Slot) -> u64 {
 
 fn read_record<S: Storage>(storage: &mut S, slot: Slot) -> Result<Record, StoreError<S::Error>> {
     let mut bytes = [0; METADATA_SIZE];
-    // A record that cannot be read is one an interrupted publication
-    // left behind, as a torn one is; the other replica decides.
-    if storage.read(record_offset(slot), &mut bytes).is_err() {
+    // A record that cannot be read, also on a second try, is one an
+    // interrupted publication left behind, as a torn one is; the other
+    // replica decides. One failed read must not hide the newer record.
+    let offset = record_offset(slot);
+    if storage.read(offset, &mut bytes).is_err() && storage.read(offset, &mut bytes).is_err() {
         return Ok(Record::Damaged);
     }
     if zero(&bytes) {
@@ -214,13 +216,13 @@ fn put_replica<S: Storage>(
     Ok(())
 }
 
-/// Transporter's write of `metadata`: the replica that was not selected
-/// first, and the record is in force once that one is durable and read
-/// back; the other is then written too. If that one cannot be written, the
-/// journal is as after a power cut between the two, and Bank's next write
-/// of the journal writes it. An error means that the first replica was not
-/// written and read back; only if its read-back alone failed can the record
-/// be in force all the same.
+/// The write of a record that is in force once its first replica is: the
+/// replica that was not selected first, durable and read back, then the
+/// other. If that one cannot be written, the journal is as after a power cut
+/// between the two, and the next write of the journal writes it. An error
+/// means that the first replica was not written and read back; only if its
+/// read-back alone failed can the record be in force all the same.
+/// Transporter's delivery and Bank's save without a game write so.
 fn hand_over<S: Storage>(
     storage: &mut S,
     selected: Slot,
@@ -265,6 +267,15 @@ fn put_record<S: Storage>(
         return Err(StoreError::Format(FormatError::BadChecksum));
     }
     Ok(())
+}
+
+/// A save to make current (`BankStore::next_save`): the journal as checked,
+/// the clean save it follows, and the record's next sequence number.
+struct NextSave {
+    head: Head,
+    before: Save,
+    after: Save,
+    sequence: u32,
 }
 
 fn next_sequence<E>(head: &Head) -> Result<u32, StoreError<E>> {
@@ -516,45 +527,104 @@ impl<S: Storage> BankStore<S> {
         before_fingerprint: Fingerprint,
         after_fingerprint: Fingerprint,
     ) -> Result<Head, StoreError<S::Error>> {
-        let head = self.check_head(head)?;
-        let current = match head.phase() {
-            Phase::Clean(current) => current,
-            Phase::Prepared(_) => return Err(StoreError::PendingRecovery),
-        };
+        let next = self.next_save(head, payload, sides)?;
         if before_fingerprint == after_fingerprint {
             return Err(StoreError::Format(FormatError::IndistinguishableGameStates));
         }
-        let sequence = next_sequence(&head)?;
-        let after = Save {
-            bank: Part {
-                slot: current.bank.slot.other(),
-                crc: crate::crc32(payload),
-            },
-            main: Part {
-                slot: current.main.slot.other(),
-                crc: sides.main,
-            },
-            mover: Part {
-                slot: current.next_mover(head.metadata.delivery.is_some()),
-                crc: sides.mover,
-            },
-            held: sides.held,
-        };
         let metadata = Metadata {
-            sequence,
+            sequence: next.sequence,
             phase: Phase::Prepared(PendingTransfer {
-                before: current,
-                after,
+                before: next.before,
+                after: next.after,
                 game,
                 before_fingerprint,
                 after_fingerprint,
             }),
-            ..head.metadata
+            ..next.head.metadata
         };
-        // Refuse what cannot be recorded before anything is written.
+        self.stage(&metadata, next.after, payload)?;
+        publish(&mut self.storage, next.head.preferred, metadata)
+    }
+
+    /// Makes a new save current without a game: the Bank file's spare copy
+    /// is written, synced and read back, then the record that names it, with
+    /// the main file and the transport box the caller wrote into the copies
+    /// the current save leaves free (`Save::next_mover`), as for a transfer.
+    /// The record is clean: nothing is left to settle, and a delivery that
+    /// waited is taken by it, as by any save that becomes current. A cut
+    /// before the first replica is durable leaves the save before; once it
+    /// is, the save is made, and a second replica that cannot be written is
+    /// left to the next write of the journal (`hand_over`).
+    pub fn commit(
+        &mut self,
+        head: &Head,
+        payload: &[u8],
+        sides: Sides,
+    ) -> Result<Head, StoreError<S::Error>> {
+        let next = self.next_save(head, payload, sides)?;
+        let metadata = Metadata {
+            sequence: next.sequence,
+            phase: Phase::Clean(next.after),
+            delivery: None,
+            ask: false,
+            unlocked: false,
+        };
+        self.stage(&metadata, next.after, payload)?;
+        hand_over(&mut self.storage, next.head.preferred, metadata)
+    }
+
+    /// The save that follows the clean save `head` names, for a transfer
+    /// and for a commit alike: the Bank file's spare copy holding `payload`,
+    /// and the main file and transport box the caller wrote, with the
+    /// checksums in `sides`, into the copies the current save leaves free.
+    /// A save in progress is refused.
+    fn next_save(
+        &mut self,
+        head: &Head,
+        payload: &[u8],
+        sides: Sides,
+    ) -> Result<NextSave, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
+        let before = match head.phase() {
+            Phase::Clean(current) => current,
+            Phase::Prepared(_) => return Err(StoreError::PendingRecovery),
+        };
+        let sequence = next_sequence(&head)?;
+        let after = Save {
+            bank: Part {
+                slot: before.bank.slot.other(),
+                crc: crate::crc32(payload),
+            },
+            main: Part {
+                slot: before.main.slot.other(),
+                crc: sides.main,
+            },
+            mover: Part {
+                slot: before.next_mover(head.metadata.delivery.is_some()),
+                crc: sides.mover,
+            },
+            held: sides.held,
+        };
+        Ok(NextSave {
+            head,
+            before,
+            after,
+            sequence,
+        })
+    }
+
+    /// Writes the Bank file's copy of `after` once `metadata`, the record
+    /// that will name it, is known to encode: what cannot be recorded is
+    /// refused before anything is written.
+    fn stage(
+        &mut self,
+        metadata: &Metadata,
+        after: Save,
+        payload: &[u8],
+    ) -> Result<(), StoreError<S::Error>> {
         metadata.encode().map_err(StoreError::Format)?;
         self.write_snapshot(after.bank.slot, payload)?;
-        publish(&mut self.storage, head.preferred, metadata)
+        Ok(())
     }
 
     /// Resolves a prepared transfer by the fingerprint of the game's actual
@@ -576,36 +646,32 @@ impl<S: Storage> BankStore<S> {
         Ok(Reconciled { head, decision })
     }
 
-    /// Leaves the save in progress to Transporter's question, or takes it
-    /// back (`Metadata::ask`), and keeps `Metadata::unlocked`: the same record with the next sequence number
-    /// and `ask`. Nothing is written when the record says so already, unless
-    /// it leaves the save to the question while one replica does not hold
-    /// it: one that does not read, is missing, or holds another record.
-    /// Transporter reads the question only from a journal whose replicas
-    /// both read, and replaces or creates none, so the record is written
-    /// again, which replaces or creates that replica (`put_replica`).
-    pub fn ask(&mut self, head: &Head, ask: bool) -> Result<Head, StoreError<S::Error>> {
-        let head = self.check_head(head)?;
-        self.mark(head, ask, head.metadata.unlocked)
-    }
-
     /// Unlocks the save in progress for Transporter's question
-    /// (`Metadata::unlocked`), whatever game Bank finds from then on, in the
-    /// same way: the same record with the next sequence number.
+    /// (`Metadata::unlocked`), whatever game Bank finds from then on: `mark`
+    /// with `ask` as it is.
     pub fn unlock(&mut self, head: &Head) -> Result<Head, StoreError<S::Error>> {
-        let head = self.check_head(head)?;
         self.mark(head, head.metadata.ask, true)
     }
 
-    /// The record of `head` with `ask` and `unlocked`, written only if it
-    /// differs, or if Transporter's question then settles the save while
-    /// one replica does not hold the record.
-    fn mark(
+    /// What the record of the save in progress says of Transporter's
+    /// question, both marks in one record: `ask` leaves the save to it or
+    /// takes it back (`Metadata::ask`), `unlocked` is `Metadata::unlocked`.
+    /// It is the same record with the next sequence number. Nothing is
+    /// written when the record says so already, unless it leaves the save to
+    /// the question while one replica does not hold it: one that does not
+    /// read, is missing, or holds another record. Transporter reads the
+    /// question only from a journal whose replicas both read, and replaces
+    /// or creates none, so the record is written again, which replaces or
+    /// creates that replica (`put_replica`). Out of line: the payload's room
+    /// is counted (docs/internals.md, "Placement").
+    #[inline(never)]
+    pub fn mark(
         &mut self,
-        head: Head,
+        head: &Head,
         ask: bool,
         unlocked: bool,
     ) -> Result<Head, StoreError<S::Error>> {
+        let head = self.check_head(head)?;
         if !matches!(head.phase(), Phase::Prepared(_)) {
             return Err(StoreError::NoPendingTransfer);
         }

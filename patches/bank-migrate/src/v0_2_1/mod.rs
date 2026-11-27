@@ -321,7 +321,7 @@ pub(crate) mod tests {
         let (card, _) = before::used(console);
         let bytes = record(1234, 17, 90, (2026, 10, 6));
         before::write_record(&card, bytes);
-        let mut expected = before::saved();
+        let mut expected = before::loaded();
         into_body(&mut expected, Stored::decode(&bytes).unwrap());
         (as_v0_2_1(&card.restarted(None)), expected)
     }

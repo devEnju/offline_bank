@@ -60,6 +60,7 @@
 //! separately verified native secure-value/backup policy. A complete rollback of
 //! all local records also needs an external monotonic reference to be detectable.
 
+pub mod boxfile;
 pub mod files;
 pub mod game_image;
 pub mod moved;

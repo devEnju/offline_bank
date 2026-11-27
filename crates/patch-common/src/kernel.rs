@@ -111,6 +111,14 @@ mod arm {
         "svc #0x3a",
         "pop {{r4, pc}}",
         ".size patch_svc_get_resource_current_values, .-patch_svc_get_resource_current_values",
+        ".global patch_svc_send_sync_request",
+        ".type patch_svc_send_sync_request, %function",
+        "patch_svc_send_sync_request:",
+        "push {{r4, lr}}",
+        // r0=session handle; the command is in the thread's buffer.
+        "svc #0x32",
+        "pop {{r4, pc}}",
+        ".size patch_svc_send_sync_request, .-patch_svc_send_sync_request",
     );
 
     unsafe extern "aapcs" {
@@ -129,6 +137,10 @@ mod arm {
             names: *const u32,
             count: i32,
         ) -> i32;
+        /// Sends the command in the calling thread's command buffer to the
+        /// session `handle` and waits for its reply there.
+        #[link_name = "patch_svc_send_sync_request"]
+        pub fn send_sync_request(handle: u32) -> i32;
         #[link_name = "patch_svc_get_resource_current_values"]
         fn get_resource_current_values(
             values: *mut i64,
@@ -162,9 +174,9 @@ mod arm {
 }
 
 #[cfg(target_arch = "arm")]
-pub use arm::close_handle;
-#[cfg(target_arch = "arm")]
 pub(crate) use arm::{check_thread_capacity, wait_thread};
+#[cfg(target_arch = "arm")]
+pub use arm::{close_handle, send_sync_request};
 
 #[cfg(test)]
 mod tests {

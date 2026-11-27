@@ -251,9 +251,24 @@ pub(crate) mod tests {
             .unwrap();
         bank
     }
-    /// The body `used` saves.
+    /// The body `used` saves, with what an earlier release left in it and a
+    /// write of the current files clears (`sections::clean`): box 1's first
+    /// slot emptied, with its flag and time, and its name "A" with an
+    /// earlier name's bytes behind its end and in the label's unused byte.
     pub(crate) fn saved() -> Vec<u8> {
-        body(0x52, 0x66, 3)
+        let mut saved = body(0x52, 0x66, 3);
+        let label = 0x17C + 30 * 0xE8;
+        saved[0x17C..0x17C + 0xE8].fill(0);
+        saved[label..label + 4].copy_from_slice(&[b'A', 0, 0, 0]);
+        saved[label + 0x22] = 0x52;
+        saved
+    }
+    /// `saved()` as the current release loads it once converted: cleaned.
+    pub(crate) fn loaded() -> Vec<u8> {
+        let mut loaded = saved();
+        offline_core::sections::clean(&mut loaded).unwrap();
+        assert!(loaded != saved());
+        loaded
     }
     /// A card with a Bank v0.4.0 created and saved once with `saved()`, and
     /// the body the current release has to load from it.
@@ -269,7 +284,7 @@ pub(crate) mod tests {
         .unwrap();
         bank.tidy_transport().unwrap();
         drop(bank);
-        (card.restarted(None), with_record(saved(), kept()))
+        (card.restarted(None), with_record(loaded(), kept()))
     }
     fn in_progress() -> Sd {
         let card = Sd::default();
@@ -412,7 +427,7 @@ pub(crate) mod tests {
         write_record(&card, earlier);
         let card = card.restarted(None);
         assert_eq!(convert(&card), Ok(Done::Converted));
-        let mut expected = with_record(saved, kept());
+        let mut expected = with_record(loaded(), kept());
         expected[0x170..0x174].copy_from_slice(&1234u32.to_le_bytes());
         assert!(current(&card).unwrap() == expected);
         // A record of that release itself adds nothing.

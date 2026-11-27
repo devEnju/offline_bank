@@ -42,7 +42,13 @@ pub fn write<F: Files>(files: F, staging: &mut [u8]) -> Outcome<bool, F> {
         return Ok(false);
     }
     native_blob::clear_unused(staging);
-    files.initialize(staging)?;
+    let Some(body) = bank_files::Cleaned::new(staging) else {
+        return Err(bank_files::Error::Side(
+            bank_files::FileName::Bank,
+            bank_files::Problem::Layout,
+        ));
+    };
+    files.initialize(body)?;
     Ok(true)
 }
 

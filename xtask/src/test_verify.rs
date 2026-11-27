@@ -353,12 +353,18 @@ fn cases(run: &mut Run) -> Result<()> {
     }
     // What only one program's package must hold, changed in a payload that
     // is otherwise whole: only that program's own check can refuse it.
-    let special: [(&str, &str, Place, &str); 3] = [
+    let special: [(&str, &str, Place, &str); 4] = [
         (
             "bank",
             "no-game stub",
             |dir| symbol(dir, "bank_offline_no_game_stub"),
             "No-game stub must pass r4",
+        ),
+        (
+            "bank",
+            "layout check",
+            |dir| symbol(dir, "bank_layout_check_stub"),
+            "Layout check lies beside the start-up hook",
         ),
         (
             "transporter",

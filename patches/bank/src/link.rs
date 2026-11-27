@@ -21,6 +21,25 @@ mod linked {
         bank_offline_save,
         bank_offline_unlock,
     );
+    mod start {
+        use bank_payload::bootstrap::*;
+        patch_common::link_roots!(bank_layout_check_stub);
+    }
+    mod home {
+        use bank_payload::transfer_screen::*;
+        patch_common::link_roots!(
+            bank_transfer_update,
+            bank_transfer_count,
+            bank_transfer_scene_done,
+            bank_transfer_input,
+            bank_transfer_event,
+            bank_transfer_input_thunk,
+            bank_transfer_event_thunk,
+            bank_transfer_cursor,
+            bank_transfer_slot,
+            bank_transfer_name,
+        );
+    }
     #[cfg(feature = "test-build")]
     mod test_build {
         use bank_payload::hooks::*;
