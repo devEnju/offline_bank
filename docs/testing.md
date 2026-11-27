@@ -125,7 +125,7 @@ Use the normal Bank and Transporter packages. Cover cartridge and installed game
 | Check | Expected |
 | --- | --- |
 | Transfer a Gen 5 Box 1 with gaps, then try another transfer before emptying Bank's transport box. Move the delivery into Bank, save, and reopen. | Accepted Pokémon arrive once in their original positions and leave the source. Another delivery is refused while Pokémon remain; it is allowed after Bank saves an empty transport box. |
-| Transfer from a supported Gen 5 SD card save. | Only saves of the matching game and language are listed. The correct file changes; its backup is `/3ds/Pokémon Bank/<name>.sav.bak`, and nothing new lies beside the save; unrelated saves stay unchanged. |
+| Transfer from a supported Gen 5 SD card save. | Only saves of the matching game and language are listed. The correct file changes; its backup is `/3ds/Pokémon Bank/<name>.sav.bak`, and no other file is created; unrelated saves stay unchanged. |
 | With a White cartridge and a Black 2 save on the SD card, START; take the cartridge out on the list, choose Black 2 and transfer. START again, take the cartridge out on the list and choose White. | The Black 2 transfer runs as usual. White: the original's message that no compatible game is detected. |
 | With a White cartridge and a White save on the SD card, START; take the cartridge out on the list and choose White. | The original's message that no compatible game is detected; the save on the SD card is not changed. |
 | With a White cartridge and Black and Black 2 saves, take the cartridge out on the checking screen after START. | The list shows both saves and no White. |
